@@ -2,34 +2,30 @@
 
 #include "isla/engine/render/renderer_backend.hpp"
 
-#if defined(_WIN32)
-struct IDXGISwapChain;
-struct ID3D11Device;
-struct ID3D11DeviceContext;
-struct ID3D11RenderTargetView;
-#endif
+#include <memory>
+#include <span>
+#include <string>
 
 namespace isla::client {
 
 class ModelRenderer final : public IRendererBackend {
   public:
+    class Impl;
+
+    ModelRenderer();
+    ~ModelRenderer() override;
+
     bool initialize(SDL_Window* window, SDL_Renderer* renderer, RenderSize size) override;
+    [[nodiscard]] bool uses_sdl_renderer() const override;
+    [[nodiscard]] bool has_homogeneous_depth() const override;
     void on_resize(RenderSize size) override;
     void render(const RenderWorld& world) const override;
+    void set_debug_overlay_enabled(bool enabled) override;
+    void set_debug_overlay_lines(std::span<const std::string> lines) override;
     void shutdown() override;
 
   private:
-#if defined(_WIN32)
-    bool create_render_target();
-    void release_render_target();
-
-    SDL_Window* window_ = nullptr;
-    RenderSize render_size_{};
-    ::IDXGISwapChain* swap_chain_ = nullptr;
-    ::ID3D11Device* device_ = nullptr;
-    ::ID3D11DeviceContext* device_context_ = nullptr;
-    ::ID3D11RenderTargetView* render_target_view_ = nullptr;
-#endif
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace isla::client

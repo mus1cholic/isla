@@ -3,8 +3,6 @@
 #include "absl/log/log.h"
 #include <SDL3/SDL.h>
 
-#include "isla/engine/render/overlay_transparency.hpp"
-
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -52,20 +50,21 @@ bool configure_win32_layered_overlay(SDL_Window* window) {
         LOG(ERROR) << "Win32Overlay: failed to apply extended window styles";
         return false;
     }
+    // A non-owned top-level window with APPWINDOW is eligible for taskbar/Alt-Tab.
+    SetWindowLongPtr(hwnd, GWLP_HWNDPARENT, 0);
 
-    const COLORREF color_key =
-        RGB(OverlayTransparencyConfig::kColorKeyRed, OverlayTransparencyConfig::kColorKeyGreen,
-            OverlayTransparencyConfig::kColorKeyBlue);
-    if (!SetLayeredWindowAttributes(hwnd, color_key, 0, LWA_COLORKEY)) {
-        LOG(ERROR) << "Win32Overlay: SetLayeredWindowAttributes failed";
+    // Force full-window transparency; this is the most reliable baseline for layered overlays.
+    if (!SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA)) {
+        LOG(ERROR) << "Win32Overlay: SetLayeredWindowAttributes(LWA_ALPHA,0) failed";
         return false;
     }
-    if (!SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+    if (!SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED |
                           SWP_SHOWWINDOW)) {
         LOG(ERROR) << "Win32Overlay: SetWindowPos failed";
         return false;
     }
+    ShowWindow(hwnd, SW_SHOWNA);
 
     if (g_overlay_original_wndproc == nullptr) {
         g_overlay_original_wndproc = reinterpret_cast<WNDPROC>(
@@ -80,11 +79,29 @@ bool configure_win32_layered_overlay(SDL_Window* window) {
     return true;
 }
 
+bool refresh_win32_layered_overlay_surface(SDL_Window* window) {
+    if (window == nullptr) {
+        return false;
+    }
+    const SDL_PropertiesID window_props = SDL_GetWindowProperties(window);
+    auto* hwnd = static_cast<HWND>(
+        SDL_GetPointerProperty(window_props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    if (hwnd == nullptr) {
+        return false;
+    }
+    return SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA) != FALSE;
+}
+
 #else
 
 bool configure_win32_layered_overlay(SDL_Window* window) {
     (void)window;
     LOG(INFO) << "Win32Overlay: skipped (non-Windows build)";
+    return false;
+}
+
+bool refresh_win32_layered_overlay_surface(SDL_Window* window) {
+    (void)window;
     return false;
 }
 

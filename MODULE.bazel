@@ -48,6 +48,143 @@ filegroup(
 )
 
 git_repository(
+    name = "bx_upstream",
+    build_file_content = """
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "bx",
+    srcs = glob(
+        ["src/*.cpp"],
+        exclude = [
+            "src/amalgamated.cpp",
+            "src/crtnone.cpp",
+        ],
+    ),
+    hdrs = glob([
+        "include/**/*.h",
+        "include/**/*.inl",
+        "3rdparty/**/*.h",
+        "scripts/**/*.natvis",
+    ]),
+    includes = [
+        "include",
+        "3rdparty",
+    ],
+    defines = [
+        "BX_CONFIG_DEBUG=0",
+        "BX_CONFIG_CRT_DIRECTORY_READER=0",
+    ],
+    visibility = ["//visibility:public"],
+)
+""",
+    commit = "c723ec4054112b1ae7e9452c587fc743b3560b7a",
+    remote = "https://github.com/bkaradzic/bx.git",
+)
+
+git_repository(
+    name = "bimg_upstream",
+    build_file_content = """
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "bimg",
+    srcs = [
+        "src/image.cpp",
+        "src/image_gnf.cpp",
+    ] + glob(["3rdparty/astc-encoder/source/**/*.cpp"]),
+    hdrs = glob([
+        "include/**/*.h",
+        "src/*.h",
+        "3rdparty/astc-encoder/include/**/*.h",
+        "3rdparty/astc-encoder/source/**/*.h",
+    ]),
+    includes = [
+        "include",
+        "3rdparty/astc-encoder/include",
+    ],
+    defines = ["BX_CONFIG_DEBUG=0"],
+    visibility = ["//visibility:public"],
+    deps = ["@bx_upstream//:bx"],
+)
+
+cc_library(
+    name = "bimg_decode",
+    srcs = [
+        "src/image_decode.cpp",
+        "3rdparty/tinyexr/deps/miniz/miniz.c",
+    ],
+    hdrs = glob([
+        "include/**/*.h",
+        "src/*.h",
+        "3rdparty/tinyexr/deps/miniz/*.h",
+        "3rdparty/tinyexr/*.h",
+        "3rdparty/lodepng/*.h",
+        "3rdparty/lodepng/*.cpp",
+        "3rdparty/stb/*.h",
+    ]),
+    includes = [
+        "include",
+        "3rdparty",
+        "3rdparty/tinyexr/deps/miniz",
+    ],
+    defines = ["BX_CONFIG_DEBUG=0"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":bimg",
+        "@bx_upstream//:bx",
+    ],
+)
+""",
+    commit = "b7130927db997b6c25effe77d46e338084ba653d",
+    remote = "https://github.com/bkaradzic/bimg.git",
+)
+
+git_repository(
+    name = "bgfx_upstream",
+    build_file_content = """
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "bgfx",
+    srcs = glob(
+        ["src/*.cpp"],
+        exclude = ["src/amalgamated.cpp"],
+    ),
+    hdrs = glob([
+        "include/**/*.h",
+        "src/*.h",
+        "src/**/*.inl",
+        "3rdparty/directx-headers/include/**/*.h",
+        "3rdparty/khronos/**/*.h",
+        "3rdparty/renderdoc/**/*.h",
+        "scripts/**/*.natvis",
+    ]),
+    includes = [
+        "include",
+        "3rdparty",
+        "3rdparty/directx-headers/include",
+        "3rdparty/directx-headers/include/directx",
+        "3rdparty/khronos",
+    ],
+    defines = ["BX_CONFIG_DEBUG=0"],
+    linkopts = [
+        "gdi32.lib",
+        "user32.lib",
+        "opengl32.lib",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@bimg_upstream//:bimg_decode",
+        "@bx_upstream//:bx",
+    ],
+)
+""",
+    commit = "7b3e1ebf626fc6ecb5ba777173c56dddac9a5726",
+    remote = "https://github.com/bkaradzic/bgfx.git",
+)
+
+git_repository(
     name = "cgltf_upstream",
     build_file_content = """
 load("@rules_cc//cc:defs.bzl", "cc_library")
