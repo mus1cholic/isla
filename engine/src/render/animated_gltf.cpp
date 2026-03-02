@@ -6,13 +6,16 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include "absl/log/log.h"
 #include <cgltf.h>
 
 namespace isla::client::animated_gltf {
@@ -89,6 +92,17 @@ std::optional<float> read_scalar(const cgltf_accessor* accessor, cgltf_size inde
     return values[0];
 }
 
+Mat4 read_node_local_matrix(const cgltf_node* node) {
+    Mat4 local_matrix = Mat4::identity();
+    if (node == nullptr) {
+        return local_matrix;
+    }
+    std::array<float, 16U> values{};
+    cgltf_node_transform_local(node, values.data());
+    local_matrix.elements = values;
+    return local_matrix;
+}
+
 bool read_vec4_u16(const cgltf_accessor* accessor, cgltf_size index,
                    std::array<std::uint16_t, 4U>& out_values) {
     if (accessor == nullptr) {
@@ -122,7 +136,7 @@ float clamp_and_wrap_time(float input_time, float duration_seconds) {
 }
 
 Vec3 sample_vec3_track(const std::vector<Vec3Keyframe>& keyframes, float time_seconds,
-                       const Vec3& fallback) {
+                       const Vec3& fallback, TrackInterpolation interpolation) {
     if (keyframes.empty()) {
         return fallback;
     }
@@ -132,29 +146,38 @@ Vec3 sample_vec3_track(const std::vector<Vec3Keyframe>& keyframes, float time_se
     if (time_seconds >= keyframes.back().time_seconds) {
         return keyframes.back().value;
     }
-
-    for (std::size_t i = 0U; i + 1U < keyframes.size(); ++i) {
-        const Vec3Keyframe& a = keyframes[i];
-        const Vec3Keyframe& b = keyframes[i + 1U];
-        if (time_seconds < a.time_seconds || time_seconds > b.time_seconds) {
-            continue;
-        }
-        const float span = b.time_seconds - a.time_seconds;
-        if (span <= 1.0e-6F) {
-            return a.value;
-        }
-        const float t = (time_seconds - a.time_seconds) / span;
-        return Vec3{
-            .x = a.value.x + ((b.value.x - a.value.x) * t),
-            .y = a.value.y + ((b.value.y - a.value.y) * t),
-            .z = a.value.z + ((b.value.z - a.value.z) * t),
-        };
+    // TODO(isla): For monotonic playback, cache the last key index per track and use
+    // index-walking to reduce sampling to amortized O(1). Keep lower_bound as fallback for seeks.
+    const auto upper_it =
+        std::lower_bound(keyframes.begin(), keyframes.end(), time_seconds,
+                         [](const Vec3Keyframe& key, float t) { return key.time_seconds < t; });
+    if (upper_it == keyframes.end()) {
+        return keyframes.back().value;
     }
-    return keyframes.back().value;
+    const std::size_t upper_index = static_cast<std::size_t>(upper_it - keyframes.begin());
+    if (upper_index == 0U) {
+        return keyframes.front().value;
+    }
+
+    const Vec3Keyframe& a = keyframes[upper_index - 1U];
+    if (interpolation == TrackInterpolation::Step) {
+        return a.value;
+    }
+    const Vec3Keyframe& b = keyframes[upper_index];
+    const float span = b.time_seconds - a.time_seconds;
+    if (span <= 1.0e-6F) {
+        return a.value;
+    }
+    const float t = (time_seconds - a.time_seconds) / span;
+    return Vec3{
+        .x = a.value.x + ((b.value.x - a.value.x) * t),
+        .y = a.value.y + ((b.value.y - a.value.y) * t),
+        .z = a.value.z + ((b.value.z - a.value.z) * t),
+    };
 }
 
 Quat sample_quat_track(const std::vector<QuatKeyframe>& keyframes, float time_seconds,
-                       const Quat& fallback) {
+                       const Quat& fallback, TrackInterpolation interpolation) {
     if (keyframes.empty()) {
         return fallback;
     }
@@ -164,21 +187,30 @@ Quat sample_quat_track(const std::vector<QuatKeyframe>& keyframes, float time_se
     if (time_seconds >= keyframes.back().time_seconds) {
         return keyframes.back().value;
     }
-
-    for (std::size_t i = 0U; i + 1U < keyframes.size(); ++i) {
-        const QuatKeyframe& a = keyframes[i];
-        const QuatKeyframe& b = keyframes[i + 1U];
-        if (time_seconds < a.time_seconds || time_seconds > b.time_seconds) {
-            continue;
-        }
-        const float span = b.time_seconds - a.time_seconds;
-        if (span <= 1.0e-6F) {
-            return a.value;
-        }
-        const float t = (time_seconds - a.time_seconds) / span;
-        return slerp(a.value, b.value, t);
+    // TODO(isla): For monotonic playback, cache the last key index per track and use
+    // index-walking to reduce sampling to amortized O(1). Keep lower_bound as fallback for seeks.
+    const auto upper_it =
+        std::lower_bound(keyframes.begin(), keyframes.end(), time_seconds,
+                         [](const QuatKeyframe& key, float t) { return key.time_seconds < t; });
+    if (upper_it == keyframes.end()) {
+        return keyframes.back().value;
     }
-    return keyframes.back().value;
+    const std::size_t upper_index = static_cast<std::size_t>(upper_it - keyframes.begin());
+    if (upper_index == 0U) {
+        return keyframes.front().value;
+    }
+
+    const QuatKeyframe& a = keyframes[upper_index - 1U];
+    if (interpolation == TrackInterpolation::Step) {
+        return a.value;
+    }
+    const QuatKeyframe& b = keyframes[upper_index];
+    const float span = b.time_seconds - a.time_seconds;
+    if (span <= 1.0e-6F) {
+        return a.value;
+    }
+    const float t = (time_seconds - a.time_seconds) / span;
+    return slerp(a.value, b.value, t);
 }
 
 } // namespace
@@ -237,6 +269,8 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
     AnimatedGltfAsset asset;
     asset.skeleton.joints.resize(static_cast<std::size_t>(skin.joints_count));
     asset.bind_local_transforms.resize(static_cast<std::size_t>(skin.joints_count));
+    asset.bind_prefix_matrices.resize(static_cast<std::size_t>(skin.joints_count),
+                                      Mat4::identity());
 
     std::unordered_map<const cgltf_node*, std::size_t> joint_index_by_node;
     joint_index_by_node.reserve(static_cast<std::size_t>(skin.joints_count));
@@ -249,12 +283,30 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
         SkeletonJoint& joint = asset.skeleton.joints[static_cast<std::size_t>(i)];
         joint.name = (node != nullptr && node->name != nullptr) ? node->name : "";
         joint.parent_index = -1;
-        if (node != nullptr && node->parent != nullptr) {
-            const auto parent_it = joint_index_by_node.find(node->parent);
+        Mat4 bind_prefix = Mat4::identity();
+        // TODO(isla): Permanent fix should evaluate the full glTF node hierarchy, including
+        // animation channels on non-joint nodes, then map skin joints from that evaluated graph.
+        const cgltf_node* ancestor = (node != nullptr) ? node->parent : nullptr;
+        cgltf_size ancestry_hops = 0U;
+        while (ancestor != nullptr) {
+            const auto parent_it = joint_index_by_node.find(ancestor);
             if (parent_it != joint_index_by_node.end()) {
                 joint.parent_index = static_cast<int>(parent_it->second);
+                break;
+            }
+
+            bind_prefix = multiply(read_node_local_matrix(ancestor), bind_prefix);
+            ancestor = ancestor->parent;
+            ++ancestry_hops;
+            if (ancestry_hops > data->nodes_count) {
+                return AnimatedGltfLoadResult{
+                    .ok = false,
+                    .asset = {},
+                    .error_message = "glTF node hierarchy contains a parent cycle",
+                };
             }
         }
+        asset.bind_prefix_matrices[static_cast<std::size_t>(i)] = bind_prefix;
         if (skin.inverse_bind_matrices != nullptr) {
             const std::optional<Mat4> ibm =
                 read_mat4(skin.inverse_bind_matrices, static_cast<cgltf_size>(i));
@@ -270,6 +322,21 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
 
         Transform local{};
         if (node != nullptr) {
+            if (node->has_matrix) {
+                LOG(ERROR)
+                    << "AnimatedGltfLoader: matrix-authored joint node encountered at joint index "
+                    << static_cast<std::size_t>(i)
+                    << "; only TRS-authored joints are supported currently";
+                // TODO(isla): Support matrix-authored joints by storing bind locals as matrices
+                // (or decomposing to TRS with explicit non-uniform/shear handling semantics).
+                return AnimatedGltfLoadResult{
+                    .ok = false,
+                    .asset = {},
+                    .error_message =
+                        "matrix-authored joint nodes are not supported yet; use TRS-authored "
+                        "joints",
+                };
+            }
             if (node->has_translation) {
                 local.position = Vec3{
                     .x = node->translation[0],
@@ -297,150 +364,167 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
         asset.bind_local_transforms[static_cast<std::size_t>(i)] = local;
     }
 
-    const cgltf_primitive* primitive = nullptr;
-    for (cgltf_size mesh_i = 0U; mesh_i < data->meshes_count && primitive == nullptr; ++mesh_i) {
-        const cgltf_mesh& mesh = data->meshes[mesh_i];
-        for (cgltf_size p = 0U; p < mesh.primitives_count; ++p) {
-            if (mesh.primitives[p].type == cgltf_primitive_type_triangles) {
-                primitive = &mesh.primitives[p];
-                break;
-            }
-        }
-    }
-    if (primitive == nullptr) {
-        return AnimatedGltfLoadResult{
-            .ok = false,
-            .asset = {},
-            .error_message = "glTF has no triangle primitive",
-        };
-    }
+    std::vector<const cgltf_primitive*> skin_primitives;
+    skin_primitives.reserve(4U);
+    std::unordered_set<const cgltf_primitive*> seen_skin_primitives;
 
-    const cgltf_accessor* position_accessor = nullptr;
-    const cgltf_accessor* normal_accessor = nullptr;
-    const cgltf_accessor* uv_accessor = nullptr;
-    const cgltf_accessor* joints_accessor = nullptr;
-    const cgltf_accessor* weights_accessor = nullptr;
-
-    for (cgltf_size i = 0U; i < primitive->attributes_count; ++i) {
-        const cgltf_attribute& attr = primitive->attributes[i];
-        if (attr.data == nullptr) {
+    for (cgltf_size node_i = 0U; node_i < data->nodes_count; ++node_i) {
+        const cgltf_node& node = data->nodes[node_i];
+        if (node.skin != &skin || node.mesh == nullptr) {
             continue;
         }
-        if (attr.type == cgltf_attribute_type_position) {
-            position_accessor = attr.data;
-        } else if (attr.type == cgltf_attribute_type_normal) {
-            normal_accessor = attr.data;
-        } else if (attr.type == cgltf_attribute_type_texcoord && attr.index == 0U) {
-            uv_accessor = attr.data;
-        } else if (attr.type == cgltf_attribute_type_joints && attr.index == 0U) {
-            joints_accessor = attr.data;
-        } else if (attr.type == cgltf_attribute_type_weights && attr.index == 0U) {
-            weights_accessor = attr.data;
+        // TODO(isla): Keep per-node primitive instances (including node-local transforms)
+        // instead of deduplicating primitive pointers.
+        for (cgltf_size p = 0U; p < node.mesh->primitives_count; ++p) {
+            const cgltf_primitive* primitive = &node.mesh->primitives[p];
+            if (primitive->type != cgltf_primitive_type_triangles) {
+                continue;
+            }
+            if (seen_skin_primitives.insert(primitive).second) {
+                skin_primitives.push_back(primitive);
+            }
         }
     }
 
-    if (position_accessor == nullptr || joints_accessor == nullptr || weights_accessor == nullptr) {
+    if (skin_primitives.empty()) {
         return AnimatedGltfLoadResult{
             .ok = false,
             .asset = {},
-            .error_message = "glTF primitive missing POSITION/JOINTS_0/WEIGHTS_0",
+            .error_message = "glTF has no triangle primitive attached to selected skin",
         };
     }
 
-    const cgltf_size vertex_count = position_accessor->count;
-    if (vertex_count == 0U) {
-        return AnimatedGltfLoadResult{
-            .ok = false,
-            .asset = {},
-            .error_message = "glTF primitive has zero vertices",
-        };
-    }
+    for (const cgltf_primitive* primitive : skin_primitives) {
+        const cgltf_accessor* position_accessor = nullptr;
+        const cgltf_accessor* normal_accessor = nullptr;
+        const cgltf_accessor* uv_accessor = nullptr;
+        const cgltf_accessor* joints_accessor = nullptr;
+        const cgltf_accessor* weights_accessor = nullptr;
 
-    SkinnedPrimitive skinned_primitive;
-    skinned_primitive.vertices.resize(static_cast<std::size_t>(vertex_count));
-    for (cgltf_size i = 0U; i < vertex_count; ++i) {
-        const std::optional<Vec3> pos = read_vec3(position_accessor, i);
-        if (!pos.has_value()) {
-            return AnimatedGltfLoadResult{
-                .ok = false,
-                .asset = {},
-                .error_message = "failed reading POSITION",
-            };
-        }
-        SkinnedVertex v{};
-        v.position = *pos;
-        if (normal_accessor != nullptr) {
-            const std::optional<Vec3> n = read_vec3(normal_accessor, i);
-            if (n.has_value()) {
-                v.normal = *n;
+        for (cgltf_size i = 0U; i < primitive->attributes_count; ++i) {
+            const cgltf_attribute& attr = primitive->attributes[i];
+            if (attr.data == nullptr) {
+                continue;
             }
-        }
-        if (uv_accessor != nullptr) {
-            const std::optional<Vec2> uv = read_vec2(uv_accessor, i);
-            if (uv.has_value()) {
-                v.uv = *uv;
+            if (attr.type == cgltf_attribute_type_position) {
+                position_accessor = attr.data;
+            } else if (attr.type == cgltf_attribute_type_normal) {
+                normal_accessor = attr.data;
+            } else if (attr.type == cgltf_attribute_type_texcoord && attr.index == 0U) {
+                uv_accessor = attr.data;
+            } else if (attr.type == cgltf_attribute_type_joints && attr.index == 0U) {
+                joints_accessor = attr.data;
+            } else if (attr.type == cgltf_attribute_type_weights && attr.index == 0U) {
+                weights_accessor = attr.data;
             }
         }
 
-        if (!read_vec4_u16(joints_accessor, i, v.joints)) {
+        if (position_accessor == nullptr || joints_accessor == nullptr ||
+            weights_accessor == nullptr) {
             return AnimatedGltfLoadResult{
                 .ok = false,
                 .asset = {},
-                .error_message = "failed reading JOINTS_0",
+                .error_message = "glTF skinned primitive missing POSITION/JOINTS_0/WEIGHTS_0",
             };
         }
-        std::array<float, 4U> weights{};
-        if (cgltf_accessor_read_float(weights_accessor, i, weights.data(), weights.size()) == 0) {
+
+        const cgltf_size vertex_count = position_accessor->count;
+        if (vertex_count == 0U) {
             return AnimatedGltfLoadResult{
                 .ok = false,
                 .asset = {},
-                .error_message = "failed reading WEIGHTS_0",
+                .error_message = "glTF skinned primitive has zero vertices",
             };
         }
-        float sum = 0.0F;
-        for (std::size_t w = 0; w < weights.size(); ++w) {
-            v.weights[w] = std::max(0.0F, weights[w]);
-            sum += v.weights[w];
-            if (v.joints[w] >= asset.skeleton.joints.size()) {
+
+        SkinnedPrimitive skinned_primitive;
+        skinned_primitive.vertices.resize(static_cast<std::size_t>(vertex_count));
+        for (cgltf_size i = 0U; i < vertex_count; ++i) {
+            const std::optional<Vec3> pos = read_vec3(position_accessor, i);
+            if (!pos.has_value()) {
                 return AnimatedGltfLoadResult{
                     .ok = false,
                     .asset = {},
-                    .error_message = "JOINTS_0 index out of range for skin",
+                    .error_message = "failed reading POSITION",
                 };
             }
+            SkinnedVertex v{};
+            v.position = *pos;
+            if (normal_accessor != nullptr) {
+                const std::optional<Vec3> n = read_vec3(normal_accessor, i);
+                if (n.has_value()) {
+                    v.normal = *n;
+                }
+            }
+            if (uv_accessor != nullptr) {
+                const std::optional<Vec2> uv = read_vec2(uv_accessor, i);
+                if (uv.has_value()) {
+                    v.uv = *uv;
+                }
+            }
+
+            if (!read_vec4_u16(joints_accessor, i, v.joints)) {
+                return AnimatedGltfLoadResult{
+                    .ok = false,
+                    .asset = {},
+                    .error_message = "failed reading JOINTS_0",
+                };
+            }
+            std::array<float, 4U> weights{};
+            if (cgltf_accessor_read_float(weights_accessor, i, weights.data(), weights.size()) ==
+                0) {
+                return AnimatedGltfLoadResult{
+                    .ok = false,
+                    .asset = {},
+                    .error_message = "failed reading WEIGHTS_0",
+                };
+            }
+            float sum = 0.0F;
+            for (std::size_t w = 0; w < weights.size(); ++w) {
+                v.weights[w] = std::max(0.0F, weights[w]);
+                sum += v.weights[w];
+                if (v.joints[w] >= asset.skeleton.joints.size()) {
+                    return AnimatedGltfLoadResult{
+                        .ok = false,
+                        .asset = {},
+                        .error_message = "JOINTS_0 index out of range for skin",
+                    };
+                }
+            }
+            if (sum > 1.0e-6F) {
+                for (float& w : v.weights) {
+                    w /= sum;
+                }
+            } else {
+                v.weights = { 1.0F, 0.0F, 0.0F, 0.0F };
+                v.joints = { 0U, 0U, 0U, 0U };
+            }
+            skinned_primitive.vertices[static_cast<std::size_t>(i)] = v;
         }
-        if (sum > 1.0e-6F) {
-            for (float& w : v.weights) {
-                w /= sum;
+
+        if (primitive->indices != nullptr) {
+            skinned_primitive.indices.reserve(static_cast<std::size_t>(primitive->indices->count));
+            for (cgltf_size i = 0U; i < primitive->indices->count; ++i) {
+                const cgltf_size idx = cgltf_accessor_read_index(primitive->indices, i);
+                if (idx >= vertex_count || idx > std::numeric_limits<std::uint32_t>::max()) {
+                    return AnimatedGltfLoadResult{
+                        .ok = false,
+                        .asset = {},
+                        .error_message = "index out of range",
+                    };
+                }
+                skinned_primitive.indices.push_back(static_cast<std::uint32_t>(idx));
             }
         } else {
-            v.weights = { 1.0F, 0.0F, 0.0F, 0.0F };
-            v.joints = { 0U, 0U, 0U, 0U };
-        }
-        skinned_primitive.vertices[static_cast<std::size_t>(i)] = v;
-    }
-
-    if (primitive->indices != nullptr) {
-        skinned_primitive.indices.reserve(static_cast<std::size_t>(primitive->indices->count));
-        for (cgltf_size i = 0U; i < primitive->indices->count; ++i) {
-            const cgltf_size idx = cgltf_accessor_read_index(primitive->indices, i);
-            if (idx >= vertex_count || idx > std::numeric_limits<std::uint32_t>::max()) {
-                return AnimatedGltfLoadResult{
-                    .ok = false,
-                    .asset = {},
-                    .error_message = "index out of range",
-                };
+            skinned_primitive.indices.resize(static_cast<std::size_t>(vertex_count));
+            for (cgltf_size i = 0U; i < vertex_count; ++i) {
+                skinned_primitive.indices[static_cast<std::size_t>(i)] =
+                    static_cast<std::uint32_t>(i);
             }
-            skinned_primitive.indices.push_back(static_cast<std::uint32_t>(idx));
         }
-    } else {
-        skinned_primitive.indices.resize(static_cast<std::size_t>(vertex_count));
-        for (cgltf_size i = 0U; i < vertex_count; ++i) {
-            skinned_primitive.indices[static_cast<std::size_t>(i)] = static_cast<std::uint32_t>(i);
-        }
-    }
 
-    asset.primitives.push_back(std::move(skinned_primitive));
+        asset.primitives.push_back(std::move(skinned_primitive));
+    }
 
     asset.clips.resize(static_cast<std::size_t>(data->animations_count));
     for (cgltf_size anim_i = 0U; anim_i < data->animations_count; ++anim_i) {
@@ -466,9 +550,38 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
             const cgltf_accessor* input = channel.sampler->input;
             const cgltf_accessor* output = channel.sampler->output;
             const cgltf_size count = std::min(input->count, output->count);
+            TrackInterpolation interpolation = TrackInterpolation::Linear;
+            if (channel.sampler->interpolation == cgltf_interpolation_type_step) {
+                interpolation = TrackInterpolation::Step;
+            } else if (channel.sampler->interpolation == cgltf_interpolation_type_linear) {
+                interpolation = TrackInterpolation::Linear;
+            } else if (channel.sampler->interpolation == cgltf_interpolation_type_cubic_spline) {
+                return AnimatedGltfLoadResult{
+                    .ok = false,
+                    .asset = {},
+                    .error_message = "animation interpolation CUBICSPLINE is not supported yet",
+                };
+            } else {
+                return AnimatedGltfLoadResult{
+                    .ok = false,
+                    .asset = {},
+                    .error_message = "animation interpolation mode is not supported",
+                };
+            }
 
             if (channel.target_path == cgltf_animation_path_type_translation) {
-                track.translations.reserve(track.translations.size() + static_cast<std::size_t>(count));
+                if (!track.translations.empty() &&
+                    track.translation_interpolation != interpolation) {
+                    return AnimatedGltfLoadResult{
+                        .ok = false,
+                        .asset = {},
+                        .error_message = "multiple interpolation modes for one translation track "
+                                         "are not supported",
+                    };
+                }
+                track.translation_interpolation = interpolation;
+                track.translations.reserve(track.translations.size() +
+                                           static_cast<std::size_t>(count));
                 for (cgltf_size i = 0U; i < count; ++i) {
                     const std::optional<float> t = read_scalar(input, i);
                     const std::optional<Vec3> v = read_vec3(output, i);
@@ -479,6 +592,15 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
                     track.translations.push_back(Vec3Keyframe{ .time_seconds = *t, .value = *v });
                 }
             } else if (channel.target_path == cgltf_animation_path_type_rotation) {
+                if (!track.rotations.empty() && track.rotation_interpolation != interpolation) {
+                    return AnimatedGltfLoadResult{
+                        .ok = false,
+                        .asset = {},
+                        .error_message =
+                            "multiple interpolation modes for one rotation track are not supported",
+                    };
+                }
+                track.rotation_interpolation = interpolation;
                 track.rotations.reserve(track.rotations.size() + static_cast<std::size_t>(count));
                 for (cgltf_size i = 0U; i < count; ++i) {
                     const std::optional<float> t = read_scalar(input, i);
@@ -490,6 +612,15 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
                     track.rotations.push_back(QuatKeyframe{ .time_seconds = *t, .value = *q });
                 }
             } else if (channel.target_path == cgltf_animation_path_type_scale) {
+                if (!track.scales.empty() && track.scale_interpolation != interpolation) {
+                    return AnimatedGltfLoadResult{
+                        .ok = false,
+                        .asset = {},
+                        .error_message =
+                            "multiple interpolation modes for one scale track are not supported",
+                    };
+                }
+                track.scale_interpolation = interpolation;
                 track.scales.reserve(track.scales.size() + static_cast<std::size_t>(count));
                 for (cgltf_size i = 0U; i < count; ++i) {
                     const std::optional<float> t = read_scalar(input, i);
@@ -532,7 +663,8 @@ bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index, 
         return false;
     }
     const std::size_t joint_count = asset.skeleton.joints.size();
-    if (joint_count == 0U || asset.bind_local_transforms.size() != joint_count) {
+    if (joint_count == 0U || asset.bind_local_transforms.size() != joint_count ||
+        (!asset.bind_prefix_matrices.empty() && asset.bind_prefix_matrices.size() != joint_count)) {
         if (error_message != nullptr) {
             *error_message = "asset skeleton/bind transforms are inconsistent";
         }
@@ -544,6 +676,7 @@ bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index, 
 
     out_pose.global_joint_matrices.assign(joint_count, Mat4::identity());
     out_pose.skin_matrices.assign(joint_count, Mat4::identity());
+    std::vector<Mat4> local_joint_matrices(joint_count, Mat4::identity());
 
     for (std::size_t joint_index = 0U; joint_index < joint_count; ++joint_index) {
         const Transform& bind_local = asset.bind_local_transforms[joint_index];
@@ -552,18 +685,47 @@ bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index, 
 
         const Vec3 local_translation =
             track != nullptr
-                ? sample_vec3_track(track->translations, sample_time, bind_local.position)
+                ? sample_vec3_track(track->translations, sample_time, bind_local.position,
+                                    track->translation_interpolation)
                 : bind_local.position;
         const Quat local_rotation =
-            track != nullptr ? sample_quat_track(track->rotations, sample_time, bind_local.rotation)
+            track != nullptr ? sample_quat_track(track->rotations, sample_time, bind_local.rotation,
+                                                 track->rotation_interpolation)
                              : bind_local.rotation;
         const Vec3 local_scale =
-            track != nullptr ? sample_vec3_track(track->scales, sample_time, bind_local.scale)
+            track != nullptr ? sample_vec3_track(track->scales, sample_time, bind_local.scale,
+                                                 track->scale_interpolation)
                              : bind_local.scale;
 
-        const Mat4 local_matrix =
+        const Mat4 local_joint_matrix =
             Mat4::from_position_scale_quat(local_translation, local_scale, local_rotation);
+        const Mat4 bind_prefix = asset.bind_prefix_matrices.empty()
+                                     ? Mat4::identity()
+                                     : asset.bind_prefix_matrices[joint_index];
+        local_joint_matrices[joint_index] = multiply(bind_prefix, local_joint_matrix);
+    }
 
+    enum class EvalState : std::uint8_t {
+        Unvisited = 0,
+        Visiting,
+        Done,
+    };
+    std::vector<EvalState> eval_states(joint_count, EvalState::Unvisited);
+
+    std::function<bool(std::size_t)> evaluate_joint = [&](std::size_t joint_index) -> bool {
+        EvalState& state = eval_states[joint_index];
+        if (state == EvalState::Done) {
+            return true;
+        }
+        if (state == EvalState::Visiting) {
+            if (error_message != nullptr) {
+                *error_message = "skeleton contains parent cycle";
+            }
+            return false;
+        }
+
+        state = EvalState::Visiting;
+        const Mat4& local_matrix = local_joint_matrices[joint_index];
         const int parent = asset.skeleton.joints[joint_index].parent_index;
         if (parent >= 0) {
             if (static_cast<std::size_t>(parent) >= joint_count) {
@@ -572,14 +734,26 @@ bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index, 
                 }
                 return false;
             }
-            out_pose.global_joint_matrices[joint_index] =
-                multiply(out_pose.global_joint_matrices[static_cast<std::size_t>(parent)], local_matrix);
+            if (!evaluate_joint(static_cast<std::size_t>(parent))) {
+                return false;
+            }
+            out_pose.global_joint_matrices[joint_index] = multiply(
+                out_pose.global_joint_matrices[static_cast<std::size_t>(parent)], local_matrix);
         } else {
             out_pose.global_joint_matrices[joint_index] = local_matrix;
         }
 
-        out_pose.skin_matrices[joint_index] = multiply(
-            out_pose.global_joint_matrices[joint_index], asset.skeleton.joints[joint_index].inverse_bind_matrix);
+        out_pose.skin_matrices[joint_index] =
+            multiply(out_pose.global_joint_matrices[joint_index],
+                     asset.skeleton.joints[joint_index].inverse_bind_matrix);
+        state = EvalState::Done;
+        return true;
+    };
+
+    for (std::size_t joint_index = 0U; joint_index < joint_count; ++joint_index) {
+        if (!evaluate_joint(joint_index)) {
+            return false;
+        }
     }
 
     return true;

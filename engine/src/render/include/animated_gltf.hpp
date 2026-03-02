@@ -46,10 +46,18 @@ struct QuatKeyframe {
     Quat value = Quat::identity();
 };
 
+enum class TrackInterpolation {
+    Linear = 0,
+    Step,
+};
+
 struct JointAnimationTrack {
     std::vector<Vec3Keyframe> translations;
     std::vector<QuatKeyframe> rotations;
     std::vector<Vec3Keyframe> scales;
+    TrackInterpolation translation_interpolation = TrackInterpolation::Linear;
+    TrackInterpolation rotation_interpolation = TrackInterpolation::Linear;
+    TrackInterpolation scale_interpolation = TrackInterpolation::Linear;
 };
 
 struct AnimationClip {
@@ -62,6 +70,9 @@ struct AnimatedGltfAsset {
     std::vector<SkinnedPrimitive> primitives;
     Skeleton skeleton;
     std::vector<Transform> bind_local_transforms;
+    // Static transform chain between nearest joint-parent and this joint.
+    // Local joint animation is evaluated in bind_local_transforms, then prefixed by this matrix.
+    std::vector<Mat4> bind_prefix_matrices;
     std::vector<AnimationClip> clips;
 };
 
@@ -83,4 +94,3 @@ struct EvaluatedPose {
                                       std::string* error_message = nullptr);
 
 } // namespace isla::client::animated_gltf
-
