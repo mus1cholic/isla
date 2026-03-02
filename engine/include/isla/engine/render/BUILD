@@ -4,6 +4,7 @@ cc_library(
     name = "render",
     hdrs = [
         "model_renderer.hpp",
+        "overlay_transparency.hpp",
         "render_types.hpp",
         "render_world.hpp",
         "renderer_backend.hpp",
