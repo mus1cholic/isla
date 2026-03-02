@@ -1,0 +1,33 @@
+name: Build Custom ARC Runner
+
+on:
+    workflow_dispatch: # Allows you to run this manually
+
+jobs:
+    build-and-push:
+        # We use Github's standard hosted runner to build this
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write # Allows this workflow to push to Github Container Registry
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 1
+
+            - name: Log in to GitHub Container Registry (GHCR)
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build and push Docker image
+              uses: docker/build-push-action@v5
+              with:
+                  context: .
+                  push: true
+                  # This tags the image as: ghcr.io/your-username-your-repo-name:latest
+                  tags: ghcr.io/${{ github.repository }}/arc-runner:latest

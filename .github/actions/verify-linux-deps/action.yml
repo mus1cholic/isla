@@ -1,0 +1,55 @@
+name: 'Setup and verify Linux build deps'
+description: 'Ensures Linux dependencies for builds and linting are installed and available'
+runs:
+  using: "composite"
+  steps:
+    - name: Install and verify Linux build deps
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          ninja-build \
+          pkg-config \
+          clang \
+          clang-tidy \
+          clang-format \
+          g++ \
+          libx11-dev \
+          libxrandr-dev \
+          libxi-dev \
+          libxcursor-dev \
+          libxfixes-dev \
+          libxtst-dev \
+          libwayland-dev \
+          libxkbcommon-dev \
+          libdrm-dev \
+          libgbm-dev \
+          libasound2-dev \
+          libxss-dev
+
+        command -v cmake >/dev/null
+        command -v ninja >/dev/null
+        command -v pkg-config >/dev/null
+        command -v clang >/dev/null
+        command -v clang-tidy >/dev/null
+        command -v clang-format >/dev/null
+        command -v g++ >/dev/null
+
+        missing_pkgs=()
+        for pkg in x11 xrandr xi xcursor xfixes xtst wayland-client xkbcommon libdrm gbm alsa; do
+          if ! pkg-config --exists "$pkg"; then
+            missing_pkgs+=("$pkg")
+          fi
+        done
+        # X11 ScreenSaver pkg-config name varies by distro/image.
+        if ! pkg-config --exists xss && ! pkg-config --exists xscrnsaver; then
+          missing_pkgs+=("xss/xscrnsaver")
+        fi
+
+        if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
+          echo "::error::Missing pkg-config dependencies on runner: ${missing_pkgs[*]}"
+          exit 1
+        fi

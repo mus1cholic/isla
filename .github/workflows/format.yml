@@ -1,0 +1,104 @@
+name: Format Check
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number for comment updates
+        required: false
+        type: string
+        default: ""
+      cancel_in_progress:
+        description: Whether to cancel prior in-progress runs in the same concurrency group
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: format-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: ${{ inputs.cancel_in_progress }}
+
+jobs:
+  format-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify preinstalled clang-format
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v clang-format
+          clang-format --version
+
+      - name: Determine changed files
+        shell: pwsh
+        run: |
+          $outFile = Join-Path $env:RUNNER_TEMP "changed_files.txt"
+          $diffBase = ""
+          $diffHead = ""
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            $base = "${{ github.event.pull_request.base.sha }}"
+            $head = "${{ github.event.pull_request.head.sha }}"
+            $diffBase = $base
+            $diffHead = $head
+            Write-Host "Computing changed files for PR diff: $base...$head"
+            git diff --name-only "$base...$head" | Set-Content -Path $outFile
+          } elseif ("${{ github.event_name }}" -eq "push") {
+            $base = "${{ github.event.before }}"
+            $head = "${{ github.sha }}"
+            if ($base -and $base -ne "0000000000000000000000000000000000000000") {
+              $diffBase = $base
+              $diffHead = $head
+              Write-Host "Computing changed files for push diff: $base..$head"
+              git diff --name-only "$base..$head" | Set-Content -Path $outFile
+            } else {
+              Write-Host "No valid push base SHA; defaulting to tracked files."
+              git ls-files | Set-Content -Path $outFile
+            }
+          } else {
+            Write-Host "Unsupported event ${{ github.event_name }}; defaulting to tracked files."
+            git ls-files | Set-Content -Path $outFile
+          }
+          "CHANGED_FILES_FILE=$outFile" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DIFF_BASE=$diffBase" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DIFF_HEAD=$diffHead" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $changedCount = (Get-Content -Path $outFile | Where-Object { $_ -ne "" }).Count
+          Write-Host "Changed file count: $changedCount"
+
+      - name: Check final newline on tracked text files
+        id: newline_check
+        shell: pwsh
+        run: ./.github/scripts/check-final-newline.ps1
+
+      - name: Run clang-format check
+        id: format_check
+        if: always()
+        shell: pwsh
+        env:
+          NEWLINE_COUNT: ${{ steps.newline_check.outputs.newline_count }}
+          NEWLINE_REPORT_PATH: ${{ steps.newline_check.outputs.newline_report_path }}
+        run: ./.github/scripts/run-clang-format.ps1
+
+      - name: Generate format count file
+        if: always()
+        shell: pwsh
+        run: |
+          "${{ steps.format_check.outputs.violations_count }}" | Out-File -FilePath "format-count.txt" -Encoding utf8
+
+      - name: Upload Format Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: format-report
+          path: |
+            ${{ steps.format_check.outputs.report_path }}
+            format-count.txt
+          retention-days: 1

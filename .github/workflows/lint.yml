@@ -1,0 +1,80 @@
+name: Lint (clang-tidy)
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number for comment updates
+        required: false
+        type: string
+        default: ""
+      pr_base_sha:
+        description: Pull request base SHA (passed by caller for reusable workflow context).
+        required: false
+        type: string
+        default: ""
+      pr_head_sha:
+        description: Pull request head SHA (passed by caller for reusable workflow context).
+        required: false
+        type: string
+        default: ""
+      cancel_in_progress:
+        description: Whether to cancel prior in-progress runs in the same concurrency group
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: lint-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: ${{ inputs.cancel_in_progress }}
+
+jobs:
+  clang-tidy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify preinstalled lint/build deps
+        uses: ./.github/actions/verify-linux-deps
+
+      - name: Fetch Bazel externals
+        shell: pwsh
+        run: |
+          $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
+          & bazel fetch @bazelFlags //client/src:client_app
+
+      - name: Generate compile_commands.json
+        shell: pwsh
+        run: |
+          $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
+          # Do not force --config=editor in Linux lint CI.
+          & bazel run @bazelFlags //tools:refresh_compile_commands_editor
+
+      - name: Run clang-tidy and collect warnings
+        id: clang_tidy
+        shell: pwsh
+        env:
+          INPUT_PR_BASE_SHA: ${{ inputs.pr_base_sha }}
+          INPUT_PR_HEAD_SHA: ${{ inputs.pr_head_sha }}
+          EVENT_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BEFORE_SHA: ${{ github.event.before }}
+          EVENT_SHA: ${{ github.sha }}
+        run: ./.github/scripts/run-clang-tidy.ps1
+
+      - name: Upload Lint Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: ${{ github.workspace }}/clang-tidy-warnings.md
+          retention-days: 1

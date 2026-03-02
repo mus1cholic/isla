@@ -1,0 +1,213 @@
+name: Determine affected Bazel targets
+description: Find affected Bazel targets from changed files for a given C++ rule kind.
+
+inputs:
+  rule_kind:
+    description: Bazel C++ rule kind without the " rule" suffix (for example, cc_binary or cc_test).
+    required: true
+  target_label:
+    description: Human-readable label used in logs (for example, build targets or unit test targets).
+    required: true
+
+outputs:
+  has_targets:
+    description: True when affected targets were found.
+    value: ${{ steps.determine.outputs.has_targets }}
+  targets:
+    description: Space-separated list of affected Bazel targets.
+    value: ${{ steps.determine.outputs.targets }}
+
+runs:
+  using: composite
+  steps:
+    - name: Determine affected targets
+      id: determine
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $ruleKind = "${{ inputs.rule_kind }}"
+        $targetLabel = "${{ inputs.target_label }}"
+        $eventName = "${{ github.event_name }}"
+        $headSha = "${{ github.sha }}"
+        $baseSha = ""
+        if ($eventName -eq "pull_request") {
+          $baseSha = "${{ github.event.pull_request.base.sha }}"
+        } else {
+          $baseSha = "${{ github.event.before }}"
+        }
+
+        $changedFiles = @()
+        if ([string]::IsNullOrWhiteSpace($baseSha) -or $baseSha -eq "0000000000000000000000000000000000000000") {
+          Write-Host "No valid base SHA found; using current commit tree."
+          $changedFiles = & git diff-tree --no-commit-id --name-only -r $headSha
+        } else {
+          Write-Host "Diffing changed files from $baseSha to $headSha"
+          $changedFiles = & git diff --name-only --diff-filter=ACMR $baseSha $headSha
+        }
+
+        if (-not $changedFiles -or $changedFiles.Count -eq 0) {
+          Write-Host "No changed files detected."
+          "has_targets=false" >> $env:GITHUB_OUTPUT
+          "targets=" >> $env:GITHUB_OUTPUT
+          exit 0
+        }
+
+        Write-Host "Changed files:"
+        $changedFiles | ForEach-Object { Write-Host " - $_" }
+
+        $selectAll = $false
+        foreach ($file in $changedFiles) {
+          if ($file -match '(^|/)MODULE\.bazel(\.lock)?$' -or
+              $file -match '(^|/)\.bazelrc$' -or
+              $file -match '(^|/)BUILD$' -or
+              $file -match '(^|/)BUILD\.bazel$' -or
+              $file -match '\.bzl$') {
+            $selectAll = $true
+            break
+          }
+        }
+
+        $ruleQuery = "kind('$ruleKind rule', //...)"
+        $affectedTargets = New-Object 'System.Collections.Generic.HashSet[string]'
+        $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
+
+        function Invoke-BazelQuery([string]$queryExpression) {
+          $args = @("query")
+          if ($bazelFlags.Count -gt 0) {
+            $args += $bazelFlags
+          }
+          $args += $queryExpression
+          $output = & bazel @args
+          $exitCode = $LASTEXITCODE
+          return [PSCustomObject]@{
+            ExitCode = $exitCode
+            Output = $output
+          }
+        }
+
+        if ($selectAll) {
+          Write-Host "Bazel graph changed; selecting all $ruleKind targets."
+          $allTargetsResult = Invoke-BazelQuery -queryExpression $ruleQuery
+          if ($allTargetsResult.ExitCode -ne 0) {
+            Write-Error "Bazel query failed while selecting all $ruleKind targets."
+            exit 1
+          }
+          foreach ($target in $allTargetsResult.Output) {
+            $trimmed = $target.Trim()
+            if ($trimmed) {
+              [void]$affectedTargets.Add($trimmed)
+            }
+          }
+        } else {
+          $packageLabels = New-Object 'System.Collections.Generic.HashSet[string]'
+          $ownerCandidates = New-Object 'System.Collections.Generic.HashSet[string]'
+          function Get-BazelPackageLabel([string]$workspaceRelativeFile) {
+            $normalized = $workspaceRelativeFile -replace '\\', '/'
+            $currentDir = [System.IO.Path]::GetDirectoryName($normalized)
+            if ([string]::IsNullOrWhiteSpace($currentDir)) {
+              $currentDir = "."
+            } else {
+              $currentDir = $currentDir -replace '\\', '/'
+            }
+
+            while ($true) {
+              $buildFile = if ($currentDir -eq ".") { "BUILD" } else { "$currentDir/BUILD" }
+              $buildBazelFile = if ($currentDir -eq ".") { "BUILD.bazel" } else { "$currentDir/BUILD.bazel" }
+              if ((Test-Path $buildFile) -or (Test-Path $buildBazelFile)) {
+                if ($currentDir -eq ".") {
+                  return "//"
+                }
+                return "//$currentDir"
+              }
+
+              if ($currentDir -eq ".") {
+                break
+              }
+
+              $parentDir = [System.IO.Path]::GetDirectoryName(($currentDir -replace '/', '\'))
+              if ([string]::IsNullOrWhiteSpace($parentDir)) {
+                $currentDir = "."
+              } else {
+                $currentDir = $parentDir -replace '\\', '/'
+              }
+            }
+
+            return $null
+          }
+
+          foreach ($file in $changedFiles) {
+            if (-not (Test-Path $file)) {
+              continue
+            }
+
+            $packageLabel = Get-BazelPackageLabel -workspaceRelativeFile $file
+            if ([string]::IsNullOrWhiteSpace($packageLabel)) {
+              continue
+            }
+            [void]$packageLabels.Add($packageLabel)
+          }
+
+          if ($packageLabels.Count -gt 0) {
+            $packageOwnerPatterns = @($packageLabels) |
+              Sort-Object |
+              ForEach-Object { if ($_ -eq "//") { "//:*" } else { "${_}:*" } }
+            $combinedOwnersQuery = ($packageOwnerPatterns | ForEach-Object { "($_)" }) -join " + "
+            $ownersResult = Invoke-BazelQuery -queryExpression $combinedOwnersQuery
+            if ($ownersResult.ExitCode -eq 0 -and $ownersResult.Output) {
+              foreach ($candidate in $ownersResult.Output) {
+                $trimmedCandidate = $candidate.Trim()
+                if ($trimmedCandidate) {
+                  [void]$ownerCandidates.Add($trimmedCandidate)
+                }
+              }
+            } else {
+              # Fallback path to preserve behavior when combined query fails.
+              foreach ($packageLabel in $packageLabels) {
+                $ownerQuery = if ($packageLabel -eq "//") { "//:*" } else { "${packageLabel}:*" }
+                $ownedTargetsResult = Invoke-BazelQuery -queryExpression $ownerQuery
+                if ($ownedTargetsResult.ExitCode -ne 0 -or -not $ownedTargetsResult.Output) {
+                  continue
+                }
+
+                foreach ($candidate in $ownedTargetsResult.Output) {
+                  $trimmedCandidate = $candidate.Trim()
+                  if ($trimmedCandidate) {
+                    [void]$ownerCandidates.Add($trimmedCandidate)
+                  }
+                }
+              }
+            }
+
+            if ($ownerCandidates.Count -gt 0) {
+              $ownersExpr = "set(" + ((@($ownerCandidates) | Sort-Object) -join " ") + ")"
+              $relatedTargetsResult = Invoke-BazelQuery -queryExpression "kind('$ruleKind rule', rdeps(//..., $ownersExpr))"
+              if ($relatedTargetsResult.ExitCode -ne 0) {
+                Write-Error "Bazel query failed while computing related $ruleKind targets."
+                exit 1
+              }
+              if ($relatedTargetsResult.Output) {
+                foreach ($target in $relatedTargetsResult.Output) {
+                  $trimmed = $target.Trim()
+                  if ($trimmed) {
+                    [void]$affectedTargets.Add($trimmed)
+                  }
+                }
+              }
+            }
+          }
+
+        }
+
+        if ($affectedTargets.Count -eq 0) {
+          Write-Host "No affected $targetLabel found."
+          "has_targets=false" >> $env:GITHUB_OUTPUT
+          "targets=" >> $env:GITHUB_OUTPUT
+          exit 0
+        }
+
+        $sortedTargets = @($affectedTargets) | Sort-Object
+        $targetsArg = $sortedTargets -join " "
+        Write-Host "Affected ${targetLabel}: $targetsArg"
+        "has_targets=true" >> $env:GITHUB_OUTPUT
+        "targets=$targetsArg" >> $env:GITHUB_OUTPUT
