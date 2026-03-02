@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -12,7 +13,37 @@
 
 namespace isla::client::animated_gltf {
 
-TEST(AnimatedGltfLoaderTests, RejectsNonSkinnedGltf) {
+class AnimatedGltfTest : public ::testing::Test {
+  protected:
+    std::filesystem::path make_temp_dir() {
+        const std::filesystem::path temp_dir =
+            std::filesystem::temp_directory_path() /
+            ("isla_animated_gltf_" +
+             std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+        EXPECT_TRUE(std::filesystem::create_directories(temp_dir));
+        temp_dirs_.push_back(temp_dir);
+        return temp_dir;
+    }
+
+    static AnimatedGltfAsset make_single_joint_asset() {
+        AnimatedGltfAsset asset;
+        asset.skeleton.joints.push_back(SkeletonJoint{});
+        asset.bind_local_transforms.push_back(Transform{});
+        return asset;
+    }
+
+    void TearDown() override {
+        for (const std::filesystem::path& temp_dir : temp_dirs_) {
+            std::error_code ec;
+            std::filesystem::remove_all(temp_dir, ec);
+        }
+    }
+
+  private:
+    std::vector<std::filesystem::path> temp_dirs_;
+};
+
+TEST_F(AnimatedGltfTest, RejectsNonSkinnedGltf) {
     const std::string path =
         isla::shared::test::runfile_path("engine/src/render/testdata/triangle_embedded.gltf");
     const AnimatedGltfLoadResult loaded = load_from_file(path);
@@ -20,12 +51,8 @@ TEST(AnimatedGltfLoaderTests, RejectsNonSkinnedGltf) {
     EXPECT_FALSE(loaded.error_message.empty());
 }
 
-TEST(AnimatedGltfLoaderTests, LoadsOnlyPrimitivesAttachedToSelectedSkin) {
-    const std::filesystem::path temp_dir =
-        std::filesystem::temp_directory_path() /
-        ("isla_animated_gltf_" +
-         std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
-    ASSERT_TRUE(std::filesystem::create_directories(temp_dir));
+TEST_F(AnimatedGltfTest, LoadsOnlyPrimitivesAttachedToSelectedSkin) {
+    const std::filesystem::path temp_dir = make_temp_dir();
 
     const std::filesystem::path bin_path = temp_dir / "asset.bin";
     const std::filesystem::path gltf_path = temp_dir / "asset.gltf";
@@ -107,22 +134,22 @@ TEST(AnimatedGltfLoaderTests, LoadsOnlyPrimitivesAttachedToSelectedSkin) {
         ASSERT_TRUE(gltf_stream.is_open());
         gltf_stream << "{\n"
                     << "  \"asset\": {\"version\": \"2.0\"},\n"
-                    << "  \"buffers\": [{\"uri\": \"asset.bin\", \"byteLength\": " << buffer.size()
+                    << R"(  "buffers": [{"uri": "asset.bin", "byteLength": )" << buffer.size()
                     << "}],\n"
                     << "  \"bufferViews\": [\n"
-                    << "    {\"buffer\": 0, \"byteOffset\": " << unskinned_pos_offset
+                    << R"(    {"buffer": 0, "byteOffset": )" << unskinned_pos_offset
                     << ", \"byteLength\": " << unskinned_pos_length << ", \"target\": 34962},\n"
-                    << "    {\"buffer\": 0, \"byteOffset\": " << unskinned_idx_offset
+                    << R"(    {"buffer": 0, "byteOffset": )" << unskinned_idx_offset
                     << ", \"byteLength\": " << unskinned_idx_length << ", \"target\": 34963},\n"
-                    << "    {\"buffer\": 0, \"byteOffset\": " << skinned_pos_offset
+                    << R"(    {"buffer": 0, "byteOffset": )" << skinned_pos_offset
                     << ", \"byteLength\": " << skinned_pos_length << ", \"target\": 34962},\n"
-                    << "    {\"buffer\": 0, \"byteOffset\": " << skinned_joints_offset
+                    << R"(    {"buffer": 0, "byteOffset": )" << skinned_joints_offset
                     << ", \"byteLength\": " << skinned_joints_length << ", \"target\": 34962},\n"
-                    << "    {\"buffer\": 0, \"byteOffset\": " << skinned_weights_offset
+                    << R"(    {"buffer": 0, "byteOffset": )" << skinned_weights_offset
                     << ", \"byteLength\": " << skinned_weights_length << ", \"target\": 34962},\n"
-                    << "    {\"buffer\": 0, \"byteOffset\": " << skinned_idx_offset
+                    << R"(    {"buffer": 0, "byteOffset": )" << skinned_idx_offset
                     << ", \"byteLength\": " << skinned_idx_length << ", \"target\": 34963},\n"
-                    << "    {\"buffer\": 0, \"byteOffset\": " << ibm_offset
+                    << R"(    {"buffer": 0, "byteOffset": )" << ibm_offset
                     << ", \"byteLength\": " << ibm_length << "}\n"
                     << "  ],\n"
                     << "  \"accessors\": [\n"
@@ -160,7 +187,6 @@ TEST(AnimatedGltfLoaderTests, LoadsOnlyPrimitivesAttachedToSelectedSkin) {
     }
 
     const AnimatedGltfLoadResult loaded = load_from_file(gltf_path.string());
-    std::filesystem::remove_all(temp_dir);
 
     ASSERT_TRUE(loaded.ok) << loaded.error_message;
     ASSERT_EQ(loaded.asset.primitives.size(), 1U);
@@ -168,12 +194,8 @@ TEST(AnimatedGltfLoaderTests, LoadsOnlyPrimitivesAttachedToSelectedSkin) {
     ASSERT_EQ(loaded.asset.primitives[0].indices.size(), 3U);
 }
 
-TEST(AnimatedGltfLoaderTests, RejectsCubicSplineInterpolation) {
-    const std::filesystem::path temp_dir =
-        std::filesystem::temp_directory_path() /
-        ("isla_animated_gltf_" +
-         std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
-    ASSERT_TRUE(std::filesystem::create_directories(temp_dir));
+TEST_F(AnimatedGltfTest, RejectsCubicSplineInterpolation) {
+    const std::filesystem::path temp_dir = make_temp_dir();
 
     const std::filesystem::path bin_path = temp_dir / "asset.bin";
     const std::filesystem::path gltf_path = temp_dir / "asset.gltf";
@@ -311,16 +333,13 @@ TEST(AnimatedGltfLoaderTests, RejectsCubicSplineInterpolation) {
     }
 
     const AnimatedGltfLoadResult loaded = load_from_file(gltf_path.string());
-    std::filesystem::remove_all(temp_dir);
 
     EXPECT_FALSE(loaded.ok);
     EXPECT_NE(loaded.error_message.find("CUBICSPLINE"), std::string::npos);
 }
 
-TEST(AnimatedGltfPoseTests, InterpolatesSingleJointTranslation) {
-    AnimatedGltfAsset asset;
-    asset.skeleton.joints.push_back(SkeletonJoint{});
-    asset.bind_local_transforms.push_back(Transform{});
+TEST_F(AnimatedGltfTest, InterpolatesSingleJointTranslation) {
+    AnimatedGltfAsset asset = make_single_joint_asset();
 
     AnimationClip clip;
     clip.name = "move";
@@ -339,10 +358,8 @@ TEST(AnimatedGltfPoseTests, InterpolatesSingleJointTranslation) {
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 1.0F, 1.0e-4F);
 }
 
-TEST(AnimatedGltfPoseTests, SamplesStepInterpolation) {
-    AnimatedGltfAsset asset;
-    asset.skeleton.joints.push_back(SkeletonJoint{});
-    asset.bind_local_transforms.push_back(Transform{});
+TEST_F(AnimatedGltfTest, SamplesStepInterpolation) {
+    AnimatedGltfAsset asset = make_single_joint_asset();
 
     AnimationClip clip;
     clip.name = "step_move";
@@ -352,17 +369,132 @@ TEST(AnimatedGltfPoseTests, SamplesStepInterpolation) {
     clip.joint_tracks[0].translations.push_back(
         Vec3Keyframe{ .time_seconds = 0.0F, .value = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } });
     clip.joint_tracks[0].translations.push_back(
+        Vec3Keyframe{ .time_seconds = 0.5F, .value = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F } });
+    clip.joint_tracks[0].translations.push_back(
         Vec3Keyframe{ .time_seconds = 1.0F, .value = Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F } });
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
     std::string error;
-    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.5F, pose, &error)) << error;
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.25F, pose, &error)) << error;
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 0.0F, 1.0e-4F);
+
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.5F, pose, &error)) << error;
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 1.0F, 1.0e-4F);
 }
 
-TEST(AnimatedGltfPoseTests, EvaluatesHierarchyAndSkinMatrices) {
+TEST_F(AnimatedGltfTest, InterpolatesRotationLinearly) {
+    AnimatedGltfAsset asset = make_single_joint_asset();
+
+    AnimationClip clip;
+    clip.duration_seconds = 1.0F;
+    clip.joint_tracks.resize(1U);
+    clip.joint_tracks[0].rotations.push_back(
+        QuatKeyframe{ .time_seconds = 0.0F, .value = Quat::identity() });
+    clip.joint_tracks[0].rotations.push_back(QuatKeyframe{
+        .time_seconds = 1.0F,
+        .value = Quat::from_axis_angle(Vec3{ .x = 0.0F, .y = 0.0F, .z = 1.0F }, 3.14159265F) });
+    asset.clips.push_back(std::move(clip));
+
+    EvaluatedPose pose;
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.5F, pose, nullptr));
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+
+    // Midway between identity and 180deg Z should be ~90deg Z.
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 0.0F, 1.0e-4F);
+    EXPECT_NEAR(std::abs(pose.global_joint_matrices[0].elements[1]), 1.0F, 1.0e-4F);
+    EXPECT_NEAR(std::abs(pose.global_joint_matrices[0].elements[4]), 1.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[1] +
+                    pose.global_joint_matrices[0].elements[4],
+                0.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 0.0F, 1.0e-4F);
+}
+
+TEST_F(AnimatedGltfTest, SamplesRotationStepInterpolationIncludingExactKeyTime) {
+    AnimatedGltfAsset asset = make_single_joint_asset();
+
+    AnimationClip clip;
+    clip.duration_seconds = 1.0F;
+    clip.joint_tracks.resize(1U);
+    clip.joint_tracks[0].rotation_interpolation = TrackInterpolation::Step;
+    clip.joint_tracks[0].rotations.push_back(
+        QuatKeyframe{ .time_seconds = 0.0F, .value = Quat::identity() });
+    clip.joint_tracks[0].rotations.push_back(QuatKeyframe{
+        .time_seconds = 0.5F,
+        .value = Quat::from_axis_angle(Vec3{ .x = 0.0F, .y = 0.0F, .z = 1.0F }, 1.57079633F) });
+    clip.joint_tracks[0].rotations.push_back(QuatKeyframe{
+        .time_seconds = 1.0F,
+        .value = Quat::from_axis_angle(Vec3{ .x = 0.0F, .y = 0.0F, .z = 1.0F }, 3.14159265F) });
+    asset.clips.push_back(std::move(clip));
+
+    EvaluatedPose pose;
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.25F, pose, nullptr));
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 1.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[1], 0.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[4], 0.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 1.0F, 1.0e-4F);
+
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.5F, pose, nullptr));
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 0.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[1], 1.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[4], -1.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 0.0F, 1.0e-4F);
+}
+
+TEST_F(AnimatedGltfTest, InterpolatesScaleLinearly) {
+    AnimatedGltfAsset asset = make_single_joint_asset();
+
+    AnimationClip clip;
+    clip.duration_seconds = 1.0F;
+    clip.joint_tracks.resize(1U);
+    clip.joint_tracks[0].scales.push_back(
+        Vec3Keyframe{ .time_seconds = 0.0F, .value = Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F } });
+    clip.joint_tracks[0].scales.push_back(
+        Vec3Keyframe{ .time_seconds = 1.0F, .value = Vec3{ .x = 3.0F, .y = 2.0F, .z = 1.0F } });
+    asset.clips.push_back(std::move(clip));
+
+    EvaluatedPose pose;
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.5F, pose, nullptr));
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 2.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 1.5F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[10], 1.0F, 1.0e-4F);
+}
+
+TEST_F(AnimatedGltfTest, SamplesScaleStepInterpolationIncludingExactKeyTime) {
+    AnimatedGltfAsset asset = make_single_joint_asset();
+
+    AnimationClip clip;
+    clip.duration_seconds = 1.0F;
+    clip.joint_tracks.resize(1U);
+    clip.joint_tracks[0].scale_interpolation = TrackInterpolation::Step;
+    clip.joint_tracks[0].scales.push_back(
+        Vec3Keyframe{ .time_seconds = 0.0F, .value = Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F } });
+    clip.joint_tracks[0].scales.push_back(
+        Vec3Keyframe{ .time_seconds = 0.5F, .value = Vec3{ .x = 2.0F, .y = 3.0F, .z = 4.0F } });
+    clip.joint_tracks[0].scales.push_back(
+        Vec3Keyframe{ .time_seconds = 1.0F, .value = Vec3{ .x = 5.0F, .y = 6.0F, .z = 7.0F } });
+    asset.clips.push_back(std::move(clip));
+
+    EvaluatedPose pose;
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.25F, pose, nullptr));
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 1.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 1.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[10], 1.0F, 1.0e-4F);
+
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.5F, pose, nullptr));
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 2.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 3.0F, 1.0e-4F);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[10], 4.0F, 1.0e-4F);
+}
+
+TEST_F(AnimatedGltfTest, EvaluatesHierarchyAndSkinMatrices) {
     AnimatedGltfAsset asset;
     asset.skeleton.joints.push_back(SkeletonJoint{ .parent_index = -1 });
     asset.skeleton.joints.push_back(SkeletonJoint{ .parent_index = 0 });
@@ -389,7 +521,7 @@ TEST(AnimatedGltfPoseTests, EvaluatesHierarchyAndSkinMatrices) {
     EXPECT_NEAR(pose.skin_matrices[1].elements[12], 3.0F, 1.0e-4F);
 }
 
-TEST(AnimatedGltfPoseTests, HandlesNonTopologicalJointOrder) {
+TEST_F(AnimatedGltfTest, HandlesNonTopologicalJointOrder) {
     AnimatedGltfAsset asset;
     // Joint 0 is the child, joint 1 is the parent.
     asset.skeleton.joints.push_back(SkeletonJoint{ .parent_index = 1 });
@@ -419,7 +551,7 @@ TEST(AnimatedGltfPoseTests, HandlesNonTopologicalJointOrder) {
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 3.0F, 1.0e-4F);
 }
 
-TEST(AnimatedGltfPoseTests, AppliesBindPrefixMatricesForNonJointAncestors) {
+TEST_F(AnimatedGltfTest, AppliesBindPrefixMatricesForNonJointAncestors) {
     AnimatedGltfAsset asset;
     asset.skeleton.joints.push_back(SkeletonJoint{ .parent_index = -1 });
     asset.skeleton.joints.push_back(SkeletonJoint{ .parent_index = 0 });

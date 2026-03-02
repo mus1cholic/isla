@@ -22,6 +22,25 @@ namespace isla::client::animated_gltf {
 
 namespace {
 
+std::string make_animation_keyframe_error(const AnimationClip& clip, std::size_t anim_index,
+                                          std::size_t joint_index, const char* path_name,
+                                          cgltf_size key_index) {
+    std::string message = "failed reading ";
+    message += path_name;
+    message += " keyframe at key index ";
+    message += std::to_string(static_cast<std::size_t>(key_index));
+    message += " for animation index ";
+    message += std::to_string(anim_index);
+    if (!clip.name.empty()) {
+        message += " ('";
+        message += clip.name;
+        message += "')";
+    }
+    message += ", joint index ";
+    message += std::to_string(joint_index);
+    return message;
+}
+
 class CgltfDataDeleter {
   public:
     void operator()(cgltf_data* data) const {
@@ -161,6 +180,9 @@ Vec3 sample_vec3_track(const std::vector<Vec3Keyframe>& keyframes, float time_se
 
     const Vec3Keyframe& a = keyframes[upper_index - 1U];
     if (interpolation == TrackInterpolation::Step) {
+        if (upper_it != keyframes.end() && upper_it->time_seconds == time_seconds) {
+            return upper_it->value;
+        }
         return a.value;
     }
     const Vec3Keyframe& b = keyframes[upper_index];
@@ -202,6 +224,9 @@ Quat sample_quat_track(const std::vector<QuatKeyframe>& keyframes, float time_se
 
     const QuatKeyframe& a = keyframes[upper_index - 1U];
     if (interpolation == TrackInterpolation::Step) {
+        if (upper_it != keyframes.end() && upper_it->time_seconds == time_seconds) {
+            return upper_it->value;
+        }
         return a.value;
     }
     const QuatKeyframe& b = keyframes[upper_index];
@@ -308,8 +333,7 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
         }
         asset.bind_prefix_matrices[static_cast<std::size_t>(i)] = bind_prefix;
         if (skin.inverse_bind_matrices != nullptr) {
-            const std::optional<Mat4> ibm =
-                read_mat4(skin.inverse_bind_matrices, static_cast<cgltf_size>(i));
+            const std::optional<Mat4> ibm = read_mat4(skin.inverse_bind_matrices, i);
             if (!ibm.has_value()) {
                 return AnimatedGltfLoadResult{
                     .ok = false,
@@ -586,7 +610,13 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
                     const std::optional<float> t = read_scalar(input, i);
                     const std::optional<Vec3> v = read_vec3(output, i);
                     if (!t.has_value() || !v.has_value()) {
-                        continue;
+                        return AnimatedGltfLoadResult{
+                            .ok = false,
+                            .asset = {},
+                            .error_message = make_animation_keyframe_error(
+                                clip, static_cast<std::size_t>(anim_i), joint_index, "translation",
+                                i),
+                        };
                     }
                     clip.duration_seconds = std::max(clip.duration_seconds, *t);
                     track.translations.push_back(Vec3Keyframe{ .time_seconds = *t, .value = *v });
@@ -606,7 +636,12 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
                     const std::optional<float> t = read_scalar(input, i);
                     const std::optional<Quat> q = read_quat(output, i);
                     if (!t.has_value() || !q.has_value()) {
-                        continue;
+                        return AnimatedGltfLoadResult{
+                            .ok = false,
+                            .asset = {},
+                            .error_message = make_animation_keyframe_error(
+                                clip, static_cast<std::size_t>(anim_i), joint_index, "rotation", i),
+                        };
                     }
                     clip.duration_seconds = std::max(clip.duration_seconds, *t);
                     track.rotations.push_back(QuatKeyframe{ .time_seconds = *t, .value = *q });
@@ -626,7 +661,12 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
                     const std::optional<float> t = read_scalar(input, i);
                     const std::optional<Vec3> v = read_vec3(output, i);
                     if (!t.has_value() || !v.has_value()) {
-                        continue;
+                        return AnimatedGltfLoadResult{
+                            .ok = false,
+                            .asset = {},
+                            .error_message = make_animation_keyframe_error(
+                                clip, static_cast<std::size_t>(anim_i), joint_index, "scale", i),
+                        };
                     }
                     clip.duration_seconds = std::max(clip.duration_seconds, *t);
                     track.scales.push_back(Vec3Keyframe{ .time_seconds = *t, .value = *v });
