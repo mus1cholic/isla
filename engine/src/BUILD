@@ -9,4 +9,3 @@ cc_library(
         "//shared/src:shared",
     ],
 )
-

@@ -2,6 +2,9 @@
 
 #include "isla/engine/render/render_world.hpp"
 
+#include <span>
+#include <string>
+
 struct SDL_Window;
 struct SDL_Renderer;
 
@@ -26,11 +29,13 @@ class IRendererBackend {
     IRendererBackend& operator=(IRendererBackend&&) = delete;
 
     virtual bool initialize(SDL_Window* window, SDL_Renderer* renderer, RenderSize size) = 0;
+    [[nodiscard]] virtual bool uses_sdl_renderer() const = 0;
+    [[nodiscard]] virtual bool has_homogeneous_depth() const = 0;
     virtual void on_resize(RenderSize size) = 0;
     virtual void render(const RenderWorld& world) const = 0;
+    virtual void set_debug_overlay_enabled(bool enabled) = 0;
+    virtual void set_debug_overlay_lines(std::span<const std::string> lines) = 0;
     virtual void shutdown() = 0;
 };
 
 } // namespace isla::client
-
-

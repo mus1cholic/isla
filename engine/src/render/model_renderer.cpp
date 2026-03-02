@@ -1,180 +1,381 @@
 #include "isla/engine/render/model_renderer.hpp"
-#include "isla/engine/render/overlay_transparency.hpp"
 
 #include "absl/log/log.h"
-
 #include <SDL3/SDL.h>
 
 #if defined(_WIN32)
-#include <d3d11.h>
-#include <windows.h>
-#endif
+
+#include "engine/src/render/include/bgfx_mesh_manager.hpp"
+#include "engine/src/render/include/bgfx_shader_manager.hpp"
+#include "engine/src/render/include/bgfx_texture_manager.hpp"
+#include "isla/engine/math/mat4.hpp"
+#include "isla/engine/render/overlay_transparency.hpp"
+#include "isla/engine/render/render_world.hpp"
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+
+#include <bgfx/bgfx.h>
+#include <bgfx/platform.h>
 
 namespace isla::client {
 
-#if defined(_WIN32)
-
 namespace {
 
-HWND get_hwnd_from_sdl_window(SDL_Window* window) {
-    if (window == nullptr) {
-        return nullptr;
-    }
+constexpr std::uint32_t kBgfxResetFlags = 0;
+constexpr std::uint8_t kBgfxViewId = 0;
+constexpr float kDefaultCameraDistance = 3.0F;
+constexpr float kDefaultCameraFovYDegrees = 60.0F;
+constexpr float kDefaultCameraNear = 0.05F;
+constexpr float kDefaultCameraFar = 1000.0F;
+constexpr const char* kObjectColorUniformName = "u_object_color";
+constexpr const char* kDirLightDirUniformName = "u_dir_light_dir";
+constexpr const char* kDirLightColorUniformName = "u_dir_light_color";
+constexpr const char* kAmbientColorUniformName = "u_ambient_color";
+constexpr const char* kCameraPosUniformName = "u_camera_pos";
+constexpr const char* kSpecParamsUniformName = "u_spec_params";
+constexpr std::uint64_t kOpaqueRenderState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
+                                             BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+                                             BGFX_STATE_CULL_CW | BGFX_STATE_MSAA;
+constexpr std::uint64_t kAlphaBlendRenderState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
+                                                 BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_CULL_CW |
+                                                 BGFX_STATE_MSAA | BGFX_STATE_BLEND_ALPHA;
 
-    const SDL_PropertiesID window_props = SDL_GetWindowProperties(window);
-    return static_cast<HWND>(
-        SDL_GetPointerProperty(window_props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-}
-
-template <typename T> void release_com(T*& value) {
-    if (value != nullptr) {
-        value->Release();
-        value = nullptr;
-    }
+bool vec3_is_finite(const Vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
 } // namespace
 
-#endif
+class ModelRenderer::Impl {
+  public:
+    int window_width = kDefaultRenderWidth;
+    int window_height = kDefaultRenderHeight;
+    SDL_Window* window = nullptr;
+    bool initialized = false;
+    BgfxMeshManager mesh_manager;
+    BgfxShaderManager shader_manager;
+    BgfxTextureManager texture_manager;
+    bgfx::UniformHandle time_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle object_color_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle dir_light_dir_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle dir_light_color_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle ambient_color_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle camera_pos_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle spec_params_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle tex_color_uniform = BGFX_INVALID_HANDLE;
+    std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
+};
+
+namespace {
+
+void destroy_uniform_if_valid(bgfx::UniformHandle& handle) {
+    if (bgfx::isValid(handle)) {
+        bgfx::destroy(handle);
+        handle = BGFX_INVALID_HANDLE;
+    }
+}
+
+void destroy_renderer_uniforms(ModelRenderer::Impl& impl) {
+    destroy_uniform_if_valid(impl.time_uniform);
+    destroy_uniform_if_valid(impl.object_color_uniform);
+    destroy_uniform_if_valid(impl.dir_light_dir_uniform);
+    destroy_uniform_if_valid(impl.dir_light_color_uniform);
+    destroy_uniform_if_valid(impl.ambient_color_uniform);
+    destroy_uniform_if_valid(impl.camera_pos_uniform);
+    destroy_uniform_if_valid(impl.spec_params_uniform);
+    destroy_uniform_if_valid(impl.tex_color_uniform);
+}
+
+} // namespace
+
+ModelRenderer::ModelRenderer() : impl_(std::make_unique<Impl>()) {}
+ModelRenderer::~ModelRenderer() = default;
 
 bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, RenderSize size) {
     (void)renderer;
+    impl_->window = window;
+    impl_->window_width = std::max(1, size.width);
+    impl_->window_height = std::max(1, size.height);
 
-#if defined(_WIN32)
-    window_ = window;
-    render_size_ = size;
-
-    HWND hwnd = get_hwnd_from_sdl_window(window_);
-    if (hwnd == nullptr) {
-        LOG(ERROR) << "ModelRenderer: SDL window does not expose a Win32 HWND";
+    if (impl_->window == nullptr) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: null window";
         return false;
     }
 
-    DXGI_SWAP_CHAIN_DESC swap_chain_desc = {};
-    swap_chain_desc.BufferDesc.Width = static_cast<UINT>(render_size_.width);
-    swap_chain_desc.BufferDesc.Height = static_cast<UINT>(render_size_.height);
-    swap_chain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    swap_chain_desc.SampleDesc.Count = 1;
-    swap_chain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swap_chain_desc.BufferCount = 2;
-    swap_chain_desc.OutputWindow = hwnd;
-    swap_chain_desc.Windowed = TRUE;
-    swap_chain_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-    const UINT device_flags = 0;
-    D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
-    const HRESULT hr = D3D11CreateDeviceAndSwapChain(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, device_flags, nullptr, 0, D3D11_SDK_VERSION,
-        &swap_chain_desc, &swap_chain_, &device_, &feature_level, &device_context_);
-    if (FAILED(hr)) {
-        LOG(ERROR) << "ModelRenderer: D3D11CreateDeviceAndSwapChain failed, hr="
-                   << static_cast<unsigned long>(hr);
+    void* native_window_handle = nullptr;
+    const SDL_PropertiesID window_properties = SDL_GetWindowProperties(impl_->window);
+    native_window_handle =
+        SDL_GetPointerProperty(window_properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    if (native_window_handle == nullptr) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: could not obtain native window handle";
         return false;
     }
 
-    if (!create_render_target()) {
-        shutdown();
+    bgfx::PlatformData platform_data{};
+    platform_data.nwh = native_window_handle;
+
+    bgfx::Init init{};
+    init.type = bgfx::RendererType::Count;
+    init.vendorId = BGFX_PCI_ID_NONE;
+    init.platformData = platform_data;
+    init.resolution.width = static_cast<std::uint32_t>(impl_->window_width);
+    init.resolution.height = static_cast<std::uint32_t>(impl_->window_height);
+    init.resolution.reset = kBgfxResetFlags;
+    if (!bgfx::init(init)) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: bgfx::init returned false";
         return false;
     }
-#else
-    (void)window;
-    (void)size;
-#endif
 
+    const auto clear_color =
+        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyRed) << 24U) |
+        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyGreen) << 16U) |
+        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyBlue) << 8U) | 0xFFU;
+    bgfx::setViewClear(kBgfxViewId, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, clear_color, 1.0F, 0);
+    bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
+                      static_cast<std::uint16_t>(impl_->window_height));
+
+    impl_->time_uniform = bgfx::createUniform("u_time", bgfx::UniformType::Vec4);
+    impl_->object_color_uniform =
+        bgfx::createUniform(kObjectColorUniformName, bgfx::UniformType::Vec4);
+    impl_->dir_light_dir_uniform =
+        bgfx::createUniform(kDirLightDirUniformName, bgfx::UniformType::Vec4);
+    impl_->dir_light_color_uniform =
+        bgfx::createUniform(kDirLightColorUniformName, bgfx::UniformType::Vec4);
+    impl_->ambient_color_uniform =
+        bgfx::createUniform(kAmbientColorUniformName, bgfx::UniformType::Vec4);
+    impl_->camera_pos_uniform = bgfx::createUniform(kCameraPosUniformName, bgfx::UniformType::Vec4);
+    impl_->spec_params_uniform =
+        bgfx::createUniform(kSpecParamsUniformName, bgfx::UniformType::Vec4);
+    impl_->tex_color_uniform = bgfx::createUniform("s_texColor", bgfx::UniformType::Sampler);
+    if (!bgfx::isValid(impl_->time_uniform) || !bgfx::isValid(impl_->object_color_uniform) ||
+        !bgfx::isValid(impl_->dir_light_dir_uniform) ||
+        !bgfx::isValid(impl_->dir_light_color_uniform) ||
+        !bgfx::isValid(impl_->ambient_color_uniform) || !bgfx::isValid(impl_->camera_pos_uniform) ||
+        !bgfx::isValid(impl_->spec_params_uniform) || !bgfx::isValid(impl_->tex_color_uniform)) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: could not create renderer uniforms";
+        destroy_renderer_uniforms(*impl_);
+        bgfx::shutdown();
+        return false;
+    }
+
+    if (!impl_->shader_manager.initialize() || !impl_->texture_manager.initialize() ||
+        !impl_->mesh_manager.initialize()) {
+        impl_->mesh_manager.shutdown();
+        impl_->texture_manager.shutdown();
+        impl_->shader_manager.shutdown();
+        destroy_renderer_uniforms(*impl_);
+        bgfx::shutdown();
+        LOG(ERROR) << "ModelRenderer: initialize failed: renderer managers could not initialize";
+        return false;
+    }
+
+    impl_->start_time = std::chrono::steady_clock::now();
+    impl_->initialized = true;
     return true;
 }
 
+bool ModelRenderer::uses_sdl_renderer() const {
+    return false;
+}
+
+bool ModelRenderer::has_homogeneous_depth() const {
+    if (!impl_ || !impl_->initialized) {
+        return false;
+    }
+    const bgfx::Caps* caps = bgfx::getCaps();
+    return (caps != nullptr) ? caps->homogeneousDepth : false;
+}
+
 void ModelRenderer::on_resize(RenderSize size) {
-#if defined(_WIN32)
-    render_size_ = size;
-    if (swap_chain_ == nullptr || device_context_ == nullptr) {
+    impl_->window_width = std::max(1, size.width);
+    impl_->window_height = std::max(1, size.height);
+    if (!impl_->initialized) {
         return;
     }
 
-    if (render_size_.width <= 0 || render_size_.height <= 0) {
+    bgfx::reset(static_cast<std::uint32_t>(impl_->window_width),
+                static_cast<std::uint32_t>(impl_->window_height), kBgfxResetFlags);
+    bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
+                      static_cast<std::uint16_t>(impl_->window_height));
+}
+
+void ModelRenderer::render(const RenderWorld& world) const {
+    if (!impl_->initialized) {
         return;
     }
+    impl_->mesh_manager.begin_frame();
+    impl_->mesh_manager.upload_dirty_meshes(world);
 
-    // Ensure no back-buffer references remain bound before ResizeBuffers.
-    device_context_->OMSetRenderTargets(0, nullptr, nullptr);
-    device_context_->Flush();
+    const auto elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() -
+                                                      impl_->start_time)
+                             .count();
+    const float sim_time =
+        std::isfinite(world.sim_time_seconds()) ? std::max(0.0F, world.sim_time_seconds()) : 0.0F;
+    const std::array<float, 4> time_values{ sim_time, elapsed, 0.0F, 0.0F };
+    bgfx::setUniform(impl_->time_uniform, time_values.data());
 
-    release_render_target();
-    const HRESULT hr =
-        swap_chain_->ResizeBuffers(0, static_cast<UINT>(render_size_.width),
-                                   static_cast<UINT>(render_size_.height), DXGI_FORMAT_UNKNOWN, 0);
-    if (FAILED(hr)) {
-        LOG(ERROR) << "ModelRenderer: ResizeBuffers failed, hr=" << static_cast<unsigned long>(hr);
+    Vec3 light_dir = world.directional_light().direction;
+    if (!vec3_is_finite(light_dir)) {
+        light_dir = kDefaultDirectionalLightDirection;
+    }
+
+    const Vec3 camera_eye{ .x = 0.0F, .y = 0.0F, .z = -kDefaultCameraDistance };
+    const std::array<float, 4> dir_light_dir_values{ light_dir.x, light_dir.y, light_dir.z, 0.0F };
+    const std::array<float, 4> dir_light_color_values{
+        world.directional_light().color.r,
+        world.directional_light().color.g,
+        world.directional_light().color.b,
+        1.0F,
+    };
+    const std::array<float, 4> ambient_color_values{
+        world.ambient_light().color.r,
+        world.ambient_light().color.g,
+        world.ambient_light().color.b,
+        1.0F,
+    };
+    const std::array<float, 4> camera_pos_values{ camera_eye.x, camera_eye.y, camera_eye.z, 1.0F };
+    const std::array<float, 4> spec_params_values{ 0.85F, 16.0F, 0.0F, 0.0F };
+    bgfx::setUniform(impl_->dir_light_dir_uniform, dir_light_dir_values.data());
+    bgfx::setUniform(impl_->dir_light_color_uniform, dir_light_color_values.data());
+    bgfx::setUniform(impl_->ambient_color_uniform, ambient_color_values.data());
+    bgfx::setUniform(impl_->camera_pos_uniform, camera_pos_values.data());
+    bgfx::setUniform(impl_->spec_params_uniform, spec_params_values.data());
+
+    const Mat4 view = Mat4::look_at(LookAtParams{
+        .eye = camera_eye,
+        .target = Vec3{},
+        .up = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
+    });
+    const float aspect = static_cast<float>(impl_->window_width) / static_cast<float>(impl_->window_height);
+    const Mat4 proj = Mat4::perspective(kDefaultCameraFovYDegrees, aspect, kDefaultCameraNear,
+                                        kDefaultCameraFar, has_homogeneous_depth());
+
+    bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
+                      static_cast<std::uint16_t>(impl_->window_height));
+    bgfx::setViewTransform(kBgfxViewId, view.data(), proj.data());
+    bgfx::touch(kBgfxViewId);
+
+    static const Material kFallbackMaterial;
+    for (const RenderObject& object : world.objects()) {
+        if (!object.visible || !impl_->mesh_manager.has_mesh_slot(object.mesh_id)) {
+            continue;
+        }
+        const bgfx::VertexBufferHandle vertex_buffer =
+            impl_->mesh_manager.vertex_buffer_for_mesh(object.mesh_id);
+        const bgfx::IndexBufferHandle index_buffer =
+            impl_->mesh_manager.index_buffer_for_mesh(object.mesh_id);
+        if (!bgfx::isValid(vertex_buffer) || !bgfx::isValid(index_buffer)) {
+            continue;
+        }
+
+        const Material& material = [&]() -> const Material& {
+            if (object.material_id < world.materials().size()) {
+                return world.materials().at(object.material_id);
+            }
+            return kFallbackMaterial;
+        }();
+        const bgfx::ProgramHandle program = impl_->shader_manager.resolve_program(material.shader_name);
+        if (!bgfx::isValid(program)) {
+            continue;
+        }
+        const bgfx::TextureHandle texture =
+            impl_->texture_manager.resolve_texture(material.albedo_texture_path);
+        const float alpha = std::clamp(material.base_alpha, 0.0F, 1.0F);
+        const std::array<float, 4> object_color{
+            material.base_color.r,
+            material.base_color.g,
+            material.base_color.b,
+            alpha,
+        };
+        const Mat4 model = Mat4::from_position_scale_quat(object.transform.position,
+                                                          object.transform.scale,
+                                                          object.transform.rotation);
+        const std::uint64_t render_state =
+            (material.blend_mode == MaterialBlendMode::AlphaBlend || alpha < 1.0F)
+                ? kAlphaBlendRenderState
+                : kOpaqueRenderState;
+        bgfx::setUniform(impl_->object_color_uniform, object_color.data());
+        bgfx::setTexture(0, impl_->tex_color_uniform, texture);
+        bgfx::setTransform(model.data());
+        bgfx::setVertexBuffer(0, vertex_buffer);
+        bgfx::setIndexBuffer(index_buffer);
+        bgfx::setState(render_state);
+        bgfx::submit(kBgfxViewId, program);
+    }
+
+    bgfx::frame();
+}
+
+void ModelRenderer::set_debug_overlay_enabled(bool enabled) {
+    (void)enabled;
+}
+
+void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) {
+    (void)lines;
+}
+
+void ModelRenderer::shutdown() {
+    if (!impl_->initialized) {
         return;
     }
+    impl_->mesh_manager.shutdown();
+    impl_->texture_manager.shutdown();
+    impl_->shader_manager.shutdown();
+    destroy_renderer_uniforms(*impl_);
+    bgfx::shutdown();
+    impl_->initialized = false;
+    impl_->window = nullptr;
+}
 
-    if (!create_render_target()) {
-        LOG(ERROR) << "ModelRenderer: failed to recreate render target after resize";
-    }
+} // namespace isla::client
+
 #else
+
+namespace isla::client {
+
+class ModelRenderer::Impl {};
+
+ModelRenderer::ModelRenderer() : impl_(std::make_unique<Impl>()) {}
+ModelRenderer::~ModelRenderer() = default;
+
+bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, RenderSize size) {
+    (void)window;
+    (void)renderer;
     (void)size;
-#endif
+    LOG(ERROR) << "ModelRenderer: bgfx renderer currently supports Windows only";
+    return false;
+}
+
+bool ModelRenderer::uses_sdl_renderer() const {
+    return false;
+}
+
+bool ModelRenderer::has_homogeneous_depth() const {
+    return false;
+}
+
+void ModelRenderer::on_resize(RenderSize size) {
+    (void)size;
 }
 
 void ModelRenderer::render(const RenderWorld& world) const {
     (void)world;
-#if defined(_WIN32)
-    if (device_context_ == nullptr || render_target_view_ == nullptr || swap_chain_ == nullptr) {
-        return;
-    }
-
-    device_context_->OMSetRenderTargets(1, &render_target_view_, nullptr);
-    device_context_->ClearRenderTargetView(render_target_view_,
-                                           OverlayTransparencyConfig::kClearColor.data());
-    swap_chain_->Present(1, 0);
-#endif
 }
 
-void ModelRenderer::shutdown() {
-#if defined(_WIN32)
-    release_render_target();
-    release_com(device_context_);
-    release_com(device_);
-    release_com(swap_chain_);
-    window_ = nullptr;
-#endif
+void ModelRenderer::set_debug_overlay_enabled(bool enabled) {
+    (void)enabled;
 }
 
-#if defined(_WIN32)
-
-bool ModelRenderer::create_render_target() {
-    if (swap_chain_ == nullptr || device_ == nullptr) {
-        return false;
-    }
-
-    ID3D11Texture2D* back_buffer = nullptr;
-    const HRESULT buffer_hr = swap_chain_->GetBuffer(0, IID_PPV_ARGS(&back_buffer));
-    if (FAILED(buffer_hr) || back_buffer == nullptr) {
-        if (back_buffer != nullptr) {
-            back_buffer->Release();
-            back_buffer = nullptr;
-        }
-        LOG(ERROR) << "ModelRenderer: swap_chain->GetBuffer failed, hr="
-                   << static_cast<unsigned long>(buffer_hr);
-        return false;
-    }
-
-    const HRESULT rtv_hr =
-        device_->CreateRenderTargetView(back_buffer, nullptr, &render_target_view_);
-    back_buffer->Release();
-    if (FAILED(rtv_hr) || render_target_view_ == nullptr) {
-        LOG(ERROR) << "ModelRenderer: CreateRenderTargetView failed, hr="
-                   << static_cast<unsigned long>(rtv_hr);
-        return false;
-    }
-
-    return true;
+void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) {
+    (void)lines;
 }
 
-void ModelRenderer::release_render_target() {
-    release_com(render_target_view_);
-}
-
-#endif
+void ModelRenderer::shutdown() {}
 
 } // namespace isla::client
+
+#endif

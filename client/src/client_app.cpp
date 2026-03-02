@@ -16,29 +16,6 @@ namespace {
 
 constexpr char kMeshAssetEnvVar[] = "ISLA_MESH_ASSET";
 
-MeshData make_fallback_quad_mesh() {
-    MeshData mesh;
-    mesh.set_triangles({
-        Triangle{
-            .a = { .x = -0.5F, .y = 0.5F, .z = 0.0F },
-            .b = { .x = -0.5F, .y = -0.5F, .z = 0.0F },
-            .c = { .x = 0.5F, .y = -0.5F, .z = 0.0F },
-            .uv_a = { .x = 0.0F, .y = 0.0F },
-            .uv_b = { .x = 0.0F, .y = 1.0F },
-            .uv_c = { .x = 1.0F, .y = 1.0F },
-        },
-        Triangle{
-            .a = { .x = -0.5F, .y = 0.5F, .z = 0.0F },
-            .b = { .x = 0.5F, .y = -0.5F, .z = 0.0F },
-            .c = { .x = 0.5F, .y = 0.5F, .z = 0.0F },
-            .uv_a = { .x = 0.0F, .y = 0.0F },
-            .uv_b = { .x = 1.0F, .y = 1.0F },
-            .uv_c = { .x = 1.0F, .y = 0.0F },
-        },
-    });
-    return mesh;
-}
-
 } // namespace
 
 ClientApp::ClientApp() : ClientApp(default_sdl_runtime()) {}
@@ -102,10 +79,7 @@ void ClientApp::load_startup_mesh() {
 
     const char* mesh_asset_path = std::getenv(kMeshAssetEnvVar);
     if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
-        world_.meshes().push_back(make_fallback_quad_mesh());
-        world_.objects().push_back(
-            RenderObject{ .mesh_id = 0U, .material_id = 0U, .visible = true });
-        LOG(INFO) << "ClientApp: no ISLA_MESH_ASSET set, using fallback quad";
+        LOG(INFO) << "ClientApp: no ISLA_MESH_ASSET set, leaving scene empty";
         return;
     }
 
@@ -113,10 +87,7 @@ void ClientApp::load_startup_mesh() {
         mesh_asset_loader::load_from_file(mesh_asset_path);
     if (!loaded.ok) {
         LOG(WARNING) << "ClientApp: mesh load failed for ISLA_MESH_ASSET='" << mesh_asset_path
-                     << "' error='" << loaded.error_message << "'; using fallback quad";
-        world_.meshes().push_back(make_fallback_quad_mesh());
-        world_.objects().push_back(
-            RenderObject{ .mesh_id = 0U, .material_id = 0U, .visible = true });
+                     << "' error='" << loaded.error_message << "'; leaving scene empty";
         return;
     }
 
