@@ -26,7 +26,12 @@ Rationale:
 - This de-risks format complexity and keeps runtime focused.
 
 > [!NOTE]
-> **Current status (2026-03-02):** Phase 0 is complete and substantially hardened. Phases 1-9 are pending.
+> **Current status (2026-03-02):** Phase 0 is complete and substantially hardened.  
+> Phase 1 contract artifacts are now drafted:
+> - `docs/pmx/pmx_to_gltf_conversion_contract.md`
+> - `docs/pmx/schemas/pmx_physics_metadata.schema.json`
+> - `tools/pmx/validate_converted_gltf.py`
+> Runtime integration phases (2-9) remain pending.
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
