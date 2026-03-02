@@ -1,5 +1,10 @@
 #include "isla/engine/render/model_renderer.hpp"
 
+#include "absl/log/log.h"
+#include <SDL3/SDL.h>
+
+#if defined(_WIN32)
+
 #include "engine/src/render/include/bgfx_mesh_manager.hpp"
 #include "engine/src/render/include/bgfx_shader_manager.hpp"
 #include "engine/src/render/include/bgfx_texture_manager.hpp"
@@ -12,10 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <memory>
 
-#include "absl/log/log.h"
-#include <SDL3/SDL.h>
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 
@@ -95,12 +97,6 @@ ModelRenderer::~ModelRenderer() = default;
 
 bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, RenderSize size) {
     (void)renderer;
-#if !defined(_WIN32)
-    (void)window;
-    (void)size;
-    LOG(ERROR) << "ModelRenderer: bgfx renderer currently supports Windows only";
-    return false;
-#else
     impl_->window = window;
     impl_->window_width = std::max(1, size.width);
     impl_->window_height = std::max(1, size.height);
@@ -180,7 +176,6 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
     impl_->start_time = std::chrono::steady_clock::now();
     impl_->initialized = true;
     return true;
-#endif
 }
 
 bool ModelRenderer::uses_sdl_renderer() const {
@@ -337,3 +332,50 @@ void ModelRenderer::shutdown() {
 }
 
 } // namespace isla::client
+
+#else
+
+namespace isla::client {
+
+class ModelRenderer::Impl {};
+
+ModelRenderer::ModelRenderer() : impl_(std::make_unique<Impl>()) {}
+ModelRenderer::~ModelRenderer() = default;
+
+bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, RenderSize size) {
+    (void)window;
+    (void)renderer;
+    (void)size;
+    LOG(ERROR) << "ModelRenderer: bgfx renderer currently supports Windows only";
+    return false;
+}
+
+bool ModelRenderer::uses_sdl_renderer() const {
+    return false;
+}
+
+bool ModelRenderer::has_homogeneous_depth() const {
+    return false;
+}
+
+void ModelRenderer::on_resize(RenderSize size) {
+    (void)size;
+}
+
+void ModelRenderer::render(const RenderWorld& world) const {
+    (void)world;
+}
+
+void ModelRenderer::set_debug_overlay_enabled(bool enabled) {
+    (void)enabled;
+}
+
+void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) {
+    (void)lines;
+}
+
+void ModelRenderer::shutdown() {}
+
+} // namespace isla::client
+
+#endif

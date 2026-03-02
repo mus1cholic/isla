@@ -39,5 +39,3 @@ class IRendererBackend {
 };
 
 } // namespace isla::client
-
-

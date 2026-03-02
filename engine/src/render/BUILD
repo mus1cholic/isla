@@ -3,9 +3,6 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 cc_library(
     name = "render",
     srcs = [
-        "bgfx_mesh_manager.cpp",
-        "bgfx_shader_manager.cpp",
-        "bgfx_texture_manager.cpp",
         "include/bgfx_limits.hpp",
         "include/bgfx_mesh_manager.hpp",
         "include/bgfx_shader_manager.hpp",
@@ -17,7 +14,14 @@ cc_library(
         "model_renderer.cpp",
         "render_world.cpp",
         "shader_path_resolver.cpp",
-    ],
+    ] + select({
+        "@platforms//os:windows": [
+            "bgfx_mesh_manager.cpp",
+            "bgfx_shader_manager.cpp",
+            "bgfx_texture_manager.cpp",
+        ],
+        "//conditions:default": [],
+    }),
     defines = select({
         "@platforms//os:windows": ["ISLA_HAS_BGFX"],
         "//conditions:default": [],
