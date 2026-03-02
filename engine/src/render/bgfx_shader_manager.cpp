@@ -1,5 +1,7 @@
 #include "engine/src/render/include/bgfx_shader_manager.hpp"
 
+#if defined(_WIN32)
+
 #include "engine/src/render/include/shader_path_resolver.hpp"
 
 #include <cstdint>
@@ -210,3 +212,5 @@ std::size_t BgfxShaderManager::active_program_cache_count() const {
 }
 
 } // namespace isla::client
+
+#endif // defined(_WIN32)

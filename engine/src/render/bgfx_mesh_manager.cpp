@@ -1,5 +1,7 @@
 #include "engine/src/render/include/bgfx_mesh_manager.hpp"
 
+#if defined(_WIN32)
+
 #include "engine/src/render/include/bgfx_limits.hpp"
 #include "isla/engine/render/render_world.hpp"
 
@@ -309,3 +311,5 @@ std::size_t BgfxMeshManager::last_frame_mesh_upload_count() const {
 }
 
 } // namespace isla::client
+
+#endif // defined(_WIN32)

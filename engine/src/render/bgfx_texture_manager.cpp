@@ -1,5 +1,7 @@
 #include "engine/src/render/include/bgfx_texture_manager.hpp"
 
+#if defined(_WIN32)
+
 #include "engine/src/render/include/bgfx_limits.hpp"
 #include "engine/src/render/include/texture_loader_limits.hpp"
 
@@ -201,3 +203,5 @@ std::size_t BgfxTextureManager::active_texture_cache_count() const {
 }
 
 } // namespace isla::client
+
+#endif // defined(_WIN32)
