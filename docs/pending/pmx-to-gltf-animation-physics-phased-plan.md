@@ -7,7 +7,7 @@
 - Static mesh loading for `.obj/.gltf/.glb`
 - A bgfx-based renderer path
 - Transparent overlay window behavior
-- Initial animated glTF foundation (skin/joint/clip loading and pose evaluation)
+- Animated glTF runtime foundation (skin/joint/clip loading and pose evaluation)
 
 Target outcome:
 
@@ -22,35 +22,59 @@ Implement PMX support as an external conversion pipeline plus incremental runtim
 Rationale:
 
 - PMX ecosystem tooling is conversion-oriented.
-- glTF is already partially supported in runtime.
+- glTF is already integrated in runtime.
 - This de-risks format complexity and keeps runtime focused.
 
 > [!NOTE]
-> **Current status (2026-03-02):** Phase 0 is complete. Phases 1+ are pending.
+> **Current status (2026-03-02):** Phase 0 is complete and substantially hardened. Phases 1-9 are pending.
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
 ### Goal
 
-Add core runtime structures and pose evaluation needed before full playback/rendering.
+Add robust runtime structures and pose evaluation needed before full playback/rendering.
 
 ### Implemented
 
 - New animated glTF module:
   - `engine/src/render/include/animated_gltf.hpp`
   - `engine/src/render/animated_gltf.cpp`
-- Added:
+- Added core runtime data:
   - skeleton/joint representation
   - inverse bind matrix import
   - clip/track/keyframe import (TRS channels)
+  - per-track interpolation modes (`LINEAR`, `STEP`)
   - pose sampling (vec3 interpolation + quat slerp)
   - skin matrix generation
-- Added tests:
+- Added playback time mode support in pose evaluation:
+  - `Loop` (default; wraps into `[0, duration)`)
+  - `Clamp` (end-sticky; exact end hits final key)
+- Hierarchy robustness:
+  - non-topological skin joint order handling via DFS parent resolution
+  - parent cycle detection during pose evaluation
+  - non-joint ancestor transform baking (`bind_prefix_matrices`)
+- Loader robustness:
+  - selects all triangle primitives attached to nodes using selected skin (instead of first global primitive)
+  - strict keyframe decode failures for translation/rotation/scale channels
+  - strict input/output key count validation per channel
+  - explicit rejection of unsupported interpolation (`CUBICSPLINE`)
+  - explicit rejection of matrix-authored joint nodes (`has_matrix`)
+- Added/expanded tests:
   - `engine/src/render/animated_gltf_test.cpp`
+  - loader tests, hierarchy tests, interpolation tests (translation/rotation/scale, linear/step, exact-key behavior), playback mode tests
+  - fixture-based test organization (`TEST_F`) and hardened temp directory creation
+
+### Known Phase 0 Limits (Intentional)
+
+- Matrix-authored joints are hard-failed.
+- `CUBICSPLINE` animation interpolation is hard-failed.
+- Non-joint node animation channels are not evaluated in hierarchy composition.
+- Primitive dedup is pointer-based; per-node primitive instances/transforms are not yet represented.
+- Sampling uses binary search per sample (`O(log N)`), not cached index walking (`amortized O(1)`).
 
 ### Exit Criteria
 
-- Runtime can load skinned glTF animation data and evaluate joint/skin matrices.
+- Runtime can load skinned glTF animation data and evaluate joint/skin matrices deterministically with explicit failure behavior for unsupported/invalid content.
 
 ## Phase 1: PMX to glTF Conversion Contract
 
@@ -72,142 +96,24 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
   - layer/mask hints
 - Add validation checklist for converted assets.
 
-### Contract Details (In-Plan)
+### Contract Notes Updated From Phase 0
 
-#### A. Conversion Toolchain Contract
-
-- Conversion must be deterministic and scripted (no manual editor-only steps).
-- Converter invocation must be pinned by version and checked into docs/scripts.
-- Input package baseline:
-  - `model.pmx`
-  - optional `motions/*.vmd`
-  - textures used by PMX materials
-- Output package baseline:
-  - `model.glb` or `model.gltf + bin + textures`
-  - optional sidecar `model.physics.json` (if physics is not embedded in glTF `extras`)
-
-#### B. Required glTF Runtime Fields
-
-The converted glTF is considered valid only if all required fields below are present.
-
-- Mesh/Skin:
-  - at least 1 mesh primitive with triangle topology
-  - `POSITION`
-  - `JOINTS_0`
-  - `WEIGHTS_0`
-  - one valid `skin` with non-empty `joints`
-  - valid inverse bind matrices (or converter emits defaults)
-- Animation:
-  - at least one clip for validation assets (`idle` minimum)
-  - channels targeting translation/rotation/scale are allowed
-  - clip timestamps must be monotonic per sampler
-- Materials/Textures:
-  - base color texture references must resolve to files in package
-  - missing textures must be explicit and handled by runtime fallback
-
-#### C. Coordinate/Units Contract
-
-- Runtime target convention:
-  - units: `1.0 = 1 meter`
-  - up-axis: `+Y`
-  - handedness/conversion must be consistent for mesh + skeleton + animation
-- Conversion must preserve relative bone hierarchy transforms after axis conversion.
-- Root transform policy must be explicit:
-  - either baked into skeleton root node, or standardized via one root correction node.
-
-#### D. Physics Metadata Contract (Basic Preservation)
-
-Basic PMX physics intent must be carried via one of:
-
-- glTF node `extras.isla_physics`, or
-- sidecar `model.physics.json` keyed by node/bone name.
-
-Minimum supported metadata schema:
-
-```json
-{
-  "colliders": [
-    {
-      "bone": "Spine",
-      "shape": "capsule",
-      "radius": 0.08,
-      "half_height": 0.22,
-      "center": [0.0, 0.12, 0.0],
-      "layer": "character",
-      "mask": ["world", "character"]
-    }
-  ],
-  "constraints": [
-    {
-      "type": "parent",
-      "bone_a": "UpperArm_L",
-      "bone_b": "LowerArm_L"
-    }
-  ]
-}
-```
-
-Supported in-scope fields for Phase 4:
-
-- `shape`: `sphere`, `capsule`, `box`
-- `center`, primitive dimensions
-- `layer`, `mask`
-- minimal parent/attachment-style constraint hints
-
-Out-of-scope fields (must be safely ignored with warning):
-
-- full soft-body semantics
-- advanced spring/joint motor parameters
-- engine-specific PMX rigid-body flags with no runtime mapping
-
-#### E. Naming and Clip Contract
-
-- Bone names must be stable and preserved from conversion output.
-- Motion clip naming convention:
-  - lowercase snake case (for example: `idle`, `walk_fwd`, `run`, `jump_start`)
-- Required regression clip set for test assets:
-  - `idle`
-  - `walk_fwd`
-- Optional root motion:
-  - if present, must be tagged in metadata so runtime can choose in-place vs root-driven playback.
-
-#### F. Validation Checklist (Pass/Fail)
-
-A converted asset fails contract validation if any of these are true:
-
-- no `skin` or no joints
-- missing `JOINTS_0` or `WEIGHTS_0`
-- joint indices out of range for skeleton
-- weights are all zero for any vertex and cannot be normalized to fallback
-- no animations for required validation assets
-- unresolved required texture paths
-- physics metadata parse error (if metadata file exists)
-
-A converted asset passes with warnings if:
-
-- optional physics fields are unsupported but ignorable
-- optional clips are missing beyond required baseline
-
-#### G. Runtime Fallback Policy
-
-- Missing optional physics metadata:
-  - continue load, no physics proxies created, log warning
-- Unsupported physics field:
-  - continue load, ignore field, log warning
-- Invalid core skinning data:
-  - hard fail load for animated path
-- Missing animation clips:
-  - allow static skinned pose if skin is valid; playback APIs return clip-not-found
-
-### Deliverables
-
-- This section (Phase 1 contract details) is the single source of truth.
-- Example converted asset set under `engine/src/render/testdata/pmx_pipeline/`.
-- A conversion script entrypoint (to be added) that emits contract-compliant output.
+- Required runtime-compatible animation interpolation:
+  - supported: `LINEAR`, `STEP`
+  - unsupported: `CUBICSPLINE` (currently hard fail)
+- Joint authoring requirement:
+  - joints must be TRS-authored (`translation/rotation/scale`)
+  - matrix-authored joint nodes are currently unsupported and rejected
+- Channel count requirement:
+  - `input.count == output.count` must hold for runtime-supported samplers
+- Skin primitive association requirement:
+  - skinned primitives must be referenced by nodes that use the target skin
+- Hierarchy caveat:
+  - static non-joint ancestors are baked; animated non-joint chains are not fully supported yet
 
 ### Exit Criteria
 
-- PMX conversion is reproducible and outputs runtime-consumable glTF + physics metadata.
+- PMX conversion is reproducible and outputs runtime-consumable glTF + physics metadata that respects current runtime constraints.
 
 ## Phase 2: Runtime Clip Playback System
 
@@ -222,19 +128,14 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
   - local time
   - play/pause/loop
   - speed scalar
+  - playback mode (`Loop`/`Clamp`) wiring at system level
 - Advance clip time each tick (fixed-step or frame-time policy, documented).
 - Evaluate pose each frame/tick and cache skin matrices for rendering.
-- Add minimal API for selecting clips.
-
-### Files (expected)
-
-- `engine/include/isla/engine/render/render_world.hpp` (or adjacent animation state)
-- `engine/src/render/*` animation playback integration
-- `client/src/client_app.cpp` startup/demo clip selection
+- Add minimal API for selecting clips and playback mode.
 
 ### Exit Criteria
 
-- A converted skinned glTF character visibly plays a looped clip.
+- A converted skinned glTF character visibly plays selected clips with predictable loop/clamp behavior.
 
 ## Phase 3: GPU Skinning Render Path
 
@@ -250,6 +151,7 @@ Render skinned meshes using evaluated joint matrices.
 - Add skinning-capable shader variant(s).
 - Upload/bind joint matrix palette per draw.
 - Keep static mesh path intact.
+- Ensure multi-primitive skinned assets render all attached primitives.
 
 ### Risks
 
@@ -292,6 +194,7 @@ Make PMX motion assets usable by converting motion data into glTF clips.
 - Resolve bone naming/retarget mapping policy.
 - Verify clip timing and root motion policy.
 - Add regression assets for idle/walk/action.
+- Ensure converted clips avoid unsupported sampler output until cubic support lands.
 
 ### Exit Criteria
 
@@ -309,6 +212,8 @@ Make the pipeline maintainable and testable.
 - Add automated tests for:
   - loader failures (missing skin/joints/weights)
   - pose eval determinism
+  - interpolation mode handling (`LINEAR`/`STEP` + rejection paths)
+  - playback mode behavior (`Loop`/`Clamp`)
   - shader contract for skinning path
   - physics metadata parsing fallbacks
 - Add CI target(s) for animation/physics pipeline tests.
@@ -316,6 +221,56 @@ Make the pipeline maintainable and testable.
 ### Exit Criteria
 
 - Pipeline regressions are detected automatically in CI.
+
+## Phase 7: Full Node-Hierarchy Animation Support
+
+### Goal
+
+Remove current hierarchy caveats by evaluating full glTF node graph semantics.
+
+### Scope
+
+- Evaluate animation channels on non-joint nodes.
+- Compose full node hierarchy before skin extraction.
+- Replace/retire `bind_prefix_matrices` workaround where appropriate.
+- Support rigs with non-joint skeleton roots and animated intermediate nodes correctly.
+
+### Exit Criteria
+
+- Assets with animated non-joint hierarchy segments evaluate correctly without conversion-side workarounds.
+
+## Phase 8: Interpolation + Sampling Completeness
+
+### Goal
+
+Close remaining runtime animation fidelity/performance gaps.
+
+### Scope
+
+- Add `CUBICSPLINE` interpolation support (including tangent semantics).
+- Add cached key index walking for monotonic playback (`amortized O(1)` sampling).
+- Expand regression tests for cubic edge cases and seek behavior.
+
+### Exit Criteria
+
+- Runtime matches expected glTF animation interpolation semantics for all targeted modes with stable performance.
+
+## Phase 9: PMX Pipeline Readiness and Sign-Off
+
+### Goal
+
+Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
+
+### Scope
+
+- Publish supported/unsupported feature matrix (PMX -> conversion -> glTF -> runtime).
+- Freeze converter/runtime compatibility versions.
+- Produce representative demo assets and validation reports.
+- Document operational runbook for adding new PMX characters/clips.
+
+### Exit Criteria
+
+- PMX conversion + runtime playback + basic physics flow is production-ready with documented limits and regression coverage.
 
 ## Cross-Phase Testing Strategy
 
@@ -329,3 +284,5 @@ Make the pipeline maintainable and testable.
 1. First usable PMX pipeline point: after Phase 2 (runtime clip playback).
 2. First visually correct character deformation point: after Phase 3 (GPU skinning).
 3. First basic PMX parity point (animation + basic physics): after Phase 4/5.
+4. First hierarchy-fidelity point for complex rigs: after Phase 7.
+5. First interpolation-complete point: after Phase 8.
