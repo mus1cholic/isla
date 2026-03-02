@@ -1,0 +1,64 @@
+module(
+    name = "isla",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.16")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
+bazel_dep(name = "hermetic_cc_toolchain", version = "4.1.0")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "abseil-cpp", version = "20250814.1")
+
+bazel_dep(name = "hedron_compile_commands", dev_dependency = True)
+
+git_override(
+    module_name = "hedron_compile_commands",
+    commit = "7fe1eab26d2b8eeb5e1c6a2f38bddb001e3f9696",
+    remote = "https://github.com/hedronvision/bazel-compile-commands-extractor.git",
+)
+
+git_override(
+    module_name = "rules_foreign_cc",
+    commit = "16566f37f1220b996efc265ab848a2d3f52a488c",
+    remote = "https://github.com/bazel-contrib/rules_foreign_cc.git",
+)
+
+toolchains = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
+use_repo(toolchains, "zig_sdk")
+register_toolchains("//tools/llvm_mingw:toolchain_x86_64_windows")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+git_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
+
+http_archive(
+    name = "sdl3_source",
+    build_file_content = """
+filegroup(
+    name = "all_srcs",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "082cbf5f429e0d80820f68dc2b507a94d4cc1b4e70817b119bbb8ec6a69584b8",
+    strip_prefix = "SDL3-3.4.0",
+    urls = [
+        "https://github.com/libsdl-org/SDL/releases/download/release-3.4.0/SDL3-3.4.0.tar.gz",
+    ],
+)
+
+git_repository(
+    name = "cgltf_upstream",
+    build_file_content = """
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "cgltf",
+    hdrs = ["cgltf.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+""",
+    commit = "360db1a95480fe102ae9c69b27c5d101167ff5ba",
+    remote = "https://github.com/jkuhlmann/cgltf.git",
+)

@@ -1,0 +1,66 @@
+common --enable_bzlmod
+common --enable_platform_specific_config
+# Required with Bazel 9 for current rules_foreign_cc tool repos that still
+# rely on implicit cc_import autoloading (external to this repository).
+common --incompatible_autoload_externally=cc_import
+common:windows --shell_executable=C:/Program\ Files/Git/usr/bin/bash.exe
+common:windows --repo_env=BAZEL_SH=C:/Progra~1/Git/usr/bin/bash.exe
+common:windows --action_env=BAZEL_SH=C:/Progra~1/Git/usr/bin/bash.exe
+common:windows --host_action_env=BAZEL_SH=C:/Progra~1/Git/usr/bin/bash.exe
+common:windows --define=isla_windows_gnu=false
+common:linux --sandbox_add_mount_pair=/tmp
+build:windows --cxxopt=/std:c++20
+build:windows --host_cxxopt=/std:c++20
+build:windows --cxxopt=/utf-8
+build:windows --host_cxxopt=/utf-8
+build:windows --cxxopt=/Zc:__cplusplus
+build:windows --host_cxxopt=/Zc:__cplusplus
+build:windows --cxxopt=/Zc:preprocessor
+build:windows --host_cxxopt=/Zc:preprocessor
+build:linux --cxxopt=-std=c++20
+build:linux --host_cxxopt=-std=c++20
+test --test_output=errors
+build:windows --features=-default_cpp_std
+build:windows --host_features=-default_cpp_std
+# Ubuntu-hosted cross-compilation to Windows via hermetic_cc_toolchain (zig).
+build:linux_windows --platforms=//tools/platforms:windows_x86_64
+build:linux_windows --extra_toolchains=@zig_sdk//toolchain:windows_amd64
+build:linux_windows --host_platform=@platforms//host
+
+# Experimental Option 2: attempt Linux->Windows cross-build via llvm-mingw
+# without relying on hermetic_cc_toolchain's windows_amd64 toolchain.
+# Compiler tool paths are injected per-invocation via --repo_env=CC/CXX/AR/LD.
+build:linux_windows_llvm_mingw --platforms=//tools/platforms:windows_x86_64
+build:linux_windows_llvm_mingw --host_platform=@platforms//host
+build:linux_windows_llvm_mingw --define=isla_windows_gnu=true
+
+# IDE / compile_commands.json compatibility alias.
+# Usage:
+#   bazel run @hedron_compile_commands//:refresh_all --config=editor
+common:editor --color=yes
+
+# --- BuildBuddy Remote Caching Setup ---
+# To use these, run with: bazel build --config=remote <targets>
+# Note: BUILDBUDDY_API_KEY should be provided via --remote_header
+
+build:remote --remote_cache=grpcs://remote.buildbuddy.io
+build:remote --remote_upload_local_results=true
+build:remote --bes_backend=grpcs://remote.buildbuddy.io
+build:remote --bes_results_url=https://app.buildbuddy.io/invocation/
+build:remote --remote_timeout=3600
+
+# Results and Monitoring
+build:remote --build_metadata=VISIBILITY=PUBLIC
+build:remote --bes_lifecycle_events
+
+# --- BuildBuddy Remote Execution (RBE) Setup ---
+# Use together with --config=remote so cache + BES settings remain active.
+# Example: bazel build --config=remote --config=remote_rbe //...
+# Define executor at common scope so --config=remote_rbe works for build/test/query.
+common:remote_rbe --remote_executor=grpcs://remote.buildbuddy.io
+build:remote_rbe --jobs=50
+test:remote_rbe --jobs=50
+
+# Define remote config to avoid errors in CI scripts when running query/cquery
+common:remote --color=yes
+

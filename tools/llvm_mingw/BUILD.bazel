@@ -1,0 +1,61 @@
+load("@rules_cc//cc/toolchains:cc_toolchain.bzl", "cc_toolchain")
+load("//tools/llvm_mingw:cc_toolchain_config.bzl", "llvm_mingw_cc_toolchain_config")
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "empty",
+    srcs = [],
+)
+
+filegroup(
+    name = "wrapper_files",
+    srcs = glob(["bin/*"]),
+)
+
+llvm_mingw_cc_toolchain_config(
+    name = "cc_toolchain_config_x86_64_windows",
+    cxx_builtin_include_directories = [
+        # Preinstalled runner image path (stable symlink).
+        "/opt/llvm-mingw/current/x86_64-w64-mingw32/include/c++/v1",
+        "/opt/llvm-mingw/current/lib/clang/21/include",
+        "/opt/llvm-mingw/current/x86_64-w64-mingw32/include",
+        # Compiler-reported real path target behind /opt/llvm-mingw/current.
+        "/opt/llvm-mingw/llvm-mingw-20251216-ucrt-ubuntu-22.04-x86_64/x86_64-w64-mingw32/include/c++/v1",
+        "/opt/llvm-mingw/llvm-mingw-20251216-ucrt-ubuntu-22.04-x86_64/lib/clang/21/include",
+        "/opt/llvm-mingw/llvm-mingw-20251216-ucrt-ubuntu-22.04-x86_64/x86_64-w64-mingw32/include",
+        # Backward compatibility for legacy /tmp-provisioned local workflows.
+        "/tmp/llvm-mingw/llvm-mingw-20251216-ucrt-ubuntu-22.04-x86_64/x86_64-w64-mingw32/include/c++/v1",
+        "/tmp/llvm-mingw/llvm-mingw-20251216-ucrt-ubuntu-22.04-x86_64/lib/clang/21/include",
+        "/tmp/llvm-mingw/llvm-mingw-20251216-ucrt-ubuntu-22.04-x86_64/x86_64-w64-mingw32/include",
+    ],
+)
+
+cc_toolchain(
+    name = "cc_toolchain_x86_64_windows",
+    toolchain_identifier = "llvm_mingw_x86_64_windows",
+    toolchain_config = ":cc_toolchain_config_x86_64_windows",
+    all_files = ":wrapper_files",
+    ar_files = ":wrapper_files",
+    as_files = ":wrapper_files",
+    compiler_files = ":wrapper_files",
+    dwp_files = ":wrapper_files",
+    linker_files = ":wrapper_files",
+    objcopy_files = ":wrapper_files",
+    strip_files = ":wrapper_files",
+    supports_param_files = 1,
+)
+
+toolchain(
+    name = "toolchain_x86_64_windows",
+    exec_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    target_compatible_with = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+    toolchain = ":cc_toolchain_x86_64_windows",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+)

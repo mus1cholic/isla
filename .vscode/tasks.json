@@ -1,0 +1,53 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build isla_client (Bazel)",
+      "type": "shell",
+      "command": "bazel",
+      "args": [
+        "build",
+        "//client/src:isla_client"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "Run isla_client (Bazel)",
+      "type": "shell",
+      "command": "bazel",
+      "args": [
+        "run",
+        "//client/src:isla_client"
+      ],
+      "group": "test",
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "Refresh compile_commands (Bazel)",
+      "type": "shell",
+      "command": "bazel",
+      "args": [
+        "run",
+        "//tools:refresh_compile_commands_editor"
+      ],
+      "problemMatcher": [],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    }
+  ]
+}

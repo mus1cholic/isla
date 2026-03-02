@@ -1,0 +1,5 @@
+﻿* text=auto
+
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+tools/llvm_mingw/bin/* text eol=lf

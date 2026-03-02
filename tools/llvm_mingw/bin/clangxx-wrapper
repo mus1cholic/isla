@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -z "${LLVM_MINGW_ROOT:-}" ]]; then
+  echo "LLVM_MINGW_ROOT is not set" >&2
+  exit 1
+fi
+
+tmpfiles=()
+cleanup() {
+  for f in "${tmpfiles[@]:-}"; do
+    rm -f "$f"
+  done
+}
+trap cleanup EXIT
+
+# rules_foreign_cc/CMake can forward C compiler flags into the link step.
+# If "-x c" reaches clang++ during link, object files are misinterpreted as
+# C sources. Keep "-x c" for compile actions, strip it for link actions.
+is_compile=0
+for arg in "$@"; do
+  if [[ "$arg" == "-c" ]]; then
+    is_compile=1
+    break
+  fi
+done
+
+normalize_token() {
+  local token="$1"
+  if [[ "$token" =~ ^[A-Za-z0-9_+.-]+\.lib$ && "$token" != *"/"* && "$token" != *"\\"* ]]; then
+    printf -- "-l%s" "${token%.lib}"
+  else
+    printf -- "%s" "$token"
+  fi
+}
+
+rewrite_param_file() {
+  local input_file="$1"
+  local output_file
+  output_file="$(mktemp)"
+  tmpfiles+=("$output_file")
+
+  local skip_next=0
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+    local line="${raw_line%$'\r'}"
+    if [[ "$line" == "" ]]; then
+      continue
+    fi
+    if [[ "$line" == "-x" ]]; then
+      skip_next=1
+      continue
+    fi
+    if [[ "$skip_next" -eq 1 ]]; then
+      skip_next=0
+      continue
+    fi
+
+    local token="$line"
+    if [[ "${token:0:1}" == "\"" && "${token: -1}" == "\"" ]]; then
+      token="${token:1:${#token}-2}"
+    elif [[ "${token:0:1}" == "'" && "${token: -1}" == "'" ]]; then
+      token="${token:1:${#token}-2}"
+    fi
+
+    printf "%s\n" "$(normalize_token "$token")" >> "$output_file"
+  done < "$input_file"
+
+  printf -- "@%s" "$output_file"
+}
+
+expand_args() {
+  local result=()
+  local skip_next=0
+  for arg in "$@"; do
+    if [[ "$skip_next" -eq 1 ]]; then
+      skip_next=0
+      continue
+    fi
+    if [[ "$arg" == "-x" ]]; then
+      skip_next=1
+      continue
+    fi
+    if [[ "$arg" == @* ]]; then
+      local param_file="${arg#@}"
+      if [[ -f "$param_file" ]]; then
+        result+=("$(rewrite_param_file "$param_file")")
+      else
+        result+=("$arg")
+      fi
+      continue
+    fi
+    result+=("$(normalize_token "$arg")")
+  done
+  printf "%s\0" "${result[@]}"
+}
+
+if [[ "$is_compile" -eq 1 ]]; then
+  exec "${LLVM_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang++" "$@"
+fi
+
+mapfile -d '' filtered_args < <(expand_args "$@")
+
+exec "${LLVM_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang++" "${filtered_args[@]}"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -z "${LLVM_MINGW_ROOT:-}" ]]; then
+  echo "LLVM_MINGW_ROOT is not set" >&2
+  exit 1
+fi
+exec "${LLVM_MINGW_ROOT}/bin/llvm-nm" "$@"

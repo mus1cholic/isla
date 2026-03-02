@@ -1,0 +1,21 @@
+---
+If:
+  PathMatch: '.*(_test|_tests|\.spec)\.cpp$'
+Diagnostics:
+  ClangTidy:
+    Remove:
+      - cppcoreguidelines-avoid-non-const-global-variables
+
+---
+If:
+  PathMatch: 'engine/(src/math|include/isla/engine/math)/.*\.(c|cc|cpp|h|hpp)$'
+Diagnostics:
+  ClangTidy:
+    Remove:
+      - cppcoreguidelines-avoid-magic-numbers
+      - readability-magic-numbers
+      - cppcoreguidelines-pro-bounds-pointer-arithmetic
+      - cppcoreguidelines-pro-bounds-constant-array-index
+      - cppcoreguidelines-pro-bounds-array-to-pointer-decay
+
+

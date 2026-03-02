@@ -1,41 +1,40 @@
-# Prerequisites
-*.d
+vcpkg/
+.vs/
+.idea/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs/temp
+*.log
+*.tmp
+*.temp
+
+# Tool caches
+.cache/
+.clangd/
+.vscode/.browse.VC.db
+.vscode/.browse.VC.db-journal
+
+# Bazel outputs/symlinks
+bazel-*
+.bazel-cache/
+compile_commands.json
+
+# Compiler/linker outputs (if ever generated outside build/)
 *.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
+*.o
 *.pdb
-
-# Compiled Dynamic libraries
+*.ilk
+*.idb
+*.lib
+*.a
+*.dll
 *.so
 *.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
 *.exe
-*.out
-*.app
 
-# debug information files
-*.dwo
+# Keep OBJ mesh fixtures used by importer tests.
+!engine/src/render/testdata/*.obj
