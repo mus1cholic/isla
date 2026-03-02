@@ -3,10 +3,12 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 cc_library(
     name = "render",
     srcs = [
+        "animated_gltf.cpp",
         "include/bgfx_limits.hpp",
         "include/bgfx_mesh_manager.hpp",
         "include/bgfx_shader_manager.hpp",
         "include/bgfx_texture_manager.hpp",
+        "include/animated_gltf.hpp",
         "include/mesh_asset_loader.hpp",
         "include/shader_path_resolver.hpp",
         "include/texture_loader_limits.hpp",
@@ -113,6 +115,19 @@ cc_test(
     srcs = ["texture_loader_limits_test.cpp"],
     deps = [
         ":render",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "animated_gltf_tests",
+    srcs = ["animated_gltf_test.cpp"],
+    data = [
+        "testdata/triangle_embedded.gltf",
+    ],
+    deps = [
+        ":render",
+        "//shared/src:test_runfiles",
         "@googletest//:gtest_main",
     ],
 )
