@@ -75,7 +75,8 @@ bool ClientApp::initialize() {
 
     sdl_runtime_.maximize_window(window_);
     if (!configure_win32_layered_overlay(window_)) {
-        LOG(WARNING) << "ClientApp: layered overlay mode not applied (non-Windows or HWND lookup failure).";
+        LOG(WARNING)
+            << "ClientApp: layered overlay mode not applied (non-Windows or HWND lookup failure).";
     }
 
     int pixel_width = window_width_;
@@ -85,7 +86,8 @@ bool ClientApp::initialize() {
         window_height_ = pixel_height;
     }
 
-    if (!model_renderer_.initialize(window_, renderer_, RenderSize{ window_width_, window_height_ })) {
+    if (!model_renderer_.initialize(window_, renderer_,
+                                    RenderSize{ .width=window_width_, .height=window_height_ })) {
         LOG(ERROR) << "ClientApp: model renderer initialize failed";
         return false;
     }
@@ -101,17 +103,20 @@ void ClientApp::load_startup_mesh() {
     const char* mesh_asset_path = std::getenv(kMeshAssetEnvVar);
     if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
         world_.meshes().push_back(make_fallback_quad_mesh());
-        world_.objects().push_back(RenderObject{ .mesh_id = 0U, .material_id = 0U, .visible = true });
+        world_.objects().push_back(
+            RenderObject{ .mesh_id = 0U, .material_id = 0U, .visible = true });
         LOG(INFO) << "ClientApp: no ISLA_MESH_ASSET set, using fallback quad";
         return;
     }
 
-    mesh_asset_loader::MeshAssetLoadResult loaded = mesh_asset_loader::load_from_file(mesh_asset_path);
+    mesh_asset_loader::MeshAssetLoadResult loaded =
+        mesh_asset_loader::load_from_file(mesh_asset_path);
     if (!loaded.ok) {
         LOG(WARNING) << "ClientApp: mesh load failed for ISLA_MESH_ASSET='" << mesh_asset_path
                      << "' error='" << loaded.error_message << "'; using fallback quad";
         world_.meshes().push_back(make_fallback_quad_mesh());
-        world_.objects().push_back(RenderObject{ .mesh_id = 0U, .material_id = 0U, .visible = true });
+        world_.objects().push_back(
+            RenderObject{ .mesh_id = 0U, .material_id = 0U, .visible = true });
         return;
     }
 
@@ -137,7 +142,8 @@ void ClientApp::tick() {
             if (sdl_runtime_.get_window_size_in_pixels(window_, &width, &height)) {
                 window_width_ = width;
                 window_height_ = height;
-                model_renderer_.on_resize(RenderSize{ window_width_, window_height_ });
+                model_renderer_.on_resize(
+                    RenderSize{ .width = window_width_, .height = window_height_ });
             }
         }
     }
@@ -164,5 +170,3 @@ void ClientApp::shutdown() {
 }
 
 } // namespace isla::client
-
-
