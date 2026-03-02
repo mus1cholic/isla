@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -16,13 +18,32 @@ namespace isla::client::animated_gltf {
 class AnimatedGltfTest : public ::testing::Test {
   protected:
     std::filesystem::path make_temp_dir() {
-        const std::filesystem::path temp_dir =
-            std::filesystem::temp_directory_path() /
-            ("isla_animated_gltf_" +
-             std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
-        EXPECT_TRUE(std::filesystem::create_directories(temp_dir));
-        temp_dirs_.push_back(temp_dir);
-        return temp_dir;
+        static std::mt19937_64 rng(std::random_device{}());
+        static std::mutex rng_mutex;
+        const std::filesystem::path temp_root = std::filesystem::temp_directory_path();
+
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            std::uint64_t random_suffix = 0U;
+            {
+                const std::lock_guard<std::mutex> lock(rng_mutex);
+                random_suffix = rng();
+            }
+            const std::filesystem::path temp_dir =
+                temp_root / ("isla_animated_gltf_" + std::to_string(random_suffix));
+            std::error_code ec;
+            if (std::filesystem::create_directory(temp_dir, ec)) {
+                temp_dirs_.push_back(temp_dir);
+                return temp_dir;
+            }
+        }
+
+        ADD_FAILURE() << "failed to create unique temporary directory after retries";
+        const std::filesystem::path fallback =
+            temp_root / ("isla_animated_gltf_fallback_" + std::to_string(temp_dirs_.size()));
+        std::error_code fallback_ec;
+        std::filesystem::create_directories(fallback, fallback_ec);
+        temp_dirs_.push_back(fallback);
+        return fallback;
     }
 
     static AnimatedGltfAsset make_single_joint_asset() {
@@ -356,6 +377,29 @@ TEST_F(AnimatedGltfTest, InterpolatesSingleJointTranslation) {
     ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 0.5F, pose, &error)) << error;
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 1.0F, 1.0e-4F);
+}
+
+TEST_F(AnimatedGltfTest, SamplesExactClipEndByPlaybackMode) {
+    AnimatedGltfAsset asset = make_single_joint_asset();
+
+    AnimationClip clip;
+    clip.name = "end_mode";
+    clip.duration_seconds = 1.0F;
+    clip.joint_tracks.resize(1U);
+    clip.joint_tracks[0].translations.push_back(
+        Vec3Keyframe{ .time_seconds = 0.0F, .value = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } });
+    clip.joint_tracks[0].translations.push_back(
+        Vec3Keyframe{ .time_seconds = 1.0F, .value = Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F } });
+    asset.clips.push_back(std::move(clip));
+
+    EvaluatedPose pose;
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 1.0F, pose, nullptr, ClipPlaybackMode::Loop));
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 0.0F, 1.0e-4F);
+
+    ASSERT_TRUE(evaluate_clip_pose(asset, 0U, 1.0F, pose, nullptr, ClipPlaybackMode::Clamp));
+    ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
+    EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 2.0F, 1.0e-4F);
 }
 
 TEST_F(AnimatedGltfTest, SamplesStepInterpolation) {

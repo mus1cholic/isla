@@ -87,10 +87,16 @@ struct EvaluatedPose {
     std::vector<Mat4> skin_matrices;
 };
 
+enum class ClipPlaybackMode {
+    Loop = 0,
+    Clamp,
+};
+
 [[nodiscard]] AnimatedGltfLoadResult load_from_file(std::string_view asset_path);
 
 [[nodiscard]] bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index,
                                       float time_seconds, EvaluatedPose& out_pose,
-                                      std::string* error_message = nullptr);
+                                      std::string* error_message = nullptr,
+                                      ClipPlaybackMode playback_mode = ClipPlaybackMode::Loop);
 
 } // namespace isla::client::animated_gltf

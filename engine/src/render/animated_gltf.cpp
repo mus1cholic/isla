@@ -41,6 +41,27 @@ std::string make_animation_keyframe_error(const AnimationClip& clip, std::size_t
     return message;
 }
 
+std::string make_animation_count_mismatch_error(const AnimationClip& clip, std::size_t anim_index,
+                                                std::size_t joint_index, const char* path_name,
+                                                cgltf_size input_count, cgltf_size output_count) {
+    std::string message = "mismatched animation key counts for ";
+    message += path_name;
+    message += ": input=";
+    message += std::to_string(static_cast<std::size_t>(input_count));
+    message += ", output=";
+    message += std::to_string(static_cast<std::size_t>(output_count));
+    message += ", animation index ";
+    message += std::to_string(anim_index);
+    if (!clip.name.empty()) {
+        message += " ('";
+        message += clip.name;
+        message += "')";
+    }
+    message += ", joint index ";
+    message += std::to_string(joint_index);
+    return message;
+}
+
 class CgltfDataDeleter {
   public:
     void operator()(cgltf_data* data) const {
@@ -140,14 +161,18 @@ bool read_vec4_u16(const cgltf_accessor* accessor, cgltf_size index,
     return true;
 }
 
-float clamp_and_wrap_time(float input_time, float duration_seconds) {
+float normalize_sample_time(float input_time, float duration_seconds, ClipPlaybackMode mode) {
     if (!std::isfinite(input_time)) {
         return 0.0F;
     }
     if (duration_seconds <= 0.0F || !std::isfinite(duration_seconds)) {
         return std::max(0.0F, input_time);
     }
-    float wrapped = std::fmod(std::max(0.0F, input_time), duration_seconds);
+    const float clamped_non_negative = std::max(0.0F, input_time);
+    if (mode == ClipPlaybackMode::Clamp) {
+        return std::min(clamped_non_negative, duration_seconds);
+    }
+    float wrapped = std::fmod(clamped_non_negative, duration_seconds);
     if (wrapped < 0.0F) {
         wrapped += duration_seconds;
     }
@@ -573,7 +598,6 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
 
             const cgltf_accessor* input = channel.sampler->input;
             const cgltf_accessor* output = channel.sampler->output;
-            const cgltf_size count = std::min(input->count, output->count);
             TrackInterpolation interpolation = TrackInterpolation::Linear;
             if (channel.sampler->interpolation == cgltf_interpolation_type_step) {
                 interpolation = TrackInterpolation::Step;
@@ -592,6 +616,24 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
                     .error_message = "animation interpolation mode is not supported",
                 };
             }
+            if (input->count != output->count) {
+                const char* path_name = "unknown";
+                if (channel.target_path == cgltf_animation_path_type_translation) {
+                    path_name = "translation";
+                } else if (channel.target_path == cgltf_animation_path_type_rotation) {
+                    path_name = "rotation";
+                } else if (channel.target_path == cgltf_animation_path_type_scale) {
+                    path_name = "scale";
+                }
+                return AnimatedGltfLoadResult{
+                    .ok = false,
+                    .asset = {},
+                    .error_message = make_animation_count_mismatch_error(
+                        clip, static_cast<std::size_t>(anim_i), joint_index, path_name,
+                        input->count, output->count),
+                };
+            }
+            const cgltf_size count = input->count;
 
             if (channel.target_path == cgltf_animation_path_type_translation) {
                 if (!track.translations.empty() &&
@@ -695,7 +737,8 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
 }
 
 bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index, float time_seconds,
-                        EvaluatedPose& out_pose, std::string* error_message) {
+                        EvaluatedPose& out_pose, std::string* error_message,
+                        ClipPlaybackMode playback_mode) {
     if (clip_index >= asset.clips.size()) {
         if (error_message != nullptr) {
             *error_message = "clip index out of range";
@@ -712,7 +755,8 @@ bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index, 
     }
 
     const AnimationClip& clip = asset.clips[clip_index];
-    const float sample_time = clamp_and_wrap_time(time_seconds, clip.duration_seconds);
+    const float sample_time =
+        normalize_sample_time(time_seconds, clip.duration_seconds, playback_mode);
 
     out_pose.global_joint_matrices.assign(joint_count, Mat4::identity());
     out_pose.skin_matrices.assign(joint_count, Mat4::identity());
