@@ -21,3 +21,7 @@ Run directly through Bazel:
 ```bash
 bazel run //client/src:isla_client
 ```
+
+## Mesh import formats
+
+The rendering mesh asset loader currently supports importing `.obj`, `.gltf`, and `.glb` files.
