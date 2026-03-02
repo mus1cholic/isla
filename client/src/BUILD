@@ -23,6 +23,11 @@ cc_library(
     srcs = ["win32_layered_overlay.cpp"],
     hdrs = ["win32_layered_overlay.hpp"],
     visibility = ["//visibility:public"],
+    linkopts = select({
+        ":windows_gnu": ["-luser32"],
+        ":windows_msvc": ["user32.lib"],
+        "//conditions:default": [],
+    }),
     deps = [
         "@abseil-cpp//absl/log:log",
         "//engine/include/isla/engine/render",
@@ -63,8 +68,14 @@ cc_test(
     name = "win32_layered_overlay_test",
     srcs = ["win32_layered_overlay_test.cpp"],
     linkopts = select({
-        ":windows_gnu": ["-ladvapi32"],
-        ":windows_msvc": ["advapi32.lib"],
+        ":windows_gnu": [
+            "-luser32",
+            "-ladvapi32",
+        ],
+        ":windows_msvc": [
+            "user32.lib",
+            "advapi32.lib",
+        ],
         "//conditions:default": [],
     }),
     deps = [
@@ -72,4 +83,3 @@ cc_test(
         "@googletest//:gtest_main",
     ],
 )
-

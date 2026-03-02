@@ -26,6 +26,7 @@ build:windows --host_features=-default_cpp_std
 build:linux_windows --platforms=//tools/platforms:windows_x86_64
 build:linux_windows --extra_toolchains=@zig_sdk//toolchain:windows_amd64
 build:linux_windows --host_platform=@platforms//host
+build:linux_windows --define=isla_windows_gnu=true
 
 # Experimental Option 2: attempt Linux->Windows cross-build via llvm-mingw
 # without relying on hermetic_cc_toolchain's windows_amd64 toolchain.
@@ -63,4 +64,3 @@ test:remote_rbe --jobs=50
 
 # Define remote config to avoid errors in CI scripts when running query/cquery
 common:remote --color=yes
-

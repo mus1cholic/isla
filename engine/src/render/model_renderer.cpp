@@ -95,6 +95,10 @@ void ModelRenderer::on_resize(RenderSize size) {
         return;
     }
 
+    // Ensure no back-buffer references remain bound before ResizeBuffers.
+    device_context_->OMSetRenderTargets(0, nullptr, nullptr);
+    device_context_->Flush();
+
     release_render_target();
     const HRESULT hr =
         swap_chain_->ResizeBuffers(0, static_cast<UINT>(render_size_.width),
@@ -146,6 +150,10 @@ bool ModelRenderer::create_render_target() {
     ID3D11Texture2D* back_buffer = nullptr;
     const HRESULT buffer_hr = swap_chain_->GetBuffer(0, IID_PPV_ARGS(&back_buffer));
     if (FAILED(buffer_hr) || back_buffer == nullptr) {
+        if (back_buffer != nullptr) {
+            back_buffer->Release();
+            back_buffer = nullptr;
+        }
         LOG(ERROR) << "ModelRenderer: swap_chain->GetBuffer failed, hr="
                    << static_cast<unsigned long>(buffer_hr);
         return false;
