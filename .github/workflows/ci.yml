@@ -1,0 +1,314 @@
+name: Build and Test CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ubuntu-ci:
+    name: Build/Test (Ubuntu)
+    runs-on: ubuntu-latest
+    env:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify preinstalled Linux build deps
+        uses: ./.github/actions/verify-linux-deps
+
+      - name: Determine affected build targets
+        id: affected-build
+        uses: ./.github/actions/determine-affected-bazel-targets
+        with:
+          rule_kind: cc_binary
+          target_label: build targets
+
+      - name: Build affected targets (Linux-safe subset)
+        if: steps.affected-build.outputs.has_targets == 'true'
+        shell: pwsh
+        run: |
+          $allTargets = "${{ steps.affected-build.outputs.targets }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($allTargets)) {
+            Write-Host "No affected build targets."
+            exit 0
+          }
+
+          $targets = @(
+            $allTargets.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries) |
+              Sort-Object -Unique
+          )
+          if ($targets.Count -eq 0) {
+            Write-Host "No Linux-safe affected build targets after filtering."
+            exit 0
+          }
+
+          $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
+          & bazel build --config=linux @bazelFlags $targets
+
+      - name: Determine affected unit tests
+        id: affected-tests
+        uses: ./.github/actions/determine-affected-bazel-targets
+        with:
+          rule_kind: cc_test
+          target_label: unit test targets
+
+      - name: Run affected unit tests
+        if: steps.affected-tests.outputs.has_targets == 'true'
+        shell: pwsh
+        run: |
+          $allTargets = "${{ steps.affected-tests.outputs.targets }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($allTargets)) {
+            Write-Host "No affected unit test targets."
+            exit 0
+          }
+
+          $targets = @(
+            $allTargets.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries) |
+              Sort-Object -Unique
+          )
+          if ($targets.Count -eq 0) {
+            Write-Host "No affected unit test targets after normalization."
+            exit 0
+          }
+
+          $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
+          & bazel test --config=linux @bazelFlags $targets
+
+  windows-smoke:
+    name: Windows Smoke (MSVC)
+    runs-on: windows-latest
+    env:
+      BAZEL_SH: C:/Program Files/Git/usr/bin/bash.exe
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.18.0
+
+      - name: Build Windows client
+        shell: pwsh
+        run: |
+          $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
+          & bazel build @bazelFlags //client/src:isla_client
+
+      - name: Run Windows smoke tests
+        shell: pwsh
+        run: |
+          $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
+          & bazel test @bazelFlags //client/src:win32_layered_overlay_test //engine/src/render:overlay_transparency_contract_test
+
+  linux-cross-windows:
+    name: Cross-Build Windows (Ubuntu)
+    runs-on: ubuntu-latest
+    env:
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+      LLVM_MINGW_ROOT: /opt/llvm-mingw/current
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify preinstalled Linux build deps
+        uses: ./.github/actions/verify-linux-deps
+
+      - name: Detect linux_windows_llvm_mingw config
+        id: detect-linux-windows
+        shell: bash
+        run: |
+          if grep -q '^build:linux_windows_llvm_mingw ' .bazelrc && [[ -d "${LLVM_MINGW_ROOT}" ]]; then
+            echo "has_config=true" >> "$GITHUB_OUTPUT"
+            echo "Found --config=linux_windows_llvm_mingw in .bazelrc and llvm-mingw at ${LLVM_MINGW_ROOT}."
+          else
+            echo "has_config=false" >> "$GITHUB_OUTPUT"
+            echo "linux_windows_llvm_mingw config or preinstalled llvm-mingw toolchain is missing; skipping cross-build job."
+          fi
+
+      - name: Toolchain Probe - preinstalled llvm-mingw (Linux->Windows)
+        id: option2-probe
+        if: steps.detect-linux-windows.outputs.has_config == 'true'
+        shell: bash
+        run: |
+          # TODO(cross-build-roadmap): See docs/cross-build-roadmap.md for
+          # current status, exclusions, and next actions.
+          set -euo pipefail
+
+          TOOLCHAIN_ROOT="${LLVM_MINGW_ROOT}"
+          if [[ -z "${TOOLCHAIN_ROOT}" ]]; then
+            echo "LLVM_MINGW_ROOT is not set."
+            exit 1
+          fi
+          if [[ ! -d "${TOOLCHAIN_ROOT}" ]]; then
+            echo "Preinstalled llvm-mingw toolchain missing at ${TOOLCHAIN_ROOT}."
+            exit 1
+          fi
+          CXX="${TOOLCHAIN_ROOT}/bin/x86_64-w64-mingw32-clang++"
+          echo "toolchain_root=${TOOLCHAIN_ROOT}" >> "$GITHUB_OUTPUT"
+
+          echo "llvm-mingw CXX: ${CXX}"
+          "${CXX}" --version
+
+          # Verify the header that currently fails in the hermetic_cc_toolchain lane.
+          test -f "${TOOLCHAIN_ROOT}/x86_64-w64-mingw32/include/pthread.h"
+
+          # Compile-only probe to validate basic Linux-hosted -> Windows target behavior.
+          cat > /tmp/llvm-mingw-probe.cpp <<'EOF'
+          #include <pthread.h>
+          #include <windows.h>
+          int main() {
+            pthread_t tid{};
+            return static_cast<int>(sizeof(tid) + sizeof(HANDLE));
+          }
+          EOF
+          "${CXX}" -std=c++20 -c /tmp/llvm-mingw-probe.cpp -o /tmp/llvm-mingw-probe.obj
+          ls -l /tmp/llvm-mingw-probe.obj
+          echo "Option 2 probe PASSED: llvm-mingw Linux->Windows compile path is viable."
+
+      - name: Full Cross-Build Coverage - linux_windows_llvm_mingw
+        if: steps.detect-linux-windows.outputs.has_config == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN_ROOT="${{ steps.option2-probe.outputs.toolchain_root }}"
+          if [[ -z "${TOOLCHAIN_ROOT}" ]]; then
+            echo "Missing llvm-mingw toolchain_root from probe step output."
+            exit 1
+          fi
+
+          echo "Full cross-build coverage: building compile-only cc_binary/cc_test target set via linux_windows_llvm_mingw."
+          echo "This lane uses local execution toolchains; --config=remote enables cache/BES only."
+
+          TARGET_SET_EXPR="kind('cc_binary|cc_test', //...)"
+          TARGET_QUERY="${TARGET_SET_EXPR}"
+          mapfile -t TARGETS < <(bazel query "${TARGET_QUERY}" | sort -u)
+          if [[ ${#TARGETS[@]} -eq 0 ]]; then
+            echo "No cross-build coverage targets selected; failing to avoid false green."
+            exit 1
+          fi
+          echo "Coverage target count: ${#TARGETS[@]}"
+          printf '  %s\n' "${TARGETS[@]}"
+
+          mapfile -t BAZEL_FLAGS < <(bash ./.github/scripts/get-bazel-remote-flags.sh)
+
+          bazel build \
+            --config=linux_windows_llvm_mingw \
+            --extra_toolchains=//tools/llvm_mingw:toolchain_x86_64_windows \
+            --action_env=LLVM_MINGW_ROOT="${TOOLCHAIN_ROOT}" \
+            "${BAZEL_FLAGS[@]}" \
+            "${TARGETS[@]}"
+
+  reset-pr-comment:
+    name: Reset PR Comment
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Reset PR comment to pending
+        uses: ./.github/actions/reset-pr-comment
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+
+  lint:
+    name: Lint (clang-tidy)
+    needs: [reset-pr-comment]
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/lint.yml
+    with:
+      pr_number: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+      pr_base_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+      pr_head_sha: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+      cancel_in_progress: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+      pull-requests: write
+    secrets: inherit
+
+  format:
+    name: Format Check
+    needs: [reset-pr-comment]
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/format.yml
+    with:
+      pr_number: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+      cancel_in_progress: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+      pull-requests: write
+    secrets: inherit
+
+  pr-report:
+    name: Post PR Report
+    needs: [format, lint]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download Format Report
+        uses: actions/download-artifact@v4
+        with:
+          name: format-report
+          path: format-report
+        continue-on-error: true
+
+      - name: Download Lint Report
+        uses: actions/download-artifact@v4
+        with:
+          name: lint-report
+          path: lint-report
+        continue-on-error: true
+
+      - name: Debug Downloaded Reports
+        shell: bash
+        run: |
+          echo "Downloaded format-report files:"
+          find format-report -maxdepth 4 -type f 2>/dev/null || true
+          echo "Downloaded lint-report files:"
+          find lint-report -maxdepth 4 -type f 2>/dev/null || true
+          if [ -f lint-report/clang-tidy-warnings.md ]; then
+            echo "Lint report preview:"
+            sed -n "1,40p" lint-report/clang-tidy-warnings.md
+          else
+            echo "Lint report file missing at expected path: lint-report/clang-tidy-warnings.md"
+          fi
+
+      - name: Post Combined PR Report
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          script: |
+            const script = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/post-pr-report.js`);
+            await script({github, context});
