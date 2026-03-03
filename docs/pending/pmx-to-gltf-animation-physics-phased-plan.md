@@ -29,13 +29,22 @@ Rationale:
 > **Current status (2026-03-03):**
 > - Phase 0 is complete and substantially hardened.
 > - Phase 1 is complete (contract + schema + validator + validator tests).
-> - Phases 2-9 remain pending runtime/tooling expansion.
+> - Phase 2 is complete (runtime clip playback + controller + temporary CPU skinning path).
+> - Phase 2.5 is newly scoped and pending optimization follow-up.
+> - Phases 3-9 remain pending runtime/tooling expansion.
 >
 > Phase 1 artifacts:
 > - `docs/pmx/pmx_to_gltf_conversion_contract.md`
 > - `docs/pmx/schemas/pmx_physics_metadata.schema.json`
 > - `tools/pmx/validate_converted_gltf.py`
 > - `tools/pmx/validate_converted_gltf_test.py` (`bazel test //tools/pmx:validate_converted_gltf_test`)
+>
+> Phase 2 artifacts:
+> - `engine/src/render/include/animation_playback_controller.hpp`
+> - `engine/src/render/animation_playback_controller.cpp`
+> - `client/src/animated_mesh_skinning.hpp`
+> - `client/src/animated_mesh_skinning.cpp`
+> - `client/src/client_app.cpp` (runtime wiring + env controls)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -85,6 +94,7 @@ Add robust runtime structures and pose evaluation needed before full playback/re
 
 - Runtime can load skinned glTF animation data and evaluate joint/skin matrices deterministically with explicit failure behavior for unsupported/invalid content.
 - Phase 1 now codifies these runtime constraints in conversion contract + validation tooling.
+- Phase 2 now consumes this runtime evaluator through a system-level playback controller.
 
 ## Phase 1: PMX to glTF Conversion Contract (Completed)
 
@@ -150,8 +160,9 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
 
 - PMX conversion is reproducible and outputs runtime-consumable glTF + physics metadata that respects current runtime constraints.
 - Satisfied as of 2026-03-03.
+- Phase 2 runtime playback path now uses Phase 1 outputs as expected baseline input.
 
-## Phase 2: Runtime Clip Playback System
+## Phase 2: Runtime Clip Playback System (Completed)
 
 ### Goal
 
@@ -170,11 +181,53 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
 - Add minimal API for selecting clips and playback mode.
 - Consume Phase 1-validated assets as the expected input contract for runtime playback.
 
+### Implemented (2026-03-03)
+
+- Added animation playback controller module:
+  - `engine/src/render/include/animation_playback_controller.hpp`
+  - `engine/src/render/animation_playback_controller.cpp`
+- Added system-level playback state and API:
+  - clip index
+  - local time
+  - play/pause
+  - speed scalar
+  - playback mode (`Loop`/`Clamp`)
+  - seek + immediate evaluate support
+- Hardened controller semantics:
+  - transactional `set_asset(...)` (failed set leaves cleared state)
+  - local time normalization aligned with sampled pose semantics (loop/clamp-consistent state introspection)
+- Added runtime/client wiring:
+  - frame-time tick advancement using SDL nanosecond clock
+  - animated glTF startup load path via env (`ISLA_ANIMATED_GLTF_ASSET`)
+  - optional clip/mode env controls (`ISLA_ANIM_CLIP`, `ISLA_ANIM_PLAYBACK_MODE`)
+  - per-tick pose evaluation + temporary CPU skinning into render mesh triangles
+- Added logging for runtime observability:
+  - startup selection logs (clip/mode)
+  - invalid mode warnings
+  - zero-playable-mesh warning for animated package load
+  - throttled playback telemetry
+- Added tests:
+  - `engine/src/render/animation_playback_controller_test.cpp`
+  - `client/src/animated_mesh_skinning_test.cpp`
+  - `client/src/client_app_animation_test.cpp`
+- Added CI/smoke wiring updates:
+  - `.github/workflows/ci.yml` windows smoke includes:
+    - `//engine/src/render:animation_playback_controller_tests`
+    - `//client/src:animated_mesh_skinning_test`
+    - `//client/src:client_app_animation_test`
+
+### Known Phase 2 Limits (Intentional / Deferred)
+
+- Temporary CPU skinning path currently rebuilds/replaces triangle lists each frame.
+- This CPU path is functional for visible playback bring-up but not intended as final deformation architecture.
+- Performance hardening of this temporary path is tracked in Phase 2.5.
+
 ### Exit Criteria
 
 - A converted skinned glTF character visibly plays selected clips with predictable loop/clamp behavior.
+- Satisfied as of 2026-03-03 via runtime playback controller + temporary CPU skinning.
 
-## Phase 2.5: CPU Skinning Update Path Optimization
+## Phase 2.5: CPU Skinning Update Path Optimization (Pending)
 
 ### Goal
 
@@ -223,6 +276,7 @@ Render skinned meshes using evaluated joint matrices.
 - Keep static mesh path intact.
 - Ensure multi-primitive skinned assets render all attached primitives.
 - Validate GPU path against Phase 1 contract outputs (`JOINTS_0`, `WEIGHTS_0`, baseline clip presence).
+- Retire or bypass Phase 2 temporary CPU skinning deformation updates once GPU skinning is authoritative.
 
 ### Risks
 
@@ -249,6 +303,7 @@ Preserve basic PMX physics intent through glTF metadata ingestion.
 - Define fallback behavior for unsupported physics fields.
 - Keep physics feature scope minimal and stable.
 - Use Phase 1 sidecar schema (`schema_version: 1.0.0`) as ingestion baseline.
+- Integrate against established Phase 2 playback/skeleton runtime state (avoid introducing a parallel animation state path).
 
 ### Exit Criteria
 
@@ -268,6 +323,7 @@ Make PMX motion assets usable by converting motion data into glTF clips.
 - Add regression assets for idle/walk/action.
 - Ensure converted clips avoid unsupported sampler output until cubic support lands.
 - Maintain Phase 1 baseline clip naming/acceptance requirements.
+- Target Phase 2 playback controller API as the runtime clip control surface.
 
 ### Exit Criteria
 
@@ -291,6 +347,10 @@ Make the pipeline maintainable and testable.
   - physics metadata parsing fallbacks
 - Add CI target(s) for animation/physics pipeline tests.
 - Add CI wiring for `//tools/pmx:validate_converted_gltf_test`.
+- Extend CI/smoke wiring from current baseline that already includes:
+  - `//engine/src/render:animation_playback_controller_tests`
+  - `//client/src:animated_mesh_skinning_test`
+  - `//client/src:client_app_animation_test`
 
 ### Exit Criteria
 
@@ -309,6 +369,7 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
 - Replace/retire `bind_prefix_matrices` workaround where appropriate.
 - Support rigs with non-joint skeleton roots and animated intermediate nodes correctly.
 - Revisit Phase 1 conversion caveats once full hierarchy animation support lands.
+- Preserve Phase 2 controller semantics for clip/state APIs while changing evaluation internals.
 
 ### Exit Criteria
 
@@ -326,6 +387,7 @@ Close remaining runtime animation fidelity/performance gaps.
 - Add cached key index walking for monotonic playback (`amortized O(1)` sampling).
 - Expand regression tests for cubic edge cases and seek behavior.
 - Update Phase 1 contract + validator rules when `CUBICSPLINE` transitions from unsupported to supported.
+- Maintain Phase 2 state/pose consistency guarantees (reported local time aligns with sampled pose semantics).
 
 ### Exit Criteria
 
@@ -344,6 +406,9 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 - Produce representative demo assets and validation reports.
 - Document operational runbook for adding new PMX characters/clips.
 - Version and publish contract/schema migration guidance beyond Phase 1 (`schema_version` evolution).
+- Explicitly document temporary-vs-final deformation path transitions:
+  - Phase 2 temporary CPU skinning
+  - Phase 3+ authoritative GPU skinning
 
 ### Exit Criteria
 
