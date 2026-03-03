@@ -318,7 +318,7 @@ void ClientApp::populate_world_from_animated_asset() {
             for (GpuSkinningPartition& partition : partitions) {
                 AnimatedMeshBinding binding;
                 binding.primitive_index = primitive_index;
-                binding.gpu_palette_global_joints = partition.global_joint_palette;
+                binding.gpu_palette_global_joints = std::move(partition.global_joint_palette);
                 if (binding.gpu_palette_global_joints.empty()) {
                     LOG_EVERY_N_SEC(WARNING, 2.0)
                         << "ClientApp: GPU partition has empty remapped joint palette "

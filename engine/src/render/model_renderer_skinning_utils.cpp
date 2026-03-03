@@ -30,14 +30,9 @@ void append_vertex_influence_joints(const SkinnedMeshVertex& vertex,
         }
         has_non_zero_weight = true;
         const std::uint16_t joint = vertex.joints[influence];
-        bool seen = false;
-        for (std::size_t i = 0U; i < joints_count; ++i) {
-            if (joints_buffer[i] == joint) {
-                seen = true;
-                break;
-            }
-        }
-        if (!seen) {
+        const auto* begin = joints_buffer.data();
+        const auto* end = begin + joints_count;
+        if (std::find(begin, end, joint) == end) {
             joints_buffer[joints_count++] = joint;
         }
     }
@@ -46,10 +41,10 @@ void append_vertex_influence_joints(const SkinnedMeshVertex& vertex,
     }
 
     const std::uint16_t fallback_joint = vertex.joints[0];
-    for (std::size_t i = 0U; i < joints_count; ++i) {
-        if (joints_buffer[i] == fallback_joint) {
-            return;
-        }
+    const auto* begin = joints_buffer.data();
+    const auto* end = begin + joints_count;
+    if (std::find(begin, end, fallback_joint) != end) {
+        return;
     }
     joints_buffer[joints_count++] = fallback_joint;
 }
