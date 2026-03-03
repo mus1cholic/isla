@@ -25,7 +25,8 @@ make_triangles_from_skinned_primitive(const animated_gltf::SkinnedPrimitive& pri
             if (joint_index >= skin_matrices->size()) {
                 continue;
             }
-            const Vec3 transformed = transform_point(skin_matrices->at(joint_index), vertex.position);
+            const Vec3 transformed =
+                transform_point(skin_matrices->at(joint_index), vertex.position);
             blended.x += transformed.x * weight;
             blended.y += transformed.y * weight;
             blended.z += transformed.z * weight;
@@ -34,6 +35,9 @@ make_triangles_from_skinned_primitive(const animated_gltf::SkinnedPrimitive& pri
         if (blended_weight <= 1.0e-6F) {
             return vertex.position;
         }
+        blended.x /= blended_weight;
+        blended.y /= blended_weight;
+        blended.z /= blended_weight;
         return blended;
     };
 

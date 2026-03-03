@@ -174,6 +174,39 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
 
 - A converted skinned glTF character visibly plays selected clips with predictable loop/clamp behavior.
 
+## Phase 2.5: CPU Skinning Update Path Optimization
+
+### Goal
+
+Reduce per-frame CPU and allocation overhead in the temporary CPU-skinned playback path introduced during Phase 2.
+
+### Scope
+
+- Replace per-frame triangle vector reconstruction/replacement with in-place updates:
+  - avoid `MeshData::set_triangles(...)` per tick for animated meshes
+  - prefer pre-sized storage and `MeshData::edit_triangles(...)` mutation
+- Reuse per-primitive working buffers (for skinned vertex positions and/or triangle writes) across ticks.
+- Avoid unnecessary per-frame bounds recomputation for animated meshes:
+  - either defer bounds recompute to a lower frequency, or
+  - gate by runtime need (if bounds are not currently consumed for culling/physics in this path).
+- Keep this optimization scoped to the temporary CPU deformation path; do not block Phase 3 GPU skinning rollout.
+
+### Rationale
+
+Phase 2 currently skins by rebuilding and replacing triangle lists every frame, which implies:
+
+- repeated allocations and copies
+- repeated bounds recomputation
+- avoidable CPU overhead that scales with mesh/primitive size
+
+This is acceptable for initial bring-up, but should be tightened before relying on larger PMX assets in playback-heavy scenarios.
+
+### Exit Criteria
+
+- Animated CPU-skinning path no longer performs full triangle-list reallocation/replacement each tick.
+- Runtime behavior is unchanged functionally (same visible animation output as Phase 2 baseline).
+- Added regression/perf-oriented test coverage for the in-place update path (correctness first, plus basic allocation/churn guard where practical).
+
 ## Phase 3: GPU Skinning Render Path
 
 ### Goal

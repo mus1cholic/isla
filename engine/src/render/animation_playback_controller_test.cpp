@@ -40,6 +40,8 @@ TEST(AnimationPlaybackControllerTest, RejectsAssetWithNoClips) {
     std::string error;
     EXPECT_FALSE(controller.set_asset(&asset, &error));
     EXPECT_EQ(error, "animation asset has no clips");
+    EXPECT_EQ(controller.asset(), nullptr);
+    EXPECT_FALSE(controller.has_cached_pose());
 }
 
 TEST(AnimationPlaybackControllerTest, EvaluatesInitialPoseOnSetAsset) {
@@ -76,6 +78,7 @@ TEST(AnimationPlaybackControllerTest, ClampModeSticksAtClipEnd) {
     ASSERT_TRUE(controller.set_asset(&asset, nullptr));
     controller.set_playback_mode(ClipPlaybackMode::Clamp);
     ASSERT_TRUE(controller.seek_local_time(1.25F, nullptr));
+    EXPECT_NEAR(controller.state().local_time_seconds, 1.0F, 1.0e-4F);
     EXPECT_NEAR(skin_tx(controller.cached_pose()), 2.0F, 1.0e-4F);
 }
 
@@ -85,6 +88,7 @@ TEST(AnimationPlaybackControllerTest, LoopModeWrapsAtClipEnd) {
     ASSERT_TRUE(controller.set_asset(&asset, nullptr));
     controller.set_playback_mode(ClipPlaybackMode::Loop);
     ASSERT_TRUE(controller.seek_local_time(1.0F, nullptr));
+    EXPECT_NEAR(controller.state().local_time_seconds, 0.0F, 1.0e-4F);
     EXPECT_NEAR(skin_tx(controller.cached_pose()), 0.0F, 1.0e-4F);
 }
 
@@ -140,6 +144,27 @@ TEST(AnimationPlaybackControllerTest, TickFailsWhenAssetCleared) {
 
     std::string error;
     EXPECT_FALSE(controller.tick(0.016F, &error));
+    EXPECT_EQ(error, "animation asset is not set");
+}
+
+TEST(AnimationPlaybackControllerTest, FailedSetAssetLeavesControllerCleared) {
+    AnimatedGltfAsset invalid_asset;
+    invalid_asset.skeleton.joints.resize(1U);
+    // bind_local_transforms intentionally missing to trigger evaluate failure.
+    AnimationClip clip;
+    clip.name = "idle";
+    clip.duration_seconds = 1.0F;
+    clip.joint_tracks.resize(1U);
+    invalid_asset.clips.push_back(std::move(clip));
+
+    AnimationPlaybackController controller;
+    std::string error;
+    EXPECT_FALSE(controller.set_asset(&invalid_asset, &error));
+    EXPECT_EQ(error, "asset skeleton/bind transforms are inconsistent");
+    EXPECT_EQ(controller.asset(), nullptr);
+    EXPECT_FALSE(controller.has_cached_pose());
+
+    EXPECT_FALSE(controller.tick(0.1F, &error));
     EXPECT_EQ(error, "animation asset is not set");
 }
 

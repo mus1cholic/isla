@@ -57,5 +57,3 @@ class ClientApp {
 };
 
 } // namespace isla::client
-
-

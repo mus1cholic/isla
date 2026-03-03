@@ -20,7 +20,8 @@ struct ClipPlaybackState {
 // refreshes cached pose each tick.
 class AnimationPlaybackController {
   public:
-    [[nodiscard]] bool set_asset(const AnimatedGltfAsset* asset, std::string* error_message = nullptr);
+    [[nodiscard]] bool set_asset(const AnimatedGltfAsset* asset,
+                                 std::string* error_message = nullptr);
     void clear_asset();
 
     [[nodiscard]] const AnimatedGltfAsset* asset() const;
