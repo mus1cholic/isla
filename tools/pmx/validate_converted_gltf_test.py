@@ -7,7 +7,10 @@ from tools.pmx import validate_converted_gltf
 def _runfile(relpath: str) -> Path:
     # Package-local fixtures are available next to this test under runfiles.
     base = Path(__file__).resolve().parent
-    rel = relpath.replace("tools/pmx/", "")
+    rel = relpath
+    prefix = "tools/pmx/"
+    if rel.startswith(prefix):
+        rel = rel[len(prefix):]
     path = base / rel
     if not path.exists():
         raise FileNotFoundError(f"Runfile not found: {relpath} (resolved: {path})")
@@ -53,6 +56,35 @@ class ValidateConvertedGltfTest(unittest.TestCase):
             "physics sidecar top-level JSON value must be an object",
             "\n".join(errors),
         )
+
+    def test_fails_naive_converter_timestamp(self):
+        errors, _warnings = self._run_validator(
+            "tools/pmx/testdata/pass_minimal.gltf",
+            "tools/pmx/testdata/fail_naive_timestamp.physics.json",
+        )
+        self.assertTrue(errors)
+        self.assertIn(
+            "converter.timestamp_utc missing or invalid RFC3339 date-time",
+            "\n".join(errors),
+        )
+
+    def test_returns_error_instead_of_raising_for_no_skin(self):
+        errors, _warnings = self._run_validator(
+            "tools/pmx/testdata/fail_no_skin.gltf",
+            "tools/pmx/testdata/pass_minimal.physics.json",
+        )
+        self.assertTrue(errors)
+        self.assertIn("glTF has no skin", "\n".join(errors))
+
+    def test_warns_for_malformed_joints_min_metadata(self):
+        errors, warnings = self._run_validator(
+            "tools/pmx/testdata/warn_malformed_joints_min_metadata.gltf",
+            "tools/pmx/testdata/pass_minimal.physics.json",
+        )
+        self.assertFalse(errors, msg=f"errors: {errors}, warnings: {warnings}")
+        all_warnings = "\n".join(warnings)
+        self.assertIn("JOINTS_0 accessor min metadata is malformed", all_warnings)
+        self.assertNotIn("JOINTS_0 accessor lacks max metadata", all_warnings)
 
 
 if __name__ == "__main__":

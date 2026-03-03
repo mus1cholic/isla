@@ -26,12 +26,16 @@ Rationale:
 - This de-risks format complexity and keeps runtime focused.
 
 > [!NOTE]
-> **Current status (2026-03-02):** Phase 0 is complete and substantially hardened.  
-> Phase 1 contract artifacts are now drafted:
+> **Current status (2026-03-03):**
+> - Phase 0 is complete and substantially hardened.
+> - Phase 1 is complete (contract + schema + validator + validator tests).
+> - Phases 2-9 remain pending runtime/tooling expansion.
+>
+> Phase 1 artifacts:
 > - `docs/pmx/pmx_to_gltf_conversion_contract.md`
 > - `docs/pmx/schemas/pmx_physics_metadata.schema.json`
 > - `tools/pmx/validate_converted_gltf.py`
-> Runtime integration phases (2-9) remain pending.
+> - `tools/pmx/validate_converted_gltf_test.py` (`bazel test //tools/pmx:validate_converted_gltf_test`)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -80,8 +84,9 @@ Add robust runtime structures and pose evaluation needed before full playback/re
 ### Exit Criteria
 
 - Runtime can load skinned glTF animation data and evaluate joint/skin matrices deterministically with explicit failure behavior for unsupported/invalid content.
+- Phase 1 now codifies these runtime constraints in conversion contract + validation tooling.
 
-## Phase 1: PMX to glTF Conversion Contract
+## Phase 1: PMX to glTF Conversion Contract (Completed)
 
 ### Goal
 
@@ -101,6 +106,26 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
   - layer/mask hints
 - Add validation checklist for converted assets.
 
+### Implemented (2026-03-03)
+
+- Published contract and schema:
+  - `docs/pmx/pmx_to_gltf_conversion_contract.md`
+  - `docs/pmx/schemas/pmx_physics_metadata.schema.json`
+- Added example sidecar payload:
+  - `docs/pmx/examples/sample.physics.json`
+- Added validator script:
+  - `tools/pmx/validate_converted_gltf.py`
+- Added validator tests + fixtures:
+  - `tools/pmx/validate_converted_gltf_test.py`
+  - `tools/pmx/testdata/*`
+  - Bazel target: `//tools/pmx:validate_converted_gltf_test`
+- Hardened validator behavior to align with contract:
+  - strict sidecar schema version (`1.0.0`)
+  - strict baseline clip requirements (`idle`, `walk`, + one additional clip) as pass/fail errors
+  - strict top-level sidecar type handling (structured errors instead of crash)
+  - stricter RFC3339 timestamp validation (timezone required)
+  - improved JOINTS_0 metadata diagnostics for malformed `min`/`max`
+
 ### Contract Notes Updated From Phase 0
 
 - Required runtime-compatible animation interpolation:
@@ -116,9 +141,15 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
 - Hierarchy caveat:
   - static non-joint ancestors are baked; animated non-joint chains are not fully supported yet
 
+### Known Phase 1 Limits (Intentional)
+
+- Validator does not decode raw accessor buffer values for `JOINTS_0`; bounds checks are static and metadata-dependent.
+- Validator enforces conversion contract constraints, but does not execute rendering/runtime playback paths.
+
 ### Exit Criteria
 
 - PMX conversion is reproducible and outputs runtime-consumable glTF + physics metadata that respects current runtime constraints.
+- Satisfied as of 2026-03-03.
 
 ## Phase 2: Runtime Clip Playback System
 
@@ -137,6 +168,7 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
 - Advance clip time each tick (fixed-step or frame-time policy, documented).
 - Evaluate pose each frame/tick and cache skin matrices for rendering.
 - Add minimal API for selecting clips and playback mode.
+- Consume Phase 1-validated assets as the expected input contract for runtime playback.
 
 ### Exit Criteria
 
@@ -157,6 +189,7 @@ Render skinned meshes using evaluated joint matrices.
 - Upload/bind joint matrix palette per draw.
 - Keep static mesh path intact.
 - Ensure multi-primitive skinned assets render all attached primitives.
+- Validate GPU path against Phase 1 contract outputs (`JOINTS_0`, `WEIGHTS_0`, baseline clip presence).
 
 ### Risks
 
@@ -182,6 +215,7 @@ Preserve basic PMX physics intent through glTF metadata ingestion.
   - conservative constraints subset (if present)
 - Define fallback behavior for unsupported physics fields.
 - Keep physics feature scope minimal and stable.
+- Use Phase 1 sidecar schema (`schema_version: 1.0.0`) as ingestion baseline.
 
 ### Exit Criteria
 
@@ -200,6 +234,7 @@ Make PMX motion assets usable by converting motion data into glTF clips.
 - Verify clip timing and root motion policy.
 - Add regression assets for idle/walk/action.
 - Ensure converted clips avoid unsupported sampler output until cubic support lands.
+- Maintain Phase 1 baseline clip naming/acceptance requirements.
 
 ### Exit Criteria
 
@@ -213,7 +248,7 @@ Make the pipeline maintainable and testable.
 
 ### Scope
 
-- Add asset validation script/checklist for converted glTF packages.
+- Expand the Phase 1 validator/checklist into broader CI/runtime coverage (do not replace it).
 - Add automated tests for:
   - loader failures (missing skin/joints/weights)
   - pose eval determinism
@@ -222,6 +257,7 @@ Make the pipeline maintainable and testable.
   - shader contract for skinning path
   - physics metadata parsing fallbacks
 - Add CI target(s) for animation/physics pipeline tests.
+- Add CI wiring for `//tools/pmx:validate_converted_gltf_test`.
 
 ### Exit Criteria
 
@@ -239,6 +275,7 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
 - Compose full node hierarchy before skin extraction.
 - Replace/retire `bind_prefix_matrices` workaround where appropriate.
 - Support rigs with non-joint skeleton roots and animated intermediate nodes correctly.
+- Revisit Phase 1 conversion caveats once full hierarchy animation support lands.
 
 ### Exit Criteria
 
@@ -255,6 +292,7 @@ Close remaining runtime animation fidelity/performance gaps.
 - Add `CUBICSPLINE` interpolation support (including tangent semantics).
 - Add cached key index walking for monotonic playback (`amortized O(1)` sampling).
 - Expand regression tests for cubic edge cases and seek behavior.
+- Update Phase 1 contract + validator rules when `CUBICSPLINE` transitions from unsupported to supported.
 
 ### Exit Criteria
 
@@ -272,6 +310,7 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 - Freeze converter/runtime compatibility versions.
 - Produce representative demo assets and validation reports.
 - Document operational runbook for adding new PMX characters/clips.
+- Version and publish contract/schema migration guidance beyond Phase 1 (`schema_version` evolution).
 
 ### Exit Criteria
 
@@ -283,11 +322,13 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 2. Add small canonical converted assets for deterministic assertions.
 3. Prefer structural assertions (joint counts, matrix validity, clip duration) over brittle visual checks.
 4. Add a smoke runtime test for one animated skinned character path.
+5. Keep `//tools/pmx:validate_converted_gltf_test` as the conversion-gate baseline and extend coverage incrementally.
 
 ## Suggested Delivery Milestones
 
-1. First usable PMX pipeline point: after Phase 2 (runtime clip playback).
-2. First visually correct character deformation point: after Phase 3 (GPU skinning).
-3. First basic PMX parity point (animation + basic physics): after Phase 4/5.
-4. First hierarchy-fidelity point for complex rigs: after Phase 7.
-5. First interpolation-complete point: after Phase 8.
+1. First deterministic PMX conversion gate: after Phase 1 (contract + schema + validator).
+2. First usable PMX runtime playback point: after Phase 2 (runtime clip playback).
+3. First visually correct character deformation point: after Phase 3 (GPU skinning).
+4. First basic PMX parity point (animation + basic physics): after Phase 4/5.
+5. First hierarchy-fidelity point for complex rigs: after Phase 7.
+6. First interpolation-complete point: after Phase 8.

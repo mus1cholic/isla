@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import struct
 import sys
 from datetime import datetime
@@ -94,10 +95,16 @@ def _is_uint32(value: Any) -> bool:
 def _is_rfc3339_datetime(value: Any) -> bool:
     if not isinstance(value, str) or not value:
         return False
-    normalized = value.replace("Z", "+00:00")
+    # Require explicit timezone designator to match RFC3339 contract expectations.
+    if value.endswith("Z"):
+        normalized = value[:-1] + "+00:00"
+    elif re.search(r"[+-]\d{2}:\d{2}$", value):
+        normalized = value
+    else:
+        return False
     try:
-        datetime.fromisoformat(normalized)
-        return True
+        parsed = datetime.fromisoformat(normalized)
+        return parsed.tzinfo is not None
     except ValueError:
         return False
 
@@ -407,11 +414,14 @@ def validate_package(asset_path: Path, sidecar_path: Path | None) -> tuple[list[
     errors: list[str] = []
     warnings: list[str] = []
 
-    doc = _load_gltf_or_glb(asset_path)
-
-    selected_skin, skin = _get_selected_skin(doc)
-    joints = _joint_indices(skin)
-    joint_names = _node_joint_names(doc, joints)
+    try:
+        doc = _load_gltf_or_glb(asset_path)
+        selected_skin, skin = _get_selected_skin(doc)
+        joints = _joint_indices(skin)
+        joint_names = _node_joint_names(doc, joints)
+    except ValidationError as exc:
+        errors.append(str(exc))
+        return errors, warnings
     joint_count = len(joints)
     accessors = doc.get("accessors", [])
     if not isinstance(accessors, list):
@@ -437,27 +447,48 @@ def validate_package(asset_path: Path, sidecar_path: Path | None) -> tuple[list[
                 if isinstance(joints_accessor, dict):
                     accessor_max = joints_accessor.get("max")
                     accessor_min = joints_accessor.get("min")
-                    if isinstance(accessor_max, list) and accessor_max:
-                        numeric_max = [v for v in accessor_max if isinstance(v, (int, float))]
-                        if len(numeric_max) == len(accessor_max):
-                            if max(numeric_max) >= joint_count:
-                                errors.append(
-                                    f"primitive[{idx}] JOINTS_0 max index exceeds skin joint range"
-                                )
-                    elif isinstance(accessor_min, list) and accessor_min:
-                        numeric_min = [v for v in accessor_min if isinstance(v, (int, float))]
-                        if len(numeric_min) == len(accessor_min) and min(numeric_min) < 0:
-                            errors.append(f"primitive[{idx}] JOINTS_0 min index is negative")
-                        else:
+                    max_is_valid_numeric_list = False
+                    if accessor_max is not None:
+                        if not isinstance(accessor_max, list) or not accessor_max:
                             warnings.append(
-                                f"primitive[{idx}] JOINTS_0 accessor lacks max metadata; "
+                                f"primitive[{idx}] JOINTS_0 accessor max metadata is malformed"
+                            )
+                        else:
+                            numeric_max = [v for v in accessor_max if isinstance(v, (int, float))]
+                            if len(numeric_max) != len(accessor_max):
+                                warnings.append(
+                                    f"primitive[{idx}] JOINTS_0 accessor max metadata is malformed"
+                                )
+                            else:
+                                max_is_valid_numeric_list = True
+                                if max(numeric_max) >= joint_count:
+                                    errors.append(
+                                        f"primitive[{idx}] JOINTS_0 max index exceeds skin joint range"
+                                    )
+
+                    if not max_is_valid_numeric_list:
+                        if accessor_min is None:
+                            warnings.append(
+                                f"primitive[{idx}] JOINTS_0 accessor lacks min/max metadata; "
                                 "cannot fully verify index bounds statically"
                             )
-                    else:
-                        warnings.append(
-                            f"primitive[{idx}] JOINTS_0 accessor lacks min/max metadata; "
-                            "cannot fully verify index bounds statically"
-                        )
+                        elif not isinstance(accessor_min, list) or not accessor_min:
+                            warnings.append(
+                                f"primitive[{idx}] JOINTS_0 accessor min metadata is malformed"
+                            )
+                        else:
+                            numeric_min = [v for v in accessor_min if isinstance(v, (int, float))]
+                            if len(numeric_min) != len(accessor_min):
+                                warnings.append(
+                                    f"primitive[{idx}] JOINTS_0 accessor min metadata is malformed"
+                                )
+                            elif min(numeric_min) < 0:
+                                errors.append(f"primitive[{idx}] JOINTS_0 min index is negative")
+                            else:
+                                warnings.append(
+                                    f"primitive[{idx}] JOINTS_0 accessor lacks max metadata; "
+                                    "cannot fully verify index bounds statically"
+                                )
         else:
             errors.append(f"primitive[{idx}] JOINTS_0 accessor index must be an integer")
 

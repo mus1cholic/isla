@@ -7,15 +7,26 @@
     "timestamp_utc": "2026-03-02T00:00:00Z"
   },
   "collision_layers": [
-    { "index": 0, "name": "default" }
+    {
+      "index": 0,
+      "name": "default"
+    }
   ],
   "colliders": [
     {
       "id": "c0",
       "bone_name": "Root",
       "shape": "sphere",
-      "offset": [0.0, 0.0, 0.0],
-      "rotation_euler_deg": [0.0, 0.0, 0.0],
+      "offset": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation_euler_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
       "is_trigger": false,
       "layer": 0,
       "mask": 1,
@@ -24,4 +35,3 @@
   ],
   "constraints": []
 }
-
