@@ -38,3 +38,6 @@ compile_commands.json
 
 # Keep OBJ mesh fixtures used by importer tests.
 !engine/src/render/testdata/*.obj
+
+# Temporarily block models
+models/

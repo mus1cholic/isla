@@ -53,9 +53,9 @@ bool configure_win32_layered_overlay(SDL_Window* window) {
     // A non-owned top-level window with APPWINDOW is eligible for taskbar/Alt-Tab.
     SetWindowLongPtr(hwnd, GWLP_HWNDPARENT, 0);
 
-    // Force full-window transparency; this is the most reliable baseline for layered overlays.
-    if (!SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA)) {
-        LOG(ERROR) << "Win32Overlay: SetLayeredWindowAttributes(LWA_ALPHA,0) failed";
+    // Keep the overlay visible while preserving layered/click-through behavior.
+    if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
+        LOG(ERROR) << "Win32Overlay: SetLayeredWindowAttributes(LWA_ALPHA,255) failed";
         return false;
     }
     if (!SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
@@ -89,7 +89,7 @@ bool refresh_win32_layered_overlay_surface(SDL_Window* window) {
     if (hwnd == nullptr) {
         return false;
     }
-    return SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA) != FALSE;
+    return SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) != FALSE;
 }
 
 #else

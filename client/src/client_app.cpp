@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <vector>
@@ -27,6 +28,45 @@ constexpr char kMeshAssetEnvVar[] = "ISLA_MESH_ASSET";
 constexpr char kAnimatedGltfAssetEnvVar[] = "ISLA_ANIMATED_GLTF_ASSET";
 constexpr char kAnimationClipEnvVar[] = "ISLA_ANIM_CLIP";
 constexpr char kAnimationPlaybackModeEnvVar[] = "ISLA_ANIM_PLAYBACK_MODE";
+constexpr char kDefaultStartupModelPath[] = "models/model.glb";
+
+Transform make_visible_object_transform(const MeshData& mesh) {
+    Transform transform{};
+    const BoundingSphere bounds = mesh.local_bounds();
+    if (!std::isfinite(bounds.center.x) || !std::isfinite(bounds.center.y) ||
+        !std::isfinite(bounds.center.z) || !std::isfinite(bounds.radius) || bounds.radius <= 0.0F) {
+        return transform;
+    }
+
+    constexpr float kTargetRadius = 1.0F;
+    const float scale = kTargetRadius / std::max(bounds.radius, 1.0e-4F);
+    transform.scale = Vec3{ .x = scale, .y = scale, .z = scale };
+    transform.position =
+        Vec3{ .x = -bounds.center.x * scale, .y = -bounds.center.y * scale, .z = -bounds.center.z * scale };
+    return transform;
+}
+
+std::string resolve_default_startup_model_path() {
+    const std::filesystem::path relative_path(kDefaultStartupModelPath);
+    std::vector<std::filesystem::path> candidates = {
+        std::filesystem::current_path() / relative_path,
+        relative_path,
+    };
+    const char* workspace_dir = std::getenv("BUILD_WORKSPACE_DIRECTORY");
+    if (workspace_dir != nullptr && workspace_dir[0] != '\0') {
+        candidates.push_back(std::filesystem::path(workspace_dir) / relative_path);
+    }
+    for (const std::filesystem::path& candidate : candidates) {
+        if (candidate.empty()) {
+            continue;
+        }
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec) && !ec) {
+            return candidate.lexically_normal().string();
+        }
+    }
+    return {};
+}
 
 std::size_t find_clip_index_by_name(const animated_gltf::AnimatedGltfAsset& asset,
                                     const char* name) {
@@ -155,7 +195,6 @@ bool ClientApp::initialize() {
         LOG(ERROR) << "ClientApp: model renderer initialize failed";
         return false;
     }
-
     load_startup_mesh();
     last_tick_ns_ = sdl_runtime_.get_ticks_ns();
     is_running_ = true;
@@ -173,43 +212,64 @@ void ClientApp::load_startup_mesh() {
               << (gpu_skinning_authoritative_ ? "enabled" : "disabled")
               << " (renderer support check)";
 
+    const auto try_load_animated_asset = [&](const std::string& path,
+                                             const char* source_label) -> bool {
+        animated_gltf::AnimatedGltfLoadResult loaded = animated_gltf::load_from_file(path);
+        if (!loaded.ok) {
+            LOG(WARNING) << "ClientApp: animated glTF load failed for " << source_label << "='"
+                         << path << "' error='" << loaded.error_message
+                         << "'; falling back to static mesh path";
+            return false;
+        }
+        animated_asset_.emplace(std::move(loaded.asset));
+        std::string playback_error;
+        if (!animation_playback_.set_asset(&*animated_asset_, &playback_error)) {
+            LOG(WARNING) << "ClientApp: animation playback setup failed for " << source_label
+                         << "='" << path << "' error='" << playback_error
+                         << "'; falling back to static mesh path";
+            animated_asset_.reset();
+            animation_playback_.clear_asset();
+            return false;
+        }
+        configure_animation_playback_from_environment();
+        populate_world_from_animated_asset();
+
+        LOG(INFO) << "ClientApp: loaded animated glTF from " << source_label << "='" << path
+                  << "', clips=" << animated_asset_->clips.size()
+                  << ", primitives=" << animated_asset_->primitives.size()
+                  << ", playback_meshes=" << animated_mesh_bindings_.size();
+        if (animated_mesh_bindings_.empty()) {
+            LOG(WARNING) << "ClientApp: animated glTF loaded but produced zero playable meshes";
+        }
+        return true;
+    };
+
     const char* animated_asset_path = std::getenv(kAnimatedGltfAssetEnvVar);
     if (animated_asset_path != nullptr && animated_asset_path[0] != '\0') {
-        animated_gltf::AnimatedGltfLoadResult loaded =
-            animated_gltf::load_from_file(animated_asset_path);
-        if (!loaded.ok) {
-            LOG(WARNING) << "ClientApp: animated glTF load failed for " << kAnimatedGltfAssetEnvVar
-                         << "='" << animated_asset_path << "' error='" << loaded.error_message
-                         << "'; falling back to static mesh path";
-        } else {
-            animated_asset_.emplace(std::move(loaded.asset));
-            std::string playback_error;
-            if (!animation_playback_.set_asset(&*animated_asset_, &playback_error)) {
-                LOG(WARNING) << "ClientApp: animation playback setup failed for "
-                             << kAnimatedGltfAssetEnvVar << "='" << animated_asset_path
-                             << "' error='" << playback_error
-                             << "'; falling back to static mesh path";
-                animated_asset_.reset();
-                animation_playback_.clear_asset();
-            } else {
-                configure_animation_playback_from_environment();
-                populate_world_from_animated_asset();
-
-                LOG(INFO) << "ClientApp: loaded animated glTF from " << kAnimatedGltfAssetEnvVar
-                          << "='" << animated_asset_path
-                          << "', clips=" << animated_asset_->clips.size()
-                          << ", primitives=" << animated_asset_->primitives.size()
-                          << ", playback_meshes=" << animated_mesh_bindings_.size();
-                if (animated_mesh_bindings_.empty()) {
-                    LOG(WARNING)
-                        << "ClientApp: animated glTF loaded but produced zero playable meshes";
-                }
-                return;
-            }
+        if (try_load_animated_asset(animated_asset_path, kAnimatedGltfAssetEnvVar)) {
+            return;
         }
     }
 
+    std::string resolved_mesh_asset_path;
     const char* mesh_asset_path = std::getenv(kMeshAssetEnvVar);
+    if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
+        const std::string default_path = resolve_default_startup_model_path();
+        if (!default_path.empty()) {
+            LOG(INFO) << "ClientApp: no " << kMeshAssetEnvVar << " set; using default model path '"
+                      << default_path << "'";
+            if (try_load_animated_asset(default_path, "default_model_path")) {
+                return;
+            }
+            resolved_mesh_asset_path = default_path;
+            mesh_asset_path = resolved_mesh_asset_path.c_str();
+        } else {
+            LOG(INFO) << "ClientApp: no ISLA_MESH_ASSET set and default model path '"
+                      << kDefaultStartupModelPath << "' not found; leaving scene empty";
+            return;
+        }
+    }
+
     if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
         LOG(INFO) << "ClientApp: no ISLA_MESH_ASSET set, leaving scene empty";
         return;
@@ -226,7 +286,12 @@ void ClientApp::load_startup_mesh() {
     MeshData mesh;
     mesh.set_triangles(std::move(loaded.triangles));
     world_.meshes().push_back(std::move(mesh));
-    world_.objects().push_back(RenderObject{ .mesh_id = 0U, .material_id = 0U, .visible = true });
+    world_.objects().push_back(RenderObject{
+        .mesh_id = 0U,
+        .transform = make_visible_object_transform(world_.meshes().back()),
+        .material_id = 0U,
+        .visible = true,
+    });
     LOG(INFO) << "ClientApp: loaded mesh from ISLA_MESH_ASSET='" << mesh_asset_path << "'";
 }
 

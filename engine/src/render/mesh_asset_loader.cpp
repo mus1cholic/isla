@@ -279,199 +279,196 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
         };
     }
 
-    const cgltf_mesh* mesh = nullptr;
-    for (cgltf_size i = 0U; i < data->meshes_count; ++i) {
-        if (data->meshes[i].primitives_count > 0U) {
-            mesh = &data->meshes[i];
-            break;
-        }
-    }
-    if (mesh == nullptr) {
+    if (data->meshes_count == 0U) {
         return MeshAssetLoadResult{
             .ok = false,
             .triangles = {},
             .error_message = "glTF has no mesh primitives",
         };
     }
+    std::vector<Triangle> triangles;
+    bool found_triangle_primitive = false;
+    for (cgltf_size mesh_i = 0U; mesh_i < data->meshes_count; ++mesh_i) {
+        const cgltf_mesh& mesh = data->meshes[mesh_i];
+        for (cgltf_size prim_i = 0U; prim_i < mesh.primitives_count; ++prim_i) {
+            const cgltf_primitive& primitive = mesh.primitives[prim_i];
+            if (primitive.type != cgltf_primitive_type_triangles) {
+                continue;
+            }
+            found_triangle_primitive = true;
 
-    const cgltf_primitive* primitive = nullptr;
-    for (cgltf_size i = 0U; i < mesh->primitives_count; ++i) {
-        if (mesh->primitives[i].type == cgltf_primitive_type_triangles) {
-            primitive = &mesh->primitives[i];
-            break;
+            const cgltf_accessor* position_accessor = nullptr;
+            const cgltf_accessor* texcoord_accessor = nullptr;
+            for (cgltf_size attr_i = 0U; attr_i < primitive.attributes_count; ++attr_i) {
+                const cgltf_attribute& attribute = primitive.attributes[attr_i];
+                if (attribute.type == cgltf_attribute_type_position) {
+                    position_accessor = attribute.data;
+                } else if (attribute.type == cgltf_attribute_type_texcoord &&
+                           attribute.index == 0U) {
+                    texcoord_accessor = attribute.data;
+                }
+            }
+
+            if (position_accessor == nullptr) {
+                return MeshAssetLoadResult{
+                    .ok = false,
+                    .triangles = {},
+                    .error_message = "glTF primitive has no POSITION accessor",
+                };
+            }
+            if (position_accessor->type != cgltf_type_vec3 ||
+                position_accessor->component_type != cgltf_component_type_r_32f) {
+                return MeshAssetLoadResult{
+                    .ok = false,
+                    .triangles = {},
+                    .error_message = "glTF POSITION accessor must be float VEC3",
+                };
+            }
+
+            if (texcoord_accessor != nullptr &&
+                (texcoord_accessor->type != cgltf_type_vec2 ||
+                 texcoord_accessor->component_type != cgltf_component_type_r_32f)) {
+                return MeshAssetLoadResult{
+                    .ok = false,
+                    .triangles = {},
+                    .error_message = "glTF TEXCOORD_0 accessor must be float VEC2",
+                };
+            }
+
+            if (primitive.indices != nullptr) {
+                const cgltf_accessor* indices_accessor = primitive.indices;
+                if (indices_accessor->count < 3U || (indices_accessor->count % 3U) != 0U) {
+                    return MeshAssetLoadResult{
+                        .ok = false,
+                        .triangles = {},
+                        .error_message =
+                            "indexed glTF primitive index count must be a multiple of 3",
+                    };
+                }
+
+                for (cgltf_size i = 0U; i < indices_accessor->count; i += 3U) {
+                    const cgltf_size ia = cgltf_accessor_read_index(indices_accessor, i);
+                    const cgltf_size ib = cgltf_accessor_read_index(indices_accessor, i + 1U);
+                    const cgltf_size ic = cgltf_accessor_read_index(indices_accessor, i + 2U);
+                    if (ia >= position_accessor->count || ib >= position_accessor->count ||
+                        ic >= position_accessor->count) {
+                        return MeshAssetLoadResult{
+                            .ok = false,
+                            .triangles = {},
+                            .error_message = "glTF index points past POSITION accessor bounds",
+                        };
+                    }
+
+                    const std::optional<Vec3> a = read_vec3(position_accessor, ia);
+                    const std::optional<Vec3> b = read_vec3(position_accessor, ib);
+                    const std::optional<Vec3> c = read_vec3(position_accessor, ic);
+                    if (!a.has_value() || !b.has_value() || !c.has_value()) {
+                        return MeshAssetLoadResult{
+                            .ok = false,
+                            .triangles = {},
+                            .error_message = "failed reading glTF POSITION values",
+                        };
+                    }
+
+                    Vec2 uv_a{};
+                    Vec2 uv_b{};
+                    Vec2 uv_c{};
+                    if (texcoord_accessor != nullptr) {
+                        const std::optional<Vec2> ta = ia < texcoord_accessor->count
+                                                           ? read_vec2(texcoord_accessor, ia)
+                                                           : std::optional<Vec2>{};
+                        const std::optional<Vec2> tb = ib < texcoord_accessor->count
+                                                           ? read_vec2(texcoord_accessor, ib)
+                                                           : std::optional<Vec2>{};
+                        const std::optional<Vec2> tc = ic < texcoord_accessor->count
+                                                           ? read_vec2(texcoord_accessor, ic)
+                                                           : std::optional<Vec2>{};
+                        if (!ta.has_value() || !tb.has_value() || !tc.has_value()) {
+                            return MeshAssetLoadResult{
+                                .ok = false,
+                                .triangles = {},
+                                .error_message = "failed reading glTF TEXCOORD_0 values",
+                            };
+                        }
+                        uv_a = *ta;
+                        uv_b = *tb;
+                        uv_c = *tc;
+                    }
+
+                    triangles.push_back(Triangle{
+                        .a = *a,
+                        .b = *b,
+                        .c = *c,
+                        .uv_a = uv_a,
+                        .uv_b = uv_b,
+                        .uv_c = uv_c,
+                    });
+                }
+            } else {
+                if (position_accessor->count < 3U || (position_accessor->count % 3U) != 0U) {
+                    return MeshAssetLoadResult{
+                        .ok = false,
+                        .triangles = {},
+                        .error_message = "non-indexed glTF POSITION count must be a multiple of 3",
+                    };
+                }
+
+                for (cgltf_size i = 0U; i < position_accessor->count; i += 3U) {
+                    const std::optional<Vec3> a = read_vec3(position_accessor, i);
+                    const std::optional<Vec3> b = read_vec3(position_accessor, i + 1U);
+                    const std::optional<Vec3> c = read_vec3(position_accessor, i + 2U);
+                    if (!a.has_value() || !b.has_value() || !c.has_value()) {
+                        return MeshAssetLoadResult{
+                            .ok = false,
+                            .triangles = {},
+                            .error_message = "failed reading glTF POSITION values",
+                        };
+                    }
+
+                    Vec2 uv_a{};
+                    Vec2 uv_b{};
+                    Vec2 uv_c{};
+                    if (texcoord_accessor != nullptr) {
+                        const std::optional<Vec2> ta = i < texcoord_accessor->count
+                                                           ? read_vec2(texcoord_accessor, i)
+                                                           : std::optional<Vec2>{};
+                        const std::optional<Vec2> tb = (i + 1U) < texcoord_accessor->count
+                                                           ? read_vec2(texcoord_accessor, i + 1U)
+                                                           : std::optional<Vec2>{};
+                        const std::optional<Vec2> tc = (i + 2U) < texcoord_accessor->count
+                                                           ? read_vec2(texcoord_accessor, i + 2U)
+                                                           : std::optional<Vec2>{};
+                        if (!ta.has_value() || !tb.has_value() || !tc.has_value()) {
+                            return MeshAssetLoadResult{
+                                .ok = false,
+                                .triangles = {},
+                                .error_message = "failed reading glTF TEXCOORD_0 values",
+                            };
+                        }
+                        uv_a = *ta;
+                        uv_b = *tb;
+                        uv_c = *tc;
+                    }
+
+                    triangles.push_back(Triangle{
+                        .a = *a,
+                        .b = *b,
+                        .c = *c,
+                        .uv_a = uv_a,
+                        .uv_b = uv_b,
+                        .uv_c = uv_c,
+                    });
+                }
+            }
         }
     }
-    if (primitive == nullptr) {
+
+    if (!found_triangle_primitive) {
         return MeshAssetLoadResult{
             .ok = false,
             .triangles = {},
             .error_message = "glTF has no triangle primitive",
         };
-    }
-
-    const cgltf_accessor* position_accessor = nullptr;
-    const cgltf_accessor* texcoord_accessor = nullptr;
-    for (cgltf_size i = 0U; i < primitive->attributes_count; ++i) {
-        const cgltf_attribute& attribute = primitive->attributes[i];
-        if (attribute.type == cgltf_attribute_type_position) {
-            position_accessor = attribute.data;
-        } else if (attribute.type == cgltf_attribute_type_texcoord && attribute.index == 0U) {
-            texcoord_accessor = attribute.data;
-        }
-    }
-
-    if (position_accessor == nullptr) {
-        return MeshAssetLoadResult{
-            .ok = false,
-            .triangles = {},
-            .error_message = "glTF primitive has no POSITION accessor",
-        };
-    }
-    if (position_accessor->type != cgltf_type_vec3 ||
-        position_accessor->component_type != cgltf_component_type_r_32f) {
-        return MeshAssetLoadResult{
-            .ok = false,
-            .triangles = {},
-            .error_message = "glTF POSITION accessor must be float VEC3",
-        };
-    }
-
-    if (texcoord_accessor != nullptr &&
-        (texcoord_accessor->type != cgltf_type_vec2 ||
-         texcoord_accessor->component_type != cgltf_component_type_r_32f)) {
-        return MeshAssetLoadResult{
-            .ok = false,
-            .triangles = {},
-            .error_message = "glTF TEXCOORD_0 accessor must be float VEC2",
-        };
-    }
-
-    std::vector<Triangle> triangles;
-    if (primitive->indices != nullptr) {
-        const cgltf_accessor* indices_accessor = primitive->indices;
-        if (indices_accessor->count < 3U || (indices_accessor->count % 3U) != 0U) {
-            return MeshAssetLoadResult{
-                .ok = false,
-                .triangles = {},
-                .error_message = "indexed glTF primitive index count must be a multiple of 3",
-            };
-        }
-
-        triangles.reserve(static_cast<std::size_t>(indices_accessor->count / 3U));
-        for (cgltf_size i = 0U; i < indices_accessor->count; i += 3U) {
-            const cgltf_size ia = cgltf_accessor_read_index(indices_accessor, i);
-            const cgltf_size ib = cgltf_accessor_read_index(indices_accessor, i + 1U);
-            const cgltf_size ic = cgltf_accessor_read_index(indices_accessor, i + 2U);
-            if (ia >= position_accessor->count || ib >= position_accessor->count ||
-                ic >= position_accessor->count) {
-                return MeshAssetLoadResult{
-                    .ok = false,
-                    .triangles = {},
-                    .error_message = "glTF index points past POSITION accessor bounds",
-                };
-            }
-
-            const std::optional<Vec3> a = read_vec3(position_accessor, ia);
-            const std::optional<Vec3> b = read_vec3(position_accessor, ib);
-            const std::optional<Vec3> c = read_vec3(position_accessor, ic);
-            if (!a.has_value() || !b.has_value() || !c.has_value()) {
-                return MeshAssetLoadResult{
-                    .ok = false,
-                    .triangles = {},
-                    .error_message = "failed reading glTF POSITION values",
-                };
-            }
-
-            Vec2 uv_a{};
-            Vec2 uv_b{};
-            Vec2 uv_c{};
-            if (texcoord_accessor != nullptr) {
-                const std::optional<Vec2> ta = ia < texcoord_accessor->count
-                                                   ? read_vec2(texcoord_accessor, ia)
-                                                   : std::optional<Vec2>{};
-                const std::optional<Vec2> tb = ib < texcoord_accessor->count
-                                                   ? read_vec2(texcoord_accessor, ib)
-                                                   : std::optional<Vec2>{};
-                const std::optional<Vec2> tc = ic < texcoord_accessor->count
-                                                   ? read_vec2(texcoord_accessor, ic)
-                                                   : std::optional<Vec2>{};
-                if (!ta.has_value() || !tb.has_value() || !tc.has_value()) {
-                    return MeshAssetLoadResult{
-                        .ok = false,
-                        .triangles = {},
-                        .error_message = "failed reading glTF TEXCOORD_0 values",
-                    };
-                }
-                uv_a = *ta;
-                uv_b = *tb;
-                uv_c = *tc;
-            }
-
-            triangles.push_back(Triangle{
-                .a = *a,
-                .b = *b,
-                .c = *c,
-                .uv_a = uv_a,
-                .uv_b = uv_b,
-                .uv_c = uv_c,
-            });
-        }
-    } else {
-        if (position_accessor->count < 3U || (position_accessor->count % 3U) != 0U) {
-            return MeshAssetLoadResult{
-                .ok = false,
-                .triangles = {},
-                .error_message = "non-indexed glTF POSITION count must be a multiple of 3",
-            };
-        }
-
-        triangles.reserve(static_cast<std::size_t>(position_accessor->count / 3U));
-        for (cgltf_size i = 0U; i < position_accessor->count; i += 3U) {
-            const std::optional<Vec3> a = read_vec3(position_accessor, i);
-            const std::optional<Vec3> b = read_vec3(position_accessor, i + 1U);
-            const std::optional<Vec3> c = read_vec3(position_accessor, i + 2U);
-            if (!a.has_value() || !b.has_value() || !c.has_value()) {
-                return MeshAssetLoadResult{
-                    .ok = false,
-                    .triangles = {},
-                    .error_message = "failed reading glTF POSITION values",
-                };
-            }
-
-            Vec2 uv_a{};
-            Vec2 uv_b{};
-            Vec2 uv_c{};
-            if (texcoord_accessor != nullptr) {
-                const std::optional<Vec2> ta = i < texcoord_accessor->count
-                                                   ? read_vec2(texcoord_accessor, i)
-                                                   : std::optional<Vec2>{};
-                const std::optional<Vec2> tb = (i + 1U) < texcoord_accessor->count
-                                                   ? read_vec2(texcoord_accessor, i + 1U)
-                                                   : std::optional<Vec2>{};
-                const std::optional<Vec2> tc = (i + 2U) < texcoord_accessor->count
-                                                   ? read_vec2(texcoord_accessor, i + 2U)
-                                                   : std::optional<Vec2>{};
-                if (!ta.has_value() || !tb.has_value() || !tc.has_value()) {
-                    return MeshAssetLoadResult{
-                        .ok = false,
-                        .triangles = {},
-                        .error_message = "failed reading glTF TEXCOORD_0 values",
-                    };
-                }
-                uv_a = *ta;
-                uv_b = *tb;
-                uv_c = *tc;
-            }
-
-            triangles.push_back(Triangle{
-                .a = *a,
-                .b = *b,
-                .c = *c,
-                .uv_a = uv_a,
-                .uv_b = uv_b,
-                .uv_c = uv_c,
-            });
-        }
     }
 
     if (triangles.empty()) {

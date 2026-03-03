@@ -42,10 +42,10 @@ constexpr const char* kSpecParamsUniformName = "u_spec_params";
 constexpr const char* kJointPaletteUniformName = "u_joint_palette";
 constexpr std::uint64_t kOpaqueRenderState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                                              BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
-                                             BGFX_STATE_CULL_CW | BGFX_STATE_MSAA;
+                                             BGFX_STATE_MSAA;
 constexpr std::uint64_t kAlphaBlendRenderState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
-                                                 BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_CULL_CW |
-                                                 BGFX_STATE_MSAA | BGFX_STATE_BLEND_ALPHA;
+                                                 BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_MSAA |
+                                                 BGFX_STATE_BLEND_ALPHA;
 
 bool vec3_is_finite(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
@@ -136,10 +136,13 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
         return false;
     }
 
-    const auto clear_color =
-        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyRed) << 24U) |
-        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyGreen) << 16U) |
-        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyBlue) << 8U) | 0xFFU;
+    const auto clear_color = (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyRed)
+                              << 24U) |
+                             (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyGreen)
+                              << 16U) |
+                             (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyBlue)
+                              << 8U) |
+                             0xFFU;
     bgfx::setViewClear(kBgfxViewId, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, clear_color, 1.0F, 0);
     bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
                       static_cast<std::uint16_t>(impl_->window_height));
