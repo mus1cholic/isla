@@ -41,8 +41,9 @@ Transform make_visible_object_transform(const MeshData& mesh) {
     constexpr float kTargetRadius = 1.0F;
     const float scale = kTargetRadius / std::max(bounds.radius, 1.0e-4F);
     transform.scale = Vec3{ .x = scale, .y = scale, .z = scale };
-    transform.position =
-        Vec3{ .x = -bounds.center.x * scale, .y = -bounds.center.y * scale, .z = -bounds.center.z * scale };
+    transform.position = Vec3{ .x = -bounds.center.x * scale,
+                               .y = -bounds.center.y * scale,
+                               .z = -bounds.center.z * scale };
     return transform;
 }
 

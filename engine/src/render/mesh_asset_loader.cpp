@@ -286,7 +286,78 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
             .error_message = "glTF has no mesh primitives",
         };
     }
+    std::size_t total_triangle_count = 0U;
+    for (cgltf_size mesh_i = 0U; mesh_i < data->meshes_count; ++mesh_i) {
+        const cgltf_mesh& mesh = data->meshes[mesh_i];
+        for (cgltf_size prim_i = 0U; prim_i < mesh.primitives_count; ++prim_i) {
+            const cgltf_primitive& primitive = mesh.primitives[prim_i];
+            if (primitive.type != cgltf_primitive_type_triangles) {
+                continue;
+            }
+
+            const cgltf_accessor* position_accessor = nullptr;
+            const cgltf_accessor* texcoord_accessor = nullptr;
+            for (cgltf_size attr_i = 0U; attr_i < primitive.attributes_count; ++attr_i) {
+                const cgltf_attribute& attribute = primitive.attributes[attr_i];
+                if (attribute.type == cgltf_attribute_type_position) {
+                    position_accessor = attribute.data;
+                } else if (attribute.type == cgltf_attribute_type_texcoord &&
+                           attribute.index == 0U) {
+                    texcoord_accessor = attribute.data;
+                }
+            }
+
+            if (position_accessor == nullptr) {
+                return MeshAssetLoadResult{
+                    .ok = false,
+                    .triangles = {},
+                    .error_message = "glTF primitive has no POSITION accessor",
+                };
+            }
+            if (position_accessor->type != cgltf_type_vec3 ||
+                position_accessor->component_type != cgltf_component_type_r_32f) {
+                return MeshAssetLoadResult{
+                    .ok = false,
+                    .triangles = {},
+                    .error_message = "glTF POSITION accessor must be float VEC3",
+                };
+            }
+            if (texcoord_accessor != nullptr &&
+                (texcoord_accessor->type != cgltf_type_vec2 ||
+                 texcoord_accessor->component_type != cgltf_component_type_r_32f)) {
+                return MeshAssetLoadResult{
+                    .ok = false,
+                    .triangles = {},
+                    .error_message = "glTF TEXCOORD_0 accessor must be float VEC2",
+                };
+            }
+
+            if (primitive.indices != nullptr) {
+                const cgltf_accessor* indices_accessor = primitive.indices;
+                if (indices_accessor->count < 3U || (indices_accessor->count % 3U) != 0U) {
+                    return MeshAssetLoadResult{
+                        .ok = false,
+                        .triangles = {},
+                        .error_message =
+                            "indexed glTF primitive index count must be a multiple of 3",
+                    };
+                }
+                total_triangle_count += static_cast<std::size_t>(indices_accessor->count / 3U);
+            } else {
+                if (position_accessor->count < 3U || (position_accessor->count % 3U) != 0U) {
+                    return MeshAssetLoadResult{
+                        .ok = false,
+                        .triangles = {},
+                        .error_message = "non-indexed glTF POSITION count must be a multiple of 3",
+                    };
+                }
+                total_triangle_count += static_cast<std::size_t>(position_accessor->count / 3U);
+            }
+        }
+    }
+
     std::vector<Triangle> triangles;
+    triangles.reserve(total_triangle_count);
     bool found_triangle_primitive = false;
     for (cgltf_size mesh_i = 0U; mesh_i < data->meshes_count; ++mesh_i) {
         const cgltf_mesh& mesh = data->meshes[mesh_i];
@@ -509,4 +580,3 @@ MeshAssetLoadResult load_from_file(std::string_view asset_path) {
 }
 
 } // namespace isla::client::mesh_asset_loader
-

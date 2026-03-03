@@ -7,6 +7,8 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,6 +58,106 @@ class ScopedEnvVar {
     bool had_original_ = false;
     std::string original_;
 };
+
+class ScopedCurrentPath {
+  public:
+    explicit ScopedCurrentPath(const std::filesystem::path& path)
+        : original_(std::filesystem::current_path()) {
+        std::filesystem::current_path(path);
+    }
+
+    ~ScopedCurrentPath() {
+        std::error_code ec;
+        std::filesystem::current_path(original_, ec);
+    }
+
+  private:
+    std::filesystem::path original_;
+};
+
+std::filesystem::path make_unique_temp_dir() {
+    const auto base = std::filesystem::temp_directory_path();
+    for (int i = 0; i < 100; ++i) {
+        const auto candidate = base / ("isla_client_app_test_" + std::to_string(i) + "_" +
+                                       std::to_string(std::rand()));
+        std::error_code ec;
+        if (std::filesystem::create_directories(candidate, ec) && !ec) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+std::vector<std::uint8_t> make_minimal_triangle_glb() {
+    const std::string json =
+        "{\"asset\":{\"version\":\"2.0\"},"
+        "\"buffers\":[{\"byteLength\":36}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\","
+        "\"max\":[1,1,0],\"min\":[0,0,0]}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}]}";
+
+    std::vector<std::uint8_t> json_chunk(json.begin(), json.end());
+    while ((json_chunk.size() % 4U) != 0U) {
+        json_chunk.push_back(static_cast<std::uint8_t>(' '));
+    }
+
+    std::vector<std::uint8_t> bin_chunk;
+    bin_chunk.reserve(36U);
+    const float vertices[9] = {
+        0.0F, 0.0F, 0.0F,
+        1.0F, 0.0F, 0.0F,
+        0.0F, 1.0F, 0.0F,
+    };
+    for (float value : vertices) {
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+        bin_chunk.insert(bin_chunk.end(), bytes, bytes + sizeof(float));
+    }
+    while ((bin_chunk.size() % 4U) != 0U) {
+        bin_chunk.push_back(0U);
+    }
+
+    auto append_u32_le = [](std::vector<std::uint8_t>& out, std::uint32_t value) {
+        out.push_back(static_cast<std::uint8_t>(value & 0xFFU));
+        out.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
+        out.push_back(static_cast<std::uint8_t>((value >> 16U) & 0xFFU));
+        out.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xFFU));
+    };
+
+    const std::uint32_t json_chunk_length = static_cast<std::uint32_t>(json_chunk.size());
+    const std::uint32_t bin_chunk_length = static_cast<std::uint32_t>(bin_chunk.size());
+    const std::uint32_t total_length =
+        12U + 8U + json_chunk_length + 8U + bin_chunk_length;
+
+    std::vector<std::uint8_t> glb;
+    glb.reserve(total_length);
+
+    // GLB header.
+    glb.push_back(static_cast<std::uint8_t>('g'));
+    glb.push_back(static_cast<std::uint8_t>('l'));
+    glb.push_back(static_cast<std::uint8_t>('T'));
+    glb.push_back(static_cast<std::uint8_t>('F'));
+    append_u32_le(glb, 2U);
+    append_u32_le(glb, total_length);
+
+    // JSON chunk.
+    append_u32_le(glb, json_chunk_length);
+    glb.push_back(static_cast<std::uint8_t>('J'));
+    glb.push_back(static_cast<std::uint8_t>('S'));
+    glb.push_back(static_cast<std::uint8_t>('O'));
+    glb.push_back(static_cast<std::uint8_t>('N'));
+    glb.insert(glb.end(), json_chunk.begin(), json_chunk.end());
+
+    // BIN chunk.
+    append_u32_le(glb, bin_chunk_length);
+    glb.push_back(static_cast<std::uint8_t>('B'));
+    glb.push_back(static_cast<std::uint8_t>('I'));
+    glb.push_back(static_cast<std::uint8_t>('N'));
+    glb.push_back(0U);
+    glb.insert(glb.end(), bin_chunk.begin(), bin_chunk.end());
+
+    return glb;
+}
 
 class FakeSdlRuntime final : public ISdlRuntime {
   public:
@@ -448,6 +550,69 @@ TEST(ClientAppAnimationTest, FallbackWhenAnimatedAssetFailsToLoad) {
 
     EXPECT_FALSE(internal::ClientAppTestHooks::has_animated_asset(app));
     EXPECT_TRUE(internal::ClientAppTestHooks::world(app).meshes().empty());
+}
+
+TEST(ClientAppAnimationTest, LoadStartupMeshUsesWorkspaceDefaultModelPathWhenUnset) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+
+    const std::filesystem::path sandbox_dir = make_unique_temp_dir();
+    const std::filesystem::path workspace_dir = make_unique_temp_dir();
+    ASSERT_FALSE(sandbox_dir.empty());
+    ASSERT_FALSE(workspace_dir.empty());
+    ASSERT_TRUE(std::filesystem::create_directories(workspace_dir / "models"));
+
+    const std::filesystem::path default_glb_path = workspace_dir / "models" / "model.glb";
+    const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
+    {
+        std::ofstream out(default_glb_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out.write(reinterpret_cast<const char*>(glb.data()),
+                  static_cast<std::streamsize>(glb.size()));
+    }
+
+    ScopedCurrentPath cwd_guard(sandbox_dir);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
+    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace_dir.string().c_str());
+
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.meshes().size(), 1U);
+    ASSERT_EQ(world.objects().size(), 1U);
+    EXPECT_FALSE(world.meshes()[0].triangles().empty());
+}
+
+TEST(ClientAppAnimationTest, StaticFallbackAppliesVisibleAutoFitTransform) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+
+    const std::filesystem::path temp_dir = make_unique_temp_dir();
+    ASSERT_FALSE(temp_dir.empty());
+    const std::filesystem::path obj_path = temp_dir / "triangle.obj";
+    {
+        std::ofstream out(obj_path);
+        ASSERT_TRUE(out.is_open());
+        out << "v 0 0 0\n";
+        out << "v 1 0 0\n";
+        out << "v 0 1 0\n";
+        out << "f 1 2 3\n";
+    }
+
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", obj_path.string().c_str());
+
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.objects().size(), 1U);
+    const Transform& transform = world.objects()[0].transform;
+    EXPECT_GT(transform.scale.x, 1.0F);
+    EXPECT_GT(transform.scale.y, 1.0F);
+    EXPECT_GT(transform.scale.z, 1.0F);
+    EXPECT_NE(transform.position.x, 0.0F);
+    EXPECT_NE(transform.position.y, 0.0F);
 }
 
 } // namespace

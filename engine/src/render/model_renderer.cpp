@@ -40,15 +40,27 @@ constexpr const char* kAmbientColorUniformName = "u_ambient_color";
 constexpr const char* kCameraPosUniformName = "u_camera_pos";
 constexpr const char* kSpecParamsUniformName = "u_spec_params";
 constexpr const char* kJointPaletteUniformName = "u_joint_palette";
-constexpr std::uint64_t kOpaqueRenderState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
-                                             BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
-                                             BGFX_STATE_MSAA;
-constexpr std::uint64_t kAlphaBlendRenderState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
-                                                 BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_MSAA |
-                                                 BGFX_STATE_BLEND_ALPHA;
+constexpr std::uint64_t kOpaqueRenderStateBase = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
+                                                 BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+                                                 BGFX_STATE_MSAA;
+constexpr std::uint64_t kAlphaBlendRenderStateBase = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
+                                                     BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_MSAA |
+                                                     BGFX_STATE_BLEND_ALPHA;
 
 bool vec3_is_finite(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+std::uint64_t cull_state_for_material(MaterialCullMode mode) {
+    switch (mode) {
+    case MaterialCullMode::Clockwise:
+        return BGFX_STATE_CULL_CW;
+    case MaterialCullMode::CounterClockwise:
+        return BGFX_STATE_CULL_CCW;
+    case MaterialCullMode::Disabled:
+        return 0ULL;
+    }
+    return BGFX_STATE_CULL_CW;
 }
 
 } // namespace
@@ -136,13 +148,10 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
         return false;
     }
 
-    const auto clear_color = (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyRed)
-                              << 24U) |
-                             (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyGreen)
-                              << 16U) |
-                             (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyBlue)
-                              << 8U) |
-                             0xFFU;
+    const auto clear_color =
+        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyRed) << 24U) |
+        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyGreen) << 16U) |
+        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyBlue) << 8U) | 0xFFU;
     bgfx::setViewClear(kBgfxViewId, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, clear_color, 1.0F, 0);
     bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
                       static_cast<std::uint16_t>(impl_->window_height));
@@ -354,10 +363,12 @@ void ModelRenderer::render(const RenderWorld& world) const {
         };
         const Mat4 model = Mat4::from_position_scale_quat(
             object.transform.position, object.transform.scale, object.transform.rotation);
-        const std::uint64_t render_state =
+        const std::uint64_t render_state_base =
             (material.blend_mode == MaterialBlendMode::AlphaBlend || alpha < 1.0F)
-                ? kAlphaBlendRenderState
-                : kOpaqueRenderState;
+                ? kAlphaBlendRenderStateBase
+                : kOpaqueRenderStateBase;
+        const std::uint64_t render_state =
+            render_state_base | cull_state_for_material(material.cull_mode);
         bgfx::setUniform(impl_->object_color_uniform, object_color.data());
         bgfx::setTexture(0, impl_->tex_color_uniform, texture);
         bgfx::setTransform(model.data());

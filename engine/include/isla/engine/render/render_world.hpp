@@ -155,11 +155,18 @@ enum class MaterialBlendMode {
     AlphaBlend,
 };
 
+enum class MaterialCullMode {
+    Clockwise = 0,
+    CounterClockwise,
+    Disabled,
+};
+
 struct Material {
     std::string shader_name = "mesh";
     Color3 base_color = kDefaultObjectColor;
     float base_alpha = 1.0F;
     MaterialBlendMode blend_mode = MaterialBlendMode::Opaque;
+    MaterialCullMode cull_mode = MaterialCullMode::Clockwise;
     std::string albedo_texture_path;
 };
 

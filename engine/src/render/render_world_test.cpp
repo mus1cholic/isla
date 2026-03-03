@@ -59,5 +59,19 @@ TEST(RenderWorldMeshDataTest, SetSkinnedGeometryAndPaletteStoresData) {
     EXPECT_EQ(mesh.geometry_revision(), initial_revision + 1U);
 }
 
+TEST(RenderWorldMaterialTest, DefaultMaterialUsesClockwiseCulling) {
+    const Material material{};
+    EXPECT_EQ(material.blend_mode, MaterialBlendMode::Opaque);
+    EXPECT_EQ(material.cull_mode, MaterialCullMode::Clockwise);
+}
+
+TEST(RenderWorldMaterialTest, MaterialCullModeIsConfigurable) {
+    Material material{};
+    material.cull_mode = MaterialCullMode::Disabled;
+    EXPECT_EQ(material.cull_mode, MaterialCullMode::Disabled);
+    material.cull_mode = MaterialCullMode::CounterClockwise;
+    EXPECT_EQ(material.cull_mode, MaterialCullMode::CounterClockwise);
+}
+
 } // namespace
 } // namespace isla::client

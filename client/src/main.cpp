@@ -12,5 +12,3 @@ int main() {
     isla::client::ClientApp app;
     return app.run();
 }
-
-
