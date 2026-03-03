@@ -42,6 +42,7 @@ class ClientApp {
     struct AnimatedMeshBinding {
         std::size_t mesh_id = 0U;
         std::size_t primitive_index = 0U;
+        std::vector<std::uint16_t> gpu_palette_global_joints;
         animated_mesh_skinning::PrimitiveSkinningWorkspace skinning_workspace;
     };
 

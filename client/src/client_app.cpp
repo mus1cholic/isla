@@ -8,11 +8,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "animated_mesh_skinning.hpp"
 #include "engine/src/render/include/mesh_asset_loader.hpp"
+#include "engine/src/render/include/model_renderer_skinning_utils.hpp"
 #include "win32_layered_overlay.hpp"
 
 namespace isla::client {
@@ -34,6 +36,71 @@ std::size_t find_clip_index_by_name(const animated_gltf::AnimatedGltfAsset& asse
     const auto it =
         std::ranges::find_if(asset.clips, [name](const auto& clip) { return clip.name == name; });
     return static_cast<std::size_t>(std::distance(asset.clips.cbegin(), it));
+}
+
+std::vector<SkinnedMeshVertex>
+make_render_skinned_vertices(const animated_gltf::SkinnedPrimitive& primitive) {
+    std::vector<SkinnedMeshVertex> vertices;
+    vertices.reserve(primitive.vertices.size());
+    for (const animated_gltf::SkinnedVertex& vertex : primitive.vertices) {
+        vertices.push_back(SkinnedMeshVertex{
+            .position = vertex.position,
+            .normal = vertex.normal,
+            .uv = vertex.uv,
+            .joints = vertex.joints,
+            .weights = vertex.weights,
+        });
+    }
+    return vertices;
+}
+
+std::vector<Triangle>
+make_triangles_from_skinned_geometry(std::span<const SkinnedMeshVertex> vertices,
+                                     std::span<const std::uint32_t> indices) {
+    std::vector<Triangle> triangles;
+    if ((indices.size() % 3U) != 0U) {
+        return triangles;
+    }
+    triangles.reserve(indices.size() / 3U);
+    for (std::size_t i = 0U; i < indices.size(); i += 3U) {
+        const std::uint32_t ia = indices[i];
+        const std::uint32_t ib = indices[i + 1U];
+        const std::uint32_t ic = indices[i + 2U];
+        if (static_cast<std::size_t>(ia) >= vertices.size() ||
+            static_cast<std::size_t>(ib) >= vertices.size() ||
+            static_cast<std::size_t>(ic) >= vertices.size()) {
+            continue;
+        }
+        const SkinnedMeshVertex& a = vertices[ia];
+        const SkinnedMeshVertex& b = vertices[ib];
+        const SkinnedMeshVertex& c = vertices[ic];
+        triangles.push_back(Triangle{
+            .a = a.position,
+            .b = b.position,
+            .c = c.position,
+            .uv_a = a.uv,
+            .uv_b = b.uv,
+            .uv_c = c.uv,
+        });
+    }
+    return triangles;
+}
+
+std::vector<Mat4> make_remapped_skin_palette(std::span<const Mat4> global_skin_matrices,
+                                             std::span<const std::uint16_t> global_joints) {
+    std::vector<Mat4> palette(global_joints.size(), Mat4::identity());
+    for (std::size_t local_joint = 0U; local_joint < global_joints.size(); ++local_joint) {
+        const std::size_t global_joint = global_joints[local_joint];
+        if (global_joint >= global_skin_matrices.size()) {
+            LOG_EVERY_N_SEC(WARNING, 2.0)
+                << "ClientApp: remapped GPU palette references out-of-range global joint index "
+                << global_joint << " for skin matrix count " << global_skin_matrices.size()
+                << "; using identity";
+            continue;
+        }
+        palette[local_joint] = global_skin_matrices[global_joint];
+    }
+    return palette;
 }
 
 } // namespace
@@ -203,6 +270,8 @@ void ClientApp::configure_animation_playback_from_environment() {
 void ClientApp::populate_world_from_animated_asset() {
     animated_mesh_bindings_.clear();
     animation_tick_count_ = 0U;
+    world_.meshes().clear();
+    world_.objects().clear();
     if (!animated_asset_.has_value()) {
         return;
     }
@@ -210,6 +279,77 @@ void ClientApp::populate_world_from_animated_asset() {
          ++primitive_index) {
         const animated_gltf::SkinnedPrimitive& primitive =
             animated_asset_->primitives[primitive_index];
+
+        if (gpu_skinning_authoritative_) {
+            std::vector<GpuSkinningPartition> partitions;
+            std::string partition_error;
+            const std::vector<SkinnedMeshVertex> render_vertices =
+                make_render_skinned_vertices(primitive);
+            if (!build_gpu_skinning_partitions(render_vertices, primitive.indices,
+                                               kMaxGpuSkinningJoints, partitions,
+                                               &partition_error)) {
+                LOG_EVERY_N_SEC(WARNING, 2.0)
+                    << "ClientApp: failed to partition skinned primitive " << primitive_index
+                    << " (source_vertices=" << render_vertices.size()
+                    << ", source_indices=" << primitive.indices.size() << ")"
+                    << " for GPU palette budget " << kMaxGpuSkinningJoints
+                    << "; skipping primitive. error='" << partition_error << "'";
+                continue;
+            }
+            if (partitions.empty()) {
+                continue;
+            }
+            if (partitions.size() > 1U) {
+                std::string palette_sizes;
+                palette_sizes.reserve(partitions.size() * 4U);
+                for (std::size_t partition_index = 0U; partition_index < partitions.size();
+                     ++partition_index) {
+                    if (!palette_sizes.empty()) {
+                        palette_sizes += ",";
+                    }
+                    palette_sizes +=
+                        std::to_string(partitions[partition_index].global_joint_palette.size());
+                }
+                LOG(INFO) << "ClientApp: primitive " << primitive_index << " split into "
+                          << partitions.size() << " GPU skinning partitions (palette_sizes=["
+                          << palette_sizes << "])";
+            }
+
+            for (GpuSkinningPartition& partition : partitions) {
+                AnimatedMeshBinding binding;
+                binding.primitive_index = primitive_index;
+                binding.gpu_palette_global_joints = std::move(partition.global_joint_palette);
+                if (binding.gpu_palette_global_joints.empty()) {
+                    LOG_EVERY_N_SEC(WARNING, 2.0)
+                        << "ClientApp: GPU partition has empty remapped joint palette "
+                           "(primitive_index="
+                        << primitive_index << ")";
+                }
+
+                MeshData mesh;
+                mesh.set_triangles(
+                    make_triangles_from_skinned_geometry(partition.vertices, partition.indices));
+                mesh.set_skinned_geometry(std::move(partition.vertices),
+                                          std::move(partition.indices));
+                if (animation_playback_.has_cached_pose()) {
+                    mesh.set_skin_palette(
+                        make_remapped_skin_palette(animation_playback_.cached_pose().skin_matrices,
+                                                   binding.gpu_palette_global_joints));
+                }
+                if (mesh.triangles().empty()) {
+                    continue;
+                }
+                world_.meshes().push_back(std::move(mesh));
+                binding.mesh_id = world_.meshes().size() - 1U;
+                world_.objects().push_back(RenderObject{
+                    .mesh_id = binding.mesh_id,
+                    .material_id = 0U,
+                    .visible = true,
+                });
+                animated_mesh_bindings_.push_back(std::move(binding));
+            }
+            continue;
+        }
 
         AnimatedMeshBinding binding;
         binding.primitive_index = primitive_index;
@@ -219,25 +359,7 @@ void ClientApp::populate_world_from_animated_asset() {
 
         MeshData mesh;
         mesh.set_triangles(std::move(initial_triangles));
-        if (gpu_skinning_authoritative_) {
-            std::vector<SkinnedMeshVertex> vertices;
-            vertices.reserve(primitive.vertices.size());
-            for (const animated_gltf::SkinnedVertex& vertex : primitive.vertices) {
-                vertices.push_back(SkinnedMeshVertex{
-                    .position = vertex.position,
-                    .normal = vertex.normal,
-                    .uv = vertex.uv,
-                    .joints = vertex.joints,
-                    .weights = vertex.weights,
-                });
-            }
-            mesh.set_skinned_geometry(std::move(vertices), primitive.indices);
-            if (animation_playback_.has_cached_pose()) {
-                mesh.set_skin_palette(animation_playback_.cached_pose().skin_matrices);
-            }
-        } else {
-            mesh.clear_skinned_geometry();
-        }
+        mesh.clear_skinned_geometry();
         if (mesh.triangles().empty()) {
             continue;
         }
@@ -326,7 +448,12 @@ void ClientApp::tick_animation(float dt_seconds) {
                 continue;
             }
             MeshData& mesh = world_.meshes()[binding.mesh_id];
-            mesh.set_skin_palette(skin_matrices);
+            if (binding.gpu_palette_global_joints.empty()) {
+                mesh.set_skin_palette(skin_matrices);
+                continue;
+            }
+            mesh.set_skin_palette(
+                make_remapped_skin_palette(skin_matrices, binding.gpu_palette_global_joints));
         }
         return;
     }
