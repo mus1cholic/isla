@@ -30,7 +30,7 @@ Rationale:
 > - Phase 0 is complete and substantially hardened.
 > - Phase 1 is complete (contract + schema + validator + validator tests).
 > - Phase 2 is complete (runtime clip playback + controller + temporary CPU skinning path).
-> - Phase 2.5 is newly scoped and pending optimization follow-up.
+> - Phase 2.5 is complete (in-place CPU skinning updates + workspace reuse + deferred bounds recompute).
 > - Phases 3-9 remain pending runtime/tooling expansion.
 >
 > Phase 1 artifacts:
@@ -45,6 +45,16 @@ Rationale:
 > - `client/src/animated_mesh_skinning.hpp`
 > - `client/src/animated_mesh_skinning.cpp`
 > - `client/src/client_app.cpp` (runtime wiring + env controls)
+>
+> Phase 2.5 artifacts:
+> - `engine/include/isla/engine/render/render_world.hpp` (`edit_triangles_without_recompute_bounds(...)`)
+> - `client/src/animated_mesh_skinning.hpp` (per-primitive workspace + in-place APIs)
+> - `client/src/animated_mesh_skinning.cpp` (topology/workspace build + in-place skin writes)
+> - `client/src/client_app.hpp` / `client/src/client_app.cpp` (binding workspace + in-place tick updates)
+> - `engine/src/render/render_world_test.cpp` (`MeshData` no-bounds-edit regression coverage)
+> - `client/src/animated_mesh_skinning_test.cpp` (multi-tick churn/capacity guards)
+> - `client/src/client_app_animation_test.cpp` (runtime multi-frame storage stability smoke test)
+> - `.github/workflows/ci.yml` (windows smoke includes `//engine/src/render:render_world_tests`)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -218,16 +228,15 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
 
 ### Known Phase 2 Limits (Intentional / Deferred)
 
-- Temporary CPU skinning path currently rebuilds/replaces triangle lists each frame.
 - This CPU path is functional for visible playback bring-up but not intended as final deformation architecture.
-- Performance hardening of this temporary path is tracked in Phase 2.5.
+- CPU deformation remains a temporary compatibility path until Phase 3 GPU skinning is authoritative.
 
 ### Exit Criteria
 
 - A converted skinned glTF character visibly plays selected clips with predictable loop/clamp behavior.
 - Satisfied as of 2026-03-03 via runtime playback controller + temporary CPU skinning.
 
-## Phase 2.5: CPU Skinning Update Path Optimization (Pending)
+## Phase 2.5: CPU Skinning Update Path Optimization (Completed)
 
 ### Goal
 
@@ -254,11 +263,39 @@ Phase 2 currently skins by rebuilding and replacing triangle lists every frame, 
 
 This is acceptable for initial bring-up, but should be tightened before relying on larger PMX assets in playback-heavy scenarios.
 
+### Implemented (2026-03-03)
+
+- Replaced per-tick triangle-list replacement for animated meshes with in-place mutation:
+  - animated mesh tick path now uses `MeshData::edit_triangles_without_recompute_bounds(...)`
+  - no per-frame `MeshData::set_triangles(...)` calls on the animated update loop
+- Added reusable per-primitive CPU skinning workspace:
+  - cached triangle topology indices for valid primitive triangles
+  - reused skinned-position buffer across ticks
+- Updated startup animated mesh population to prebuild triangle storage + topology workspace once.
+- Deferred bounds recompute on animated tick path to a lower-frequency interval (instead of every frame).
+- Added defensive workspace topology validation/rebuild in `skin_primitive_in_place(...)`:
+  - detects stale/uninitialized/mismatched topology against primitive valid triangle stream
+  - logs throttled warning when rebuild is triggered
+- Reset animation bounds-recompute tick counter in `populate_world_from_animated_asset()` for deterministic behavior across runtime and test-hook call paths.
+- Added low-verbosity telemetry (`VLOG(1)`) when deferred animated mesh bounds recompute is executed.
+- Added regression/perf-oriented test coverage:
+  - in-place skinning storage/capacity stability over many ticks
+  - client animation smoke test validating stable triangle storage across many frames
+  - `MeshData` edit-without-bounds-recompute contract test
+  - deferred-bounds interval boundary behavior in client animation tick tests
+  - stale workspace and uninitialized workspace rebuild safety tests
+
+### Known Limits (Post-Phase 2.5)
+
+- CPU skinning remains a temporary deformation path until Phase 3 GPU skinning is authoritative.
+- Bounds recompute is deferred (not per-frame), which is acceptable for current usage because this path does not currently rely on per-frame bounds for culling/physics decisions.
+
 ### Exit Criteria
 
 - Animated CPU-skinning path no longer performs full triangle-list reallocation/replacement each tick.
 - Runtime behavior is unchanged functionally (same visible animation output as Phase 2 baseline).
 - Added regression/perf-oriented test coverage for the in-place update path (correctness first, plus basic allocation/churn guard where practical).
+- Satisfied as of 2026-03-03.
 
 ## Phase 3: GPU Skinning Render Path
 
@@ -277,6 +314,7 @@ Render skinned meshes using evaluated joint matrices.
 - Ensure multi-primitive skinned assets render all attached primitives.
 - Validate GPU path against Phase 1 contract outputs (`JOINTS_0`, `WEIGHTS_0`, baseline clip presence).
 - Retire or bypass Phase 2 temporary CPU skinning deformation updates once GPU skinning is authoritative.
+- Keep Phase 2.5 CPU path as an optional fallback/debug path during rollout, but treat GPU skinning as the single source of visual truth once validated.
 
 ### Risks
 
@@ -349,6 +387,7 @@ Make the pipeline maintainable and testable.
 - Add CI wiring for `//tools/pmx:validate_converted_gltf_test`.
 - Extend CI/smoke wiring from current baseline that already includes:
   - `//engine/src/render:animation_playback_controller_tests`
+  - `//engine/src/render:render_world_tests`
   - `//client/src:animated_mesh_skinning_test`
   - `//client/src:client_app_animation_test`
 
@@ -408,6 +447,7 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 - Version and publish contract/schema migration guidance beyond Phase 1 (`schema_version` evolution).
 - Explicitly document temporary-vs-final deformation path transitions:
   - Phase 2 temporary CPU skinning
+  - Phase 2.5 optimized temporary CPU skinning (in-place + deferred bounds)
   - Phase 3+ authoritative GPU skinning
 
 ### Exit Criteria

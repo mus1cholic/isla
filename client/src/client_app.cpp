@@ -20,6 +20,7 @@ namespace isla::client {
 namespace {
 
 constexpr std::uint64_t kNanosecondsPerSecond = 1000000000ULL;
+constexpr std::uint32_t kAnimatedBoundsRecomputeIntervalTicks = 30U;
 constexpr char kMeshAssetEnvVar[] = "ISLA_MESH_ASSET";
 constexpr char kAnimatedGltfAssetEnvVar[] = "ISLA_ANIMATED_GLTF_ASSET";
 constexpr char kAnimationClipEnvVar[] = "ISLA_ANIM_CLIP";
@@ -99,6 +100,7 @@ void ClientApp::load_startup_mesh() {
     animated_asset_.reset();
     animation_playback_.clear_asset();
     animated_mesh_bindings_.clear();
+    animation_tick_count_ = 0U;
 
     const char* animated_asset_path = std::getenv(kAnimatedGltfAssetEnvVar);
     if (animated_asset_path != nullptr && animated_asset_path[0] != '\0') {
@@ -196,6 +198,7 @@ void ClientApp::configure_animation_playback_from_environment() {
 
 void ClientApp::populate_world_from_animated_asset() {
     animated_mesh_bindings_.clear();
+    animation_tick_count_ = 0U;
     if (!animated_asset_.has_value()) {
         return;
     }
@@ -203,23 +206,26 @@ void ClientApp::populate_world_from_animated_asset() {
          ++primitive_index) {
         const animated_gltf::SkinnedPrimitive& primitive =
             animated_asset_->primitives[primitive_index];
+
+        AnimatedMeshBinding binding;
+        binding.primitive_index = primitive_index;
+        std::vector<Triangle> initial_triangles =
+            animated_mesh_skinning::make_initial_triangles_and_workspace(
+                primitive, &binding.skinning_workspace);
+
         MeshData mesh;
-        mesh.set_triangles(
-            animated_mesh_skinning::make_triangles_from_skinned_primitive(primitive, nullptr));
+        mesh.set_triangles(std::move(initial_triangles));
         if (mesh.triangles().empty()) {
             continue;
         }
         world_.meshes().push_back(std::move(mesh));
-        const std::size_t mesh_id = world_.meshes().size() - 1U;
+        binding.mesh_id = world_.meshes().size() - 1U;
         world_.objects().push_back(RenderObject{
-            .mesh_id = mesh_id,
+            .mesh_id = binding.mesh_id,
             .material_id = 0U,
             .visible = true,
         });
-        animated_mesh_bindings_.push_back(AnimatedMeshBinding{
-            .mesh_id = mesh_id,
-            .primitive_index = primitive_index,
-        });
+        animated_mesh_bindings_.push_back(std::move(binding));
     }
 }
 
@@ -277,17 +283,32 @@ void ClientApp::tick_animation(float dt_seconds) {
     if (!animation_playback_.has_cached_pose()) {
         return;
     }
+    ++animation_tick_count_;
+    const bool should_recompute_bounds =
+        (animation_tick_count_ % kAnimatedBoundsRecomputeIntervalTicks) == 0U;
+    std::size_t recomputed_bounds_mesh_count = 0U;
     const std::vector<Mat4>& skin_matrices = animation_playback_.cached_pose().skin_matrices;
-    for (const AnimatedMeshBinding& binding : animated_mesh_bindings_) {
+    for (AnimatedMeshBinding& binding : animated_mesh_bindings_) {
         if (binding.mesh_id >= world_.meshes().size() ||
             binding.primitive_index >= animated_asset_->primitives.size()) {
             continue;
         }
         const animated_gltf::SkinnedPrimitive& primitive =
             animated_asset_->primitives[binding.primitive_index];
-        world_.meshes()[binding.mesh_id].set_triangles(
-            animated_mesh_skinning::make_triangles_from_skinned_primitive(primitive,
-                                                                          &skin_matrices));
+        MeshData& mesh = world_.meshes()[binding.mesh_id];
+        mesh.edit_triangles_without_recompute_bounds([&](MeshData::TriangleList& triangles) {
+            animated_mesh_skinning::skin_primitive_in_place(
+                primitive, &skin_matrices, &binding.skinning_workspace, &triangles);
+        });
+        if (should_recompute_bounds) {
+            mesh.recompute_bounds();
+            ++recomputed_bounds_mesh_count;
+        }
+    }
+    if (should_recompute_bounds && recomputed_bounds_mesh_count > 0U) {
+        VLOG(1) << "ClientApp: deferred animated mesh bounds recomputed for "
+                << recomputed_bounds_mesh_count
+                << " mesh(es) at animation_tick_count=" << animation_tick_count_;
     }
     const auto& playback_state = animation_playback_.state();
     LOG_EVERY_N_SEC(INFO, 2.0)

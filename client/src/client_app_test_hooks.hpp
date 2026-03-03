@@ -44,6 +44,10 @@ class ClientAppTestHooks {
         return app.world_;
     }
 
+    static RenderWorld& mutable_world(ClientApp& app) {
+        return app.world_;
+    }
+
     static const animated_gltf::AnimationPlaybackController&
     animation_playback(const ClientApp& app) {
         return app.animation_playback_;
