@@ -1,0 +1,39 @@
+{
+  "asset": {
+    "version": "2.0"
+  },
+  "accessors": [
+    { "count": 2 },
+    { "count": 2 },
+    { "count": 2 }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "JOINTS_0": 1,
+            "WEIGHTS_0": 2
+          }
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    { "name": "Root" },
+    { "mesh": 0, "skin": 0 }
+  ],
+  "skins": [
+    { "joints": [0] }
+  ],
+  "animations": [
+    {
+      "name": "idle",
+      "samplers": [
+        { "input": 0, "output": 1, "interpolation": "CUBICSPLINE" }
+      ]
+    }
+  ]
+}

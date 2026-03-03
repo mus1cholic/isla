@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0.0",
+  "converter": {
+    "name": "test-converter",
+    "version": "1.2.3",
+    "command": "test --in model.pmx --out pass_minimal.gltf",
+    "timestamp_utc": "2026-03-02T00:00:00"
+  },
+  "collision_layers": [
+    {
+      "index": 0,
+      "name": "default"
+    }
+  ],
+  "colliders": [
+    {
+      "id": "c0",
+      "bone_name": "Root",
+      "shape": "sphere",
+      "offset": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation_euler_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "is_trigger": false,
+      "layer": 0,
+      "mask": 1,
+      "radius": 0.1
+    }
+  ],
+  "constraints": []
+}

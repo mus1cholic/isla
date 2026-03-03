@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "converter": {
+    "name": "example-pmx-converter",
+    "version": "0.1.0",
+    "command": "pmx2gltf --input model.pmx --output model.gltf",
+    "timestamp_utc": "2026-03-02T12:00:00Z"
+  },
+  "collision_layers": [
+    {
+      "index": 0,
+      "name": "default"
+    },
+    {
+      "index": 1,
+      "name": "character"
+    }
+  ],
+  "colliders": [
+    {
+      "id": "col_head",
+      "bone_name": "Head",
+      "shape": "sphere",
+      "offset": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation_euler_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "is_trigger": false,
+      "layer": 1,
+      "mask": 1,
+      "radius": 0.12
+    }
+  ],
+  "constraints": [
+    {
+      "id": "neck_joint",
+      "bone_a_name": "Neck",
+      "bone_b_name": "Head",
+      "type": "cone_twist",
+      "limit": {
+        "swing_deg": 30.0,
+        "twist_deg": 15.0
+      }
+    }
+  ]
+}
