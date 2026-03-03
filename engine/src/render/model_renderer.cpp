@@ -6,9 +6,9 @@
 #if defined(_WIN32)
 
 #include "engine/src/render/include/bgfx_mesh_manager.hpp"
-#include "engine/src/render/include/model_renderer_skinning_utils.hpp"
 #include "engine/src/render/include/bgfx_shader_manager.hpp"
 #include "engine/src/render/include/bgfx_texture_manager.hpp"
+#include "engine/src/render/include/model_renderer_skinning_utils.hpp"
 #include "isla/engine/math/mat4.hpp"
 #include "isla/engine/render/overlay_transparency.hpp"
 #include "isla/engine/render/render_world.hpp"
@@ -156,9 +156,8 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
     impl_->camera_pos_uniform = bgfx::createUniform(kCameraPosUniformName, bgfx::UniformType::Vec4);
     impl_->spec_params_uniform =
         bgfx::createUniform(kSpecParamsUniformName, bgfx::UniformType::Vec4);
-    impl_->joint_palette_uniform = bgfx::createUniform(kJointPaletteUniformName,
-                                                       bgfx::UniformType::Mat4,
-                                                       kMaxGpuSkinningJoints);
+    impl_->joint_palette_uniform = bgfx::createUniform(
+        kJointPaletteUniformName, bgfx::UniformType::Mat4, kMaxGpuSkinningJoints);
     impl_->tex_color_uniform = bgfx::createUniform("s_texColor", bgfx::UniformType::Sampler);
     if (!bgfx::isValid(impl_->time_uniform) || !bgfx::isValid(impl_->object_color_uniform) ||
         !bgfx::isValid(impl_->dir_light_dir_uniform) ||
@@ -231,9 +230,8 @@ void ModelRenderer::render(const RenderWorld& world) const {
     impl_->mesh_manager.begin_frame();
     impl_->mesh_manager.upload_dirty_meshes(world);
 
-    const auto elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                                      impl_->start_time)
-                             .count();
+    const auto elapsed =
+        std::chrono::duration<float>(std::chrono::steady_clock::now() - impl_->start_time).count();
     const float sim_time =
         std::isfinite(world.sim_time_seconds()) ? std::max(0.0F, world.sim_time_seconds()) : 0.0F;
     const std::array<float, 4> time_values{ sim_time, elapsed, 0.0F, 0.0F };
@@ -271,7 +269,8 @@ void ModelRenderer::render(const RenderWorld& world) const {
         .target = Vec3{},
         .up = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
     });
-    const float aspect = static_cast<float>(impl_->window_width) / static_cast<float>(impl_->window_height);
+    const float aspect =
+        static_cast<float>(impl_->window_width) / static_cast<float>(impl_->window_height);
     const Mat4 proj = Mat4::perspective(kDefaultCameraFovYDegrees, aspect, kDefaultCameraNear,
                                         kDefaultCameraFar, has_homogeneous_depth());
 
@@ -315,8 +314,8 @@ void ModelRenderer::render(const RenderWorld& world) const {
                     << "', falling back to static mesh program for skinned draw";
             }
         }
-        const SkinningProgramPath program_path = choose_skinning_program_path(
-            SkinningProgramDecisionInputs{
+        const SkinningProgramPath program_path =
+            choose_skinning_program_path(SkinningProgramDecisionInputs{
                 .mesh_is_skinned = mesh_is_skinned,
                 .has_skin_palette = has_skin_palette,
                 .gpu_skinning_supported = renderer_supports_gpu_skinning,
@@ -350,9 +349,8 @@ void ModelRenderer::render(const RenderWorld& world) const {
             material.base_color.b,
             alpha,
         };
-        const Mat4 model = Mat4::from_position_scale_quat(object.transform.position,
-                                                          object.transform.scale,
-                                                          object.transform.rotation);
+        const Mat4 model = Mat4::from_position_scale_quat(
+            object.transform.position, object.transform.scale, object.transform.rotation);
         const std::uint64_t render_state =
             (material.blend_mode == MaterialBlendMode::AlphaBlend || alpha < 1.0F)
                 ? kAlphaBlendRenderState

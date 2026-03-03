@@ -239,7 +239,8 @@ BgfxShaderManager::resolve_instanced_program(const std::string& shader_name) con
     return BGFX_INVALID_HANDLE;
 }
 
-bgfx::ProgramHandle BgfxShaderManager::resolve_skinned_program(const std::string& shader_name) const {
+bgfx::ProgramHandle
+BgfxShaderManager::resolve_skinned_program(const std::string& shader_name) const {
     if (auto it = impl_->skinned_program_cache.find(shader_name);
         it != impl_->skinned_program_cache.end()) {
         return it->second;

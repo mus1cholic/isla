@@ -69,8 +69,7 @@ TEST(ModelRendererSkinningUtilsTest, FillSkinPaletteBufferReportsTruncationAtLim
     std::vector<Mat4> source(kMaxGpuSkinningJoints + 1U, Mat4::identity());
     source[kMaxGpuSkinningJoints - 1U] =
         Mat4::translation(Vec3{ .x = 64.0F, .y = 0.0F, .z = 0.0F });
-    source[kMaxGpuSkinningJoints] =
-        Mat4::translation(Vec3{ .x = 65.0F, .y = 0.0F, .z = 0.0F });
+    source[kMaxGpuSkinningJoints] = Mat4::translation(Vec3{ .x = 65.0F, .y = 0.0F, .z = 0.0F });
     std::vector<Mat4> upload(kMaxGpuSkinningJoints, Mat4::identity());
 
     std::size_t copied = 0U;

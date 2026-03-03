@@ -106,6 +106,19 @@ void destroy_index_buffers(std::vector<bgfx::IndexBufferHandle>& buffers) {
     buffers.clear();
 }
 
+void reset_mesh_gpu_buffers(std::size_t mesh_index, std::uint64_t geometry_revision,
+                            bool is_skinned, std::vector<bgfx::VertexBufferHandle>& vertex_buffers,
+                            std::vector<bgfx::IndexBufferHandle>& index_buffers,
+                            std::vector<std::uint64_t>& geometry_revisions,
+                            std::vector<bool>& mesh_is_skinned) {
+    destroy_vertex_buffer_if_valid(vertex_buffers.at(mesh_index));
+    destroy_index_buffer_if_valid(index_buffers.at(mesh_index));
+    vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+    index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+    geometry_revisions.at(mesh_index) = geometry_revision;
+    mesh_is_skinned.at(mesh_index) = is_skinned;
+}
+
 } // namespace
 
 class BgfxMeshManager::Impl {
@@ -181,33 +194,24 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
             const std::size_t vertex_count = mesh.skinned_vertices().size();
             const std::size_t index_count = mesh.skinned_indices().size();
             if (vertex_count == 0U || index_count == 0U) {
-                destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
-                destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
-                impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-                impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-                impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
-                impl_->mesh_is_skinned.at(mesh_index) = true;
+                reset_mesh_gpu_buffers(mesh_index, geometry_revision, true,
+                                       impl_->mesh_vertex_buffers, impl_->mesh_index_buffers,
+                                       impl_->mesh_geometry_revisions, impl_->mesh_is_skinned);
                 continue;
             }
             if (vertex_count > (internal::kMaxBgfxCopyBytes / sizeof(GpuSkinnedMeshVertex))) {
-                destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
-                destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
-                impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-                impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-                impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
-                impl_->mesh_is_skinned.at(mesh_index) = true;
+                reset_mesh_gpu_buffers(mesh_index, geometry_revision, true,
+                                       impl_->mesh_vertex_buffers, impl_->mesh_index_buffers,
+                                       impl_->mesh_geometry_revisions, impl_->mesh_is_skinned);
                 LOG_EVERY_N_SEC(WARNING, 2.0)
                     << "BgfxRenderer: skinned mesh vertex buffer byte size exceeds "
                        "bgfx::copy limit, skipping mesh";
                 continue;
             }
             if (index_count > (internal::kMaxBgfxCopyBytes / sizeof(std::uint32_t))) {
-                destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
-                destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
-                impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-                impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-                impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
-                impl_->mesh_is_skinned.at(mesh_index) = true;
+                reset_mesh_gpu_buffers(mesh_index, geometry_revision, true,
+                                       impl_->mesh_vertex_buffers, impl_->mesh_index_buffers,
+                                       impl_->mesh_geometry_revisions, impl_->mesh_is_skinned);
                 LOG_EVERY_N_SEC(WARNING, 2.0)
                     << "BgfxRenderer: skinned mesh index buffer byte size exceeds "
                        "bgfx::copy limit, skipping mesh";
@@ -221,12 +225,9 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
                 }
             }
             if (has_invalid_index) {
-                destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
-                destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
-                impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-                impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-                impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
-                impl_->mesh_is_skinned.at(mesh_index) = true;
+                reset_mesh_gpu_buffers(mesh_index, geometry_revision, true,
+                                       impl_->mesh_vertex_buffers, impl_->mesh_index_buffers,
+                                       impl_->mesh_geometry_revisions, impl_->mesh_is_skinned);
                 LOG(WARNING) << "BgfxRenderer: skinned mesh has out-of-range index, skipping mesh";
                 continue;
             }
@@ -270,8 +271,8 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
                     bgfx::destroy(new_index_buffer);
                 }
                 LOG_EVERY_N_SEC(WARNING, 2.0)
-                    << "BgfxRenderer: failed to create skinned mesh buffers for mesh "
-                    << mesh_index << " at revision " << geometry_revision
+                    << "BgfxRenderer: failed to create skinned mesh buffers for mesh " << mesh_index
+                    << " at revision " << geometry_revision
                     << "; keeping previous GPU buffers and retrying on future frames";
                 continue;
             }
@@ -284,8 +285,8 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
             ++impl_->uploaded_mesh_count;
             ++impl_->last_frame_mesh_upload_count;
             VLOG(1) << "BgfxRenderer: uploaded skinned mesh " << mesh_index
-                    << " vertices=" << vertex_count << ", indices=" << index_count
-                    << ", revision " << previous_geometry_revision << " -> " << geometry_revision
+                    << " vertices=" << vertex_count << ", indices=" << index_count << ", revision "
+                    << previous_geometry_revision << " -> " << geometry_revision
                     << ", total_uploads=" << impl_->uploaded_mesh_count;
             continue;
         }
@@ -295,22 +296,18 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
 
         const std::size_t triangle_count = mesh.triangles().size();
         if (triangle_count == 0U) {
-            destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
-            destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
-            impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-            impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-            impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+            reset_mesh_gpu_buffers(mesh_index, geometry_revision, false, impl_->mesh_vertex_buffers,
+                                   impl_->mesh_index_buffers, impl_->mesh_geometry_revisions,
+                                   impl_->mesh_is_skinned);
             VLOG(1) << "BgfxRenderer: mesh " << mesh_index
                     << " has zero triangles, cleared GPU buffers and updated revision "
                     << previous_geometry_revision << " -> " << geometry_revision;
             continue;
         }
         if (triangle_count > (std::numeric_limits<std::uint32_t>::max() / kTriangleVertexCount)) {
-            destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
-            destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
-            impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-            impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-            impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+            reset_mesh_gpu_buffers(mesh_index, geometry_revision, false, impl_->mesh_vertex_buffers,
+                                   impl_->mesh_index_buffers, impl_->mesh_geometry_revisions,
+                                   impl_->mesh_is_skinned);
             LOG(WARNING) << "BgfxRenderer: mesh exceeds 32-bit index limit, skipping mesh";
             continue;
         }
@@ -322,21 +319,17 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
         const std::size_t vertex_count = triangle_count * kTriangleVertexCount;
         const std::size_t index_count = triangle_count * kTriangleVertexCount;
         if (vertex_count > (internal::kMaxBgfxCopyBytes / sizeof(MeshVertex))) {
-            destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
-            destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
-            impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-            impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-            impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+            reset_mesh_gpu_buffers(mesh_index, geometry_revision, false, impl_->mesh_vertex_buffers,
+                                   impl_->mesh_index_buffers, impl_->mesh_geometry_revisions,
+                                   impl_->mesh_is_skinned);
             LOG(WARNING) << "BgfxRenderer: mesh vertex buffer byte size exceeds bgfx::copy limit, "
                             "skipping mesh";
             continue;
         }
         if (index_count > (internal::kMaxBgfxCopyBytes / sizeof(std::uint32_t))) {
-            destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
-            destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
-            impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-            impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
-            impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+            reset_mesh_gpu_buffers(mesh_index, geometry_revision, false, impl_->mesh_vertex_buffers,
+                                   impl_->mesh_index_buffers, impl_->mesh_geometry_revisions,
+                                   impl_->mesh_is_skinned);
             LOG(WARNING) << "BgfxRenderer: mesh index buffer byte size exceeds bgfx::copy limit, "
                             "skipping mesh";
             continue;
