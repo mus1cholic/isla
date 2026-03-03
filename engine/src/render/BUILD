@@ -38,6 +38,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "@abseil-cpp//absl/log:check",
         "//engine/src/math",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/strings",

@@ -11,10 +11,10 @@ uniform mat4 u_joint_palette[64];
 
 void main()
 {
-    int i0 = int(a_indices.x);
-    int i1 = int(a_indices.y);
-    int i2 = int(a_indices.z);
-    int i3 = int(a_indices.w);
+    int i0 = clamp(int(a_indices.x), 0, 63);
+    int i1 = clamp(int(a_indices.y), 0, 63);
+    int i2 = clamp(int(a_indices.z), 0, 63);
+    int i3 = clamp(int(a_indices.w), 0, 63);
 
     mat4 skin =
         (u_joint_palette[i0] * a_weight.x) + (u_joint_palette[i1] * a_weight.y) +

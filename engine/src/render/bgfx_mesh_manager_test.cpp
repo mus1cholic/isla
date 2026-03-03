@@ -123,6 +123,52 @@ TEST_F(BgfxMeshManagerTest, SkinnedMeshWithInvalidIndicesIsRejected) {
     manager.shutdown();
 }
 
+TEST_F(BgfxMeshManagerTest, SkinnedMeshWithJointBeyondGpuPaletteLimitIsRejected) {
+    isla::client::RenderWorld world;
+    isla::client::MeshData mesh;
+    mesh.set_skinned_geometry(
+        {
+            isla::client::SkinnedMeshVertex{
+                .position = isla::client::Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
+                .normal = isla::client::Vec3{ .x = 0.0F, .y = 0.0F, .z = 1.0F },
+                .uv = isla::client::Vec2{ .x = 0.0F, .y = 0.0F },
+                .joints = { 64U, 0U, 0U, 0U },
+                .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
+            },
+            isla::client::SkinnedMeshVertex{
+                .position = isla::client::Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F },
+                .normal = isla::client::Vec3{ .x = 0.0F, .y = 0.0F, .z = 1.0F },
+                .uv = isla::client::Vec2{ .x = 1.0F, .y = 0.0F },
+                .joints = { 0U, 0U, 0U, 0U },
+                .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
+            },
+            isla::client::SkinnedMeshVertex{
+                .position = isla::client::Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
+                .normal = isla::client::Vec3{ .x = 0.0F, .y = 0.0F, .z = 1.0F },
+                .uv = isla::client::Vec2{ .x = 0.0F, .y = 1.0F },
+                .joints = { 0U, 0U, 0U, 0U },
+                .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
+            },
+        },
+        { 0U, 1U, 2U });
+    mesh.set_skin_palette({ isla::client::Mat4::identity() });
+    world.meshes().push_back(std::move(mesh));
+
+    isla::client::BgfxMeshManager manager;
+    ASSERT_TRUE(manager.initialize());
+
+    manager.begin_frame();
+    manager.upload_dirty_meshes(world);
+    EXPECT_EQ(manager.last_frame_mesh_upload_count(), 0U);
+    EXPECT_EQ(manager.uploaded_mesh_count(), 0U);
+    EXPECT_TRUE(manager.has_mesh_slot(0U));
+    EXPECT_TRUE(manager.mesh_is_skinned(0U));
+    EXPECT_FALSE(bgfx::isValid(manager.vertex_buffer_for_mesh(0U)));
+    EXPECT_FALSE(bgfx::isValid(manager.index_buffer_for_mesh(0U)));
+
+    manager.shutdown();
+}
+
 } // namespace
 
 #else

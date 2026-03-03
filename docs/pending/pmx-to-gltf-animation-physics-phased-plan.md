@@ -36,8 +36,14 @@ Operational interpretation:
 > - Phase 1 is complete (contract + schema + validator + validator tests).
 > - Phase 2 is complete (runtime clip playback + controller + temporary CPU skinning path).
 > - Phase 2.5 is complete (in-place CPU skinning updates + workspace reuse + deferred bounds recompute).
-> - Phases 3-9 remain pending runtime/tooling expansion.
+> - Phase 3 is complete (authoritative GPU skinning path for current fixed palette budget).
+> - Phase 3.5 is pending (large-skeleton GPU skinning support beyond current fixed palette budget).
+> - Phases 4-9 remain pending runtime/tooling expansion.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 6 and finalized in Phase 9.
+>
+> Phase 3 design constraint (current):
+> - Authoritative GPU skinning is complete for current scope, but uses a fixed 64-joint palette budget per skinned draw.
+> - Large-skeleton (>64 referenced joint index) support is explicitly deferred to Phase 3.5.
 >
 > Phase 1 artifacts:
 > - `docs/pmx/pmx_to_gltf_conversion_contract.md`
@@ -61,6 +67,19 @@ Operational interpretation:
 > - `client/src/animated_mesh_skinning_test.cpp` (multi-tick churn/capacity guards)
 > - `client/src/client_app_animation_test.cpp` (runtime multi-frame storage stability smoke test)
 > - `.github/workflows/ci.yml` (windows smoke includes `//engine/src/render:render_world_tests`)
+>
+> Phase 3 artifacts:
+> - `engine/include/isla/engine/render/render_world.hpp` (skinned geometry + skin palette storage)
+> - `engine/src/render/include/bgfx_mesh_manager.hpp` / `engine/src/render/bgfx_mesh_manager.cpp` (dual static/skinned upload path + validation guards)
+> - `engine/src/render/include/bgfx_shader_manager.hpp` / `engine/src/render/bgfx_shader_manager.cpp` (skinned shader program cache/resolve path)
+> - `engine/src/render/shaders/vs_mesh_skinned.sc` / `engine/src/render/shaders/varying.def.sc` / `engine/src/render/shaders/BUILD` (skinning shader variant + build wiring)
+> - `engine/include/isla/engine/render/model_renderer.hpp` / `engine/src/render/model_renderer.cpp` (skinned draw selection + palette upload)
+> - `engine/src/render/include/model_renderer_skinning_utils.hpp` / `engine/src/render/model_renderer_skinning_utils.cpp` (program-path and palette helper logic)
+> - `client/src/client_app.hpp` / `client/src/client_app.cpp` (GPU-authoritative animation updates + CPU fallback)
+> - `engine/src/render/model_renderer_skinning_utils_test.cpp`
+> - `engine/src/render/bgfx_mesh_manager_test.cpp`
+> - `engine/src/render/shader_contract_test.cpp` / `engine/src/render/shader_binary_runtime_test.cpp`
+> - `.github/workflows/ci.yml` (windows smoke includes `//engine/src/render:bgfx_mesh_manager_tests`, `//engine/src/render:model_renderer_skinning_utils_tests`, `//engine/src/render:shader_binary_runtime_tests`)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -166,11 +185,15 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
   - skinned primitives must be referenced by nodes that use the target skin
 - Hierarchy caveat:
   - static non-joint ancestors are baked; animated non-joint chains are not fully supported yet
+- Current GPU skinning caveat (Phase 3 implementation):
+  - authoritative GPU palette currently supports joint indices in `[0, 63]` per skinned draw
+  - >64-joint referenced primitive support is tracked in Phase 3.5
 
 ### Known Phase 1 Limits (Intentional)
 
 - Validator does not decode raw accessor buffer values for `JOINTS_0`; bounds checks are static and metadata-dependent.
 - Validator enforces conversion contract constraints, but does not execute rendering/runtime playback paths.
+- Validator does not currently enforce Phase 3 fixed GPU palette budget constraints (`JOINTS_0 <= 63` on rendered primitive path).
 
 ### Exit Criteria
 
@@ -303,7 +326,7 @@ This is acceptable for initial bring-up, but should be tightened before relying 
 - Added regression/perf-oriented test coverage for the in-place update path (correctness first, plus basic allocation/churn guard where practical).
 - Satisfied as of 2026-03-03.
 
-## Phase 3: GPU Skinning Render Path
+## Phase 3: GPU Skinning Render Path (Completed; Phase 3.5 Follow-up Pending)
 
 ### Goal
 
@@ -323,14 +346,80 @@ Render skinned meshes using evaluated joint matrices.
 - Keep Phase 2.5 CPU path as an optional fallback/debug path during rollout, but treat GPU skinning as the single source of visual truth once validated.
 - Continue consuming converted glTF/GLB as runtime render input; PMX intake automation is handled in later tooling phases.
 
+### Implemented (2026-03-03)
+
+- Added skinned mesh render data to `RenderWorld`:
+  - skinned vertex stream (`position/normal/uv/joints/weights`)
+  - skinned index stream
+  - per-mesh skin palette storage
+- Added bgfx dual upload path (static + skinned) with dedicated skinned vertex layout.
+- Added skinning-capable shader variant and runtime loading path:
+  - `vs_mesh_skinned.sc`
+  - shader manager skinned program resolution
+- Added renderer draw-path wiring:
+  - per-draw static-vs-skinned program selection
+  - per-draw joint palette upload (`u_joint_palette[64]`)
+- Added `ClientApp` GPU-authoritative animation tick path:
+  - per-tick palette updates without per-frame CPU geometry deformation
+  - retained Phase 2.5 CPU skinning path as fallback/debug path
+- Added Phase 3 safety hardening:
+  - shader-side index clamp into `[0, 63]`
+  - skinned upload rejection for invalid primitive indices
+  - skinned upload rejection when vertex joint indices exceed current palette budget
+- Added focused tests and CI coverage for:
+  - skinned shader source/binary contracts
+  - skinned upload churn/guard behavior
+  - GPU program-path decision and palette helper logic
+  - GPU-authoritative runtime update stability
+
+### Known Limits (Post-Phase 3)
+
+- Current GPU skinning palette budget is fixed at 64 joint matrices per skinned draw.
+- Assets/primitives referencing joint indices above this budget are not yet supported by the current Phase 3 upload path.
+- Large-skeleton support is deferred to Phase 3.5 (joint remap and/or draw partition strategy).
+
 ### Risks
 
 - Uniform limits for large skeletons
 - Shader/backend compatibility differences
+- Large-skeleton mitigation beyond fixed palette budget is tracked in Phase 3.5.
 
 ### Exit Criteria
 
 - Character deforms correctly during animation (no rigid-only motion).
+- Satisfied as of 2026-03-03 for the current fixed-palette budget path.
+
+## Phase 3.5: Large-Skeleton GPU Skinning Support (>64 Joint Indices)
+
+### Goal
+
+Support real character assets where skinned primitives reference more than 64 joints without falling back to non-authoritative deformation behavior.
+
+### Scope
+
+- Remove strict runtime dependency on a single fixed 64-matrix palette per skinned draw.
+- Introduce a deterministic joint remap workflow for GPU skinning:
+  - build per-primitive (or per-submesh partition) local joint palettes
+  - rewrite uploaded skinned joint indices to local palette space
+  - upload only remapped palette entries per draw
+- Define and document draw splitting policy when a primitive cannot be represented in one palette budget.
+- Keep Phase 3 shader/runtime contracts intact for assets already within the 64-joint budget.
+- Preserve static mesh and non-skinned paths unchanged.
+- Add regression coverage for:
+  - primitives with joints spanning above 64 global indices
+  - remap correctness (same deformation output as CPU/reference path)
+  - deterministic behavior across repeated loads/ticks
+
+### Risks
+
+- Additional CPU preprocessing cost for remap/partition build
+- Complexity in draw splitting and material/primitive bookkeeping
+- Potential mismatch bugs between remapped indices and uploaded palette entries
+
+### Exit Criteria
+
+- GPU skinning path supports converted assets whose skinned primitives reference more than 64 joints, with correct deformation and without silent GPU-path rejection.
+- Runtime no longer treats `joint_index > 63` as a hard incompatibility for otherwise valid assets.
 
 ## Phase 4: Basic Physics Preservation from PMX Conversion
 
@@ -348,7 +437,7 @@ Preserve basic PMX physics intent through glTF metadata ingestion.
 - Define fallback behavior for unsupported physics fields.
 - Keep physics feature scope minimal and stable.
 - Use Phase 1 sidecar schema (`schema_version: 1.0.0`) as ingestion baseline.
-- Integrate against established Phase 2 playback/skeleton runtime state (avoid introducing a parallel animation state path).
+- Integrate against established Phase 2/3 playback + skeleton runtime state (avoid introducing a parallel animation/deformation state path).
 
 ### Exit Criteria
 
@@ -369,6 +458,7 @@ Make PMX motion assets usable by converting motion data into glTF clips.
 - Ensure converted clips avoid unsupported sampler output until cubic support lands.
 - Maintain Phase 1 baseline clip naming/acceptance requirements.
 - Target Phase 2 playback controller API as the runtime clip control surface.
+- Validate converted clips against the Phase 3 GPU skinning runtime path (not CPU fallback-only behavior).
 
 ### Exit Criteria
 
@@ -397,6 +487,7 @@ Make the pipeline maintainable and testable.
   - interpolation mode handling (`LINEAR`/`STEP` + rejection paths)
   - playback mode behavior (`Loop`/`Clamp`)
   - shader contract for skinning path
+  - GPU skinning guard/fallback behavior around current palette/index limits
   - physics metadata parsing fallbacks
   - model intake orchestration (`models/` scan, PMX auto-convert trigger, converted-output cache hit path)
 - Add CI target(s) for animation/physics pipeline tests.
@@ -406,6 +497,9 @@ Make the pipeline maintainable and testable.
   - `//engine/src/render:render_world_tests`
   - `//client/src:animated_mesh_skinning_test`
   - `//client/src:client_app_animation_test`
+  - `//engine/src/render:bgfx_mesh_manager_tests`
+  - `//engine/src/render:model_renderer_skinning_utils_tests`
+  - `//engine/src/render:shader_binary_runtime_tests`
 
 ### Exit Criteria
 
@@ -426,6 +520,7 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
 - Support rigs with non-joint skeleton roots and animated intermediate nodes correctly.
 - Revisit Phase 1 conversion caveats once full hierarchy animation support lands.
 - Preserve Phase 2 controller semantics for clip/state APIs while changing evaluation internals.
+- Keep compatibility with Phase 3/3.5 GPU skinning data flow while evaluation internals evolve.
 
 ### Exit Criteria
 
@@ -444,6 +539,7 @@ Close remaining runtime animation fidelity/performance gaps.
 - Expand regression tests for cubic edge cases and seek behavior.
 - Update Phase 1 contract + validator rules when `CUBICSPLINE` transitions from unsupported to supported.
 - Maintain Phase 2 state/pose consistency guarantees (reported local time aligns with sampled pose semantics).
+- Maintain Phase 3 deformation consistency guarantees (GPU-skinned output remains aligned with evaluated pose semantics).
 
 ### Exit Criteria
 
@@ -466,6 +562,7 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
   - Phase 2 temporary CPU skinning
   - Phase 2.5 optimized temporary CPU skinning (in-place + deferred bounds)
   - Phase 3+ authoritative GPU skinning
+  - Phase 3.5 large-skeleton GPU skinning extension beyond fixed palette budget
 - Publish final end-user intake workflow docs:
   - where to place models (`models/`)
   - supported input extensions (`.pmx`, `.gltf`, `.glb`)
@@ -488,8 +585,9 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 
 1. First deterministic PMX conversion gate: after Phase 1 (contract + schema + validator).
 2. First usable PMX runtime playback point: after Phase 2 (runtime clip playback).
-3. First visually correct character deformation point: after Phase 3 (GPU skinning).
-4. First basic PMX parity point (animation + basic physics): after Phase 4/5.
-5. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 6.
-6. First hierarchy-fidelity point for complex rigs: after Phase 7.
-7. First interpolation-complete point: after Phase 8.
+3. First visually correct character deformation point: after Phase 3 (GPU skinning, achieved for current fixed-palette-budget content).
+4. First large-rig-ready deformation point (>64-joint referenced primitives): after Phase 3.5.
+5. First basic PMX parity point (animation + basic physics): after Phase 4/5.
+6. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 6.
+7. First hierarchy-fidelity point for complex rigs: after Phase 7.
+8. First interpolation-complete point: after Phase 8.

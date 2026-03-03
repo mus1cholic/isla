@@ -12,6 +12,7 @@
 #include <memory>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/log/log.h"
 #include <bgfx/bgfx.h>
 
@@ -25,6 +26,7 @@ namespace {
 
 constexpr std::size_t kTriangleVertexCount = 3U;
 constexpr std::size_t kNormalPackedElementCount = 4U;
+constexpr std::uint16_t kMaxGpuSkinningJointIndex = 63U;
 
 struct MeshVertex {
     float x;
@@ -193,12 +195,8 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
         if (mesh.has_skinned_geometry()) {
             const std::size_t vertex_count = mesh.skinned_vertices().size();
             const std::size_t index_count = mesh.skinned_indices().size();
-            if (vertex_count == 0U || index_count == 0U) {
-                reset_mesh_gpu_buffers(mesh_index, geometry_revision, true,
-                                       impl_->mesh_vertex_buffers, impl_->mesh_index_buffers,
-                                       impl_->mesh_geometry_revisions, impl_->mesh_is_skinned);
-                continue;
-            }
+            DCHECK_GT(vertex_count, 0U);
+            DCHECK_GT(index_count, 0U);
             if (vertex_count > (internal::kMaxBgfxCopyBytes / sizeof(GpuSkinnedMeshVertex))) {
                 reset_mesh_gpu_buffers(mesh_index, geometry_revision, true,
                                        impl_->mesh_vertex_buffers, impl_->mesh_index_buffers,
@@ -231,6 +229,27 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
                 LOG(WARNING) << "BgfxRenderer: skinned mesh has out-of-range index, skipping mesh";
                 continue;
             }
+            bool has_joint_out_of_palette_range = false;
+            for (const isla::client::SkinnedMeshVertex& vertex : mesh.skinned_vertices()) {
+                for (const std::uint16_t joint : vertex.joints) {
+                    if (joint > kMaxGpuSkinningJointIndex) {
+                        has_joint_out_of_palette_range = true;
+                        break;
+                    }
+                }
+                if (has_joint_out_of_palette_range) {
+                    break;
+                }
+            }
+            if (has_joint_out_of_palette_range) {
+                reset_mesh_gpu_buffers(mesh_index, geometry_revision, true,
+                                       impl_->mesh_vertex_buffers, impl_->mesh_index_buffers,
+                                       impl_->mesh_geometry_revisions, impl_->mesh_is_skinned);
+                LOG_EVERY_N_SEC(WARNING, 2.0)
+                    << "BgfxRenderer: skinned mesh uses joint index beyond GPU palette limit (64), "
+                       "skipping mesh";
+                continue;
+            }
 
             std::vector<GpuSkinnedMeshVertex> vertices;
             vertices.reserve(vertex_count);
@@ -251,7 +270,7 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
                     .weights = vertex.weights,
                 });
             }
-            std::vector<std::uint32_t> indices = mesh.skinned_indices();
+            const std::vector<std::uint32_t>& indices = mesh.skinned_indices();
 
             const std::size_t vertex_bytes = vertices.size() * sizeof(GpuSkinnedMeshVertex);
             const std::size_t index_bytes = indices.size() * sizeof(std::uint32_t);
