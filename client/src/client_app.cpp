@@ -4,9 +4,14 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
+#include "animated_mesh_skinning.hpp"
 #include "engine/src/render/include/mesh_asset_loader.hpp"
 #include "win32_layered_overlay.hpp"
 
@@ -14,7 +19,23 @@ namespace isla::client {
 
 namespace {
 
+constexpr std::uint64_t kNanosecondsPerSecond = 1000000000ULL;
 constexpr char kMeshAssetEnvVar[] = "ISLA_MESH_ASSET";
+constexpr char kAnimatedGltfAssetEnvVar[] = "ISLA_ANIMATED_GLTF_ASSET";
+constexpr char kAnimationClipEnvVar[] = "ISLA_ANIM_CLIP";
+constexpr char kAnimationPlaybackModeEnvVar[] = "ISLA_ANIM_PLAYBACK_MODE";
+
+std::size_t find_clip_index_by_name(const animated_gltf::AnimatedGltfAsset& asset, const char* name) {
+    if (name == nullptr || name[0] == '\0') {
+        return 0U;
+    }
+    for (std::size_t i = 0U; i < asset.clips.size(); ++i) {
+        if (asset.clips[i].name == name) {
+            return i;
+        }
+    }
+    return asset.clips.size();
+}
 
 } // namespace
 
@@ -70,12 +91,49 @@ bool ClientApp::initialize() {
     }
 
     load_startup_mesh();
+    last_tick_ns_ = sdl_runtime_.get_ticks_ns();
     is_running_ = true;
     return true;
 }
 
 void ClientApp::load_startup_mesh() {
     world_.materials().push_back(Material{});
+    animated_asset_.reset();
+    animation_playback_.clear_asset();
+    animated_mesh_bindings_.clear();
+
+    const char* animated_asset_path = std::getenv(kAnimatedGltfAssetEnvVar);
+    if (animated_asset_path != nullptr && animated_asset_path[0] != '\0') {
+        animated_gltf::AnimatedGltfLoadResult loaded =
+            animated_gltf::load_from_file(animated_asset_path);
+        if (!loaded.ok) {
+            LOG(WARNING) << "ClientApp: animated glTF load failed for " << kAnimatedGltfAssetEnvVar
+                         << "='" << animated_asset_path << "' error='" << loaded.error_message
+                         << "'; falling back to static mesh path";
+        } else {
+            animated_asset_.emplace(std::move(loaded.asset));
+            std::string playback_error;
+            if (!animation_playback_.set_asset(&*animated_asset_, &playback_error)) {
+                LOG(WARNING) << "ClientApp: animation playback setup failed for "
+                             << kAnimatedGltfAssetEnvVar << "='" << animated_asset_path
+                             << "' error='" << playback_error << "'; falling back to static mesh path";
+                animated_asset_.reset();
+                animation_playback_.clear_asset();
+            } else {
+                configure_animation_playback_from_environment();
+                populate_world_from_animated_asset();
+
+                LOG(INFO) << "ClientApp: loaded animated glTF from " << kAnimatedGltfAssetEnvVar << "='"
+                          << animated_asset_path << "', clips=" << animated_asset_->clips.size()
+                          << ", primitives=" << animated_asset_->primitives.size()
+                          << ", playback_meshes=" << animated_mesh_bindings_.size();
+                if (animated_mesh_bindings_.empty()) {
+                    LOG(WARNING) << "ClientApp: animated glTF loaded but produced zero playable meshes";
+                }
+                return;
+            }
+        }
+    }
 
     const char* mesh_asset_path = std::getenv(kMeshAssetEnvVar);
     if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
@@ -98,7 +156,88 @@ void ClientApp::load_startup_mesh() {
     LOG(INFO) << "ClientApp: loaded mesh from ISLA_MESH_ASSET='" << mesh_asset_path << "'";
 }
 
+void ClientApp::configure_animation_playback_from_environment() {
+    if (!animated_asset_.has_value()) {
+        return;
+    }
+    std::string playback_error;
+    const char* clip_name = std::getenv(kAnimationClipEnvVar);
+    const std::size_t clip_index = find_clip_index_by_name(*animated_asset_, clip_name);
+    if (clip_index < animated_asset_->clips.size()) {
+        if (!animation_playback_.set_clip_index(clip_index, &playback_error)) {
+            LOG(WARNING) << "ClientApp: failed selecting clip index " << clip_index
+                         << " error='" << playback_error << "'";
+        } else {
+            LOG(INFO) << "ClientApp: selected animation clip index=" << clip_index << " name='"
+                      << animated_asset_->clips[clip_index].name << "'";
+        }
+    } else if (clip_name != nullptr && clip_name[0] != '\0') {
+        LOG(WARNING) << "ClientApp: requested clip '" << clip_name
+                     << "' not found; defaulting to clip index 0";
+    }
+
+    const char* playback_mode = std::getenv(kAnimationPlaybackModeEnvVar);
+    if (playback_mode == nullptr) {
+        return;
+    }
+    const std::string mode_value(playback_mode);
+    if (mode_value == "clamp") {
+        animation_playback_.set_playback_mode(animated_gltf::ClipPlaybackMode::Clamp);
+        LOG(INFO) << "ClientApp: animation playback mode set to clamp";
+    } else if (mode_value == "loop") {
+        animation_playback_.set_playback_mode(animated_gltf::ClipPlaybackMode::Loop);
+        LOG(INFO) << "ClientApp: animation playback mode set to loop";
+    } else {
+        LOG(WARNING) << "ClientApp: unknown " << kAnimationPlaybackModeEnvVar << " value='"
+                     << mode_value << "'; expected 'loop' or 'clamp'";
+    }
+}
+
+void ClientApp::populate_world_from_animated_asset() {
+    animated_mesh_bindings_.clear();
+    if (!animated_asset_.has_value()) {
+        return;
+    }
+    for (std::size_t primitive_index = 0U; primitive_index < animated_asset_->primitives.size();
+         ++primitive_index) {
+        const animated_gltf::SkinnedPrimitive& primitive = animated_asset_->primitives[primitive_index];
+        MeshData mesh;
+        mesh.set_triangles(
+            animated_mesh_skinning::make_triangles_from_skinned_primitive(primitive, nullptr));
+        if (mesh.triangles().empty()) {
+            continue;
+        }
+        world_.meshes().push_back(std::move(mesh));
+        const std::size_t mesh_id = world_.meshes().size() - 1U;
+        world_.objects().push_back(RenderObject{
+            .mesh_id = mesh_id,
+            .material_id = 0U,
+            .visible = true,
+        });
+        animated_mesh_bindings_.push_back(AnimatedMeshBinding{
+            .mesh_id = mesh_id,
+            .primitive_index = primitive_index,
+        });
+    }
+}
+
 void ClientApp::tick() {
+    const std::uint64_t now_ns = sdl_runtime_.get_ticks_ns();
+    float dt_seconds = 0.0F;
+    if (now_ns < last_tick_ns_) {
+        LOG(WARNING) << "ClientApp: non-monotonic tick clock observed (now=" << now_ns
+                     << ", previous=" << last_tick_ns_ << "); clamping dt to 0";
+    } else {
+        dt_seconds =
+            static_cast<float>(now_ns - last_tick_ns_) / static_cast<float>(kNanosecondsPerSecond);
+    }
+    if (!std::isfinite(dt_seconds) || dt_seconds < 0.0F) {
+        LOG(WARNING) << "ClientApp: invalid frame dt computed (" << dt_seconds << "); clamping to 0";
+        dt_seconds = 0.0F;
+    }
+    last_tick_ns_ = now_ns;
+    world_.set_sim_time_seconds(world_.sim_time_seconds() + dt_seconds);
+
     SDL_Event event;
     while (sdl_runtime_.poll_event(&event)) {
         if (event.type == SDL_EVENT_QUIT) {
@@ -118,6 +257,41 @@ void ClientApp::tick() {
             }
         }
     }
+
+    tick_animation(dt_seconds);
+}
+
+void ClientApp::tick_animation(float dt_seconds) {
+    if (!animated_asset_.has_value()) {
+        return;
+    }
+    std::string playback_error;
+    if (!animation_playback_.tick(dt_seconds, &playback_error)) {
+        LOG_EVERY_N_SEC(WARNING, 2.0)
+            << "ClientApp: animation playback tick failed: " << playback_error;
+        return;
+    }
+    if (!animation_playback_.has_cached_pose()) {
+        return;
+    }
+    const std::vector<Mat4>& skin_matrices = animation_playback_.cached_pose().skin_matrices;
+    for (const AnimatedMeshBinding& binding : animated_mesh_bindings_) {
+        if (binding.mesh_id >= world_.meshes().size() ||
+            binding.primitive_index >= animated_asset_->primitives.size()) {
+            continue;
+        }
+        const animated_gltf::SkinnedPrimitive& primitive =
+            animated_asset_->primitives[binding.primitive_index];
+        world_.meshes()[binding.mesh_id].set_triangles(
+            animated_mesh_skinning::make_triangles_from_skinned_primitive(primitive, &skin_matrices));
+    }
+    const auto& playback_state = animation_playback_.state();
+    LOG_EVERY_N_SEC(INFO, 2.0)
+        << "ClientApp: animation playback tick clip_index=" << playback_state.clip_index
+        << ", local_time_seconds=" << playback_state.local_time_seconds
+        << ", mode="
+        << (playback_state.playback_mode == animated_gltf::ClipPlaybackMode::Clamp ? "clamp"
+                                                                                    : "loop");
 }
 
 void ClientApp::render() const {
