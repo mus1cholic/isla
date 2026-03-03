@@ -213,4 +213,13 @@ TEST(ShaderContractTests, NonInstancedVaryingDefDeclaresWorldPositionVarying) {
     EXPECT_TRUE(absl::StrContains(varying, "v_world_pos"));
 }
 
+TEST(ShaderContractTests, SkinnedVertexShaderDeclaresSkinInputsAndPaletteUniform) {
+    const std::string shader = load_shader_source("engine/src/render/shaders/vs_mesh_skinned.sc");
+    ASSERT_FALSE(shader.empty()) << "Could not load skinned vertex shader source";
+
+    EXPECT_TRUE(absl::StrContains(shader, "$input a_indices, a_weight"));
+    EXPECT_TRUE(absl::StrContains(shader, "uniform mat4 u_joint_palette[64];"));
+    EXPECT_TRUE(absl::StrContains(shader, "vec4 skinnedPos = mul(skin, vec4(a_position, 1.0));"));
+}
+
 } // namespace

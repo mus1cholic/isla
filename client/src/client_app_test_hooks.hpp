@@ -40,6 +40,14 @@ class ClientAppTestHooks {
         app.populate_world_from_animated_asset();
     }
 
+    static void set_gpu_skinning_authoritative(ClientApp& app, bool enabled) {
+        app.gpu_skinning_authoritative_ = enabled;
+    }
+
+    static bool gpu_skinning_authoritative(const ClientApp& app) {
+        return app.gpu_skinning_authoritative_;
+    }
+
     static const RenderWorld& world(const ClientApp& app) {
         return app.world_;
     }

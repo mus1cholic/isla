@@ -12,10 +12,12 @@ cc_library(
         "include/animation_playback_controller.hpp",
         "include/animated_gltf.hpp",
         "include/mesh_asset_loader.hpp",
+        "include/model_renderer_skinning_utils.hpp",
         "include/shader_path_resolver.hpp",
         "include/texture_loader_limits.hpp",
         "mesh_asset_loader.cpp",
         "model_renderer.cpp",
+        "model_renderer_skinning_utils.cpp",
         "render_world.cpp",
         "shader_path_resolver.cpp",
     ] + select({
@@ -47,6 +49,24 @@ cc_library(
         "@platforms//os:windows": ["//third_party/bgfx:bgfx"],
         "//conditions:default": [],
     }),
+)
+
+cc_test(
+    name = "model_renderer_skinning_utils_tests",
+    srcs = ["model_renderer_skinning_utils_test.cpp"],
+    deps = [
+        ":render",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "bgfx_mesh_manager_tests",
+    srcs = ["bgfx_mesh_manager_test.cpp"],
+    deps = [
+        ":render",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
@@ -92,6 +112,7 @@ cc_test(
     data = [
         "//engine/src/render/shaders:fs_mesh.sc",
         "//engine/src/render/shaders:vs_mesh.sc",
+        "//engine/src/render/shaders:vs_mesh_skinned.sc",
         "//engine/src/render/shaders:vs_mesh_instanced.sc",
         "//engine/src/render/shaders:varying.def.sc",
         "//engine/src/render/shaders:varying_instanced.def.sc",

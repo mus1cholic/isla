@@ -43,6 +43,27 @@ struct MeshVertex {
     }
 };
 
+struct GpuSkinnedMeshVertex {
+    float x;
+    float y;
+    float z;
+    std::array<std::uint8_t, kNormalPackedElementCount> normal;
+    float u;
+    float v;
+    std::array<float, 4U> joints;
+    std::array<float, 4U> weights;
+
+    static void init_layout(bgfx::VertexLayout& layout) {
+        layout.begin()
+            .add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+            .add(bgfx::Attrib::Normal, 4, bgfx::AttribType::Uint8, true, false)
+            .add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+            .add(bgfx::Attrib::Indices, 4, bgfx::AttribType::Float)
+            .add(bgfx::Attrib::Weight, 4, bgfx::AttribType::Float)
+            .end();
+    }
+};
+
 std::uint8_t pack_normal_component(float component) {
     const float clamped = std::clamp(component, -1.0F, 1.0F);
     const float mapped = (clamped * 0.5F) + 0.5F;
@@ -92,7 +113,9 @@ class BgfxMeshManager::Impl {
     std::vector<bgfx::VertexBufferHandle> mesh_vertex_buffers;
     std::vector<bgfx::IndexBufferHandle> mesh_index_buffers;
     std::vector<std::uint64_t> mesh_geometry_revisions;
+    std::vector<bool> mesh_is_skinned;
     bgfx::VertexLayout mesh_vertex_layout;
+    bgfx::VertexLayout skinned_mesh_vertex_layout;
     std::size_t uploaded_mesh_count = 0U;
     std::size_t last_frame_mesh_upload_count = 0U;
 };
@@ -104,6 +127,7 @@ BgfxMeshManager::~BgfxMeshManager() = default;
 bool BgfxMeshManager::initialize() {
     shutdown();
     MeshVertex::init_layout(impl_->mesh_vertex_layout);
+    GpuSkinnedMeshVertex::init_layout(impl_->skinned_mesh_vertex_layout);
     return true;
 }
 
@@ -111,6 +135,7 @@ void BgfxMeshManager::shutdown() {
     destroy_vertex_buffers(impl_->mesh_vertex_buffers);
     destroy_index_buffers(impl_->mesh_index_buffers);
     impl_->mesh_geometry_revisions.clear();
+    impl_->mesh_is_skinned.clear();
     impl_->uploaded_mesh_count = 0U;
     impl_->last_frame_mesh_upload_count = 0U;
 }
@@ -131,6 +156,7 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
         impl_->mesh_vertex_buffers.assign(mesh_count, BGFX_INVALID_HANDLE);
         impl_->mesh_index_buffers.assign(mesh_count, BGFX_INVALID_HANDLE);
         impl_->mesh_geometry_revisions.assign(mesh_count, 0U);
+        impl_->mesh_is_skinned.assign(mesh_count, false);
     }
 
     for (std::size_t mesh_index = 0; mesh_index < mesh_count; ++mesh_index) {
@@ -148,6 +174,119 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
         if (previous_geometry_revision == geometry_revision) {
             VLOG(2) << "BgfxRenderer: mesh " << mesh_index
                     << " revision unchanged, reusing existing GPU buffers";
+            continue;
+        }
+
+        if (mesh.has_skinned_geometry()) {
+            const std::size_t vertex_count = mesh.skinned_vertices().size();
+            const std::size_t index_count = mesh.skinned_indices().size();
+            if (vertex_count == 0U || index_count == 0U) {
+                destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
+                destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
+                impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+                impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+                impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+                impl_->mesh_is_skinned.at(mesh_index) = true;
+                continue;
+            }
+            if (vertex_count > (internal::kMaxBgfxCopyBytes / sizeof(GpuSkinnedMeshVertex))) {
+                destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
+                destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
+                impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+                impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+                impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+                impl_->mesh_is_skinned.at(mesh_index) = true;
+                LOG_EVERY_N_SEC(WARNING, 2.0)
+                    << "BgfxRenderer: skinned mesh vertex buffer byte size exceeds "
+                       "bgfx::copy limit, skipping mesh";
+                continue;
+            }
+            if (index_count > (internal::kMaxBgfxCopyBytes / sizeof(std::uint32_t))) {
+                destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
+                destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
+                impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+                impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+                impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+                impl_->mesh_is_skinned.at(mesh_index) = true;
+                LOG_EVERY_N_SEC(WARNING, 2.0)
+                    << "BgfxRenderer: skinned mesh index buffer byte size exceeds "
+                       "bgfx::copy limit, skipping mesh";
+                continue;
+            }
+            bool has_invalid_index = false;
+            for (const std::uint32_t index : mesh.skinned_indices()) {
+                if (static_cast<std::size_t>(index) >= vertex_count) {
+                    has_invalid_index = true;
+                    break;
+                }
+            }
+            if (has_invalid_index) {
+                destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
+                destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
+                impl_->mesh_vertex_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+                impl_->mesh_index_buffers.at(mesh_index) = BGFX_INVALID_HANDLE;
+                impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+                impl_->mesh_is_skinned.at(mesh_index) = true;
+                LOG(WARNING) << "BgfxRenderer: skinned mesh has out-of-range index, skipping mesh";
+                continue;
+            }
+
+            std::vector<GpuSkinnedMeshVertex> vertices;
+            vertices.reserve(vertex_count);
+            for (const isla::client::SkinnedMeshVertex& vertex : mesh.skinned_vertices()) {
+                vertices.push_back(GpuSkinnedMeshVertex{
+                    .x = vertex.position.x,
+                    .y = vertex.position.y,
+                    .z = vertex.position.z,
+                    .normal = pack_normal(normalize(vertex.normal)),
+                    .u = vertex.uv.x,
+                    .v = vertex.uv.y,
+                    .joints = {
+                        static_cast<float>(vertex.joints[0]),
+                        static_cast<float>(vertex.joints[1]),
+                        static_cast<float>(vertex.joints[2]),
+                        static_cast<float>(vertex.joints[3]),
+                    },
+                    .weights = vertex.weights,
+                });
+            }
+            std::vector<std::uint32_t> indices = mesh.skinned_indices();
+
+            const std::size_t vertex_bytes = vertices.size() * sizeof(GpuSkinnedMeshVertex);
+            const std::size_t index_bytes = indices.size() * sizeof(std::uint32_t);
+            const bgfx::Memory* vertex_memory =
+                bgfx::copy(vertices.data(), static_cast<std::uint32_t>(vertex_bytes));
+            const bgfx::Memory* index_memory =
+                bgfx::copy(indices.data(), static_cast<std::uint32_t>(index_bytes));
+            bgfx::VertexBufferHandle new_vertex_buffer =
+                bgfx::createVertexBuffer(vertex_memory, impl_->skinned_mesh_vertex_layout);
+            bgfx::IndexBufferHandle new_index_buffer =
+                bgfx::createIndexBuffer(index_memory, BGFX_BUFFER_INDEX32);
+            if (!bgfx::isValid(new_vertex_buffer) || !bgfx::isValid(new_index_buffer)) {
+                if (bgfx::isValid(new_vertex_buffer)) {
+                    bgfx::destroy(new_vertex_buffer);
+                }
+                if (bgfx::isValid(new_index_buffer)) {
+                    bgfx::destroy(new_index_buffer);
+                }
+                LOG_EVERY_N_SEC(WARNING, 2.0)
+                    << "BgfxRenderer: failed to create skinned mesh buffers for mesh "
+                    << mesh_index << " at revision " << geometry_revision
+                    << "; keeping previous GPU buffers and retrying on future frames";
+                continue;
+            }
+            destroy_vertex_buffer_if_valid(impl_->mesh_vertex_buffers.at(mesh_index));
+            destroy_index_buffer_if_valid(impl_->mesh_index_buffers.at(mesh_index));
+            impl_->mesh_vertex_buffers.at(mesh_index) = new_vertex_buffer;
+            impl_->mesh_index_buffers.at(mesh_index) = new_index_buffer;
+            impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+            impl_->mesh_is_skinned.at(mesh_index) = true;
+            ++impl_->uploaded_mesh_count;
+            ++impl_->last_frame_mesh_upload_count;
+            VLOG(1) << "BgfxRenderer: uploaded skinned mesh " << mesh_index
+                    << " vertices=" << vertex_count << ", indices=" << index_count
+                    << ", revision " << previous_geometry_revision << " -> " << geometry_revision
+                    << ", total_uploads=" << impl_->uploaded_mesh_count;
             continue;
         }
 
@@ -275,6 +414,7 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
         impl_->mesh_vertex_buffers.at(mesh_index) = new_vertex_buffer;
         impl_->mesh_index_buffers.at(mesh_index) = new_index_buffer;
         impl_->mesh_geometry_revisions.at(mesh_index) = geometry_revision;
+        impl_->mesh_is_skinned.at(mesh_index) = false;
         ++impl_->uploaded_mesh_count;
         ++impl_->last_frame_mesh_upload_count;
         VLOG(1) << "BgfxRenderer: uploaded mesh " << mesh_index << " triangles=" << triangle_count
@@ -286,6 +426,10 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
 bool BgfxMeshManager::has_mesh_slot(std::size_t mesh_id) const {
     return mesh_id < impl_->mesh_vertex_buffers.size() &&
            mesh_id < impl_->mesh_index_buffers.size();
+}
+
+bool BgfxMeshManager::mesh_is_skinned(std::size_t mesh_id) const {
+    return mesh_id < impl_->mesh_is_skinned.size() && impl_->mesh_is_skinned.at(mesh_id);
 }
 
 bgfx::VertexBufferHandle BgfxMeshManager::vertex_buffer_for_mesh(std::size_t mesh_id) const {

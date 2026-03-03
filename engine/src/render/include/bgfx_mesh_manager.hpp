@@ -30,6 +30,7 @@ class BgfxMeshManager {
     void upload_dirty_meshes(const RenderWorld& world);
 
     [[nodiscard]] bool has_mesh_slot(std::size_t mesh_id) const;
+    [[nodiscard]] bool mesh_is_skinned(std::size_t mesh_id) const;
     [[nodiscard]] bgfx::VertexBufferHandle vertex_buffer_for_mesh(std::size_t mesh_id) const;
     [[nodiscard]] bgfx::IndexBufferHandle index_buffer_for_mesh(std::size_t mesh_id) const;
 

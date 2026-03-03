@@ -101,6 +101,10 @@ void ClientApp::load_startup_mesh() {
     animation_playback_.clear_asset();
     animated_mesh_bindings_.clear();
     animation_tick_count_ = 0U;
+    gpu_skinning_authoritative_ = model_renderer_.supports_gpu_skinning();
+    LOG(INFO) << "ClientApp: GPU skinning authoritative mode "
+              << (gpu_skinning_authoritative_ ? "enabled" : "disabled")
+              << " (renderer support check)";
 
     const char* animated_asset_path = std::getenv(kAnimatedGltfAssetEnvVar);
     if (animated_asset_path != nullptr && animated_asset_path[0] != '\0') {
@@ -215,6 +219,25 @@ void ClientApp::populate_world_from_animated_asset() {
 
         MeshData mesh;
         mesh.set_triangles(std::move(initial_triangles));
+        if (gpu_skinning_authoritative_) {
+            std::vector<SkinnedMeshVertex> vertices;
+            vertices.reserve(primitive.vertices.size());
+            for (const animated_gltf::SkinnedVertex& vertex : primitive.vertices) {
+                vertices.push_back(SkinnedMeshVertex{
+                    .position = vertex.position,
+                    .normal = vertex.normal,
+                    .uv = vertex.uv,
+                    .joints = vertex.joints,
+                    .weights = vertex.weights,
+                });
+            }
+            mesh.set_skinned_geometry(std::move(vertices), primitive.indices);
+            if (animation_playback_.has_cached_pose()) {
+                mesh.set_skin_palette(animation_playback_.cached_pose().skin_matrices);
+            }
+        } else {
+            mesh.clear_skinned_geometry();
+        }
         if (mesh.triangles().empty()) {
             continue;
         }
@@ -227,6 +250,9 @@ void ClientApp::populate_world_from_animated_asset() {
         });
         animated_mesh_bindings_.push_back(std::move(binding));
     }
+    LOG(INFO) << "ClientApp: animated mesh population complete, bindings="
+              << animated_mesh_bindings_.size() << ", gpu_skinning_authoritative="
+              << (gpu_skinning_authoritative_ ? "true" : "false");
 }
 
 void ClientApp::tick() {
@@ -288,6 +314,22 @@ void ClientApp::tick_animation(float dt_seconds) {
         (animation_tick_count_ % kAnimatedBoundsRecomputeIntervalTicks) == 0U;
     std::size_t recomputed_bounds_mesh_count = 0U;
     const std::vector<Mat4>& skin_matrices = animation_playback_.cached_pose().skin_matrices;
+    const auto& playback_state = animation_playback_.state();
+    LOG_EVERY_N_SEC(INFO, 2.0)
+        << "ClientApp: animation playback tick clip_index=" << playback_state.clip_index
+        << ", local_time_seconds=" << playback_state.local_time_seconds << ", mode="
+        << (playback_state.playback_mode == animated_gltf::ClipPlaybackMode::Clamp ? "clamp"
+                                                                                   : "loop");
+    if (gpu_skinning_authoritative_) {
+        for (AnimatedMeshBinding& binding : animated_mesh_bindings_) {
+            if (binding.mesh_id >= world_.meshes().size()) {
+                continue;
+            }
+            MeshData& mesh = world_.meshes()[binding.mesh_id];
+            mesh.set_skin_palette(skin_matrices);
+        }
+        return;
+    }
     for (AnimatedMeshBinding& binding : animated_mesh_bindings_) {
         if (binding.mesh_id >= world_.meshes().size() ||
             binding.primitive_index >= animated_asset_->primitives.size()) {
@@ -310,12 +352,6 @@ void ClientApp::tick_animation(float dt_seconds) {
                 << recomputed_bounds_mesh_count
                 << " mesh(es) at animation_tick_count=" << animation_tick_count_;
     }
-    const auto& playback_state = animation_playback_.state();
-    LOG_EVERY_N_SEC(INFO, 2.0)
-        << "ClientApp: animation playback tick clip_index=" << playback_state.clip_index
-        << ", local_time_seconds=" << playback_state.local_time_seconds << ", mode="
-        << (playback_state.playback_mode == animated_gltf::ClipPlaybackMode::Clamp ? "clamp"
-                                                                                   : "loop");
 }
 
 void ClientApp::render() const {

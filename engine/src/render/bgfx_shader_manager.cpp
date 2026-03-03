@@ -21,6 +21,7 @@ class BgfxShaderManager::Impl {
   public:
     std::unordered_map<std::string, bgfx::ProgramHandle> program_cache;
     std::unordered_map<std::string, bgfx::ProgramHandle> instanced_program_cache;
+    std::unordered_map<std::string, bgfx::ProgramHandle> skinned_program_cache;
 };
 
 namespace {
@@ -126,6 +127,31 @@ bool BgfxShaderManager::initialize() {
 
     impl_->program_cache.emplace("mesh", mesh_program);
 
+    bgfx::ShaderHandle skinned_vertex_shader = load_shader_with_fallbacks("vs_mesh_skinned.bin");
+    if (!bgfx::isValid(skinned_vertex_shader)) {
+        LOG(WARNING) << "BgfxShaderManager: could not load skinned vertex shader; "
+                        "GPU skinning path will be unavailable";
+    } else {
+        // Fragment shader is shared; load a second copy because bgfx::createProgram with
+        // destroy_shaders=true takes ownership.
+        bgfx::ShaderHandle skinned_fragment_shader = load_shader_with_fallbacks("fs_mesh.bin");
+        if (!bgfx::isValid(skinned_fragment_shader)) {
+            LOG(WARNING) << "BgfxShaderManager: could not load fragment shader for skinned "
+                            "program; GPU skinning path will be unavailable";
+            destroy_shader_if_valid(skinned_vertex_shader);
+        } else {
+            bgfx::ProgramHandle skinned_program =
+                bgfx::createProgram(skinned_vertex_shader, skinned_fragment_shader, true);
+            if (!bgfx::isValid(skinned_program)) {
+                LOG(WARNING) << "BgfxShaderManager: could not create skinned bgfx program; "
+                                "GPU skinning path will be unavailable";
+            } else {
+                impl_->skinned_program_cache.emplace("mesh", skinned_program);
+                LOG(INFO) << "BgfxShaderManager: skinned mesh program created successfully";
+            }
+        }
+    }
+
     bgfx::ShaderHandle instanced_vertex_shader =
         load_shader_with_fallbacks("vs_mesh_instanced.bin");
     if (!bgfx::isValid(instanced_vertex_shader)) {
@@ -170,6 +196,12 @@ void BgfxShaderManager::shutdown() {
         }
     }
     impl_->instanced_program_cache.clear();
+    for (auto& [name, program] : impl_->skinned_program_cache) {
+        if (bgfx::isValid(program)) {
+            bgfx::destroy(program);
+        }
+    }
+    impl_->skinned_program_cache.clear();
 }
 
 bgfx::ProgramHandle BgfxShaderManager::resolve_program(const std::string& shader_name) const {
@@ -207,8 +239,22 @@ BgfxShaderManager::resolve_instanced_program(const std::string& shader_name) con
     return BGFX_INVALID_HANDLE;
 }
 
+bgfx::ProgramHandle BgfxShaderManager::resolve_skinned_program(const std::string& shader_name) const {
+    if (auto it = impl_->skinned_program_cache.find(shader_name);
+        it != impl_->skinned_program_cache.end()) {
+        return it->second;
+    }
+
+    const auto default_it = impl_->skinned_program_cache.find("mesh");
+    if (default_it != impl_->skinned_program_cache.end()) {
+        return default_it->second;
+    }
+    return BGFX_INVALID_HANDLE;
+}
+
 std::size_t BgfxShaderManager::active_program_cache_count() const {
-    return impl_->program_cache.size() + impl_->instanced_program_cache.size();
+    return impl_->program_cache.size() + impl_->instanced_program_cache.size() +
+           impl_->skinned_program_cache.size();
 }
 
 } // namespace isla::client

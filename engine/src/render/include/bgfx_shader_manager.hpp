@@ -26,6 +26,7 @@ class BgfxShaderManager {
     [[nodiscard]] bgfx::ProgramHandle resolve_program(const std::string& shader_name) const;
     [[nodiscard]] bgfx::ProgramHandle
     resolve_instanced_program(const std::string& shader_name) const;
+    [[nodiscard]] bgfx::ProgramHandle resolve_skinned_program(const std::string& shader_name) const;
     [[nodiscard]] std::size_t active_program_cache_count() const;
 
   private:

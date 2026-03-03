@@ -18,6 +18,7 @@ class ModelRenderer final : public IRendererBackend {
     bool initialize(SDL_Window* window, SDL_Renderer* renderer, RenderSize size) override;
     [[nodiscard]] bool uses_sdl_renderer() const override;
     [[nodiscard]] bool has_homogeneous_depth() const override;
+    [[nodiscard]] bool supports_gpu_skinning() const;
     void on_resize(RenderSize size) override;
     void render(const RenderWorld& world) const override;
     void set_debug_overlay_enabled(bool enabled) override;
