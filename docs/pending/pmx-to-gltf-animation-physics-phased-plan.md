@@ -30,7 +30,7 @@ Rationale:
 > - Phase 0 is complete and substantially hardened.
 > - Phase 1 is complete (contract + schema + validator + validator tests).
 > - Phase 2 is complete (runtime clip playback + controller + temporary CPU skinning path).
-> - Phase 2.5 is newly scoped and pending optimization follow-up.
+> - Phase 2.5 is complete (in-place CPU skinning updates + workspace reuse + deferred bounds recompute).
 > - Phases 3-9 remain pending runtime/tooling expansion.
 >
 > Phase 1 artifacts:
@@ -45,6 +45,14 @@ Rationale:
 > - `client/src/animated_mesh_skinning.hpp`
 > - `client/src/animated_mesh_skinning.cpp`
 > - `client/src/client_app.cpp` (runtime wiring + env controls)
+>
+> Phase 2.5 artifacts:
+> - `engine/include/isla/engine/render/render_world.hpp` (`edit_triangles_without_recompute_bounds(...)`)
+> - `client/src/animated_mesh_skinning.hpp` (per-primitive workspace + in-place APIs)
+> - `client/src/animated_mesh_skinning.cpp` (topology/workspace build + in-place skin writes)
+> - `client/src/client_app.hpp` / `client/src/client_app.cpp` (binding workspace + in-place tick updates)
+> - `client/src/animated_mesh_skinning_test.cpp` (multi-tick churn/capacity guards)
+> - `client/src/client_app_animation_test.cpp` (runtime multi-frame storage stability smoke test)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -227,7 +235,7 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
 - A converted skinned glTF character visibly plays selected clips with predictable loop/clamp behavior.
 - Satisfied as of 2026-03-03 via runtime playback controller + temporary CPU skinning.
 
-## Phase 2.5: CPU Skinning Update Path Optimization (Pending)
+## Phase 2.5: CPU Skinning Update Path Optimization (Completed)
 
 ### Goal
 
@@ -254,11 +262,31 @@ Phase 2 currently skins by rebuilding and replacing triangle lists every frame, 
 
 This is acceptable for initial bring-up, but should be tightened before relying on larger PMX assets in playback-heavy scenarios.
 
+### Implemented (2026-03-03)
+
+- Replaced per-tick triangle-list replacement for animated meshes with in-place mutation:
+  - animated mesh tick path now uses `MeshData::edit_triangles_without_recompute_bounds(...)`
+  - no per-frame `MeshData::set_triangles(...)` calls on the animated update loop
+- Added reusable per-primitive CPU skinning workspace:
+  - cached triangle topology indices for valid primitive triangles
+  - reused skinned-position buffer across ticks
+- Updated startup animated mesh population to prebuild triangle storage + topology workspace once.
+- Deferred bounds recompute on animated tick path to a lower-frequency interval (instead of every frame).
+- Added regression/perf-oriented test coverage:
+  - in-place skinning storage/capacity stability over many ticks
+  - client animation smoke test validating stable triangle storage across many frames
+
+### Known Limits (Post-Phase 2.5)
+
+- CPU skinning remains a temporary deformation path until Phase 3 GPU skinning is authoritative.
+- Bounds recompute is deferred (not per-frame), which is acceptable for current usage because this path does not currently rely on per-frame bounds for culling/physics decisions.
+
 ### Exit Criteria
 
 - Animated CPU-skinning path no longer performs full triangle-list reallocation/replacement each tick.
 - Runtime behavior is unchanged functionally (same visible animation output as Phase 2 baseline).
 - Added regression/perf-oriented test coverage for the in-place update path (correctness first, plus basic allocation/churn guard where practical).
+- Satisfied as of 2026-03-03.
 
 ## Phase 3: GPU Skinning Render Path
 

@@ -131,6 +131,15 @@ cc_test(
 )
 
 cc_test(
+    name = "render_world_tests",
+    srcs = ["render_world_test.cpp"],
+    deps = [
+        ":render",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "animated_gltf_tests",
     srcs = ["animated_gltf_test.cpp"],
     data = [

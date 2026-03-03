@@ -220,6 +220,81 @@ TEST(ClientAppAnimationTest, TickAdvancesAnimationAndMeshTriangles) {
     EXPECT_NEAR(world.meshes()[0].triangles()[0].a.x, 1.0F, 1.0e-4F);
 }
 
+TEST(ClientAppAnimationTest, AnimatedTickUpdatesMeshInPlaceWithoutTriangleReallocation) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+    runtime.now_ticks_ns = 500000000ULL;
+
+    internal::ClientAppTestHooks::tick(app);
+
+    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
+    ASSERT_FALSE(world.meshes().empty());
+    const Triangle* triangles_ptr_after_first_tick = world.meshes()[0].triangles().data();
+    const std::size_t triangles_capacity_after_first_tick = world.meshes()[0].triangles().capacity();
+
+    runtime.now_ticks_ns = 1000000000ULL;
+    internal::ClientAppTestHooks::tick(app);
+
+    ASSERT_FALSE(world.meshes()[0].triangles().empty());
+    EXPECT_EQ(world.meshes()[0].triangles().data(), triangles_ptr_after_first_tick);
+    EXPECT_EQ(world.meshes()[0].triangles().capacity(), triangles_capacity_after_first_tick);
+}
+
+TEST(ClientAppAnimationTest, AnimatedTickKeepsTriangleStorageStableAcrossManyFrames) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+    runtime.now_ticks_ns = 500000000ULL;
+
+    internal::ClientAppTestHooks::tick(app);
+
+    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
+    ASSERT_FALSE(world.meshes().empty());
+    const Triangle* stable_ptr = world.meshes()[0].triangles().data();
+    const std::size_t stable_capacity = world.meshes()[0].triangles().capacity();
+
+    for (int frame = 0; frame < 120; ++frame) {
+        runtime.now_ticks_ns += 16666666ULL;
+        internal::ClientAppTestHooks::tick(app);
+        ASSERT_FALSE(world.meshes()[0].triangles().empty());
+        EXPECT_EQ(world.meshes()[0].triangles().data(), stable_ptr);
+        EXPECT_EQ(world.meshes()[0].triangles().capacity(), stable_capacity);
+    }
+}
+
+TEST(ClientAppAnimationTest, AnimatedTickDefersBoundsRecomputeUntilIntervalBoundary) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+
+    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
+    ASSERT_FALSE(world.meshes().empty());
+    const BoundingSphere initial_bounds = world.meshes()[0].local_bounds();
+
+    for (int frame = 0; frame < 29; ++frame) {
+        runtime.now_ticks_ns += 16666666ULL;
+        internal::ClientAppTestHooks::tick(app);
+    }
+
+    const BoundingSphere deferred_bounds = world.meshes()[0].local_bounds();
+    EXPECT_FLOAT_EQ(deferred_bounds.center.x, initial_bounds.center.x);
+    EXPECT_FLOAT_EQ(deferred_bounds.center.y, initial_bounds.center.y);
+    EXPECT_FLOAT_EQ(deferred_bounds.center.z, initial_bounds.center.z);
+    EXPECT_FLOAT_EQ(deferred_bounds.radius, initial_bounds.radius);
+
+    runtime.now_ticks_ns += 16666666ULL;
+    internal::ClientAppTestHooks::tick(app);
+    const BoundingSphere refreshed_bounds = world.meshes()[0].local_bounds();
+    EXPECT_GT(refreshed_bounds.center.x, initial_bounds.center.x + 0.1F);
+}
+
 TEST(ClientAppAnimationTest, EnvironmentConfigSelectsClipAndClampMode) {
     FakeSdlRuntime runtime;
     ClientApp app(runtime);

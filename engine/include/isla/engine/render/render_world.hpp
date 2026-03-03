@@ -56,6 +56,14 @@ class MeshData {
         recompute_bounds();
     }
 
+    template <typename Fn> void edit_triangles_without_recompute_bounds(Fn&& fn) {
+        static_assert(std::is_void_v<std::invoke_result_t<Fn, TriangleList&>>,
+                      "MeshData::edit_triangles_without_recompute_bounds callback must return "
+                      "void");
+        std::invoke(std::forward<Fn>(fn), triangles_);
+        mark_geometry_dirty();
+    }
+
     void set_triangles(TriangleList triangles) {
         triangles_ = std::move(triangles);
         mark_geometry_dirty();

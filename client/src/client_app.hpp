@@ -10,6 +10,8 @@
 #include <optional>
 #include <vector>
 
+#include "animated_mesh_skinning.hpp"
+
 struct SDL_Window;
 struct SDL_Renderer;
 
@@ -40,6 +42,7 @@ class ClientApp {
     struct AnimatedMeshBinding {
         std::size_t mesh_id = 0U;
         std::size_t primitive_index = 0U;
+        animated_mesh_skinning::PrimitiveSkinningWorkspace skinning_workspace;
     };
 
     bool is_running_ = false;
@@ -53,6 +56,7 @@ class ClientApp {
     std::optional<animated_gltf::AnimatedGltfAsset> animated_asset_;
     animated_gltf::AnimationPlaybackController animation_playback_;
     std::vector<AnimatedMeshBinding> animated_mesh_bindings_;
+    std::uint32_t animation_tick_count_ = 0U;
     const ISdlRuntime& sdl_runtime_;
 };
 
