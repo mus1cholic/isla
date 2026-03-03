@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 
 #include "engine/src/render/include/mesh_asset_loader.hpp"
@@ -11,18 +11,55 @@
 namespace isla::client::mesh_asset_loader {
 namespace {
 
-std::filesystem::path make_unique_temp_dir() {
-    const auto base = std::filesystem::temp_directory_path();
-    for (int i = 0; i < 100; ++i) {
-        const auto candidate = base / ("isla_mesh_loader_test_" + std::to_string(i) + "_" +
-                                       std::to_string(std::rand()));
+class ScopedTempDir {
+  public:
+    static ScopedTempDir create(std::string_view prefix) {
         std::error_code ec;
-        if (std::filesystem::create_directories(candidate, ec) && !ec) {
-            return candidate;
+        const auto base = std::filesystem::temp_directory_path(ec);
+        if (ec) {
+            return {};
         }
+
+        std::mt19937_64 rng(std::random_device{}());
+        std::uniform_int_distribution<std::uint64_t> distribution;
+        for (int i = 0; i < 100; ++i) {
+            const auto candidate =
+                base / (std::string(prefix) + "_" + std::to_string(distribution(rng)));
+            if (std::filesystem::create_directories(candidate, ec) && !ec) {
+                return ScopedTempDir(candidate);
+            }
+            ec.clear();
+        }
+        return {};
     }
-    return {};
-}
+
+    ScopedTempDir() = default;
+    ScopedTempDir(const ScopedTempDir&) = delete;
+    ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+    ScopedTempDir(ScopedTempDir&&) = default;
+    ScopedTempDir& operator=(ScopedTempDir&&) = default;
+
+    ~ScopedTempDir() {
+        if (path_.empty()) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    [[nodiscard]] bool is_valid() const {
+        return !path_.empty();
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const {
+        return path_;
+    }
+
+  private:
+    explicit ScopedTempDir(std::filesystem::path path) : path_(std::move(path)) {}
+
+    std::filesystem::path path_{};
+};
 
 } // namespace
 
@@ -77,9 +114,9 @@ TEST(MeshAssetLoaderTests, UnsupportedExtensionReturnsError) {
 }
 
 TEST(MeshAssetLoaderTests, LoadsAllTrianglePrimitivesAcrossMeshes) {
-    const std::filesystem::path temp_dir = make_unique_temp_dir();
-    ASSERT_FALSE(temp_dir.empty());
-    const std::filesystem::path gltf_path = temp_dir / "multi_mesh_two_triangles.gltf";
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_mesh_loader_test");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = temp_dir.path() / "multi_mesh_two_triangles.gltf";
 
     constexpr char kMultiMeshGltf[] =
         "{"

@@ -49,10 +49,12 @@ Transform make_visible_object_transform(const MeshData& mesh) {
 
 std::string resolve_default_startup_model_path() {
     const std::filesystem::path relative_path(kDefaultStartupModelPath);
-    std::vector<std::filesystem::path> candidates = {
-        std::filesystem::current_path() / relative_path,
-        relative_path,
-    };
+    std::vector<std::filesystem::path> candidates = { relative_path };
+    std::error_code cwd_error;
+    const std::filesystem::path current_dir = std::filesystem::current_path(cwd_error);
+    if (!cwd_error) {
+        candidates.insert(candidates.begin(), current_dir / relative_path);
+    }
     const char* workspace_dir = std::getenv("BUILD_WORKSPACE_DIRECTORY");
     if (workspace_dir != nullptr && workspace_dir[0] != '\0') {
         candidates.push_back(std::filesystem::path(workspace_dir) / relative_path);

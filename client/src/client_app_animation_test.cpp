@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,32 +62,86 @@ class ScopedEnvVar {
 
 class ScopedCurrentPath {
   public:
-    explicit ScopedCurrentPath(const std::filesystem::path& path)
-        : original_(std::filesystem::current_path()) {
-        std::filesystem::current_path(path);
+    explicit ScopedCurrentPath(const std::filesystem::path& path) {
+        std::error_code ec;
+        original_ = std::filesystem::current_path(ec);
+        if (ec) {
+            return;
+        }
+        std::filesystem::current_path(path, ec);
+        if (ec) {
+            original_.clear();
+            return;
+        }
+        armed_ = true;
     }
 
     ~ScopedCurrentPath() {
+        if (!armed_) {
+            return;
+        }
         std::error_code ec;
         std::filesystem::current_path(original_, ec);
     }
 
+    [[nodiscard]] bool is_armed() const {
+        return armed_;
+    }
+
   private:
     std::filesystem::path original_;
+    bool armed_ = false;
 };
 
-std::filesystem::path make_unique_temp_dir() {
-    const auto base = std::filesystem::temp_directory_path();
-    for (int i = 0; i < 100; ++i) {
-        const auto candidate = base / ("isla_client_app_test_" + std::to_string(i) + "_" +
-                                       std::to_string(std::rand()));
+class ScopedTempDir {
+  public:
+    static ScopedTempDir create(std::string_view prefix) {
         std::error_code ec;
-        if (std::filesystem::create_directories(candidate, ec) && !ec) {
-            return candidate;
+        const auto base = std::filesystem::temp_directory_path(ec);
+        if (ec) {
+            return {};
         }
+
+        std::mt19937_64 rng(std::random_device{}());
+        std::uniform_int_distribution<std::uint64_t> distribution;
+        for (int i = 0; i < 100; ++i) {
+            const auto candidate =
+                base / (std::string(prefix) + "_" + std::to_string(distribution(rng)));
+            if (std::filesystem::create_directories(candidate, ec) && !ec) {
+                return ScopedTempDir(candidate);
+            }
+            ec.clear();
+        }
+        return {};
     }
-    return {};
-}
+
+    ScopedTempDir() = default;
+    ScopedTempDir(const ScopedTempDir&) = delete;
+    ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+    ScopedTempDir(ScopedTempDir&&) = default;
+    ScopedTempDir& operator=(ScopedTempDir&&) = default;
+
+    ~ScopedTempDir() {
+        if (path_.empty()) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    [[nodiscard]] bool is_valid() const {
+        return !path_.empty();
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const {
+        return path_;
+    }
+
+  private:
+    explicit ScopedTempDir(std::filesystem::path path) : path_(std::move(path)) {}
+
+    std::filesystem::path path_{};
+};
 
 std::vector<std::uint8_t> make_minimal_triangle_glb() {
     const std::string json =
@@ -553,13 +608,13 @@ TEST(ClientAppAnimationTest, LoadStartupMeshUsesWorkspaceDefaultModelPathWhenUns
     FakeSdlRuntime runtime;
     ClientApp app(runtime);
 
-    const std::filesystem::path sandbox_dir = make_unique_temp_dir();
-    const std::filesystem::path workspace_dir = make_unique_temp_dir();
-    ASSERT_FALSE(sandbox_dir.empty());
-    ASSERT_FALSE(workspace_dir.empty());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace_dir / "models"));
+    ScopedTempDir sandbox_dir = ScopedTempDir::create("isla_client_app_test_sandbox");
+    ScopedTempDir workspace_dir = ScopedTempDir::create("isla_client_app_test_workspace");
+    ASSERT_TRUE(sandbox_dir.is_valid());
+    ASSERT_TRUE(workspace_dir.is_valid());
+    ASSERT_TRUE(std::filesystem::create_directories(workspace_dir.path() / "models"));
 
-    const std::filesystem::path default_glb_path = workspace_dir / "models" / "model.glb";
+    const std::filesystem::path default_glb_path = workspace_dir.path() / "models" / "model.glb";
     const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
     {
         std::ofstream out(default_glb_path, std::ios::binary);
@@ -568,10 +623,11 @@ TEST(ClientAppAnimationTest, LoadStartupMeshUsesWorkspaceDefaultModelPathWhenUns
                   static_cast<std::streamsize>(glb.size()));
     }
 
-    ScopedCurrentPath cwd_guard(sandbox_dir);
+    ScopedCurrentPath cwd_guard(sandbox_dir.path());
+    ASSERT_TRUE(cwd_guard.is_armed());
     ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
     ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace_dir.string().c_str());
+    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace_dir.path().string().c_str());
 
     internal::ClientAppTestHooks::load_startup_mesh(app);
 
@@ -585,9 +641,9 @@ TEST(ClientAppAnimationTest, StaticFallbackAppliesVisibleAutoFitTransform) {
     FakeSdlRuntime runtime;
     ClientApp app(runtime);
 
-    const std::filesystem::path temp_dir = make_unique_temp_dir();
-    ASSERT_FALSE(temp_dir.empty());
-    const std::filesystem::path obj_path = temp_dir / "triangle.obj";
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_obj");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path obj_path = temp_dir.path() / "triangle.obj";
     {
         std::ofstream out(obj_path);
         ASSERT_TRUE(out.is_open());
