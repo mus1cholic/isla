@@ -38,8 +38,9 @@ Operational interpretation:
 > - Phase 2.5 is complete (in-place CPU skinning updates + workspace reuse + deferred bounds recompute).
 > - Phase 3 is complete (authoritative GPU skinning path for current fixed palette budget).
 > - Phase 3.5 is complete (large-skeleton GPU skinning support beyond current fixed palette budget via deterministic remap/partition).
-> - Phases 4-9 remain pending runtime/tooling expansion.
-> - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 6 and finalized in Phase 9.
+> - Phases 4-10 remain pending runtime/tooling expansion.
+> - A dedicated Windows alpha-compositing stabilization phase (Phase 4.5) is now added and pending.
+> - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
 > Phase 3/3.5 design constraint (current):
 > - Shader-side per-draw GPU palette budget remains fixed at 64 joints (`u_joint_palette[64]`).
@@ -454,7 +455,113 @@ Support real character assets where skinned primitives reference more than 64 jo
 - Runtime no longer treats `joint_index > 63` as a hard incompatibility for otherwise valid assets.
 - Satisfied as of 2026-03-03.
 
-## Phase 4: Basic Physics Preservation from PMX Conversion
+## Phase 4: Static glTF Visual Fidelity Path
+
+### Goal
+
+Ensure static `.gltf/.glb` rendering preserves authored visual fidelity so loaded models do not appear materially/tessellation-degraded versus expected output.
+
+### Scope
+
+- Preserve imported surface shading inputs for static glTF path:
+  - consume authored vertex normals where available (avoid forced flat-shaded recompute path)
+  - keep deterministic fallback behavior when normals are missing
+- Preserve core material appearance inputs for static fallback path:
+  - neutral/default color policy that does not introduce global tint bias
+  - base color and alpha ingestion where available in glTF
+  - base color texture hookup for static loaded content where available
+- Define and test behavior for animated-asset static fallback:
+  - when animated glTF load succeeds but playback contract fails (e.g. no clips), static fallback render should still retain fidelity behavior
+- Add regression coverage for:
+  - static glTF normals/material fidelity expectations
+  - fallback behavior consistency between startup env path and default-model path
+
+### Exit Criteria
+
+- Static `.gltf/.glb` fallback no longer exhibits systemic yellow-tint/forced-faceted appearance for assets that include authored normals/material base inputs.
+- Animated-load fallback-to-static path produces the same visual-fidelity baseline as direct static load.
+
+## Phase 4.5: Windows Transparent Overlay + 3D Composition Reliability
+
+### Goal
+
+Provide a stable Windows composition path where the desktop remains transparent while 3D content remains visible and correctly blended.
+
+### Scope
+
+- Replace fragile layered-window/color-key permutations with a dedicated alpha-composited presentation path on Windows:
+  - DirectComposition-backed window composition
+  - premultiplied-alpha swapchain/presentation path compatible with runtime renderer output
+- Define a single authoritative Windows transparency mode for runtime:
+  - transparent clear background
+  - opaque model pixels
+  - deterministic behavior across resize/reconfigure events
+- Remove/retire ambiguous fallback combinations that produced inconsistent outcomes in current testing:
+  - color key honored on some paths but not others
+  - transparent-backbuffer path causing black/no-model presentation on current setup
+- Add platform-focused diagnostics and tests:
+  - compositor/swapchain init/result logging
+  - regression test coverage for overlay contract and window reconfigure behavior
+- Keep non-Windows behavior unchanged.
+
+### Rationale (Current Observed Behavior)
+
+- Current runtime can render the model reliably with non-transparent presentation (`reset_flags=0`) but background remains black.
+- Enabling transparent backbuffer on current setup causes black/no-model presentation despite successful draw submission and successful DWM API calls.
+- This indicates a Windows presentation/compositing integration gap, not a mesh/animation loading issue.
+
+### Observed Diagnostics (2026-03-03)
+
+What was tried (and why), with observed outcomes:
+
+- Layered + color-key path (`WS_EX_LAYERED` + `SetLayeredWindowAttributes(..., LWA_COLORKEY)`):
+  - Goal: treat clear color as transparent while preserving rendered model pixels.
+  - Outcome: model visible, but keyed background behavior was inconsistent and often remained opaque.
+- Color-key debug switch to magenta:
+  - Goal: verify whether Windows color-key transparency was actually being honored on the current path.
+  - Outcome: full magenta background appeared with model visible, confirming key color was showing as raw clear color (not being composited out reliably in this runtime path).
+- Transparent backbuffer path (`BGFX_RESET_TRANSPARENT_BACKBUFFER`) with alpha-clear `(0,0,0,0)`:
+  - Goal: use per-pixel alpha composition instead of color-key behavior.
+  - Outcome: black screen and/or missing model, despite renderer submitting draws.
+- DWM overlay path (`DwmIsCompositionEnabled`, `DwmEnableBlurBehindWindow`, `DwmExtendFrameIntoClientArea`) with explicit HRESULT logging:
+  - Goal: confirm compositor APIs were not failing.
+  - Outcome: APIs consistently returned success (`hr=0x0`), but black/no-model behavior persisted on transparent-backbuffer attempts.
+- Hybrid combinations (layered alpha + DWM + transparent backbuffer, SDL transparent flag toggles, color-key vs alpha variants):
+  - Goal: find a compatible combination without major platform-path rewrite.
+  - Outcome: no stable combination achieved transparent desktop + visible model simultaneously on current setup.
+- Shader/visibility troubleshooting:
+  - Forced mesh fragment alpha to `1.0` to ensure mesh pixels were not accidentally transparent.
+  - Restored static mesh auto-fit transform so model stays in camera view.
+  - Outcome: did not resolve black/no-model behavior under transparent-backbuffer mode.
+
+Key evidence collected:
+
+- Mesh/runtime loading is successful:
+  - static fallback loads `models/model.glb`
+  - renderer logs show `submitted_draws=1, world_objects=1, world_meshes=1`
+- DWM calls succeed:
+  - `dwm_composition_hr=0x0`, `blur_hr=0x0`, `extend_hr=0x0`
+- Behavior splits by presentation path:
+  - non-transparent bgfx reset (`reset_flags=0`): model visible, black background
+  - transparent bgfx reset (`reset_flags=1048576`): black/no-model on current setup
+
+What this rules out:
+
+- Not primarily an asset conversion/load failure (model and shaders load; draws are submitted).
+- Not primarily a single Win32 API call failure (DWM API success is verified).
+- Not primarily mesh visibility from transform/alpha alone (forced-opaque fragment alpha + auto-fit still fail under transparent-backbuffer path).
+
+Conclusion from diagnostics:
+
+- Current black-screen issue is a Windows presentation/compositing integration problem for this renderer path.
+- A dedicated alpha-composited presentation implementation (DirectComposition + premultiplied-alpha swapchain path) is required for a reliable transparent-desktop + visible-3D result.
+
+### Exit Criteria
+
+- On Windows, runtime shows desktop/background transparency and visible 3D model simultaneously in the same session, with stable behavior across startup and resize.
+- Transparency behavior no longer depends on color-key hacks or mutually inconsistent overlay flag combinations.
+
+## Phase 5: Basic Physics Preservation from PMX Conversion
 
 ### Goal
 
@@ -476,7 +583,7 @@ Preserve basic PMX physics intent through glTF metadata ingestion.
 
 - Imported character gets basic collider/physics proxies aligned with skeleton.
 
-## Phase 5: PMX Motion Pipeline (VMD to glTF Clip Workflow)
+## Phase 6: PMX Motion Pipeline (VMD to glTF Clip Workflow)
 
 ### Goal
 
@@ -497,7 +604,7 @@ Make PMX motion assets usable by converting motion data into glTF clips.
 
 - PMX model + converted motion clips play reliably in runtime through the same clip system.
 
-## Phase 6: Tooling, Validation, and CI
+## Phase 7: Tooling, Validation, and CI
 
 ### Goal
 
@@ -539,7 +646,7 @@ Make the pipeline maintainable and testable.
 - Pipeline regressions are detected automatically in CI.
 - App/tooling flow supports `models/` intake where `.pmx` inputs are auto-converted to runtime glTF/GLB and then loaded for display, while `.gltf/.glb` inputs load directly.
 
-## Phase 7: Full Node-Hierarchy Animation Support
+## Phase 8: Full Node-Hierarchy Animation Support
 
 ### Goal
 
@@ -559,7 +666,7 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
 
 - Assets with animated non-joint hierarchy segments evaluate correctly without conversion-side workarounds.
 
-## Phase 8: Interpolation + Sampling Completeness
+## Phase 9: Interpolation + Sampling Completeness
 
 ### Goal
 
@@ -578,7 +685,7 @@ Close remaining runtime animation fidelity/performance gaps.
 
 - Runtime matches expected glTF animation interpolation semantics for all targeted modes with stable performance.
 
-## Phase 9: PMX Pipeline Readiness and Sign-Off
+## Phase 10: PMX Pipeline Readiness and Sign-Off
 
 ### Goal
 
@@ -620,7 +727,9 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 2. First usable PMX runtime playback point: after Phase 2 (runtime clip playback).
 3. First visually correct character deformation point: after Phase 3 (GPU skinning, achieved for current fixed-palette-budget content).
 4. First large-rig-ready deformation point (>64-joint referenced primitives): after Phase 3.5 (achieved 2026-03-03).
-5. First basic PMX parity point (animation + basic physics): after Phase 4/5.
-6. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 6.
-7. First hierarchy-fidelity point for complex rigs: after Phase 7.
-8. First interpolation-complete point: after Phase 8.
+5. First static glTF visual-fidelity parity point (non-animated fallback path): after Phase 4.
+6. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5.
+7. First basic PMX parity point (animation + basic physics): after Phase 5/6.
+8. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7.
+9. First hierarchy-fidelity point for complex rigs: after Phase 8.
+10. First interpolation-complete point: after Phase 9.
