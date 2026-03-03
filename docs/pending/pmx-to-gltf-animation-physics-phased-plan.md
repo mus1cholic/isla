@@ -25,6 +25,11 @@ Rationale:
 - glTF is already integrated in runtime.
 - This de-risks format complexity and keeps runtime focused.
 
+Operational interpretation:
+
+- Runtime render input remains glTF/GLB.
+- PMX support is provided through conversion orchestration workflows, not native PMX render/runtime parsing.
+
 > [!NOTE]
 > **Current status (2026-03-03):**
 > - Phase 0 is complete and substantially hardened.
@@ -32,6 +37,7 @@ Rationale:
 > - Phase 2 is complete (runtime clip playback + controller + temporary CPU skinning path).
 > - Phase 2.5 is complete (in-place CPU skinning updates + workspace reuse + deferred bounds recompute).
 > - Phases 3-9 remain pending runtime/tooling expansion.
+> - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 6 and finalized in Phase 9.
 >
 > Phase 1 artifacts:
 > - `docs/pmx/pmx_to_gltf_conversion_contract.md`
@@ -315,6 +321,7 @@ Render skinned meshes using evaluated joint matrices.
 - Validate GPU path against Phase 1 contract outputs (`JOINTS_0`, `WEIGHTS_0`, baseline clip presence).
 - Retire or bypass Phase 2 temporary CPU skinning deformation updates once GPU skinning is authoritative.
 - Keep Phase 2.5 CPU path as an optional fallback/debug path during rollout, but treat GPU skinning as the single source of visual truth once validated.
+- Continue consuming converted glTF/GLB as runtime render input; PMX intake automation is handled in later tooling phases.
 
 ### Risks
 
@@ -376,6 +383,14 @@ Make the pipeline maintainable and testable.
 ### Scope
 
 - Expand the Phase 1 validator/checklist into broader CI/runtime coverage (do not replace it).
+- Add model intake orchestration for app/runtime workflows:
+  - define a default `models/` directory scan/input policy
+  - accept both `.pmx` and `.gltf/.glb` files in that intake directory
+  - if input is `.pmx`, run conversion automatically at app launch (or first-use) to produce runtime glTF/GLB output
+  - if input is `.gltf/.glb`, load directly without conversion
+  - cache converted outputs and avoid unnecessary reconversion when source + converter version are unchanged
+  - produce clear logs/errors for conversion failures and fallback/skip behavior
+  - define deterministic model selection policy when multiple candidates exist
 - Add automated tests for:
   - loader failures (missing skin/joints/weights)
   - pose eval determinism
@@ -383,6 +398,7 @@ Make the pipeline maintainable and testable.
   - playback mode behavior (`Loop`/`Clamp`)
   - shader contract for skinning path
   - physics metadata parsing fallbacks
+  - model intake orchestration (`models/` scan, PMX auto-convert trigger, converted-output cache hit path)
 - Add CI target(s) for animation/physics pipeline tests.
 - Add CI wiring for `//tools/pmx:validate_converted_gltf_test`.
 - Extend CI/smoke wiring from current baseline that already includes:
@@ -394,6 +410,7 @@ Make the pipeline maintainable and testable.
 ### Exit Criteria
 
 - Pipeline regressions are detected automatically in CI.
+- App/tooling flow supports `models/` intake where `.pmx` inputs are auto-converted to runtime glTF/GLB and then loaded for display, while `.gltf/.glb` inputs load directly.
 
 ## Phase 7: Full Node-Hierarchy Animation Support
 
@@ -449,10 +466,15 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
   - Phase 2 temporary CPU skinning
   - Phase 2.5 optimized temporary CPU skinning (in-place + deferred bounds)
   - Phase 3+ authoritative GPU skinning
+- Publish final end-user intake workflow docs:
+  - where to place models (`models/`)
+  - supported input extensions (`.pmx`, `.gltf`, `.glb`)
+  - PMX auto-convert behavior, cache location/invalidation policy, and troubleshooting steps
 
 ### Exit Criteria
 
 - PMX conversion + runtime playback + basic physics flow is production-ready with documented limits and regression coverage.
+- End-user can place a model in `models/` (`.pmx` or `.gltf/.glb`), run the app, and see it displayed; PMX inputs auto-convert through the defined pipeline.
 
 ## Cross-Phase Testing Strategy
 
@@ -468,5 +490,6 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 2. First usable PMX runtime playback point: after Phase 2 (runtime clip playback).
 3. First visually correct character deformation point: after Phase 3 (GPU skinning).
 4. First basic PMX parity point (animation + basic physics): after Phase 4/5.
-5. First hierarchy-fidelity point for complex rigs: after Phase 7.
-6. First interpolation-complete point: after Phase 8.
+5. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 6.
+6. First hierarchy-fidelity point for complex rigs: after Phase 7.
+7. First interpolation-complete point: after Phase 8.
