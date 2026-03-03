@@ -193,6 +193,46 @@ animated_gltf::AnimatedGltfAsset make_test_asset_with_two_clips() {
     return asset;
 }
 
+animated_gltf::AnimatedGltfAsset make_large_joint_test_asset() {
+    animated_gltf::AnimatedGltfAsset asset;
+    asset.skeleton.joints.resize(66U);
+    asset.bind_local_transforms.resize(66U);
+    asset.bind_prefix_matrices.assign(66U, Mat4::identity());
+
+    animated_gltf::SkinnedPrimitive primitive;
+    primitive.vertices.reserve(66U);
+    primitive.indices.reserve(66U);
+    for (std::uint16_t joint = 0U; joint < 66U; ++joint) {
+        primitive.vertices.push_back(animated_gltf::SkinnedVertex{
+            .position = Vec3{ .x = static_cast<float>(joint), .y = 0.0F, .z = 0.0F },
+            .uv = Vec2{ .x = 0.0F, .y = 0.0F },
+            .joints = { joint, 0U, 0U, 0U },
+            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
+        });
+        primitive.indices.push_back(static_cast<std::uint32_t>(joint));
+    }
+    asset.primitives.push_back(std::move(primitive));
+
+    animated_gltf::AnimationClip idle;
+    idle.name = "idle";
+    idle.duration_seconds = 1.0F;
+    idle.joint_tracks.resize(66U);
+    idle.joint_tracks[0].translations = {
+        animated_gltf::Vec3Keyframe{ .time_seconds = 0.0F,
+                                     .value = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } },
+        animated_gltf::Vec3Keyframe{ .time_seconds = 1.0F,
+                                     .value = Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F } },
+    };
+    animated_gltf::AnimationClip walk = idle;
+    walk.name = "walk";
+    animated_gltf::AnimationClip action = idle;
+    action.name = "action";
+    asset.clips.push_back(std::move(idle));
+    asset.clips.push_back(std::move(walk));
+    asset.clips.push_back(std::move(action));
+    return asset;
+}
+
 TEST(ClientAppAnimationTest, NonMonotonicClockClampsTickDeltaToZero) {
     FakeSdlRuntime runtime;
     ClientApp app(runtime);
@@ -323,6 +363,51 @@ TEST(ClientAppAnimationTest, GpuAuthoritativeAnimationUpdatesPaletteWithoutGeome
     const float tx_after_second_tick = world.meshes()[0].skin_palette()[0].elements[12];
     EXPECT_NEAR(tx_after_second_tick, 0.0F, 1.0e-4F);
     EXPECT_EQ(world.meshes()[0].geometry_revision(), stable_geometry_revision);
+}
+
+TEST(ClientAppAnimationTest, GpuAuthoritativeLargeSkeletonIsPartitionedToLocalPaletteBudget) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    internal::ClientAppTestHooks::set_animated_asset(app, make_large_joint_test_asset());
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_GE(world.meshes().size(), 2U);
+    for (const MeshData& mesh : world.meshes()) {
+        ASSERT_TRUE(mesh.has_skinned_geometry());
+        ASSERT_LE(mesh.skin_palette().size(), 64U);
+        for (const SkinnedMeshVertex& vertex : mesh.skinned_vertices()) {
+            EXPECT_LT(vertex.joints[0], 64U);
+        }
+    }
+}
+
+TEST(ClientAppAnimationTest, GpuAuthoritativePartitioningIsStableAcrossRepeatedPopulate) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    internal::ClientAppTestHooks::set_animated_asset(app, make_large_joint_test_asset());
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
+
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    const RenderWorld& first_world = internal::ClientAppTestHooks::world(app);
+    ASSERT_FALSE(first_world.meshes().empty());
+    std::vector<std::size_t> first_palette_sizes;
+    first_palette_sizes.reserve(first_world.meshes().size());
+    for (const MeshData& mesh : first_world.meshes()) {
+        first_palette_sizes.push_back(mesh.skin_palette().size());
+    }
+    const std::size_t first_mesh_count = first_world.meshes().size();
+    const std::size_t first_object_count = first_world.objects().size();
+
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    const RenderWorld& second_world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(second_world.meshes().size(), first_mesh_count);
+    ASSERT_EQ(second_world.objects().size(), first_object_count);
+    ASSERT_EQ(second_world.meshes().size(), first_palette_sizes.size());
+    for (std::size_t i = 0U; i < second_world.meshes().size(); ++i) {
+        EXPECT_EQ(second_world.meshes()[i].skin_palette().size(), first_palette_sizes[i]);
+    }
 }
 
 TEST(ClientAppAnimationTest, LoadStartupMeshResetsGpuAuthoritativeFlagWhenRendererUnsupported) {
