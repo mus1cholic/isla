@@ -71,4 +71,3 @@ const ISdlRuntime& default_sdl_runtime() {
 }
 
 } // namespace isla::client
-

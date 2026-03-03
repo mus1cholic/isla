@@ -3,11 +3,13 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 cc_library(
     name = "render",
     srcs = [
+        "animation_playback_controller.cpp",
         "animated_gltf.cpp",
         "include/bgfx_limits.hpp",
         "include/bgfx_mesh_manager.hpp",
         "include/bgfx_shader_manager.hpp",
         "include/bgfx_texture_manager.hpp",
+        "include/animation_playback_controller.hpp",
         "include/animated_gltf.hpp",
         "include/mesh_asset_loader.hpp",
         "include/shader_path_resolver.hpp",
@@ -113,6 +115,15 @@ cc_test(
 cc_test(
     name = "texture_loader_limits_tests",
     srcs = ["texture_loader_limits_test.cpp"],
+    deps = [
+        ":render",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "animation_playback_controller_tests",
+    srcs = ["animation_playback_controller_test.cpp"],
     deps = [
         ":render",
         "@googletest//:gtest_main",

@@ -36,18 +36,53 @@ cc_library(
 )
 
 cc_library(
+    name = "animated_mesh_skinning",
+    srcs = ["animated_mesh_skinning.cpp"],
+    hdrs = ["animated_mesh_skinning.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//engine/src/render:render",
+        "//engine/include/isla/engine/math",
+        "//engine/include/isla/engine/render",
+    ],
+)
+
+cc_library(
     name = "client_app",
     srcs = ["client_app.cpp"],
     hdrs = ["client_app.hpp"],
     visibility = ["//visibility:public"],
     deps = [
         "@abseil-cpp//absl/log:log",
+        ":animated_mesh_skinning",
         ":client_sdl_runtime",
         ":win32_layered_overlay",
         "//engine/src:engine",
         "//engine/src/render:render",
         "//engine/include/isla/engine/render",
         "//third_party/sdl3:sdl3",
+    ],
+)
+
+cc_test(
+    name = "animated_mesh_skinning_test",
+    srcs = ["animated_mesh_skinning_test.cpp"],
+    deps = [
+        ":animated_mesh_skinning",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "client_app_animation_test",
+    srcs = [
+        "client_app_animation_test.cpp",
+        "client_app_test_hooks.hpp",
+    ],
+    deps = [
+        ":client_app",
+        "//engine/src/render:render",
+        "@googletest//:gtest_main",
     ],
 )
 
