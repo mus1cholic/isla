@@ -35,6 +35,25 @@ class ValidateConvertedGltfTest(unittest.TestCase):
         self.assertTrue(errors)
         self.assertIn("Unsupported interpolation: CUBICSPLINE", "\n".join(errors))
 
+    def test_fails_schema_version_mismatch(self):
+        errors, _warnings = self._run_validator(
+            "tools/pmx/testdata/pass_minimal.gltf",
+            "tools/pmx/testdata/fail_schema_version.physics.json",
+        )
+        self.assertTrue(errors)
+        self.assertIn("schema_version '1.0.1' is unsupported", "\n".join(errors))
+
+    def test_fails_non_object_sidecar_root(self):
+        errors, _warnings = self._run_validator(
+            "tools/pmx/testdata/pass_minimal.gltf",
+            "tools/pmx/testdata/fail_top_level_array.physics.json",
+        )
+        self.assertTrue(errors)
+        self.assertIn(
+            "physics sidecar top-level JSON value must be an object",
+            "\n".join(errors),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

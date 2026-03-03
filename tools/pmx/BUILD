@@ -9,6 +9,8 @@ py_test(
     data = [
         "testdata/fail_cubicspline.gltf",
         "testdata/fail_cubicspline.physics.json",
+        "testdata/fail_schema_version.physics.json",
+        "testdata/fail_top_level_array.physics.json",
         "testdata/pass_minimal.gltf",
         "testdata/pass_minimal.physics.json",
     ],

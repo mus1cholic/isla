@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Phase 1 validator for PMX-converted glTF packages.
 
-Checks current runtime compatibility constraints documented in:
+Performs automated checks for a practical subset of the conversion contract:
 - docs/pmx/pmx_to_gltf_conversion_contract.md
+
+Notes:
+- Sidecar validation is schema-aligned and strict for required fields/types.
+- JOINTS_0 index bounds are checked when accessor metadata allows static validation.
+  Full raw accessor-value decoding is not implemented yet.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ import argparse
 import json
 import struct
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +25,10 @@ class ValidationError(Exception):
     pass
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+EXPECTED_SCHEMA_VERSION = "1.0.0"
+
+
+def _read_json(path: Path) -> Any:
     with path.open("rb") as f:
         return json.load(f)
 
@@ -66,6 +75,31 @@ def _load_gltf_or_glb(path: Path) -> dict[str, Any]:
 def _require(cond: bool, message: str, errors: list[str]) -> None:
     if not cond:
         errors.append(message)
+
+
+def _is_non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _is_vec3(value: Any) -> bool:
+    if not isinstance(value, list) or len(value) != 3:
+        return False
+    return all(isinstance(v, (int, float)) for v in value)
+
+
+def _is_uint32(value: Any) -> bool:
+    return isinstance(value, int) and 0 <= value <= 4294967295
+
+
+def _is_rfc3339_datetime(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    normalized = value.replace("Z", "+00:00")
+    try:
+        datetime.fromisoformat(normalized)
+        return True
+    except ValueError:
+        return False
 
 
 def _get_selected_skin(doc: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -151,7 +185,6 @@ def _validate_animation(doc: dict[str, Any], errors: list[str], warnings: list[s
         return clip_names
 
     if not animations:
-        warnings.append("No animations found")
         return clip_names
 
     accessors = doc.get("accessors", [])
@@ -233,18 +266,51 @@ def _validate_material_image_refs(doc: dict[str, Any], asset_path: Path, warning
             warnings.append(f"image[{idx}] uri does not resolve: {uri}")
 
 
-def _validate_sidecar(sidecar: dict[str, Any], joint_names: set[str], errors: list[str], warnings: list[str]) -> None:
+def _validate_sidecar(sidecar: Any, joint_names: set[str], errors: list[str], warnings: list[str]) -> None:
+    if not isinstance(sidecar, dict):
+        errors.append("physics sidecar top-level JSON value must be an object")
+        return
+
     required_top = ["schema_version", "converter", "colliders", "constraints", "collision_layers"]
     for key in required_top:
         _require(key in sidecar, f"physics sidecar missing required field: {key}", errors)
 
+    schema_version = sidecar.get("schema_version")
+    if not isinstance(schema_version, str):
+        errors.append("physics sidecar schema_version must be a string")
+    elif schema_version != EXPECTED_SCHEMA_VERSION:
+        errors.append(
+            f"physics sidecar schema_version '{schema_version}' is unsupported; "
+            f"expected '{EXPECTED_SCHEMA_VERSION}'"
+        )
+
     converter = sidecar.get("converter")
-    if isinstance(converter, dict):
-        for key in ("name", "version", "command", "timestamp_utc"):
-            _require(isinstance(converter.get(key), str) and bool(converter.get(key)),
-                     f"converter.{key} missing or empty", errors)
-    else:
+    if not isinstance(converter, dict):
         errors.append("converter section is missing or invalid")
+    else:
+        _require(_is_non_empty_string(converter.get("name")), "converter.name missing or empty", errors)
+        _require(_is_non_empty_string(converter.get("version")), "converter.version missing or empty", errors)
+        _require(_is_non_empty_string(converter.get("command")), "converter.command missing or empty", errors)
+        _require(
+            _is_rfc3339_datetime(converter.get("timestamp_utc")),
+            "converter.timestamp_utc missing or invalid RFC3339 date-time",
+            errors,
+        )
+
+    collision_layers = sidecar.get("collision_layers", [])
+    if not isinstance(collision_layers, list):
+        errors.append("collision_layers must be an array")
+    else:
+        for idx, layer in enumerate(collision_layers):
+            if not isinstance(layer, dict):
+                errors.append(f"collision_layers[{idx}] is invalid")
+                continue
+            layer_index = layer.get("index")
+            layer_name = layer.get("name")
+            if not isinstance(layer_index, int) or not (0 <= layer_index <= 31):
+                errors.append(f"collision_layers[{idx}].index must be int in [0, 31]")
+            if not _is_non_empty_string(layer_name):
+                errors.append(f"collision_layers[{idx}].name missing or empty")
 
     colliders = sidecar.get("colliders", [])
     if not isinstance(colliders, list):
@@ -260,10 +326,49 @@ def _validate_sidecar(sidecar: dict[str, Any], joint_names: set[str], errors: li
         if not isinstance(col, dict):
             errors.append(f"collider[{idx}] is invalid")
             continue
+        collider_id = col.get("id")
         bone_name = col.get("bone_name")
-        if not isinstance(bone_name, str) or not bone_name:
+        shape = col.get("shape")
+        offset = col.get("offset")
+        rotation = col.get("rotation_euler_deg")
+        is_trigger = col.get("is_trigger")
+        layer = col.get("layer")
+        mask = col.get("mask")
+
+        if not _is_non_empty_string(collider_id):
+            errors.append(f"collider[{idx}] id missing or empty")
+        if not _is_non_empty_string(bone_name):
             errors.append(f"collider[{idx}] bone_name missing")
             continue
+        if shape not in ("sphere", "capsule", "box"):
+            errors.append(f"collider[{idx}] shape must be one of sphere/capsule/box")
+        if not _is_vec3(offset):
+            errors.append(f"collider[{idx}] offset must be vec3")
+        if not _is_vec3(rotation):
+            errors.append(f"collider[{idx}] rotation_euler_deg must be vec3")
+        if not isinstance(is_trigger, bool):
+            errors.append(f"collider[{idx}] is_trigger must be bool")
+        if not _is_uint32(layer):
+            errors.append(f"collider[{idx}] layer must be uint32")
+        if not _is_uint32(mask):
+            errors.append(f"collider[{idx}] mask must be uint32")
+
+        if shape == "sphere":
+            radius = col.get("radius")
+            if not isinstance(radius, (int, float)) or radius <= 0:
+                errors.append(f"collider[{idx}] sphere requires radius > 0")
+        elif shape == "capsule":
+            radius = col.get("radius")
+            height = col.get("height")
+            if not isinstance(radius, (int, float)) or radius <= 0:
+                errors.append(f"collider[{idx}] capsule requires radius > 0")
+            if not isinstance(height, (int, float)) or height <= 0:
+                errors.append(f"collider[{idx}] capsule requires height > 0")
+        elif shape == "box":
+            size = col.get("size")
+            if not _is_vec3(size):
+                errors.append(f"collider[{idx}] box requires size vec3")
+
         if joint_names and bone_name not in joint_names:
             errors.append(f"collider[{idx}] bone_name not found in skin joints: {bone_name}")
 
@@ -271,11 +376,23 @@ def _validate_sidecar(sidecar: dict[str, Any], joint_names: set[str], errors: li
         if not isinstance(con, dict):
             errors.append(f"constraint[{idx}] is invalid")
             continue
+        constraint_id = con.get("id")
         a = con.get("bone_a_name")
         b = con.get("bone_b_name")
+        constraint_type = con.get("type")
+        if not _is_non_empty_string(constraint_id):
+            errors.append(f"constraint[{idx}] id missing or empty")
         if not isinstance(a, str) or not isinstance(b, str):
             errors.append(f"constraint[{idx}] missing bone_a_name/bone_b_name")
             continue
+        if constraint_type not in ("fixed", "hinge", "cone_twist"):
+            errors.append(f"constraint[{idx}] type must be fixed/hinge/cone_twist")
+        limit = con.get("limit")
+        if limit is not None and not isinstance(limit, dict):
+            errors.append(f"constraint[{idx}] limit must be an object when present")
+        extensions = con.get("extensions")
+        if extensions is not None and not isinstance(extensions, dict):
+            errors.append(f"constraint[{idx}] extensions must be an object when present")
         if joint_names:
             if a not in joint_names:
                 errors.append(f"constraint[{idx}] bone_a_name not found: {a}")
@@ -295,6 +412,11 @@ def validate_package(asset_path: Path, sidecar_path: Path | None) -> tuple[list[
     selected_skin, skin = _get_selected_skin(doc)
     joints = _joint_indices(skin)
     joint_names = _node_joint_names(doc, joints)
+    joint_count = len(joints)
+    accessors = doc.get("accessors", [])
+    if not isinstance(accessors, list):
+        errors.append("accessors field is not an array")
+        accessors = []
 
     prims = _collect_skin_primitives(doc, selected_skin)
     _require(bool(prims), "No triangle primitive attached to selected skin", errors)
@@ -306,15 +428,49 @@ def validate_package(asset_path: Path, sidecar_path: Path | None) -> tuple[list[
             continue
         for required in ("POSITION", "JOINTS_0", "WEIGHTS_0"):
             _require(required in attrs, f"primitive[{idx}] missing {required}", errors)
+        joints_accessor_index = attrs.get("JOINTS_0")
+        if isinstance(joints_accessor_index, int):
+            if joints_accessor_index < 0 or joints_accessor_index >= len(accessors):
+                errors.append(f"primitive[{idx}] JOINTS_0 accessor index out of range")
+            else:
+                joints_accessor = accessors[joints_accessor_index]
+                if isinstance(joints_accessor, dict):
+                    accessor_max = joints_accessor.get("max")
+                    accessor_min = joints_accessor.get("min")
+                    if isinstance(accessor_max, list) and accessor_max:
+                        numeric_max = [v for v in accessor_max if isinstance(v, (int, float))]
+                        if len(numeric_max) == len(accessor_max):
+                            if max(numeric_max) >= joint_count:
+                                errors.append(
+                                    f"primitive[{idx}] JOINTS_0 max index exceeds skin joint range"
+                                )
+                    elif isinstance(accessor_min, list) and accessor_min:
+                        numeric_min = [v for v in accessor_min if isinstance(v, (int, float))]
+                        if len(numeric_min) == len(accessor_min) and min(numeric_min) < 0:
+                            errors.append(f"primitive[{idx}] JOINTS_0 min index is negative")
+                        else:
+                            warnings.append(
+                                f"primitive[{idx}] JOINTS_0 accessor lacks max metadata; "
+                                "cannot fully verify index bounds statically"
+                            )
+                    else:
+                        warnings.append(
+                            f"primitive[{idx}] JOINTS_0 accessor lacks min/max metadata; "
+                            "cannot fully verify index bounds statically"
+                        )
+        else:
+            errors.append(f"primitive[{idx}] JOINTS_0 accessor index must be an integer")
 
     clip_names = _validate_animation(doc, errors, warnings)
-    if clip_names:
+    if not clip_names:
+        errors.append("Missing required animation clips: idle, walk, plus one additional clip")
+    else:
         required_names = {"idle", "walk"}
         missing = sorted(required_names - clip_names)
         for name in missing:
-            warnings.append(f"Recommended baseline clip missing: {name}")
+            errors.append(f"Missing required baseline clip: {name}")
         if len(clip_names) < 3:
-            warnings.append("Recommended: at least 3 clips (idle, walk, test/action)")
+            errors.append("Missing required third clip: expected idle, walk, plus one additional clip")
 
     _validate_material_image_refs(doc, asset_path, warnings)
 

@@ -52,8 +52,9 @@ The converted glTF MUST satisfy all of the following:
 - All `JOINTS_0` indices MUST resolve to joints in the selected skin.
 
 3. Animation clips
-- At least one animation clip SHOULD exist for validation assets.
-- Required baseline clips for conversion acceptance: `idle`, `walk`, and one additional test/action clip.
+- Clip set MUST include `idle` and `walk`.
+- Clip set MUST include at least one additional clip (converter-defined, e.g. `test` or `action`).
+- Missing any of the baseline clip requirements above is a validation error.
 - For any sampled channel used by runtime (`translation`, `rotation`, `scale`):
   - Interpolation MUST be `LINEAR` or `STEP`.
   - `CUBICSPLINE` MUST NOT be emitted.
@@ -135,7 +136,6 @@ A converted package passes Phase 1 validation when all required checks pass:
 - Animation sampler key counts match (`input.count == output.count`).
 
 3. Content quality checks
-- At least one animation clip exists.
 - Clip name set includes: `idle`, `walk`, plus at least one additional clip.
 - Material/image references resolve to files for `.gltf` packages.
 - Collider/constraint bone names resolve to skin joint names.
