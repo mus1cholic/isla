@@ -105,9 +105,7 @@ std::vector<std::uint8_t> make_minimal_triangle_glb() {
     std::vector<std::uint8_t> bin_chunk;
     bin_chunk.reserve(36U);
     const float vertices[9] = {
-        0.0F, 0.0F, 0.0F,
-        1.0F, 0.0F, 0.0F,
-        0.0F, 1.0F, 0.0F,
+        0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
     };
     for (float value : vertices) {
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
@@ -126,8 +124,7 @@ std::vector<std::uint8_t> make_minimal_triangle_glb() {
 
     const std::uint32_t json_chunk_length = static_cast<std::uint32_t>(json_chunk.size());
     const std::uint32_t bin_chunk_length = static_cast<std::uint32_t>(bin_chunk.size());
-    const std::uint32_t total_length =
-        12U + 8U + json_chunk_length + 8U + bin_chunk_length;
+    const std::uint32_t total_length = 12U + 8U + json_chunk_length + 8U + bin_chunk_length;
 
     std::vector<std::uint8_t> glb;
     glb.reserve(total_length);
