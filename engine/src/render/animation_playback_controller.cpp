@@ -27,11 +27,8 @@ float normalize_local_time_for_state(float input_time, float duration_seconds,
     if (mode == ClipPlaybackMode::Clamp) {
         return std::min(clamped_non_negative, duration_seconds);
     }
-    float wrapped = std::fmod(clamped_non_negative, duration_seconds);
-    if (wrapped < 0.0F) {
-        wrapped += duration_seconds;
-    }
-    return wrapped;
+
+    return std::fmod(clamped_non_negative, duration_seconds);
 }
 
 } // namespace

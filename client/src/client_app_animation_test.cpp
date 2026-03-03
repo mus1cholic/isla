@@ -128,7 +128,8 @@ class FakeSdlRuntime final : public ISdlRuntime {
         (void)window;
         (void)bordered;
     }
-    [[nodiscard]] bool set_window_relative_mouse_mode(SDL_Window* window, bool enabled) const override {
+    [[nodiscard]] bool set_window_relative_mouse_mode(SDL_Window* window,
+                                                      bool enabled) const override {
         (void)window;
         (void)enabled;
         return true;
@@ -170,8 +171,10 @@ animated_gltf::AnimatedGltfAsset make_test_asset_with_two_clips() {
     idle.duration_seconds = 1.0F;
     idle.joint_tracks.resize(1U);
     idle.joint_tracks[0].translations = {
-        animated_gltf::Vec3Keyframe{ .time_seconds = 0.0F, .value = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } },
-        animated_gltf::Vec3Keyframe{ .time_seconds = 1.0F, .value = Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F } },
+        animated_gltf::Vec3Keyframe{ .time_seconds = 0.0F,
+                                     .value = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } },
+        animated_gltf::Vec3Keyframe{ .time_seconds = 1.0F,
+                                     .value = Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F } },
     };
 
     animated_gltf::AnimationClip walk;
@@ -179,8 +182,10 @@ animated_gltf::AnimatedGltfAsset make_test_asset_with_two_clips() {
     walk.duration_seconds = 1.0F;
     walk.joint_tracks.resize(1U);
     walk.joint_tracks[0].translations = {
-        animated_gltf::Vec3Keyframe{ .time_seconds = 0.0F, .value = Vec3{ .x = 10.0F, .y = 0.0F, .z = 0.0F } },
-        animated_gltf::Vec3Keyframe{ .time_seconds = 1.0F, .value = Vec3{ .x = 12.0F, .y = 0.0F, .z = 0.0F } },
+        animated_gltf::Vec3Keyframe{ .time_seconds = 0.0F,
+                                     .value = Vec3{ .x = 10.0F, .y = 0.0F, .z = 0.0F } },
+        animated_gltf::Vec3Keyframe{ .time_seconds = 1.0F,
+                                     .value = Vec3{ .x = 12.0F, .y = 0.0F, .z = 0.0F } },
     };
 
     asset.clips.push_back(std::move(idle));

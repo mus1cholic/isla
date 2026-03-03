@@ -30,12 +30,9 @@ std::size_t find_clip_index_by_name(const animated_gltf::AnimatedGltfAsset& asse
     if (name == nullptr || name[0] == '\0') {
         return 0U;
     }
-    for (std::size_t i = 0U; i < asset.clips.size(); ++i) {
-        if (asset.clips[i].name == name) {
-            return i;
-        }
-    }
-    return asset.clips.size();
+    const auto it =
+        std::ranges::find_if(asset.clips, [name](const auto& clip) { return clip.name == name; });
+    return static_cast<std::size_t>(std::distance(asset.clips.cbegin(), it));
 }
 
 } // namespace

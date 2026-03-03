@@ -21,12 +21,12 @@ make_triangles_from_skinned_primitive(const animated_gltf::SkinnedPrimitive& pri
             if (weight <= 0.0F) {
                 continue;
             }
-            const std::size_t joint_index = static_cast<std::size_t>(vertex.joints[i]);
+            const auto joint_index = static_cast<std::size_t>(vertex.joints[i]);
             if (joint_index >= skin_matrices->size()) {
                 continue;
             }
             const Vec3 transformed =
-                transform_point(skin_matrices->at(joint_index), vertex.position);
+                transform_point((*skin_matrices)[joint_index], vertex.position);
             blended.x += transformed.x * weight;
             blended.y += transformed.y * weight;
             blended.z += transformed.z * weight;
@@ -42,9 +42,9 @@ make_triangles_from_skinned_primitive(const animated_gltf::SkinnedPrimitive& pri
     };
 
     for (std::size_t i = 0U; i + 2U < primitive.indices.size(); i += 3U) {
-        const std::size_t i0 = static_cast<std::size_t>(primitive.indices[i]);
-        const std::size_t i1 = static_cast<std::size_t>(primitive.indices[i + 1U]);
-        const std::size_t i2 = static_cast<std::size_t>(primitive.indices[i + 2U]);
+        const auto i0 = static_cast<std::size_t>(primitive.indices[i]);
+        const auto i1 = static_cast<std::size_t>(primitive.indices[i + 1U]);
+        const auto i2 = static_cast<std::size_t>(primitive.indices[i + 2U]);
         if (i0 >= primitive.vertices.size() || i1 >= primitive.vertices.size() ||
             i2 >= primitive.vertices.size()) {
             continue;
