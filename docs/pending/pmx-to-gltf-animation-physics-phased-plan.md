@@ -38,7 +38,8 @@ Operational interpretation:
 > - Phase 2.5 is complete (in-place CPU skinning updates + workspace reuse + deferred bounds recompute).
 > - Phase 3 is complete (authoritative GPU skinning path for current fixed palette budget).
 > - Phase 3.5 is complete (large-skeleton GPU skinning support beyond current fixed palette budget via deterministic remap/partition).
-> - Phases 4-10 remain pending runtime/tooling expansion.
+> - Phases 4-10 remain pending runtime/tooling expansion (including Phase 4.1 and Phase 4.5 additions).
+> - A dedicated static per-primitive material preservation phase (Phase 4.1) is now added and pending.
 > - A dedicated Windows alpha-compositing stabilization phase (Phase 4.5) is now added and pending.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
@@ -481,6 +482,39 @@ Ensure static `.gltf/.glb` rendering preserves authored visual fidelity so loade
 - Static `.gltf/.glb` fallback no longer exhibits systemic yellow-tint/forced-faceted appearance for assets that include authored normals/material base inputs.
 - Animated-load fallback-to-static path produces the same visual-fidelity baseline as direct static load.
 
+## Phase 4.1: Static glTF Per-Primitive Material Preservation
+
+### Goal
+
+Preserve authored material partitioning for static `.gltf/.glb` content so multi-material meshes render with per-primitive material intent instead of a single merged fallback material baseline.
+
+### Dependencies
+
+- Builds directly on Phase 4 static-fidelity foundations (authored normals, neutral color baseline, base color/alpha/texture ingestion, and fallback-path consistency).
+- Should be completed before Phase 4.5 Windows composition stabilization so transparent/cutout validation during overlay work uses material-faithful static fallback behavior.
+
+### Scope
+
+- Preserve static glTF primitive boundaries through runtime static fallback population:
+  - avoid collapsing all static triangle primitives into one material assignment
+  - keep one renderable static mesh/object binding per source primitive (or equivalent deterministic grouping that preserves material mapping)
+- Preserve per-primitive material mapping inputs:
+  - base color / alpha / alpha cutoff (`MASK`) semantics per primitive
+  - cull mode (`doubleSided`) and blend mode behavior per primitive
+  - base color texture path binding per primitive where available
+- Define deterministic static model transform policy for multi-primitive fallback:
+  - compute aggregate visibility fit bounds once
+  - apply a consistent model-space transform to all primitive-backed render objects so assembled model alignment is preserved
+- Add regression coverage for:
+  - multi-primitive/multi-material static glTF load producing distinct material-preserving runtime objects
+  - deterministic primitive-to-material mapping behavior across repeated loads
+  - parity of per-primitive material preservation between direct static load and animated-load fallback-to-static path
+
+### Exit Criteria
+
+- Static multi-material `.gltf/.glb` fallback no longer degrades to a single-material baseline when source primitives encode distinct materials.
+- Primitive-level alpha/cutout behavior (including hair-card style `MASK` materials) remains mapped per primitive in runtime static fallback.
+
 ## Phase 4.5: Windows Transparent Overlay + 3D Composition Reliability
 
 ### Goal
@@ -623,6 +657,7 @@ Make the pipeline maintainable and testable.
   - define deterministic model selection policy when multiple candidates exist
 - Add automated tests for:
   - loader failures (missing skin/joints/weights)
+  - static multi-primitive material-preservation behavior (Phase 4.1)
   - pose eval determinism
   - interpolation mode handling (`LINEAR`/`STEP` + rejection paths)
   - playback mode behavior (`Loop`/`Clamp`)
@@ -728,8 +763,9 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 3. First visually correct character deformation point: after Phase 3 (GPU skinning, achieved for current fixed-palette-budget content).
 4. First large-rig-ready deformation point (>64-joint referenced primitives): after Phase 3.5 (achieved 2026-03-03).
 5. First static glTF visual-fidelity parity point (non-animated fallback path): after Phase 4.
-6. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5.
-7. First basic PMX parity point (animation + basic physics): after Phase 5/6.
-8. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7.
-9. First hierarchy-fidelity point for complex rigs: after Phase 8.
-10. First interpolation-complete point: after Phase 9.
+6. First static multi-material parity point (primitive-level material preservation in fallback path): after Phase 4.1.
+7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5.
+8. First basic PMX parity point (animation + basic physics): after Phase 5/6.
+9. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7.
+10. First hierarchy-fidelity point for complex rigs: after Phase 8.
+11. First interpolation-complete point: after Phase 9.

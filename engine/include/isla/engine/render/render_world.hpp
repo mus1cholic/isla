@@ -15,7 +15,7 @@
 
 namespace isla::client {
 
-inline constexpr Color3 kDefaultObjectColor{ .r = 0.86F, .g = 0.67F, .b = 0.47F };
+inline constexpr Color3 kDefaultObjectColor{ .r = 1.0F, .g = 1.0F, .b = 1.0F };
 inline constexpr Color3 kDefaultAmbientColor{ .r = 0.2F, .g = 0.2F, .b = 0.2F };
 inline constexpr Color3 kDefaultDirectionalLightColor{ .r = 0.8F, .g = 0.8F, .b = 0.8F };
 inline constexpr Vec3 kDefaultDirectionalLightDirection{ .x = -0.35F, .y = 0.85F, .z = -0.35F };
@@ -165,6 +165,7 @@ struct Material {
     std::string shader_name = "mesh";
     Color3 base_color = kDefaultObjectColor;
     float base_alpha = 1.0F;
+    float alpha_cutoff = -1.0F;
     MaterialBlendMode blend_mode = MaterialBlendMode::Opaque;
     MaterialCullMode cull_mode = MaterialCullMode::Clockwise;
     std::string albedo_texture_path;

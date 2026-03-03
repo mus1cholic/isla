@@ -65,6 +65,15 @@ TEST(RenderWorldMaterialTest, DefaultMaterialUsesClockwiseCulling) {
     EXPECT_EQ(material.cull_mode, MaterialCullMode::Clockwise);
 }
 
+TEST(RenderWorldMaterialTest, DefaultMaterialUsesNeutralColorWithoutTintBias) {
+    const Material material{};
+    EXPECT_FLOAT_EQ(material.base_color.r, 1.0F);
+    EXPECT_FLOAT_EQ(material.base_color.g, 1.0F);
+    EXPECT_FLOAT_EQ(material.base_color.b, 1.0F);
+    EXPECT_FLOAT_EQ(material.base_alpha, 1.0F);
+    EXPECT_LT(material.alpha_cutoff, 0.0F);
+}
+
 TEST(RenderWorldMaterialTest, MaterialCullModeIsConfigurable) {
     Material material{};
     material.cull_mode = MaterialCullMode::Disabled;

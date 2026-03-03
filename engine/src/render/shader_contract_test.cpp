@@ -117,9 +117,11 @@ TEST(ShaderContractTests, FragmentShaderUsesDynamicLightingUniformsContract) {
         absl::StrContains(fragment_shader, "vec3 specular = u_dir_light_color.rgb * spec_term;"));
     EXPECT_TRUE(absl::StrContains(fragment_shader, "uniform vec4 u_camera_pos;"));
     EXPECT_TRUE(absl::StrContains(fragment_shader, "uniform vec4 u_spec_params;"));
+    EXPECT_TRUE(absl::StrContains(fragment_shader, "uniform vec4 u_alpha_params;"));
     EXPECT_TRUE(absl::StrContains(fragment_shader, "(ndotl > 0.0)"))
         << "Specular term should be gated by diffuse-facing check";
     EXPECT_TRUE(absl::StrContains(fragment_shader, "dot(normal, light_dir)"));
+    EXPECT_TRUE(absl::StrContains(fragment_shader, "discard;"));
 }
 
 TEST(ShaderContractTests, ShaderSupportsTextureCoordinatesContract) {

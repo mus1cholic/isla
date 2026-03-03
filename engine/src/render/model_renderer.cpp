@@ -39,6 +39,7 @@ constexpr const char* kDirLightColorUniformName = "u_dir_light_color";
 constexpr const char* kAmbientColorUniformName = "u_ambient_color";
 constexpr const char* kCameraPosUniformName = "u_camera_pos";
 constexpr const char* kSpecParamsUniformName = "u_spec_params";
+constexpr const char* kAlphaParamsUniformName = "u_alpha_params";
 constexpr const char* kJointPaletteUniformName = "u_joint_palette";
 constexpr std::uint64_t kOpaqueRenderStateBase = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                                                  BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
@@ -81,6 +82,7 @@ class ModelRenderer::Impl {
     bgfx::UniformHandle ambient_color_uniform = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle camera_pos_uniform = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle spec_params_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle alpha_params_uniform = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle joint_palette_uniform = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle tex_color_uniform = BGFX_INVALID_HANDLE;
     std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
@@ -104,6 +106,7 @@ void destroy_renderer_uniforms(ModelRenderer::Impl& impl) {
     destroy_uniform_if_valid(impl.ambient_color_uniform);
     destroy_uniform_if_valid(impl.camera_pos_uniform);
     destroy_uniform_if_valid(impl.spec_params_uniform);
+    destroy_uniform_if_valid(impl.alpha_params_uniform);
     destroy_uniform_if_valid(impl.joint_palette_uniform);
     destroy_uniform_if_valid(impl.tex_color_uniform);
 }
@@ -168,6 +171,8 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
     impl_->camera_pos_uniform = bgfx::createUniform(kCameraPosUniformName, bgfx::UniformType::Vec4);
     impl_->spec_params_uniform =
         bgfx::createUniform(kSpecParamsUniformName, bgfx::UniformType::Vec4);
+    impl_->alpha_params_uniform =
+        bgfx::createUniform(kAlphaParamsUniformName, bgfx::UniformType::Vec4);
     impl_->joint_palette_uniform = bgfx::createUniform(
         kJointPaletteUniformName, bgfx::UniformType::Mat4, kMaxGpuSkinningJoints);
     impl_->tex_color_uniform = bgfx::createUniform("s_texColor", bgfx::UniformType::Sampler);
@@ -175,7 +180,7 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
         !bgfx::isValid(impl_->dir_light_dir_uniform) ||
         !bgfx::isValid(impl_->dir_light_color_uniform) ||
         !bgfx::isValid(impl_->ambient_color_uniform) || !bgfx::isValid(impl_->camera_pos_uniform) ||
-        !bgfx::isValid(impl_->spec_params_uniform) ||
+        !bgfx::isValid(impl_->spec_params_uniform) || !bgfx::isValid(impl_->alpha_params_uniform) ||
         !bgfx::isValid(impl_->joint_palette_uniform) || !bgfx::isValid(impl_->tex_color_uniform)) {
         LOG(ERROR) << "ModelRenderer: initialize failed: could not create renderer uniforms";
         destroy_renderer_uniforms(*impl_);
@@ -355,12 +360,23 @@ void ModelRenderer::render(const RenderWorld& world) const {
         const bgfx::TextureHandle texture =
             impl_->texture_manager.resolve_texture(material.albedo_texture_path);
         const float alpha = std::clamp(material.base_alpha, 0.0F, 1.0F);
+        const float alpha_cutoff = std::clamp(material.alpha_cutoff, -1.0F, 1.0F);
         const std::array<float, 4> object_color{
             material.base_color.r,
             material.base_color.g,
             material.base_color.b,
             alpha,
         };
+        const std::array<float, 4> alpha_params{
+            alpha_cutoff,
+            alpha_cutoff >= 0.0F ? 1.0F : 0.0F,
+            0.0F,
+            0.0F,
+        };
+        if (alpha_cutoff >= 0.0F) {
+            VLOG(1) << "ModelRenderer: alpha-cutout active for mesh_id=" << object.mesh_id
+                    << " material_id=" << object.material_id << " cutoff=" << alpha_cutoff;
+        }
         const Mat4 model = Mat4::from_position_scale_quat(
             object.transform.position, object.transform.scale, object.transform.rotation);
         const std::uint64_t render_state_base =
@@ -370,6 +386,7 @@ void ModelRenderer::render(const RenderWorld& world) const {
         const std::uint64_t render_state =
             render_state_base | cull_state_for_material(material.cull_mode);
         bgfx::setUniform(impl_->object_color_uniform, object_color.data());
+        bgfx::setUniform(impl_->alpha_params_uniform, alpha_params.data());
         bgfx::setTexture(0, impl_->tex_color_uniform, texture);
         bgfx::setTransform(model.data());
         bgfx::setVertexBuffer(0, vertex_buffer);

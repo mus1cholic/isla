@@ -11,6 +11,10 @@ struct Triangle {
     Vec2 uv_a;
     Vec2 uv_b;
     Vec2 uv_c;
+    Vec3 normal_a{};
+    Vec3 normal_b{};
+    Vec3 normal_c{};
+    bool has_vertex_normals = false;
 };
 
 struct FrameInput {
@@ -29,5 +33,3 @@ struct FrameInput {
 };
 
 } // namespace isla::client
-
-
