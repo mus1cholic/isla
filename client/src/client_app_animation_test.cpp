@@ -296,6 +296,47 @@ TEST(ClientAppAnimationTest, AnimatedTickDefersBoundsRecomputeUntilIntervalBound
     EXPECT_GT(refreshed_bounds.center.x, initial_bounds.center.x + 0.1F);
 }
 
+TEST(ClientAppAnimationTest, GpuAuthoritativeAnimationUpdatesPaletteWithoutGeometryChurn) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+
+    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
+    ASSERT_FALSE(world.meshes().empty());
+    ASSERT_TRUE(world.meshes()[0].has_skinned_geometry());
+    ASSERT_FALSE(world.meshes()[0].skin_palette().empty());
+    const std::uint64_t stable_geometry_revision = world.meshes()[0].geometry_revision();
+
+    runtime.now_ticks_ns = 500000000ULL;
+    internal::ClientAppTestHooks::tick(app);
+    ASSERT_FALSE(world.meshes()[0].skin_palette().empty());
+    const float tx_after_first_tick = world.meshes()[0].skin_palette()[0].elements[12];
+    EXPECT_NEAR(tx_after_first_tick, 1.0F, 1.0e-4F);
+    EXPECT_EQ(world.meshes()[0].geometry_revision(), stable_geometry_revision);
+
+    runtime.now_ticks_ns = 1000000000ULL;
+    internal::ClientAppTestHooks::tick(app);
+    ASSERT_FALSE(world.meshes()[0].skin_palette().empty());
+    const float tx_after_second_tick = world.meshes()[0].skin_palette()[0].elements[12];
+    EXPECT_NEAR(tx_after_second_tick, 0.0F, 1.0e-4F);
+    EXPECT_EQ(world.meshes()[0].geometry_revision(), stable_geometry_revision);
+}
+
+TEST(ClientAppAnimationTest, LoadStartupMeshResetsGpuAuthoritativeFlagWhenRendererUnsupported) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
+
+    ScopedEnvVar anim_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    EXPECT_FALSE(internal::ClientAppTestHooks::gpu_skinning_authoritative(app));
+}
+
 TEST(ClientAppAnimationTest, EnvironmentConfigSelectsClipAndClampMode) {
     FakeSdlRuntime runtime;
     ClientApp app(runtime);

@@ -34,5 +34,30 @@ TEST(RenderWorldMeshDataTest, EditWithoutBoundsRecomputeKeepsBoundsStaleUntilMan
     EXPECT_GT(mesh.local_bounds().center.x, initial_bounds.center.x + 1.0F);
 }
 
+TEST(RenderWorldMeshDataTest, SetSkinnedGeometryAndPaletteStoresData) {
+    MeshData mesh;
+    const std::uint64_t initial_revision = mesh.geometry_revision();
+
+    mesh.set_skinned_geometry(
+        {
+            SkinnedMeshVertex{
+                .position = Vec3{ .x = 1.0F, .y = 2.0F, .z = 3.0F },
+                .normal = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
+                .uv = Vec2{ .x = 0.25F, .y = 0.75F },
+                .joints = { 0U, 1U, 0U, 0U },
+                .weights = { 0.75F, 0.25F, 0.0F, 0.0F },
+            },
+        },
+        { 0U });
+    mesh.set_skin_palette({ Mat4::identity() });
+
+    EXPECT_TRUE(mesh.has_skinned_geometry());
+    ASSERT_EQ(mesh.skinned_vertices().size(), 1U);
+    ASSERT_EQ(mesh.skinned_indices().size(), 1U);
+    EXPECT_EQ(mesh.skinned_indices()[0], 0U);
+    EXPECT_EQ(mesh.skin_palette().size(), 1U);
+    EXPECT_EQ(mesh.geometry_revision(), initial_revision + 1U);
+}
+
 } // namespace
 } // namespace isla::client

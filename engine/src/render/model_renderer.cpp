@@ -8,6 +8,7 @@
 #include "engine/src/render/include/bgfx_mesh_manager.hpp"
 #include "engine/src/render/include/bgfx_shader_manager.hpp"
 #include "engine/src/render/include/bgfx_texture_manager.hpp"
+#include "engine/src/render/include/model_renderer_skinning_utils.hpp"
 #include "isla/engine/math/mat4.hpp"
 #include "isla/engine/render/overlay_transparency.hpp"
 #include "isla/engine/render/render_world.hpp"
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
@@ -37,6 +39,7 @@ constexpr const char* kDirLightColorUniformName = "u_dir_light_color";
 constexpr const char* kAmbientColorUniformName = "u_ambient_color";
 constexpr const char* kCameraPosUniformName = "u_camera_pos";
 constexpr const char* kSpecParamsUniformName = "u_spec_params";
+constexpr const char* kJointPaletteUniformName = "u_joint_palette";
 constexpr std::uint64_t kOpaqueRenderState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                                              BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
                                              BGFX_STATE_CULL_CW | BGFX_STATE_MSAA;
@@ -66,8 +69,10 @@ class ModelRenderer::Impl {
     bgfx::UniformHandle ambient_color_uniform = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle camera_pos_uniform = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle spec_params_uniform = BGFX_INVALID_HANDLE;
+    bgfx::UniformHandle joint_palette_uniform = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle tex_color_uniform = BGFX_INVALID_HANDLE;
     std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
+    std::vector<Mat4> joint_palette_upload;
 };
 
 namespace {
@@ -87,6 +92,7 @@ void destroy_renderer_uniforms(ModelRenderer::Impl& impl) {
     destroy_uniform_if_valid(impl.ambient_color_uniform);
     destroy_uniform_if_valid(impl.camera_pos_uniform);
     destroy_uniform_if_valid(impl.spec_params_uniform);
+    destroy_uniform_if_valid(impl.joint_palette_uniform);
     destroy_uniform_if_valid(impl.tex_color_uniform);
 }
 
@@ -150,12 +156,15 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
     impl_->camera_pos_uniform = bgfx::createUniform(kCameraPosUniformName, bgfx::UniformType::Vec4);
     impl_->spec_params_uniform =
         bgfx::createUniform(kSpecParamsUniformName, bgfx::UniformType::Vec4);
+    impl_->joint_palette_uniform = bgfx::createUniform(
+        kJointPaletteUniformName, bgfx::UniformType::Mat4, kMaxGpuSkinningJoints);
     impl_->tex_color_uniform = bgfx::createUniform("s_texColor", bgfx::UniformType::Sampler);
     if (!bgfx::isValid(impl_->time_uniform) || !bgfx::isValid(impl_->object_color_uniform) ||
         !bgfx::isValid(impl_->dir_light_dir_uniform) ||
         !bgfx::isValid(impl_->dir_light_color_uniform) ||
         !bgfx::isValid(impl_->ambient_color_uniform) || !bgfx::isValid(impl_->camera_pos_uniform) ||
-        !bgfx::isValid(impl_->spec_params_uniform) || !bgfx::isValid(impl_->tex_color_uniform)) {
+        !bgfx::isValid(impl_->spec_params_uniform) ||
+        !bgfx::isValid(impl_->joint_palette_uniform) || !bgfx::isValid(impl_->tex_color_uniform)) {
         LOG(ERROR) << "ModelRenderer: initialize failed: could not create renderer uniforms";
         destroy_renderer_uniforms(*impl_);
         bgfx::shutdown();
@@ -174,6 +183,7 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
     }
 
     impl_->start_time = std::chrono::steady_clock::now();
+    impl_->joint_palette_upload.assign(kMaxGpuSkinningJoints, Mat4::identity());
     impl_->initialized = true;
     return true;
 }
@@ -188,6 +198,16 @@ bool ModelRenderer::has_homogeneous_depth() const {
     }
     const bgfx::Caps* caps = bgfx::getCaps();
     return (caps != nullptr) ? caps->homogeneousDepth : false;
+}
+
+bool ModelRenderer::supports_gpu_skinning() const {
+    if (!impl_ || !impl_->initialized) {
+        return false;
+    }
+    if (!bgfx::isValid(impl_->joint_palette_uniform)) {
+        return false;
+    }
+    return bgfx::isValid(impl_->shader_manager.resolve_skinned_program("mesh"));
 }
 
 void ModelRenderer::on_resize(RenderSize size) {
@@ -210,9 +230,8 @@ void ModelRenderer::render(const RenderWorld& world) const {
     impl_->mesh_manager.begin_frame();
     impl_->mesh_manager.upload_dirty_meshes(world);
 
-    const auto elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                                      impl_->start_time)
-                             .count();
+    const auto elapsed =
+        std::chrono::duration<float>(std::chrono::steady_clock::now() - impl_->start_time).count();
     const float sim_time =
         std::isfinite(world.sim_time_seconds()) ? std::max(0.0F, world.sim_time_seconds()) : 0.0F;
     const std::array<float, 4> time_values{ sim_time, elapsed, 0.0F, 0.0F };
@@ -250,7 +269,8 @@ void ModelRenderer::render(const RenderWorld& world) const {
         .target = Vec3{},
         .up = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
     });
-    const float aspect = static_cast<float>(impl_->window_width) / static_cast<float>(impl_->window_height);
+    const float aspect =
+        static_cast<float>(impl_->window_width) / static_cast<float>(impl_->window_height);
     const Mat4 proj = Mat4::perspective(kDefaultCameraFovYDegrees, aspect, kDefaultCameraNear,
                                         kDefaultCameraFar, has_homogeneous_depth());
 
@@ -259,11 +279,13 @@ void ModelRenderer::render(const RenderWorld& world) const {
     bgfx::setViewTransform(kBgfxViewId, view.data(), proj.data());
     bgfx::touch(kBgfxViewId);
 
+    const bool renderer_supports_gpu_skinning = supports_gpu_skinning();
     static const Material kFallbackMaterial;
     for (const RenderObject& object : world.objects()) {
         if (!object.visible || !impl_->mesh_manager.has_mesh_slot(object.mesh_id)) {
             continue;
         }
+        const MeshData& mesh = world.meshes().at(object.mesh_id);
         const bgfx::VertexBufferHandle vertex_buffer =
             impl_->mesh_manager.vertex_buffer_for_mesh(object.mesh_id);
         const bgfx::IndexBufferHandle index_buffer =
@@ -278,9 +300,45 @@ void ModelRenderer::render(const RenderWorld& world) const {
             }
             return kFallbackMaterial;
         }();
-        const bgfx::ProgramHandle program = impl_->shader_manager.resolve_program(material.shader_name);
+        const bool mesh_is_skinned = impl_->mesh_manager.mesh_is_skinned(object.mesh_id);
+        const bool has_skin_palette = !mesh.skin_palette().empty();
+        bgfx::ProgramHandle skinned_program = BGFX_INVALID_HANDLE;
+        bool skinned_program_valid = false;
+        if (mesh_is_skinned && has_skin_palette && renderer_supports_gpu_skinning) {
+            skinned_program = impl_->shader_manager.resolve_skinned_program(material.shader_name);
+            skinned_program_valid = bgfx::isValid(skinned_program);
+            if (!skinned_program_valid) {
+                LOG_EVERY_N_SEC(WARNING, 2.0)
+                    << "ModelRenderer: skinned program unavailable for shader='"
+                    << material.shader_name
+                    << "', falling back to static mesh program for skinned draw";
+            }
+        }
+        const SkinningProgramPath program_path =
+            choose_skinning_program_path(SkinningProgramDecisionInputs{
+                .mesh_is_skinned = mesh_is_skinned,
+                .has_skin_palette = has_skin_palette,
+                .gpu_skinning_supported = renderer_supports_gpu_skinning,
+                .skinned_program_valid = skinned_program_valid,
+            });
+        const bool use_skinned_program = program_path == SkinningProgramPath::SkinnedMesh;
+        bgfx::ProgramHandle program =
+            use_skinned_program ? skinned_program
+                                : impl_->shader_manager.resolve_program(material.shader_name);
         if (!bgfx::isValid(program)) {
             continue;
+        }
+        if (use_skinned_program) {
+            const bool truncated =
+                fill_skin_palette_upload_buffer(mesh.skin_palette(), impl_->joint_palette_upload);
+            if (truncated) {
+                LOG_EVERY_N_SEC(WARNING, 2.0)
+                    << "ModelRenderer: skin palette size " << mesh.skin_palette().size()
+                    << " exceeds GPU uniform limit " << kMaxGpuSkinningJoints
+                    << "; truncating palette";
+            }
+            bgfx::setUniform(impl_->joint_palette_uniform, impl_->joint_palette_upload.data(),
+                             kMaxGpuSkinningJoints);
         }
         const bgfx::TextureHandle texture =
             impl_->texture_manager.resolve_texture(material.albedo_texture_path);
@@ -291,9 +349,8 @@ void ModelRenderer::render(const RenderWorld& world) const {
             material.base_color.b,
             alpha,
         };
-        const Mat4 model = Mat4::from_position_scale_quat(object.transform.position,
-                                                          object.transform.scale,
-                                                          object.transform.rotation);
+        const Mat4 model = Mat4::from_position_scale_quat(
+            object.transform.position, object.transform.scale, object.transform.rotation);
         const std::uint64_t render_state =
             (material.blend_mode == MaterialBlendMode::AlphaBlend || alpha < 1.0F)
                 ? kAlphaBlendRenderState
@@ -355,6 +412,10 @@ bool ModelRenderer::uses_sdl_renderer() const {
 }
 
 bool ModelRenderer::has_homogeneous_depth() const {
+    return false;
+}
+
+bool ModelRenderer::supports_gpu_skinning() const {
     return false;
 }
 

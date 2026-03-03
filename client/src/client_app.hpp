@@ -57,6 +57,7 @@ class ClientApp {
     animated_gltf::AnimationPlaybackController animation_playback_;
     std::vector<AnimatedMeshBinding> animated_mesh_bindings_;
     std::uint32_t animation_tick_count_ = 0U;
+    bool gpu_skinning_authoritative_ = false;
     const ISdlRuntime& sdl_runtime_;
 };
 

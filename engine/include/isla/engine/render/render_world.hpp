@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -8,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "isla/engine/math/mat4.hpp"
 #include "isla/engine/math/transform.hpp"
 #include "isla/engine/render/render_types.hpp"
 
@@ -32,12 +34,57 @@ struct BoundingSphere {
     float radius = 0.0F;
 };
 
+struct SkinnedMeshVertex {
+    Vec3 position{};
+    Vec3 normal{};
+    Vec2 uv{};
+    std::array<std::uint16_t, 4U> joints{ 0U, 0U, 0U, 0U };
+    std::array<float, 4U> weights{ 1.0F, 0.0F, 0.0F, 0.0F };
+};
+
 class MeshData {
   public:
     using TriangleList = std::vector<Triangle>;
+    using SkinnedVertexList = std::vector<SkinnedMeshVertex>;
+    using IndexList = std::vector<std::uint32_t>;
 
     [[nodiscard]] const TriangleList& triangles() const {
         return triangles_;
+    }
+
+    [[nodiscard]] const SkinnedVertexList& skinned_vertices() const {
+        return skinned_vertices_;
+    }
+
+    [[nodiscard]] const IndexList& skinned_indices() const {
+        return skinned_indices_;
+    }
+
+    [[nodiscard]] bool has_skinned_geometry() const {
+        return !skinned_vertices_.empty() && !skinned_indices_.empty();
+    }
+
+    [[nodiscard]] const std::vector<Mat4>& skin_palette() const {
+        return skin_palette_;
+    }
+
+    void set_skinned_geometry(SkinnedVertexList vertices, IndexList indices) {
+        skinned_vertices_ = std::move(vertices);
+        skinned_indices_ = std::move(indices);
+        mark_geometry_dirty();
+    }
+
+    void clear_skinned_geometry() {
+        if (skinned_vertices_.empty() && skinned_indices_.empty()) {
+            return;
+        }
+        skinned_vertices_.clear();
+        skinned_indices_.clear();
+        mark_geometry_dirty();
+    }
+
+    void set_skin_palette(std::vector<Mat4> skin_palette) {
+        skin_palette_ = std::move(skin_palette);
     }
 
     [[nodiscard]] const BoundingSphere& local_bounds() const {
@@ -96,6 +143,9 @@ class MeshData {
     }
 
     TriangleList triangles_;
+    SkinnedVertexList skinned_vertices_;
+    IndexList skinned_indices_;
+    std::vector<Mat4> skin_palette_;
     BoundingSphere local_bounds_{};
     std::uint64_t geometry_revision_ = 1U;
 };

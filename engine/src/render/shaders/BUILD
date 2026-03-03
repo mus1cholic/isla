@@ -3,6 +3,7 @@ filegroup(
     srcs = [
         ":compile_fs_mesh_dx11",
         ":compile_vs_mesh_dx11",
+        ":compile_vs_mesh_skinned_dx11",
         ":compile_vs_mesh_instanced_dx11",
     ],
     visibility = ["//visibility:public"],
@@ -51,6 +52,27 @@ genrule(
 )
 
 genrule(
+    name = "compile_vs_mesh_skinned_dx11",
+    srcs = [
+        "include/bgfx_shader.sh",
+        "varying.def.sc",
+        "vs_mesh_skinned.sc",
+    ],
+    outs = ["dx11/vs_mesh_skinned.bin"],
+    cmd_bat = "$(location //third_party/bgfx:shaderc_dx11) " +
+              "--type vertex " +
+              "--platform windows " +
+              "-p s_5_0 " +
+              "-O 3 " +
+              "--varyingdef \"$(location varying.def.sc)\" " +
+              "-i engine/src/render/shaders/include " +
+              "-f \"$(location vs_mesh_skinned.sc)\" " +
+              "-o \"$@\"",
+    cmd_bash = "printf 'isla-dx11-shader-stub\\n' > \"$@\"",
+    tools = ["//third_party/bgfx:shaderc_dx11"],
+)
+
+genrule(
     name = "compile_vs_mesh_instanced_dx11",
     srcs = [
         "include/bgfx_shader.sh",
@@ -77,5 +99,6 @@ exports_files([
     "varying.def.sc",
     "varying_instanced.def.sc",
     "vs_mesh.sc",
+    "vs_mesh_skinned.sc",
     "vs_mesh_instanced.sc",
 ])

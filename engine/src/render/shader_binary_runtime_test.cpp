@@ -62,4 +62,8 @@ TEST(ShaderBinaryRuntimeTests, InstancedVertexShaderBinaryIsResolvableAtRuntime)
     expect_shader_binary_is_resolvable("vs_mesh_instanced.bin");
 }
 
+TEST(ShaderBinaryRuntimeTests, SkinnedVertexShaderBinaryIsResolvableAtRuntime) {
+    expect_shader_binary_is_resolvable("vs_mesh_skinned.bin");
+}
+
 } // namespace
