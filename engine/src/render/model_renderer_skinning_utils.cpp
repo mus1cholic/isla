@@ -70,11 +70,10 @@ bool get_or_assign_local_joint(MutableGpuSkinningPartition& partition, std::uint
         return true;
     }
     if (partition.global_joint_palette.size() >= max_palette_joints ||
-        partition.global_joint_palette.size() >= std::numeric_limits<std::uint16_t>::max()) {
+        partition.global_joint_palette.size() > std::numeric_limits<std::uint16_t>::max()) {
         return false;
     }
-    const std::uint16_t new_local =
-        static_cast<std::uint16_t>(partition.global_joint_palette.size());
+    const auto new_local = static_cast<std::uint16_t>(partition.global_joint_palette.size());
     partition.global_joint_palette.push_back(global_joint);
     partition.global_to_local_joint.emplace(global_joint, new_local);
     out_local_joint = new_local;
