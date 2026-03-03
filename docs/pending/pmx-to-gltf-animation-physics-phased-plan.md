@@ -51,8 +51,10 @@ Rationale:
 > - `client/src/animated_mesh_skinning.hpp` (per-primitive workspace + in-place APIs)
 > - `client/src/animated_mesh_skinning.cpp` (topology/workspace build + in-place skin writes)
 > - `client/src/client_app.hpp` / `client/src/client_app.cpp` (binding workspace + in-place tick updates)
+> - `engine/src/render/render_world_test.cpp` (`MeshData` no-bounds-edit regression coverage)
 > - `client/src/animated_mesh_skinning_test.cpp` (multi-tick churn/capacity guards)
 > - `client/src/client_app_animation_test.cpp` (runtime multi-frame storage stability smoke test)
+> - `.github/workflows/ci.yml` (windows smoke includes `//engine/src/render:render_world_tests`)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -226,9 +228,8 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
 
 ### Known Phase 2 Limits (Intentional / Deferred)
 
-- Temporary CPU skinning path currently rebuilds/replaces triangle lists each frame.
 - This CPU path is functional for visible playback bring-up but not intended as final deformation architecture.
-- Performance hardening of this temporary path is tracked in Phase 2.5.
+- CPU deformation remains a temporary compatibility path until Phase 3 GPU skinning is authoritative.
 
 ### Exit Criteria
 
@@ -272,9 +273,17 @@ This is acceptable for initial bring-up, but should be tightened before relying 
   - reused skinned-position buffer across ticks
 - Updated startup animated mesh population to prebuild triangle storage + topology workspace once.
 - Deferred bounds recompute on animated tick path to a lower-frequency interval (instead of every frame).
+- Added defensive workspace topology validation/rebuild in `skin_primitive_in_place(...)`:
+  - detects stale/uninitialized/mismatched topology against primitive valid triangle stream
+  - logs throttled warning when rebuild is triggered
+- Reset animation bounds-recompute tick counter in `populate_world_from_animated_asset()` for deterministic behavior across runtime and test-hook call paths.
+- Added low-verbosity telemetry (`VLOG(1)`) when deferred animated mesh bounds recompute is executed.
 - Added regression/perf-oriented test coverage:
   - in-place skinning storage/capacity stability over many ticks
   - client animation smoke test validating stable triangle storage across many frames
+  - `MeshData` edit-without-bounds-recompute contract test
+  - deferred-bounds interval boundary behavior in client animation tick tests
+  - stale workspace and uninitialized workspace rebuild safety tests
 
 ### Known Limits (Post-Phase 2.5)
 
@@ -305,6 +314,7 @@ Render skinned meshes using evaluated joint matrices.
 - Ensure multi-primitive skinned assets render all attached primitives.
 - Validate GPU path against Phase 1 contract outputs (`JOINTS_0`, `WEIGHTS_0`, baseline clip presence).
 - Retire or bypass Phase 2 temporary CPU skinning deformation updates once GPU skinning is authoritative.
+- Keep Phase 2.5 CPU path as an optional fallback/debug path during rollout, but treat GPU skinning as the single source of visual truth once validated.
 
 ### Risks
 
@@ -377,6 +387,7 @@ Make the pipeline maintainable and testable.
 - Add CI wiring for `//tools/pmx:validate_converted_gltf_test`.
 - Extend CI/smoke wiring from current baseline that already includes:
   - `//engine/src/render:animation_playback_controller_tests`
+  - `//engine/src/render:render_world_tests`
   - `//client/src:animated_mesh_skinning_test`
   - `//client/src:client_app_animation_test`
 
@@ -436,6 +447,7 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 - Version and publish contract/schema migration guidance beyond Phase 1 (`schema_version` evolution).
 - Explicitly document temporary-vs-final deformation path transitions:
   - Phase 2 temporary CPU skinning
+  - Phase 2.5 optimized temporary CPU skinning (in-place + deferred bounds)
   - Phase 3+ authoritative GPU skinning
 
 ### Exit Criteria

@@ -8,7 +8,8 @@ namespace isla::client::animated_mesh_skinning {
 
 namespace {
 
-Vec3 skin_point(const animated_gltf::SkinnedVertex& vertex, const std::vector<Mat4>* skin_matrices) {
+Vec3 skin_point(const animated_gltf::SkinnedVertex& vertex,
+                const std::vector<Mat4>* skin_matrices) {
     if (skin_matrices == nullptr || skin_matrices->empty()) {
         return vertex.position;
     }
@@ -43,18 +44,36 @@ bool workspace_topology_matches_primitive(const animated_gltf::SkinnedPrimitive&
     if ((workspace.triangle_vertex_indices.size() % 3U) != 0U) {
         return false;
     }
-    for (const std::uint32_t vertex_index : workspace.triangle_vertex_indices) {
-        if (static_cast<std::size_t>(vertex_index) >= primitive.vertices.size()) {
+    std::size_t expected_index_count = 0U;
+    for (std::size_t i = 0U; i + 2U < primitive.indices.size(); i += 3U) {
+        const auto i0 = static_cast<std::size_t>(primitive.indices[i]);
+        const auto i1 = static_cast<std::size_t>(primitive.indices[i + 1U]);
+        const auto i2 = static_cast<std::size_t>(primitive.indices[i + 2U]);
+        if (i0 >= primitive.vertices.size() || i1 >= primitive.vertices.size() ||
+            i2 >= primitive.vertices.size()) {
+            continue;
+        }
+        if (expected_index_count + 2U >= workspace.triangle_vertex_indices.size()) {
             return false;
         }
+        if (workspace.triangle_vertex_indices[expected_index_count] !=
+                static_cast<std::uint32_t>(i0) ||
+            workspace.triangle_vertex_indices[expected_index_count + 1U] !=
+                static_cast<std::uint32_t>(i1) ||
+            workspace.triangle_vertex_indices[expected_index_count + 2U] !=
+                static_cast<std::uint32_t>(i2)) {
+            return false;
+        }
+        expected_index_count += 3U;
     }
-    return true;
+    return expected_index_count == workspace.triangle_vertex_indices.size();
 }
 
 } // namespace
 
-std::vector<Triangle> make_initial_triangles_and_workspace(
-    const animated_gltf::SkinnedPrimitive& primitive, PrimitiveSkinningWorkspace* workspace) {
+std::vector<Triangle>
+make_initial_triangles_and_workspace(const animated_gltf::SkinnedPrimitive& primitive,
+                                     PrimitiveSkinningWorkspace* workspace) {
     std::vector<Triangle> triangles;
     if (workspace == nullptr) {
         return triangles;
@@ -119,14 +138,13 @@ void skin_primitive_in_place(const animated_gltf::SkinnedPrimitive& primitive,
 
     for (std::size_t tri_index = 0U; tri_index < triangle_count; ++tri_index) {
         const std::size_t index_offset = tri_index * 3U;
-        const std::size_t i0 =
-            static_cast<std::size_t>(workspace->triangle_vertex_indices[index_offset]);
-        const std::size_t i1 =
+        const auto i0 = static_cast<std::size_t>(workspace->triangle_vertex_indices[index_offset]);
+        const auto i1 =
             static_cast<std::size_t>(workspace->triangle_vertex_indices[index_offset + 1U]);
-        const std::size_t i2 =
+        const auto i2 =
             static_cast<std::size_t>(workspace->triangle_vertex_indices[index_offset + 2U]);
 
-        Triangle& triangle = triangles->at(tri_index);
+        Triangle& triangle = (*triangles)[tri_index];
         triangle.a = workspace->skinned_positions[i0];
         triangle.b = workspace->skinned_positions[i1];
         triangle.c = workspace->skinned_positions[i2];
@@ -136,8 +154,9 @@ void skin_primitive_in_place(const animated_gltf::SkinnedPrimitive& primitive,
     }
 }
 
-std::vector<Triangle> make_triangles_from_skinned_primitive(
-    const animated_gltf::SkinnedPrimitive& primitive, const std::vector<Mat4>* skin_matrices) {
+std::vector<Triangle>
+make_triangles_from_skinned_primitive(const animated_gltf::SkinnedPrimitive& primitive,
+                                      const std::vector<Mat4>* skin_matrices) {
     PrimitiveSkinningWorkspace workspace;
     std::vector<Triangle> triangles = make_initial_triangles_and_workspace(primitive, &workspace);
     skin_primitive_in_place(primitive, skin_matrices, &workspace, &triangles);

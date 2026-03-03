@@ -147,5 +147,3 @@ class RenderWorld {
 };
 
 } // namespace isla::client
-
-

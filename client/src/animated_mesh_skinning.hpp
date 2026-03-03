@@ -18,8 +18,9 @@ struct PrimitiveSkinningWorkspace {
 make_triangles_from_skinned_primitive(const animated_gltf::SkinnedPrimitive& primitive,
                                       const std::vector<Mat4>* skin_matrices);
 
-[[nodiscard]] std::vector<Triangle> make_initial_triangles_and_workspace(
-    const animated_gltf::SkinnedPrimitive& primitive, PrimitiveSkinningWorkspace* workspace);
+[[nodiscard]] std::vector<Triangle>
+make_initial_triangles_and_workspace(const animated_gltf::SkinnedPrimitive& primitive,
+                                     PrimitiveSkinningWorkspace* workspace);
 
 void skin_primitive_in_place(const animated_gltf::SkinnedPrimitive& primitive,
                              const std::vector<Mat4>* skin_matrices,

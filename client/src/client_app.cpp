@@ -198,6 +198,7 @@ void ClientApp::configure_animation_playback_from_environment() {
 
 void ClientApp::populate_world_from_animated_asset() {
     animated_mesh_bindings_.clear();
+    animation_tick_count_ = 0U;
     if (!animated_asset_.has_value()) {
         return;
     }
@@ -296,9 +297,8 @@ void ClientApp::tick_animation(float dt_seconds) {
             animated_asset_->primitives[binding.primitive_index];
         MeshData& mesh = world_.meshes()[binding.mesh_id];
         mesh.edit_triangles_without_recompute_bounds([&](MeshData::TriangleList& triangles) {
-            animated_mesh_skinning::skin_primitive_in_place(primitive, &skin_matrices,
-                                                            &binding.skinning_workspace,
-                                                            &triangles);
+            animated_mesh_skinning::skin_primitive_in_place(
+                primitive, &skin_matrices, &binding.skinning_workspace, &triangles);
         });
         if (should_recompute_bounds) {
             mesh.recompute_bounds();

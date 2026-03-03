@@ -233,7 +233,8 @@ TEST(ClientAppAnimationTest, AnimatedTickUpdatesMeshInPlaceWithoutTriangleReallo
     RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
     ASSERT_FALSE(world.meshes().empty());
     const Triangle* triangles_ptr_after_first_tick = world.meshes()[0].triangles().data();
-    const std::size_t triangles_capacity_after_first_tick = world.meshes()[0].triangles().capacity();
+    const std::size_t triangles_capacity_after_first_tick =
+        world.meshes()[0].triangles().capacity();
 
     runtime.now_ticks_ns = 1000000000ULL;
     internal::ClientAppTestHooks::tick(app);
