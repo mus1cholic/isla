@@ -298,6 +298,10 @@ void ModelRenderer::render(const RenderWorld& world) const {
 
     const bool renderer_supports_gpu_skinning = supports_gpu_skinning();
     static const Material kFallbackMaterial;
+    std::size_t submitted_draws = 0U;
+    std::size_t opaque_draws = 0U;
+    std::size_t alpha_blend_draws = 0U;
+    std::size_t alpha_cutout_draws = 0U;
     for (const RenderObject& object : world.objects()) {
         if (!object.visible || !impl_->mesh_manager.has_mesh_slot(object.mesh_id)) {
             continue;
@@ -385,6 +389,13 @@ void ModelRenderer::render(const RenderWorld& world) const {
              (alpha < 1.0F && !alpha_cutout_enabled))
                 ? kAlphaBlendRenderStateBase
                 : kOpaqueRenderStateBase;
+        if (alpha_cutout_enabled) {
+            ++alpha_cutout_draws;
+        } else if (render_state_base == kAlphaBlendRenderStateBase) {
+            ++alpha_blend_draws;
+        } else {
+            ++opaque_draws;
+        }
         const std::uint64_t render_state =
             render_state_base | cull_state_for_material(material.cull_mode);
         bgfx::setUniform(impl_->object_color_uniform, object_color.data());
@@ -395,7 +406,14 @@ void ModelRenderer::render(const RenderWorld& world) const {
         bgfx::setIndexBuffer(index_buffer);
         bgfx::setState(render_state);
         bgfx::submit(kBgfxViewId, program);
+        ++submitted_draws;
     }
+    LOG_EVERY_N_SEC(INFO, 2.0) << "ModelRenderer: frame draw summary submitted_draws="
+                               << submitted_draws << " opaque=" << opaque_draws
+                               << " alpha_blend=" << alpha_blend_draws
+                               << " alpha_cutout=" << alpha_cutout_draws
+                               << " world_objects=" << world.objects().size()
+                               << " world_meshes=" << world.meshes().size();
 
     bgfx::frame();
 }

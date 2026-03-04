@@ -69,6 +69,26 @@ Transform make_visible_object_transform(const MeshData& mesh) {
     return transform;
 }
 
+Transform make_visible_object_transform_for_meshes(std::span<const MeshData> meshes) {
+    MeshData aggregate_mesh;
+    MeshData::TriangleList aggregate_triangles;
+    std::size_t aggregate_triangle_count = 0U;
+    for (const MeshData& mesh : meshes) {
+        aggregate_triangle_count += mesh.triangles().size();
+    }
+    if (aggregate_triangle_count == 0U) {
+        return {};
+    }
+
+    aggregate_triangles.reserve(aggregate_triangle_count);
+    for (const MeshData& mesh : meshes) {
+        aggregate_triangles.insert(aggregate_triangles.end(), mesh.triangles().begin(),
+                                   mesh.triangles().end());
+    }
+    aggregate_mesh.set_triangles(std::move(aggregate_triangles));
+    return make_visible_object_transform(aggregate_mesh);
+}
+
 std::string resolve_default_startup_model_path() {
     const std::filesystem::path relative_path(kDefaultStartupModelPath);
     std::vector<std::filesystem::path> candidates = { relative_path };
@@ -249,35 +269,97 @@ void ClientApp::load_startup_mesh() {
             return false;
         }
 
-        Material material{};
-        material.base_color = loaded.material.base_color;
-        material.base_alpha = loaded.material.base_alpha;
-        material.alpha_cutoff = loaded.material.alpha_cutoff;
-        material.albedo_texture_path = loaded.material.albedo_texture_path;
-        material.blend_mode = loaded.material.blend_mode;
-        material.cull_mode = loaded.material.cull_mode;
-        world_.materials().clear();
-        world_.materials().push_back(material);
+        std::vector<mesh_asset_loader::MeshAssetPrimitive> primitive_chunks =
+            std::move(loaded.primitives);
+        if (primitive_chunks.empty() && !loaded.triangles.empty()) {
+            primitive_chunks.push_back(mesh_asset_loader::MeshAssetPrimitive{
+                .triangles = std::move(loaded.triangles),
+                .material = loaded.material,
+            });
+        }
 
-        MeshData mesh;
-        mesh.set_triangles(std::move(loaded.triangles));
-        world_.meshes().push_back(std::move(mesh));
-        world_.objects().push_back(RenderObject{
-            .mesh_id = 0U,
-            .transform = make_visible_object_transform(world_.meshes().back()),
-            .material_id = 0U,
-            .visible = true,
-        });
+        world_.materials().clear();
+        world_.meshes().clear();
+        world_.objects().clear();
+        std::size_t total_triangle_count = 0U;
+        for (std::size_t chunk_index = 0U; chunk_index < primitive_chunks.size(); ++chunk_index) {
+            mesh_asset_loader::MeshAssetPrimitive& chunk = primitive_chunks[chunk_index];
+            if (chunk.triangles.empty()) {
+                VLOG(1) << "ClientApp: skipping empty static primitive chunk index=" << chunk_index
+                        << " from " << source_label << "='" << path << "'";
+                continue;
+            }
+            Material material{};
+            material.base_color = chunk.material.base_color;
+            material.base_alpha = chunk.material.base_alpha;
+            material.alpha_cutoff = chunk.material.alpha_cutoff;
+            material.albedo_texture_path = chunk.material.albedo_texture_path;
+            material.blend_mode = chunk.material.blend_mode;
+            material.cull_mode = chunk.material.cull_mode;
+            VLOG(1) << "ClientApp: static primitive chunk index=" << chunk_index
+                    << " triangles=" << chunk.triangles.size() << " material={base_color=["
+                    << material.base_color.r << "," << material.base_color.g << ","
+                    << material.base_color.b << "], base_alpha=" << material.base_alpha
+                    << ", alpha_cutoff=" << material.alpha_cutoff
+                    << ", blend_mode=" << material_blend_mode_name(material.blend_mode)
+                    << ", cull_mode=" << material_cull_mode_name(material.cull_mode)
+                    << ", has_albedo_texture="
+                    << (!material.albedo_texture_path.empty() ? "true" : "false") << "}";
+            if (material.alpha_cutoff >= 0.0F && material.albedo_texture_path.empty()) {
+                LOG_EVERY_N_SEC(WARNING, 2.0)
+                    << "ClientApp: static primitive chunk index=" << chunk_index
+                    << " uses MASK-like alpha cutoff without albedo texture path; cutout "
+                       "appearance may degrade";
+            }
+            world_.materials().push_back(std::move(material));
+
+            MeshData mesh;
+            total_triangle_count += chunk.triangles.size();
+            mesh.set_triangles(std::move(chunk.triangles));
+            world_.meshes().push_back(std::move(mesh));
+            const std::size_t mesh_id = world_.meshes().size() - 1U;
+            const std::size_t material_id = world_.materials().size() - 1U;
+            if (material_id >= world_.materials().size()) {
+                LOG(WARNING) << "ClientApp: invalid static primitive material mapping index="
+                             << material_id << " for chunk index=" << chunk_index
+                             << "; material_count=" << world_.materials().size();
+                continue;
+            }
+            world_.objects().push_back(RenderObject{
+                .mesh_id = mesh_id,
+                .material_id = material_id,
+                .visible = true,
+            });
+        }
+        if (world_.meshes().empty()) {
+            LOG(WARNING) << "ClientApp: static mesh load produced no renderable primitive chunks "
+                         << "for " << source_label << "='" << path << "'";
+            return false;
+        }
+        const Transform aggregate_transform =
+            make_visible_object_transform_for_meshes(world_.meshes());
+        VLOG(1) << "ClientApp: static aggregate transform applied to " << world_.objects().size()
+                << " object(s) position=[" << aggregate_transform.position.x << ","
+                << aggregate_transform.position.y << "," << aggregate_transform.position.z
+                << "] scale=[" << aggregate_transform.scale.x << ","
+                << aggregate_transform.scale.y << "," << aggregate_transform.scale.z << "]";
+        for (RenderObject& object : world_.objects()) {
+            object.transform = aggregate_transform;
+        }
+
+        const Material& first_material = world_.materials().front();
         LOG(INFO) << "ClientApp: loaded static mesh from " << source_label << "='" << path
-                  << "' triangles=" << world_.meshes().back().triangles().size()
-                  << " material={base_color=[" << material.base_color.r << ","
-                  << material.base_color.g << "," << material.base_color.b
-                  << "], base_alpha=" << material.base_alpha
-                  << ", alpha_cutoff=" << material.alpha_cutoff
-                  << ", blend_mode=" << material_blend_mode_name(material.blend_mode)
-                  << ", cull_mode=" << material_cull_mode_name(material.cull_mode)
+                  << "' triangles=" << total_triangle_count
+                  << " primitive_meshes=" << world_.meshes().size()
+                  << " materials=" << world_.materials().size()
+                  << " first_material={base_color=[" << first_material.base_color.r << ","
+                  << first_material.base_color.g << "," << first_material.base_color.b
+                  << "], base_alpha=" << first_material.base_alpha
+                  << ", alpha_cutoff=" << first_material.alpha_cutoff
+                  << ", blend_mode=" << material_blend_mode_name(first_material.blend_mode)
+                  << ", cull_mode=" << material_cull_mode_name(first_material.cull_mode)
                   << ", has_albedo_texture="
-                  << (!material.albedo_texture_path.empty() ? "true" : "false") << "}";
+                  << (!first_material.albedo_texture_path.empty() ? "true" : "false") << "}";
         return true;
     };
 
