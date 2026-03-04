@@ -860,6 +860,12 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
   - where to place models (`models/`)
   - supported input extensions (`.pmx`, `.gltf`, `.glb`)
   - PMX auto-convert behavior, cache location/invalidation policy, and troubleshooting steps
+- Execute final test-infrastructure cleanup for Windows composition regression coverage:
+  - treat current source-contract (`StrContains`-style) tests as temporary guardrails
+  - refactor composition/style invariants into testable policy/helper functions and assert behavior directly in unit tests
+  - prefer call-level verification via thin platform abstractions/fakes where practical (style application, swapchain descriptor policy, bgfx platform-data policy)
+  - add/retain at least one runtime-smoke-level composition path assertion where CI/platform constraints allow
+  - remove or minimize text-fragile source assertions once behavioral tests cover the same invariants
 
 ### Exit Criteria
 

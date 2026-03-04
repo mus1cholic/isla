@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -86,41 +88,54 @@ std::string load_source_file(std::string_view relative_path_view) {
     return "";
 }
 
+std::string normalize_source(std::string_view source) {
+    std::string result(source);
+    result.erase(std::remove_if(result.begin(), result.end(),
+                                [](unsigned char c) { return std::isspace(c) != 0; }),
+                 result.end());
+    return result;
+}
+
+bool contains_normalized(std::string_view source, std::string_view needle) {
+    return absl::StrContains(normalize_source(source), normalize_source(needle));
+}
+
 TEST(WindowsCompositionContractTest, ModelRendererUsesDirectCompositionSwapchainContract) {
     const std::string source = load_source_file("engine/src/render/model_renderer.cpp");
     ASSERT_FALSE(source.empty()) << "Could not load model_renderer.cpp source";
 
-    EXPECT_TRUE(absl::StrContains(source, "CreateSwapChainForComposition"));
-    EXPECT_TRUE(absl::StrContains(source, "DXGI_ALPHA_MODE_PREMULTIPLIED"));
-    EXPECT_TRUE(absl::StrContains(source, "platform_data.nwh = nullptr;"));
-    EXPECT_TRUE(absl::StrContains(source, "platform_data.context = presenter.device.Get();"));
-    EXPECT_TRUE(absl::StrContains(
+    EXPECT_TRUE(contains_normalized(source, "CreateSwapChainForComposition("));
+    EXPECT_TRUE(contains_normalized(source, "DXGI_ALPHA_MODE_PREMULTIPLIED"));
+    EXPECT_TRUE(contains_normalized(source, "platform_data.nwh = nullptr;"));
+    EXPECT_TRUE(contains_normalized(source, "platform_data.context = presenter.device.Get();"));
+    EXPECT_TRUE(contains_normalized(
         source, "platform_data.backBuffer = presenter.render_target_view.Get();"));
-    EXPECT_TRUE(absl::StrContains(source, "bgfx::setPlatformData(platform_data);"));
+    EXPECT_TRUE(contains_normalized(source, "bgfx::setPlatformData(platform_data);"));
 }
 
 TEST(WindowsCompositionContractTest, ModelRendererResizeRebindsExternalBackbufferContract) {
     const std::string source = load_source_file("engine/src/render/model_renderer.cpp");
     ASSERT_FALSE(source.empty()) << "Could not load model_renderer.cpp source";
 
-    EXPECT_TRUE(absl::StrContains(source, "resize_direct_composition_presenter("));
-    EXPECT_TRUE(absl::StrContains(source, "impl_->window_width == impl_->presenter.width"));
-    EXPECT_TRUE(absl::StrContains(source, "bgfx::setPlatformData(platform_data);"));
-    EXPECT_TRUE(absl::StrContains(source, "bgfx::reset(static_cast<std::uint32_t>(impl_->window_width),"));
-    EXPECT_TRUE(absl::StrContains(source, "DirectComposition presenter resize failed; keeping "));
+    EXPECT_TRUE(contains_normalized(source, "resize_direct_composition_presenter("));
+    EXPECT_TRUE(contains_normalized(source, "impl_->window_width == impl_->presenter.width"));
+    EXPECT_TRUE(contains_normalized(source, "bgfx::setPlatformData(platform_data);"));
+    EXPECT_TRUE(contains_normalized(
+        source, "bgfx::reset(static_cast<std::uint32_t>(impl_->window_width),"));
+    EXPECT_TRUE(contains_normalized(source, "DirectComposition presenter resize failed; keeping"));
 }
 
 TEST(WindowsCompositionContractTest, OverlayPrefersNonLayeredDirectCompositionStyleContract) {
     const std::string source = load_source_file("client/src/win32_layered_overlay.cpp");
     ASSERT_FALSE(source.empty()) << "Could not load win32_layered_overlay.cpp source";
 
-    EXPECT_TRUE(absl::StrContains(source, "using non-layered DirectComposition style"));
-    EXPECT_TRUE(absl::StrContains(source, "~(WS_EX_LAYERED | WS_EX_TOOLWINDOW)"));
-    EXPECT_TRUE(absl::StrContains(source, "using layered-alpha fallback style"));
-    EXPECT_TRUE(absl::StrContains(
+    EXPECT_TRUE(contains_normalized(source, "using non-layered DirectComposition style"));
+    EXPECT_TRUE(contains_normalized(source, "~(WS_EX_LAYERED | WS_EX_TOOLWINDOW)"));
+    EXPECT_TRUE(contains_normalized(source, "using layered-alpha fallback style"));
+    EXPECT_TRUE(contains_normalized(
         source, "skipping DwmEnableBlurBehindWindow/DwmExtendFrameIntoClientArea"));
-    EXPECT_FALSE(absl::StrContains(source, "DwmEnableBlurBehindWindow("));
-    EXPECT_FALSE(absl::StrContains(source, "DwmExtendFrameIntoClientArea("));
+    EXPECT_FALSE(contains_normalized(source, "DwmEnableBlurBehindWindow("));
+    EXPECT_FALSE(contains_normalized(source, "DwmExtendFrameIntoClientArea("));
 }
 
 } // namespace
