@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -147,7 +148,30 @@ TEST(PmxPhysicsSidecarTest, FailsOnInvalidJsonSyntax) {
 
     const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
     EXPECT_FALSE(loaded.ok);
-    EXPECT_NE(loaded.error_message.find("failed to parse physics sidecar JSON"), std::string::npos);
+    EXPECT_NE(loaded.error_message.find("failed to parse JSON"), std::string::npos);
+}
+
+TEST(PmxPhysicsSidecarTest, DeeplyNestedJsonReturnsValidationFailureWithoutCrash) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_pmx_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    std::string deeply_nested = "{\"schema_version\":";
+    deeply_nested.reserve(512);
+    for (int i = 0; i < 150; ++i) {
+        deeply_nested.push_back('[');
+    }
+    deeply_nested += "0";
+    for (int i = 0; i < 150; ++i) {
+        deeply_nested.push_back(']');
+    }
+    deeply_nested += "}";
+
+    const std::filesystem::path sidecar_path =
+        write_sidecar(temp_dir, "too_deep.physics.json", deeply_nested);
+    ASSERT_FALSE(sidecar_path.empty());
+
+    const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_NE(loaded.error_message.find("missing schema_version"), std::string::npos);
 }
 
 TEST(PmxPhysicsSidecarTest, FailsWhenRequiredTopLevelFieldsMissing) {
@@ -166,7 +190,7 @@ TEST(PmxPhysicsSidecarTest, FailsWhenRequiredTopLevelFieldsMissing) {
 
     const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
     EXPECT_FALSE(loaded.ok);
-    EXPECT_EQ(loaded.error_message, "physics sidecar missing required top-level arrays");
+    EXPECT_NE(loaded.error_message.find("missing required top-level arrays"), std::string::npos);
 }
 
 TEST(PmxPhysicsSidecarTest, SkipsInvalidShapeParametersAndRetainsValidColliders) {
@@ -261,6 +285,161 @@ TEST(PmxPhysicsSidecarTest, UnsupportedConstraintTypeWarnsAndSkips) {
     ASSERT_TRUE(loaded.ok) << loaded.error_message;
     ASSERT_EQ(loaded.sidecar.constraints.size(), 1U);
     EXPECT_EQ(loaded.sidecar.constraints[0].id, "good");
+    EXPECT_FALSE(loaded.warnings.empty());
+}
+
+TEST(PmxPhysicsSidecarTest, FailsWhenSidecarExceedsMaximumAllowedSize) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_pmx_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path sidecar_path = temp_dir.path() / "too_large.physics.json";
+    {
+        std::ofstream out(sidecar_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        const std::string chunk(1024U, ' ');
+        const std::size_t bytes_to_write = kMaxSidecarFileSizeBytes + 1U;
+        std::size_t written = 0U;
+        while (written < bytes_to_write) {
+            const std::size_t remaining = bytes_to_write - written;
+            const std::size_t to_write = std::min<std::size_t>(chunk.size(), remaining);
+            out.write(chunk.data(), static_cast<std::streamsize>(to_write));
+            written += to_write;
+        }
+    }
+
+    const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_NE(loaded.error_message.find("exceeds maximum allowed"), std::string::npos);
+}
+
+TEST(PmxPhysicsSidecarTest, FailsWhenCollisionLayersCountExceedsLimit) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_pmx_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path sidecar_path = temp_dir.path() / "too_many_layers.physics.json";
+
+    std::ofstream out(sidecar_path, std::ios::binary);
+    ASSERT_TRUE(out.is_open());
+    out << "{"
+        << "\"schema_version\":\"1.0.0\","
+        << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
+        << "\"collision_layers\":[";
+    for (std::size_t i = 0U; i < (kMaxCollisionLayers + 1U); ++i) {
+        if (i > 0U) {
+            out << ",";
+        }
+        out << "{\"index\":0,\"name\":\"l\"}";
+    }
+    out << "],\"colliders\":[],\"constraints\":[]}";
+    out.close();
+
+    const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_FALSE(loaded.warnings.empty());
+    const bool found = std::ranges::any_of(loaded.warnings, [](const std::string& w) {
+        return w.find("collision_layers count") != std::string::npos;
+    });
+    EXPECT_TRUE(found);
+}
+
+TEST(PmxPhysicsSidecarTest, FailsWhenCollidersCountExceedsLimit) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_pmx_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path sidecar_path = temp_dir.path() / "too_many_colliders.physics.json";
+
+    std::ofstream out(sidecar_path, std::ios::binary);
+    ASSERT_TRUE(out.is_open());
+    out << "{"
+        << "\"schema_version\":\"1.0.0\","
+        << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
+        << "\"collision_layers\":[{\"index\":0,\"name\":\"default\"}],"
+        << "\"colliders\":[";
+    for (std::size_t i = 0U; i < (kMaxColliders + 1U); ++i) {
+        if (i > 0U) {
+            out << ",";
+        }
+        out << "{\"id\":\"c\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
+               "\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,\"layer\":1,\"mask\":1,"
+               "\"radius\":0.1}";
+    }
+    out << "],\"constraints\":[]}";
+    out.close();
+
+    const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_FALSE(loaded.warnings.empty());
+    const bool found = std::ranges::any_of(loaded.warnings, [](const std::string& w) {
+        return w.find("colliders count") != std::string::npos;
+    });
+    EXPECT_TRUE(found);
+}
+
+TEST(PmxPhysicsSidecarTest, FailsWhenConstraintsCountExceedsLimit) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_pmx_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path sidecar_path =
+        temp_dir.path() / "too_many_constraints.physics.json";
+
+    std::ofstream out(sidecar_path, std::ios::binary);
+    ASSERT_TRUE(out.is_open());
+    out << "{"
+        << "\"schema_version\":\"1.0.0\","
+        << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
+        << "\"collision_layers\":[{\"index\":0,\"name\":\"default\"}],"
+        << "\"colliders\":[],"
+        << "\"constraints\":[";
+    for (std::size_t i = 0U; i < (kMaxConstraints + 1U); ++i) {
+        if (i > 0U) {
+            out << ",";
+        }
+        out << "{\"id\":\"k\",\"bone_a_name\":\"A\",\"bone_b_name\":\"B\",\"type\":\"fixed\"}";
+    }
+    out << "]}";
+    out.close();
+
+    const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_FALSE(loaded.warnings.empty());
+    const bool found = std::ranges::any_of(loaded.warnings, [](const std::string& w) {
+        return w.find("constraints count") != std::string::npos;
+    });
+    EXPECT_TRUE(found);
+}
+
+TEST(PmxPhysicsSidecarTest, OverlongStringFieldsAreRejectedPerEntry) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_pmx_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path sidecar_path = temp_dir.path() / "overlong_string.physics.json";
+    const std::string long_id(kMaxStringLengthBytes + 1U, 'x');
+    const std::string valid_id("valid");
+    {
+        std::ofstream out(sidecar_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{"
+            << "\"schema_version\":\"1.0.0\","
+            << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
+            << "\"collision_layers\":[{\"index\":0,\"name\":\"default\"}],"
+            << "\"colliders\":["
+            << "{\"id\":\"" << long_id
+            << "\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
+               "\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,\"layer\":1,\"mask\":1,"
+               "\"radius\":0.1},"
+            << "{\"id\":\"" << valid_id
+            << "\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
+               "\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,\"layer\":1,\"mask\":1,"
+               "\"radius\":0.1}"
+            << "],"
+            << "\"constraints\":[]"
+            << "}";
+    }
+
+    const std::vector<std::string> known_joints{ "Head" };
+    const SidecarLoadResult loaded = load_from_file(sidecar_path.string(), known_joints);
+    ASSERT_TRUE(loaded.ok) << loaded.error_message;
+    ASSERT_EQ(loaded.sidecar.colliders.size(), 1U);
+    EXPECT_EQ(loaded.sidecar.colliders[0].id, valid_id);
     EXPECT_FALSE(loaded.warnings.empty());
 }
 

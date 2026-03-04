@@ -11,6 +11,12 @@
 namespace isla::client::pmx_physics_sidecar {
 
 inline constexpr char kExpectedSchemaVersion[] = "1.0.0";
+inline constexpr std::uint32_t kMaxCollisionLayerIndex = 31U;
+inline constexpr std::size_t kMaxSidecarFileSizeBytes = 10U * 1024U * 1024U;
+inline constexpr std::size_t kMaxCollisionLayers = 256U;
+inline constexpr std::size_t kMaxColliders = 16384U;
+inline constexpr std::size_t kMaxConstraints = 16384U;
+inline constexpr std::size_t kMaxStringLengthBytes = 256U;
 
 enum class ColliderShape {
     Sphere = 0,

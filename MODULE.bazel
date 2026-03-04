@@ -200,3 +200,19 @@ cc_library(
     commit = "360db1a95480fe102ae9c69b27c5d101167ff5ba",
     remote = "https://github.com/jkuhlmann/cgltf.git",
 )
+
+git_repository(
+    name = "nlohmann_json_upstream",
+    build_file_content = """
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "nlohmann_json",
+    hdrs = glob(["include/**/*.hpp"]),
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
+""",
+    commit = "9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03",
+    remote = "https://github.com/nlohmann/json.git",
+)

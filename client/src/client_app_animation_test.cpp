@@ -459,24 +459,24 @@ std::filesystem::path write_skinned_with_animation_gltf_fixture(const std::files
     }
     gltf_out << "{\n"
              << "  \"asset\": {\"version\": \"2.0\"},\n"
-             << "  \"buffers\": [{\"uri\": \"" << bin_path.filename().string()
-             << "\", \"byteLength\": " << buffer.size() << "}],\n"
+             << R"(  "buffers": [{"uri": ")" << bin_path.filename().string()
+             << R"(", "byteLength": )" << buffer.size() << "}],\n"
              << "  \"bufferViews\": [\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << positions_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << positions_offset
              << ", \"byteLength\": " << positions_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << normals_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << normals_offset
              << ", \"byteLength\": " << normals_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << joints_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << joints_offset
              << ", \"byteLength\": " << joints_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << weights_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << weights_offset
              << ", \"byteLength\": " << weights_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << indices_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << indices_offset
              << ", \"byteLength\": " << indices_length << ", \"target\": 34963},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << ibm_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << ibm_offset
              << ", \"byteLength\": " << ibm_length << "},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << times_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << times_offset
              << ", \"byteLength\": " << times_length << "},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << translations_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << translations_offset
              << ", \"byteLength\": " << translations_length << "}\n"
              << "  ],\n"
              << "  \"accessors\": [\n"
@@ -1045,10 +1045,10 @@ TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedSidecarCreatesColliderProxyB
         std::ofstream out(sidecar_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
         out << "{"
-            << "\"schema_version\":\"1.0.0\","
+            << R"("schema_version":"1.0.0",)"
             << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
                "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-            << "\"collision_layers\":[{\"index\":0,\"name\":\"default\"}],"
+            << R"("collision_layers":[{"index":0,"name":"default"}],)"
             << "\"colliders\":[{\"id\":\"c0\",\"bone_name\":\"joint0\",\"shape\":\"sphere\","
                "\"offset\":[0,0,0],\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,"
                "\"layer\":1,\"mask\":1,\"radius\":0.2}],"
@@ -1098,10 +1098,10 @@ TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedInvalidSidecarDoesNotBlockAn
         std::ofstream out(sidecar_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
         out << "{"
-            << "\"schema_version\":\"1.0.1\","
+            << R"("schema_version":"1.0.1",)"
             << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
                "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-            << "\"collision_layers\":[],\"colliders\":[],\"constraints\":[]"
+            << R"("collision_layers":[],"colliders":[],"constraints":[])"
             << "}";
     }
 

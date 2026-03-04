@@ -311,6 +311,8 @@ std::vector<Triangle> make_triangles_for_collider(const pmx_physics_sidecar::Col
             .y = collider.height + (collider.radius * 2.0F),
             .z = collider.radius * 2.0F,
         };
+        // TODO(isla): Replace this box proxy with a low-poly capsule mesh (cylinder + hemispheres)
+        // for better visual fidelity once Phase 5 proxy-shape refinement is scheduled.
         return scale_triangles(make_unit_cube_triangles(), scale);
     }
     return scale_triangles(make_unit_cube_triangles(), collider.size);
@@ -842,7 +844,7 @@ void ClientApp::append_physics_proxy_meshes() {
             << " source_colliders=" << physics_sidecar_->colliders.size();
 }
 
-void ClientApp::tick_physics_proxies() {
+void ClientApp::tick_physics_proxies(bool recompute_bounds) {
     if (!animation_playback_.has_cached_pose() || physics_collider_bindings_.empty()) {
         return;
     }
@@ -859,10 +861,13 @@ void ClientApp::tick_physics_proxies() {
         MeshData& mesh = world_.meshes()[binding.mesh_id];
         const Mat4 world_matrix =
             multiply(global_joint_matrices[binding.bone_index], binding.bone_local_collider_matrix);
-        mesh.edit_triangles([&](MeshData::TriangleList& triangles) {
+        mesh.edit_triangles_without_recompute_bounds([&](MeshData::TriangleList& triangles) {
             apply_matrix_to_triangles_in_place(binding.bind_local_triangles, world_matrix,
                                                triangles);
         });
+        if (recompute_bounds) {
+            mesh.recompute_bounds();
+        }
         ++updated;
     }
     if (skipped_invalid_binding > 0U) {
@@ -960,7 +965,7 @@ void ClientApp::tick_animation(float dt_seconds) {
             mesh.set_skin_palette(
                 make_remapped_skin_palette(skin_matrices, binding.gpu_palette_global_joints));
         }
-        tick_physics_proxies();
+        tick_physics_proxies(should_recompute_bounds);
         return;
     }
     for (AnimatedMeshBinding& binding : animated_mesh_bindings_) {
@@ -985,7 +990,7 @@ void ClientApp::tick_animation(float dt_seconds) {
                 << recomputed_bounds_mesh_count
                 << " mesh(es) at animation_tick_count=" << animation_tick_count_;
     }
-    tick_physics_proxies();
+    tick_physics_proxies(should_recompute_bounds);
 }
 
 void ClientApp::render() const {

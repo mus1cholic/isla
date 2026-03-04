@@ -70,6 +70,7 @@ cc_library(
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/strings",
         "@cgltf_upstream//:cgltf",
+        "@nlohmann_json_upstream//:nlohmann_json",
         "//engine/include/isla/engine/math",
         "//engine/include/isla/engine/render",
         "//third_party/sdl3:sdl3",

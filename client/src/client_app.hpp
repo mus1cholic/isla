@@ -42,7 +42,7 @@ class ClientApp {
     void populate_world_from_animated_asset();
     void load_physics_sidecar_for_asset(std::string_view asset_path);
     void append_physics_proxy_meshes();
-    void tick_physics_proxies();
+    void tick_physics_proxies(bool recompute_bounds);
 
     struct AnimatedMeshBinding {
         std::size_t mesh_id = 0U;
