@@ -14,9 +14,9 @@ struct MeshAssetMaterial {
     float alpha_cutoff = -1.0F;
     std::string albedo_texture_path;
     MaterialBlendMode blend_mode = MaterialBlendMode::Opaque;
-    // isla uses LH coordinates, but we load RH glTF assets verbatim.
-    // This mirrors the geometry along the Z-axis relative to the camera, flipping the winding order
-    // on-screen. We cull CCW to properly discard the back-faces of RH assets in our LH engine.
+    // isla uses LH coordinates (+Z forward), but we load RH glTF assets (+Z forward) verbatim.
+    // Because Mat4::look_at is explicit LH, the X-axis is effectively mirrored relative to the
+    // camera, flipping the visual winding order. We cull CCW to correctly discard back-faces.
     MaterialCullMode cull_mode = MaterialCullMode::CounterClockwise;
 };
 

@@ -554,9 +554,9 @@ void ModelRenderer::render(const RenderWorld& world) const {
     }
 
     // Camera is positioned along -Z to view the front of Right-Handed (RH) geometry loaded
-    // directly into a Left-Handed (LH) engine. Viewing from -Z mirrors the geometry's X-axis
-    // effectively reversing the triangle winding to CCW. Be sure the material cull mode matches
-    // this reversal by culling CCW, otherwise the model will render inside-out.
+    // directly into a Left-Handed (LH) engine. Since Mat4::look_at is strictly LH +Z-forward
+    // and the loader reads POSITION/NORMAL verbatim, the X-axis is effectively mirrored,
+    // reversing the triangle winding. Be sure the material cull mode matches this by culling CCW.
     const Vec3 camera_eye{ .x = 0.0F, .y = 0.0F, .z = -kDefaultCameraDistance };
     const std::array<float, 4> dir_light_dir_values{ light_dir.x, light_dir.y, light_dir.z, 0.0F };
     const std::array<float, 4> dir_light_color_values{

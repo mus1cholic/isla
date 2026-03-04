@@ -11,16 +11,15 @@ The `isla` engine internally uses a **Left-Handed (LH)** coordinate system for a
 
 ## Asset Coordinate System (Right-Handed)
 Most 3D authoring tools and modern formats like **glTF / GLB** use a **Right-Handed (RH)** coordinate system:
-*   **+X** is Right
 *   **+Y** is Up
-*   **+Z** is Backward (meaning -Z is Forward)
+*   **+Z** is Forward
 *   **Winding Order:** Counter-Clockwise (CCW) winding is considered the "front" face in glTF.
 
 ## Handling the Conversion
 Instead of manually mutating every vertex buffer, normal vector, and animation track on load to convert them from RH to LH, `isla` takes an optimized, zero-overhead approach: **We load the RH geometry exactly as-is into our LH engine.**
 
 Wait, what happens when you put a RH model into a LH world?
-Because the Z-axis is physically mirrored, the model essentially gets inverted depth-wise. When you place the camera at `-kDefaultCameraDistance` (looking down the +Z axis), you are actually looking at the *front* of the character, but because the X-axis is mirrored relative to the geometry's expected view frame, the triangles are drawn inside-out.
+Because `Mat4::look_at` is explicitly LH +Z-forward and the loader reads POSITION/NORMAL verbatim, the geometry's X-axis is effectively mirrored relative to the camera. When viewing the character from the front, this X-axis mirroring causes the triangles to visually wind backwards on-screen.
 
 To correct this visual inversion without altering the geometry, we do the following:
 
