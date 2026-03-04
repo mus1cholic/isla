@@ -59,10 +59,10 @@ TEST(RenderWorldMeshDataTest, SetSkinnedGeometryAndPaletteStoresData) {
     EXPECT_EQ(mesh.geometry_revision(), initial_revision + 1U);
 }
 
-TEST(RenderWorldMaterialTest, DefaultMaterialUsesClockwiseCulling) {
+TEST(RenderWorldMaterialTest, DefaultMaterialUsesCounterClockwiseCulling) {
     const Material material{};
     EXPECT_EQ(material.blend_mode, MaterialBlendMode::Opaque);
-    EXPECT_EQ(material.cull_mode, MaterialCullMode::Clockwise);
+    EXPECT_EQ(material.cull_mode, MaterialCullMode::CounterClockwise);
 }
 
 TEST(RenderWorldMaterialTest, DefaultMaterialUsesNeutralColorWithoutTintBias) {

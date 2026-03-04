@@ -13,7 +13,7 @@ uniform vec4 u_alpha_params;
 
 void main()
 {
-    vec3 normal = -normalize(v_normal);
+    vec3 normal = normalize(v_normal);
     vec3 light_dir = normalize(u_dir_light_dir.xyz);
     vec3 view_dir = normalize(u_camera_pos.xyz - v_world_pos);
     vec3 half_dir = normalize(light_dir + view_dir);

@@ -974,7 +974,7 @@ TEST(ClientAppAnimationTest, StaticLoadPreservesPerPrimitiveMaterialsAndSharedTr
     EXPECT_NEAR(world.materials()[1].base_color.b, 0.0F, 1.0e-6F);
     EXPECT_NEAR(world.materials()[1].alpha_cutoff, 0.33F, 1.0e-6F);
     EXPECT_EQ(world.materials()[1].blend_mode, MaterialBlendMode::Opaque);
-    EXPECT_EQ(world.materials()[1].cull_mode, MaterialCullMode::Clockwise);
+    EXPECT_EQ(world.materials()[1].cull_mode, MaterialCullMode::CounterClockwise);
     EXPECT_EQ(world.materials()[1].albedo_texture_path,
               (temp_dir.path() / "albedo_b.png").lexically_normal().string());
     EXPECT_FLOAT_EQ(world.objects()[0].transform.scale.x, world.objects()[1].transform.scale.x);
@@ -1145,7 +1145,7 @@ TEST(ClientAppAnimationTest, StaticLoadPreservesPerObjectMaterialStateMappingCon
     EXPECT_EQ(object0_material.cull_mode, MaterialCullMode::Disabled);
     EXPECT_LT(object0_material.alpha_cutoff, 0.0F);
     EXPECT_EQ(object1_material.blend_mode, MaterialBlendMode::Opaque);
-    EXPECT_EQ(object1_material.cull_mode, MaterialCullMode::Clockwise);
+    EXPECT_EQ(object1_material.cull_mode, MaterialCullMode::CounterClockwise);
     EXPECT_NEAR(object1_material.alpha_cutoff, 0.33F, 1.0e-6F);
 }
 
