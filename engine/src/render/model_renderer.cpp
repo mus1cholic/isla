@@ -572,7 +572,7 @@ void ModelRenderer::render(const RenderWorld& world) const {
         1.0F,
     };
     const std::array<float, 4> camera_pos_values{ camera_eye.x, camera_eye.y, camera_eye.z, 1.0F };
-    const std::array<float, 4> spec_params_values{ 0.3F, 16.0F, 0.0F, 0.0F };
+    const std::array<float, 4> spec_params_values{ 0.85F, 16.0F, 0.0F, 0.0F };
     bgfx::setUniform(impl_->dir_light_dir_uniform, dir_light_dir_values.data());
     bgfx::setUniform(impl_->dir_light_color_uniform, dir_light_color_values.data());
     bgfx::setUniform(impl_->ambient_color_uniform, ambient_color_values.data());
