@@ -57,9 +57,13 @@ constexpr const char* kJointPaletteUniformName = "u_joint_palette";
 constexpr std::uint64_t kOpaqueRenderStateBase = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                                                  BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
                                                  BGFX_STATE_MSAA;
-constexpr std::uint64_t kAlphaBlendRenderStateBase = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
-                                                     BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_MSAA |
-                                                     BGFX_STATE_BLEND_ALPHA;
+constexpr std::uint64_t kAlphaBlendRenderStateBase =
+    BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
+    BGFX_STATE_MSAA | BGFX_STATE_BLEND_ALPHA;
+
+static_assert((kAlphaBlendRenderStateBase & BGFX_STATE_WRITE_Z) == BGFX_STATE_WRITE_Z,
+              "Alpha blend materials must write to depth to prevent intra-mesh self-occlusion "
+              "issues on transparent geometry (like hair)");
 using Microsoft::WRL::ComPtr;
 
 struct DirectCompositionPresenter {
@@ -549,6 +553,10 @@ void ModelRenderer::render(const RenderWorld& world) const {
         light_dir = kDefaultDirectionalLightDirection;
     }
 
+    // Camera is positioned along -Z to view the front of Right-Handed (RH) geometry loaded
+    // directly into a Left-Handed (LH) engine. Since Mat4::look_at is strictly LH +Z-forward
+    // and the loader reads POSITION/NORMAL verbatim, the X-axis is effectively mirrored,
+    // reversing the triangle winding. Be sure the material cull mode matches this by culling CCW.
     const Vec3 camera_eye{ .x = 0.0F, .y = 0.0F, .z = -kDefaultCameraDistance };
     const std::array<float, 4> dir_light_dir_values{ light_dir.x, light_dir.y, light_dir.z, 0.0F };
     const std::array<float, 4> dir_light_color_values{

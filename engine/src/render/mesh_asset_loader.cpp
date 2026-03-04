@@ -441,8 +441,8 @@ MeshAssetMaterial make_material_from_gltf_primitive(std::string_view asset_path,
     if (primitive_material->alpha_mode == cgltf_alpha_mode_mask) {
         material.alpha_cutoff = primitive_material->alpha_cutoff;
     }
-    material.cull_mode =
-        primitive_material->double_sided ? MaterialCullMode::Disabled : MaterialCullMode::Clockwise;
+    material.cull_mode = primitive_material->double_sided ? MaterialCullMode::Disabled
+                                                          : MaterialCullMode::CounterClockwise;
 
     if (pbr.base_color_texture.texture != nullptr &&
         pbr.base_color_texture.texture->image != nullptr) {

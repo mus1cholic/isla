@@ -103,7 +103,7 @@ TEST(ShaderContractTests, FragmentShaderUsesDynamicLightingUniformsContract) {
     const std::string fragment_shader = load_shader_source("engine/src/render/shaders/fs_mesh.sc");
     ASSERT_FALSE(fragment_shader.empty()) << "Could not load fragment shader source";
 
-    EXPECT_TRUE(absl::StrContains(fragment_shader, "vec3 normal = -normalize(v_normal);"));
+    EXPECT_TRUE(absl::StrContains(fragment_shader, "vec3 normal = normalize(v_normal);"));
     EXPECT_TRUE(
         absl::StrContains(fragment_shader, "vec3 light_dir = normalize(u_dir_light_dir.xyz);"));
     EXPECT_TRUE(absl::StrContains(fragment_shader,

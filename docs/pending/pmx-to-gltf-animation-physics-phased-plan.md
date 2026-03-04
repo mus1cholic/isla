@@ -41,6 +41,7 @@ Operational interpretation:
 > - Phase 4 is complete (static glTF visual-fidelity baseline: authored normals/material ingestion, `MASK` semantics hardening, and static-fallback parity guardrails).
 > - Phase 4.1 is complete (static glTF per-primitive material preservation + deterministic aggregate transform + fallback parity + additional loader hardening and contract test refactors).
 > - Phase 4.5 is complete (Windows DirectComposition-backed transparent overlay path with visible 3D rendering).
+> - Phase 4.6 is complete (coordinate system mirroring documentation + Alpha Blend depth sorting assertions).
 > - Phases 5-10 remain pending runtime/tooling expansion.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
@@ -113,6 +114,10 @@ Operational interpretation:
 > - `engine/src/render/overlay_transparency_contract_test.cpp` / `engine/include/isla/engine/render/overlay_transparency.hpp` (transparent clear-color contract for compositor presentation path)
 > - `engine/src/render/windows_composition_contract_test.cpp` (Windows composition policy/contract guardrails for style/swapchain/bgfx platform-data wiring)
 > - `engine/src/render/BUILD` / `client/src/BUILD` (Windows composition/render link dependencies, including GNU-vs-MSVC linkopts split)
+>
+> Phase 4.6 artifacts:
+> - `engine/include/isla/engine/render/render_world.hpp` / `engine/src/render/include/mesh_asset_loader.hpp` (documented Left-Handed vs Right-Handed mirroring + CCW cull requirement)
+> - `engine/src/render/model_renderer.cpp` (documented Right-Handed camera `-Z` mirroring + static assertion preventing Alpha Blend intra-mesh depth sorting regressions)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 

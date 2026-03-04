@@ -462,7 +462,7 @@ TEST(MeshAssetLoaderTests, PreservesDefaultMaterialOnlyForPrimitiveWithoutMateri
     EXPECT_FLOAT_EQ(default_material.base_alpha, 1.0F);
     EXPECT_LT(default_material.alpha_cutoff, 0.0F);
     EXPECT_EQ(default_material.blend_mode, MaterialBlendMode::Opaque);
-    EXPECT_EQ(default_material.cull_mode, MaterialCullMode::Clockwise);
+    EXPECT_EQ(default_material.cull_mode, MaterialCullMode::CounterClockwise);
     EXPECT_TRUE(default_material.albedo_texture_path.empty());
 
     const MeshAssetMaterial& explicit_material = loaded.primitives[1].material;

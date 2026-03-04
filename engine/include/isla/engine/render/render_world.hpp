@@ -167,7 +167,14 @@ struct Material {
     float base_alpha = 1.0F;
     float alpha_cutoff = -1.0F;
     MaterialBlendMode blend_mode = MaterialBlendMode::Opaque;
-    MaterialCullMode cull_mode = MaterialCullMode::Clockwise;
+    // Note on Cull Mode:
+    // isla uses a Left-Handed (LH) coordinate system (+Y up, +Z forward).
+    // Most assets (glTF) use Right-Handed (RH) coordinates (+Y up, +Z forward, CCW front faces).
+    // Since Mat4::look_at is explicitly LH +Z forward and the loader reads POSITION/NORMAL
+    // verbatim, the geometry's X-axis is effectively mirrored, flipping the visual triangle
+    // winding. To correctly cull the back-faces of un-converted RH geometry, we must cull
+    // Counter-Clockwise (CCW).
+    MaterialCullMode cull_mode = MaterialCullMode::CounterClockwise;
     std::string albedo_texture_path;
 };
 
