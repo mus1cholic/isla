@@ -121,6 +121,7 @@ TEST(ShaderContractTests, FragmentShaderUsesDynamicLightingUniformsContract) {
     EXPECT_TRUE(absl::StrContains(fragment_shader, "(ndotl > 0.0)"))
         << "Specular term should be gated by diffuse-facing check";
     EXPECT_TRUE(absl::StrContains(fragment_shader, "dot(normal, light_dir)"));
+    EXPECT_TRUE(absl::StrContains(fragment_shader, "outAlpha = 1.0;"));
     EXPECT_TRUE(absl::StrContains(fragment_shader, "discard;"));
 }
 

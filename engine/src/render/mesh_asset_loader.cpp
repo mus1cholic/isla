@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -336,17 +337,50 @@ std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cg
 
     const std::string uri(image->uri);
     if (uri.rfind("data:", 0U) == 0U || uri.rfind("http://", 0U) == 0U ||
-        uri.rfind("https://", 0U) == 0U) {
+        uri.rfind("https://", 0U) == 0U || uri.rfind("file://", 0U) == 0U) {
         return {};
     }
 
     const std::filesystem::path uri_path(uri);
-    if (uri_path.is_absolute()) {
-        return uri_path.lexically_normal().string();
+    if (uri_path.is_absolute() || uri_path.has_root_name() || uri_path.has_root_directory()) {
+        LOG(WARNING) << "MeshAssetLoader: rejecting absolute image URI path in glTF material: '"
+                     << uri << "'";
+        return {};
     }
 
     const std::filesystem::path asset_dir = std::filesystem::path(asset_path).parent_path();
-    return (asset_dir / uri_path).lexically_normal().string();
+    const std::filesystem::path normalized_asset_dir = asset_dir.lexically_normal();
+    const std::filesystem::path resolved = (asset_dir / uri_path).lexically_normal();
+
+    auto base_it = normalized_asset_dir.begin();
+    auto resolved_it = resolved.begin();
+    for (; base_it != normalized_asset_dir.end() && resolved_it != resolved.end();
+         ++base_it, ++resolved_it) {
+#if defined(_WIN32)
+        std::wstring lhs = base_it->native();
+        std::wstring rhs = resolved_it->native();
+        std::transform(lhs.begin(), lhs.end(), lhs.begin(), ::towlower);
+        std::transform(rhs.begin(), rhs.end(), rhs.begin(), ::towlower);
+        if (lhs != rhs) {
+            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
+                         << uri << "'";
+            return {};
+        }
+#else
+        if (*base_it != *resolved_it) {
+            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
+                         << uri << "'";
+            return {};
+        }
+#endif
+    }
+    if (base_it != normalized_asset_dir.end()) {
+        LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
+                     << uri << "'";
+        return {};
+    }
+
+    return resolved.string();
 }
 
 MeshAssetMaterial make_material_from_gltf_primitive(std::string_view asset_path,

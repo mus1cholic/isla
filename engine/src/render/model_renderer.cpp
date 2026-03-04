@@ -361,6 +361,7 @@ void ModelRenderer::render(const RenderWorld& world) const {
             impl_->texture_manager.resolve_texture(material.albedo_texture_path);
         const float alpha = std::clamp(material.base_alpha, 0.0F, 1.0F);
         const float alpha_cutoff = std::clamp(material.alpha_cutoff, -1.0F, 1.0F);
+        const bool alpha_cutout_enabled = alpha_cutoff >= 0.0F;
         const std::array<float, 4> object_color{
             material.base_color.r,
             material.base_color.g,
@@ -369,18 +370,19 @@ void ModelRenderer::render(const RenderWorld& world) const {
         };
         const std::array<float, 4> alpha_params{
             alpha_cutoff,
-            alpha_cutoff >= 0.0F ? 1.0F : 0.0F,
+            alpha_cutout_enabled ? 1.0F : 0.0F,
             0.0F,
             0.0F,
         };
-        if (alpha_cutoff >= 0.0F) {
+        if (alpha_cutout_enabled) {
             VLOG(1) << "ModelRenderer: alpha-cutout active for mesh_id=" << object.mesh_id
                     << " material_id=" << object.material_id << " cutoff=" << alpha_cutoff;
         }
         const Mat4 model = Mat4::from_position_scale_quat(
             object.transform.position, object.transform.scale, object.transform.rotation);
         const std::uint64_t render_state_base =
-            (material.blend_mode == MaterialBlendMode::AlphaBlend || alpha < 1.0F)
+            (material.blend_mode == MaterialBlendMode::AlphaBlend ||
+             (alpha < 1.0F && !alpha_cutout_enabled))
                 ? kAlphaBlendRenderStateBase
                 : kOpaqueRenderStateBase;
         const std::uint64_t render_state =

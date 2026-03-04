@@ -31,14 +31,15 @@ Operational interpretation:
 - PMX support is provided through conversion orchestration workflows, not native PMX render/runtime parsing.
 
 > [!NOTE]
-> **Current status (2026-03-03):**
+> **Current status (2026-03-04):**
 > - Phase 0 is complete and substantially hardened.
 > - Phase 1 is complete (contract + schema + validator + validator tests).
 > - Phase 2 is complete (runtime clip playback + controller + temporary CPU skinning path).
 > - Phase 2.5 is complete (in-place CPU skinning updates + workspace reuse + deferred bounds recompute).
 > - Phase 3 is complete (authoritative GPU skinning path for current fixed palette budget).
 > - Phase 3.5 is complete (large-skeleton GPU skinning support beyond current fixed palette budget via deterministic remap/partition).
-> - Phases 4-10 remain pending runtime/tooling expansion (including Phase 4.1 and Phase 4.5 additions).
+> - Phase 4 is complete (static glTF visual-fidelity baseline: authored normals/material ingestion, `MASK` semantics hardening, and static-fallback parity guardrails).
+> - Phases 4.1-10 remain pending runtime/tooling expansion (including Phase 4.1 and Phase 4.5 additions).
 > - A dedicated static per-primitive material preservation phase (Phase 4.1) is now added and pending.
 > - A dedicated Windows alpha-compositing stabilization phase (Phase 4.5) is now added and pending.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
@@ -88,6 +89,15 @@ Operational interpretation:
 > - `client/src/client_app.hpp` / `client/src/client_app.cpp` (partitioned GPU mesh population + per-partition remapped skin palette updates)
 > - `engine/src/render/model_renderer_skinning_utils_test.cpp` (remap equivalence + determinism + split/no-split + invalid-input guard coverage)
 > - `client/src/client_app_animation_test.cpp` (large-skeleton GPU-authoritative partitioning + repeated populate stability coverage)
+>
+> Phase 4 artifacts:
+> - `engine/include/isla/engine/render/render_types.hpp` (static triangle per-vertex normal payload for authored-normal preservation)
+> - `engine/src/render/include/mesh_asset_loader.hpp` / `engine/src/render/mesh_asset_loader.cpp` (static glTF base color/alpha/alpha-cutoff/texture ingestion + URI hardening)
+> - `engine/include/isla/engine/render/render_world.hpp` (neutral default object color baseline + material alpha cutoff field)
+> - `engine/src/render/bgfx_mesh_manager.cpp` (authored-normal consume path with deterministic face-normal fallback when missing)
+> - `engine/src/render/model_renderer.cpp` / `engine/src/render/shaders/fs_mesh.sc` (cutout shader + render-state semantics for `MASK`)
+> - `client/src/client_app.cpp` (animated-load fallback-to-static fidelity path + static material summary logging)
+> - `engine/src/render/mesh_asset_loader_test.cpp` / `client/src/client_app_animation_test.cpp` / `engine/src/render/shader_contract_test.cpp` / `engine/src/render/render_world_test.cpp` (Phase 4 regression coverage)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -196,12 +206,16 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
 - Current GPU skinning contract note (Phase 3.5 implementation):
   - per-draw GPU palette remains `[0, 63]` local joint index space
   - primitives referencing >64 global joints are supported through deterministic partition/remap preprocessing before draw submission
+- Static-fidelity and security compatibility note (Phase 4 implementation):
+  - runtime static fallback now consumes `alphaMode: MASK` cutoff semantics and treats surviving cutout fragments as opaque
+  - absolute/traversal image URI paths are rejected in static glTF texture path resolution; conversion outputs should keep texture URIs package-local
 
 ### Known Phase 1 Limits (Intentional)
 
 - Validator does not decode raw accessor buffer values for `JOINTS_0`; bounds checks are static and metadata-dependent.
 - Validator enforces conversion contract constraints, but does not execute rendering/runtime playback paths.
 - Validator does not currently execute/validate runtime partition-remap behavior for large-skeleton GPU skinning.
+- Validator does not currently enforce static-loader URI hardening behavior (absolute/traversal image URI rejection is runtime-side).
 
 ### Exit Criteria
 
@@ -456,7 +470,7 @@ Support real character assets where skinned primitives reference more than 64 jo
 - Runtime no longer treats `joint_index > 63` as a hard incompatibility for otherwise valid assets.
 - Satisfied as of 2026-03-03.
 
-## Phase 4: Static glTF Visual Fidelity Path
+## Phase 4: Static glTF Visual Fidelity Path (Completed)
 
 ### Goal
 
@@ -476,11 +490,47 @@ Ensure static `.gltf/.glb` rendering preserves authored visual fidelity so loade
 - Add regression coverage for:
   - static glTF normals/material fidelity expectations
   - fallback behavior consistency between startup env path and default-model path
+  - `MASK` alpha-cutout semantics alignment (cutoff-driven discard + opaque surviving fragments)
+  - safe texture URI resolution behavior (reject absolute and path-traversal image URIs)
+
+### Implemented (2026-03-04)
+
+- Preserved authored static normals end-to-end for static `.gltf/.glb`:
+  - static triangle payload now carries per-vertex normals
+  - static upload path consumes authored normals when present and falls back deterministically to face-normal recompute when missing
+- Preserved static core material fidelity inputs in fallback path:
+  - neutral default base color policy updated to remove tint bias
+  - glTF material base color/alpha ingestion wired through static loader -> runtime material
+  - glTF `MASK` alpha cutoff ingestion and shader-path handling added
+- Hardened `MASK` rendering semantics:
+  - alpha test uses authored cutoff
+  - surviving cutout fragments are treated as opaque for output alpha
+  - render-state selection keeps cutout materials on opaque/depth-write path (instead of blend-state fallback on `alpha < 1`)
+- Strengthened animated-load fallback-to-static behavior:
+  - when animated glTF load succeeds but playback setup fails (e.g. no clips), static fallback now retains Phase 4 fidelity behavior
+- Added static-loader URI hardening:
+  - rejects absolute image URI paths
+  - rejects parent-traversal image URI paths escaping asset directory
+- Added observability:
+  - static-load material summary logs in client startup path
+  - warnings for cutout materials missing resolvable texture sources
+  - warning for current single-material static fallback collapse on multi-material assets (explicitly deferred to Phase 4.1)
+- Added/expanded tests:
+  - `engine/src/render/mesh_asset_loader_test.cpp` (normals/material ingestion, `MASK` cutoff ingestion, URI hardening, multi-material collapse contract)
+  - `client/src/client_app_animation_test.cpp` (animated->static fallback fidelity + startup-path parity)
+  - `engine/src/render/shader_contract_test.cpp` (alpha-cutout contract)
+  - `engine/src/render/render_world_test.cpp` (neutral default material baseline)
+
+### Known Limits (Post-Phase 4)
+
+- Static fallback still collapses multi-primitive/multi-material content into one material baseline; this is explicitly scoped to Phase 4.1.
+- Static texture hookup currently depends on standards-compliant glTF `images/textures` references; converter outputs omitting those fields cannot be recovered runtime-side.
 
 ### Exit Criteria
 
 - Static `.gltf/.glb` fallback no longer exhibits systemic yellow-tint/forced-faceted appearance for assets that include authored normals/material base inputs.
 - Animated-load fallback-to-static path produces the same visual-fidelity baseline as direct static load.
+- Satisfied as of 2026-03-04 for the current single-material static fallback baseline.
 
 ## Phase 4.1: Static glTF Per-Primitive Material Preservation
 
@@ -490,7 +540,7 @@ Preserve authored material partitioning for static `.gltf/.glb` content so multi
 
 ### Dependencies
 
-- Builds directly on Phase 4 static-fidelity foundations (authored normals, neutral color baseline, base color/alpha/texture ingestion, and fallback-path consistency).
+- Builds directly on completed Phase 4 static-fidelity foundations (authored normals, neutral color baseline, base color/alpha/texture ingestion, `MASK` semantics, URI hardening, and fallback-path consistency).
 - Should be completed before Phase 4.5 Windows composition stabilization so transparent/cutout validation during overlay work uses material-faithful static fallback behavior.
 
 ### Scope
@@ -657,6 +707,8 @@ Make the pipeline maintainable and testable.
   - define deterministic model selection policy when multiple candidates exist
 - Add automated tests for:
   - loader failures (missing skin/joints/weights)
+  - static-loader texture URI hardening behavior (absolute/traversal image URI rejection)
+  - `MASK` cutout shader/render-state contract behavior
   - static multi-primitive material-preservation behavior (Phase 4.1)
   - pose eval determinism
   - interpolation mode handling (`LINEAR`/`STEP` + rejection paths)
@@ -715,6 +767,7 @@ Close remaining runtime animation fidelity/performance gaps.
 - Update Phase 1 contract + validator rules when `CUBICSPLINE` transitions from unsupported to supported.
 - Maintain Phase 2 state/pose consistency guarantees (reported local time aligns with sampled pose semantics).
 - Maintain Phase 3/3.5 deformation consistency guarantees (GPU-skinned output remains aligned with evaluated pose semantics).
+- Maintain Phase 4 static-fidelity guarantees while sampling internals evolve (including unchanged `MASK` cutout semantics and static fallback material behavior).
 
 ### Exit Criteria
 
@@ -762,7 +815,7 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 2. First usable PMX runtime playback point: after Phase 2 (runtime clip playback).
 3. First visually correct character deformation point: after Phase 3 (GPU skinning, achieved for current fixed-palette-budget content).
 4. First large-rig-ready deformation point (>64-joint referenced primitives): after Phase 3.5 (achieved 2026-03-03).
-5. First static glTF visual-fidelity parity point (non-animated fallback path): after Phase 4.
+5. First static glTF visual-fidelity parity point (non-animated fallback path): after Phase 4 (achieved 2026-03-04).
 6. First static multi-material parity point (primitive-level material preservation in fallback path): after Phase 4.1.
 7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5.
 8. First basic PMX parity point (animation + basic physics): after Phase 5/6.

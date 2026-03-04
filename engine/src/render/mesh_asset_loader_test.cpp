@@ -296,4 +296,70 @@ TEST(MeshAssetLoaderTests, MultiPrimitiveMaterialSelectionUsesFirstTrianglePrimi
     EXPECT_EQ(loaded.material.blend_mode, MaterialBlendMode::AlphaBlend);
 }
 
+TEST(MeshAssetLoaderTests, RejectsAbsoluteImageUriPath) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_mesh_loader_test");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = temp_dir.path() / "triangle_absolute_uri.gltf";
+
+    constexpr char kTriangleAbsoluteUriGltf[] =
+        "{"
+        "\"asset\":{\"version\":\"2.0\"},"
+        "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAA\",\"byteLength\":36}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],"
+        "\"images\":[{\"uri\":\"C:/Windows/win.ini\"}],"
+        "\"textures\":[{\"source\":0}],"
+        "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"material\":0,\"mode\":4}]}"
+        "],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"scenes\":[{\"nodes\":[0]}],"
+        "\"scene\":0"
+        "}";
+    {
+        std::ofstream stream(gltf_path, std::ios::binary);
+        ASSERT_TRUE(stream.is_open());
+        stream << kTriangleAbsoluteUriGltf;
+    }
+
+    const MeshAssetLoadResult loaded = load_from_file(gltf_path.string());
+    ASSERT_TRUE(loaded.ok) << loaded.error_message;
+    EXPECT_TRUE(loaded.material.albedo_texture_path.empty());
+}
+
+TEST(MeshAssetLoaderTests, RejectsImageUriParentTraversalOutsideAssetDirectory) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_mesh_loader_test");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path nested_dir = temp_dir.path() / "nested";
+    ASSERT_TRUE(std::filesystem::create_directories(nested_dir));
+    const std::filesystem::path gltf_path = nested_dir / "triangle_parent_traversal_uri.gltf";
+
+    constexpr char kTriangleParentTraversalUriGltf[] =
+        "{"
+        "\"asset\":{\"version\":\"2.0\"},"
+        "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAA\",\"byteLength\":36}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],"
+        "\"images\":[{\"uri\":\"../outside.png\"}],"
+        "\"textures\":[{\"source\":0}],"
+        "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"material\":0,\"mode\":4}]}"
+        "],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"scenes\":[{\"nodes\":[0]}],"
+        "\"scene\":0"
+        "}";
+    {
+        std::ofstream stream(gltf_path, std::ios::binary);
+        ASSERT_TRUE(stream.is_open());
+        stream << kTriangleParentTraversalUriGltf;
+    }
+
+    const MeshAssetLoadResult loaded = load_from_file(gltf_path.string());
+    ASSERT_TRUE(loaded.ok) << loaded.error_message;
+    EXPECT_TRUE(loaded.material.albedo_texture_path.empty());
+}
+
 } // namespace isla::client::mesh_asset_loader

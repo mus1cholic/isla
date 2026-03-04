@@ -28,8 +28,12 @@ void main()
 
     vec4 texColor = texture2D(s_texColor, v_texcoord0);
     float outAlpha = v_color0.a * texColor.a;
-    if (u_alpha_params.y > 0.5 && outAlpha < u_alpha_params.x) {
+    bool alphaCutoutEnabled = (u_alpha_params.y > 0.5);
+    if (alphaCutoutEnabled && outAlpha < u_alpha_params.x) {
         discard;
+    }
+    if (alphaCutoutEnabled) {
+        outAlpha = 1.0;
     }
     gl_FragColor =
         vec4(v_color0.rgb * texColor.rgb * (ambient + diffuse + specular), outAlpha);
