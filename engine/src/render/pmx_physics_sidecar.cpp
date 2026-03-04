@@ -184,8 +184,8 @@ bool parse_constraints(const json& root, SidecarData& out_data,
         } else if (*type == "cone_twist") {
             parsed_type = ConstraintType::ConeTwist;
         } else {
-            warnings.emplace_back(
-                "physics sidecar constraint type is unsupported and will be ignored");
+            warnings.emplace_back(absl::StrCat("physics sidecar constraint type '", *type,
+                                               "' is unsupported and will be ignored"));
             ++skipped_unsupported;
             continue;
         }
@@ -246,7 +246,8 @@ bool parse_colliders(const json& root, std::span<const std::string> joint_names,
             continue;
         }
         if (!known_joint_names.empty() && !known_joint_names.contains(*bone_name)) {
-            warnings.emplace_back("physics sidecar collider references unknown bone_name");
+            warnings.emplace_back(absl::StrCat(
+                "physics sidecar collider references unknown bone_name '", *bone_name, "'"));
             continue;
         }
 
@@ -288,7 +289,8 @@ bool parse_colliders(const json& root, std::span<const std::string> joint_names,
             }
             parsed.size = *size;
         } else {
-            warnings.emplace_back("physics sidecar collider shape is unsupported");
+            warnings.emplace_back(
+                absl::StrCat("physics sidecar collider shape '", *shape, "' is unsupported"));
             continue;
         }
 
