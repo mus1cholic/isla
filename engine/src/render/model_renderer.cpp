@@ -18,16 +18,29 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#ifndef NTDDI_VERSION
+#define NTDDI_VERSION 0x0A000000
+#endif
+#include <d3d11.h>
+#include <dcomp.h>
+#include <dxgi1_2.h>
+#include <windows.h>
+#include <wrl/client.h>
 
 namespace isla::client {
 
 namespace {
 
-constexpr std::uint32_t kBgfxResetFlags = 0;
+constexpr std::uint32_t kBgfxResetFlags = BGFX_RESET_TRANSPARENT_BACKBUFFER;
 constexpr std::uint8_t kBgfxViewId = 0;
 constexpr float kDefaultCameraDistance = 3.0F;
 constexpr float kDefaultCameraFovYDegrees = 60.0F;
@@ -47,9 +60,37 @@ constexpr std::uint64_t kOpaqueRenderStateBase = BGFX_STATE_WRITE_RGB | BGFX_STA
 constexpr std::uint64_t kAlphaBlendRenderStateBase = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A |
                                                      BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_MSAA |
                                                      BGFX_STATE_BLEND_ALPHA;
+using Microsoft::WRL::ComPtr;
+
+struct DirectCompositionPresenter {
+    HWND hwnd = nullptr;
+    int width = 0;
+    int height = 0;
+    bool com_initialized = false;
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> device_context;
+    ComPtr<IDXGISwapChain1> swap_chain;
+    ComPtr<ID3D11RenderTargetView> render_target_view;
+    ComPtr<ID3D11Texture2D> depth_stencil_texture;
+    ComPtr<ID3D11DepthStencilView> depth_stencil_view;
+    ComPtr<IDCompositionDevice> dcomp_device;
+    ComPtr<IDCompositionTarget> dcomp_target;
+    ComPtr<IDCompositionVisual> dcomp_visual;
+};
 
 bool vec3_is_finite(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+std::uint8_t clamp_color_channel(float value) {
+    const float clamped = std::clamp(value, 0.0F, 1.0F);
+    return static_cast<std::uint8_t>(clamped * 255.0F + 0.5F);
+}
+
+std::string hr_hex(HRESULT hr) {
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "0x%08lx", static_cast<unsigned long>(hr));
+    return std::string(buffer);
 }
 
 std::uint64_t cull_state_for_material(MaterialCullMode mode) {
@@ -62,6 +103,219 @@ std::uint64_t cull_state_for_material(MaterialCullMode mode) {
         return 0ULL;
     }
     return BGFX_STATE_CULL_CW;
+}
+
+bool create_presenter_backbuffers(DirectCompositionPresenter& presenter, int width, int height) {
+    presenter.render_target_view.Reset();
+    presenter.depth_stencil_texture.Reset();
+    presenter.depth_stencil_view.Reset();
+    if (!presenter.swap_chain || !presenter.device) {
+        return false;
+    }
+
+    ComPtr<ID3D11Texture2D> backbuffer;
+    HRESULT hr = presenter.swap_chain->GetBuffer(
+        0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()));
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: swapchain GetBuffer failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = presenter.device->CreateRenderTargetView(backbuffer.Get(), nullptr,
+                                                  presenter.render_target_view.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: CreateRenderTargetView failed hr=" << hr_hex(hr);
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC depth_desc{};
+    depth_desc.Width = static_cast<UINT>(std::max(1, width));
+    depth_desc.Height = static_cast<UINT>(std::max(1, height));
+    depth_desc.MipLevels = 1;
+    depth_desc.ArraySize = 1;
+    depth_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depth_desc.SampleDesc.Count = 1;
+    depth_desc.Usage = D3D11_USAGE_DEFAULT;
+    depth_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    hr = presenter.device->CreateTexture2D(&depth_desc, nullptr,
+                                           presenter.depth_stencil_texture.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: CreateTexture2D(depth) failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = presenter.device->CreateDepthStencilView(presenter.depth_stencil_texture.Get(), nullptr,
+                                                  presenter.depth_stencil_view.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: CreateDepthStencilView failed hr=" << hr_hex(hr);
+        return false;
+    }
+    return true;
+}
+
+bool initialize_direct_composition_presenter(DirectCompositionPresenter& presenter, HWND hwnd,
+                                             int width, int height) {
+    if (hwnd == nullptr) {
+        return false;
+    }
+    presenter.hwnd = hwnd;
+    presenter.width = std::max(1, width);
+    presenter.height = std::max(1, height);
+
+    const HRESULT co_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    presenter.com_initialized = SUCCEEDED(co_hr);
+    if (!presenter.com_initialized && co_hr != RPC_E_CHANGED_MODE) {
+        return false;
+    }
+
+    constexpr D3D_FEATURE_LEVEL kFeatureLevels[] = {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+    };
+    D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
+    const UINT device_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, device_flags,
+                                   kFeatureLevels, ARRAYSIZE(kFeatureLevels), D3D11_SDK_VERSION,
+                                   presenter.device.GetAddressOf(), &feature_level,
+                                   presenter.device_context.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: D3D11CreateDevice failed hr=" << hr_hex(hr);
+        return false;
+    }
+
+    ComPtr<IDXGIDevice> dxgi_device;
+    ComPtr<IDXGIAdapter> dxgi_adapter;
+    ComPtr<IDXGIFactory2> dxgi_factory;
+    hr = presenter.device.As(&dxgi_device);
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: Query IDXGIDevice failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = dxgi_device->GetAdapter(dxgi_adapter.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: IDXGIDevice::GetAdapter failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = dxgi_adapter->GetParent(__uuidof(IDXGIFactory2),
+                                 reinterpret_cast<void**>(dxgi_factory.GetAddressOf()));
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: IDXGIAdapter::GetParent(IDXGIFactory2) failed hr="
+                   << hr_hex(hr);
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 swap_desc{};
+    swap_desc.Width = static_cast<UINT>(presenter.width);
+    swap_desc.Height = static_cast<UINT>(presenter.height);
+    swap_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    swap_desc.SampleDesc.Count = 1;
+    swap_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swap_desc.BufferCount = 2;
+    swap_desc.Scaling = DXGI_SCALING_STRETCH;
+    swap_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    swap_desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+    hr = dxgi_factory->CreateSwapChainForComposition(presenter.device.Get(), &swap_desc, nullptr,
+                                                     presenter.swap_chain.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: CreateSwapChainForComposition failed hr=" << hr_hex(hr);
+        return false;
+    }
+
+    hr = DCompositionCreateDevice(dxgi_device.Get(), __uuidof(IDCompositionDevice),
+                                  reinterpret_cast<void**>(presenter.dcomp_device.GetAddressOf()));
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: DCompositionCreateDevice failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = presenter.dcomp_device->CreateTargetForHwnd(hwnd, TRUE,
+                                                     presenter.dcomp_target.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: CreateTargetForHwnd failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = presenter.dcomp_device->CreateVisual(presenter.dcomp_visual.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: CreateVisual failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = presenter.dcomp_visual->SetContent(presenter.swap_chain.Get());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: IDCompositionVisual::SetContent failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = presenter.dcomp_target->SetRoot(presenter.dcomp_visual.Get());
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: IDCompositionTarget::SetRoot failed hr=" << hr_hex(hr);
+        return false;
+    }
+    hr = presenter.dcomp_device->Commit();
+    if (FAILED(hr)) {
+        LOG(ERROR) << "ModelRenderer: IDCompositionDevice::Commit failed hr=" << hr_hex(hr);
+        return false;
+    }
+
+    if (!create_presenter_backbuffers(presenter, presenter.width, presenter.height)) {
+        return false;
+    }
+    LOG(INFO) << "ModelRenderer: DirectComposition swapchain initialized size=" << presenter.width
+              << "x" << presenter.height << " alpha_mode=premultiplied buffers=2";
+    return true;
+}
+
+void shutdown_direct_composition_presenter(DirectCompositionPresenter& presenter) {
+    presenter.render_target_view.Reset();
+    presenter.depth_stencil_view.Reset();
+    presenter.depth_stencil_texture.Reset();
+    presenter.dcomp_visual.Reset();
+    presenter.dcomp_target.Reset();
+    presenter.dcomp_device.Reset();
+    presenter.swap_chain.Reset();
+    presenter.device_context.Reset();
+    presenter.device.Reset();
+    if (presenter.com_initialized) {
+        CoUninitialize();
+        presenter.com_initialized = false;
+    }
+}
+
+bool resize_direct_composition_presenter(DirectCompositionPresenter& presenter, int width,
+                                         int height) {
+    presenter.width = std::max(1, width);
+    presenter.height = std::max(1, height);
+    if (!presenter.swap_chain) {
+        return false;
+    }
+    presenter.render_target_view.Reset();
+    presenter.depth_stencil_view.Reset();
+    presenter.depth_stencil_texture.Reset();
+    const HRESULT resize_hr = presenter.swap_chain->ResizeBuffers(
+        0, static_cast<UINT>(presenter.width), static_cast<UINT>(presenter.height),
+        DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(resize_hr)) {
+        LOG(ERROR) << "ModelRenderer: swapchain ResizeBuffers failed hr=" << hr_hex(resize_hr);
+        return false;
+    }
+    if (!create_presenter_backbuffers(presenter, presenter.width, presenter.height)) {
+        return false;
+    }
+    const HRESULT commit_hr = presenter.dcomp_device ? presenter.dcomp_device->Commit() : E_FAIL;
+    if (FAILED(commit_hr)) {
+        LOG(ERROR) << "ModelRenderer: DComp commit after resize failed hr=" << hr_hex(commit_hr);
+        return false;
+    }
+    return true;
+}
+
+bool has_direct_composition_presenter(const DirectCompositionPresenter& presenter) {
+    return presenter.swap_chain != nullptr;
+}
+
+bgfx::PlatformData
+make_external_backbuffer_platform_data(const DirectCompositionPresenter& presenter) {
+    bgfx::PlatformData platform_data{};
+    platform_data.nwh = nullptr;
+    platform_data.context = presenter.device.Get();
+    platform_data.backBuffer = presenter.render_target_view.Get();
+    platform_data.backBufferDS = presenter.depth_stencil_view.Get();
+    return platform_data;
 }
 
 } // namespace
@@ -87,6 +341,7 @@ class ModelRenderer::Impl {
     bgfx::UniformHandle tex_color_uniform = BGFX_INVALID_HANDLE;
     std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
     std::vector<Mat4> joint_palette_upload;
+    DirectCompositionPresenter presenter;
 };
 
 namespace {
@@ -135,12 +390,19 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
         LOG(ERROR) << "ModelRenderer: initialize failed: could not obtain native window handle";
         return false;
     }
+    if (!initialize_direct_composition_presenter(impl_->presenter,
+                                                 static_cast<HWND>(native_window_handle),
+                                                 impl_->window_width, impl_->window_height)) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: DirectComposition presenter setup failed";
+        return false;
+    }
 
-    bgfx::PlatformData platform_data{};
-    platform_data.nwh = native_window_handle;
+    const bgfx::PlatformData platform_data =
+        make_external_backbuffer_platform_data(impl_->presenter);
+    (void)bgfx::renderFrame(0);
 
     bgfx::Init init{};
-    init.type = bgfx::RendererType::Count;
+    init.type = bgfx::RendererType::Direct3D11;
     init.vendorId = BGFX_PCI_ID_NONE;
     init.platformData = platform_data;
     init.resolution.width = static_cast<std::uint32_t>(impl_->window_width);
@@ -148,17 +410,21 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
     init.resolution.reset = kBgfxResetFlags;
     if (!bgfx::init(init)) {
         LOG(ERROR) << "ModelRenderer: initialize failed: bgfx::init returned false";
+        shutdown_direct_composition_presenter(impl_->presenter);
         return false;
     }
 
-    const auto clear_color =
-        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyRed) << 24U) |
-        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyGreen) << 16U) |
-        (static_cast<std::uint32_t>(OverlayTransparencyConfig::kColorKeyBlue) << 8U) | 0xFFU;
+    const std::uint8_t clear_r = clamp_color_channel(OverlayTransparencyConfig::kClearColor[0]);
+    const std::uint8_t clear_g = clamp_color_channel(OverlayTransparencyConfig::kClearColor[1]);
+    const std::uint8_t clear_b = clamp_color_channel(OverlayTransparencyConfig::kClearColor[2]);
+    const std::uint8_t clear_a = clamp_color_channel(OverlayTransparencyConfig::kClearColor[3]);
+    const auto clear_color = (static_cast<std::uint32_t>(clear_r) << 24U) |
+                             (static_cast<std::uint32_t>(clear_g) << 16U) |
+                             (static_cast<std::uint32_t>(clear_b) << 8U) |
+                             static_cast<std::uint32_t>(clear_a);
     bgfx::setViewClear(kBgfxViewId, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, clear_color, 1.0F, 0);
     bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
                       static_cast<std::uint16_t>(impl_->window_height));
-
     impl_->time_uniform = bgfx::createUniform("u_time", bgfx::UniformType::Vec4);
     impl_->object_color_uniform =
         bgfx::createUniform(kObjectColorUniformName, bgfx::UniformType::Vec4);
@@ -185,6 +451,7 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
         LOG(ERROR) << "ModelRenderer: initialize failed: could not create renderer uniforms";
         destroy_renderer_uniforms(*impl_);
         bgfx::shutdown();
+        shutdown_direct_composition_presenter(impl_->presenter);
         return false;
     }
 
@@ -195,6 +462,7 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
         impl_->shader_manager.shutdown();
         destroy_renderer_uniforms(*impl_);
         bgfx::shutdown();
+        shutdown_direct_composition_presenter(impl_->presenter);
         LOG(ERROR) << "ModelRenderer: initialize failed: renderer managers could not initialize";
         return false;
     }
@@ -231,6 +499,28 @@ void ModelRenderer::on_resize(RenderSize size) {
     impl_->window_width = std::max(1, size.width);
     impl_->window_height = std::max(1, size.height);
     if (!impl_->initialized) {
+        return;
+    }
+    if (has_direct_composition_presenter(impl_->presenter)) {
+        if (impl_->window_width == impl_->presenter.width &&
+            impl_->window_height == impl_->presenter.height) {
+            bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
+                              static_cast<std::uint16_t>(impl_->window_height));
+            return;
+        }
+        if (!resize_direct_composition_presenter(impl_->presenter, impl_->window_width,
+                                                 impl_->window_height)) {
+            LOG(ERROR) << "ModelRenderer: DirectComposition presenter resize failed; keeping "
+                          "previous presentation buffers";
+            return;
+        }
+        const bgfx::PlatformData platform_data =
+            make_external_backbuffer_platform_data(impl_->presenter);
+        bgfx::setPlatformData(platform_data);
+        bgfx::reset(static_cast<std::uint32_t>(impl_->window_width),
+                    static_cast<std::uint32_t>(impl_->window_height), kBgfxResetFlags);
+        bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
+                          static_cast<std::uint16_t>(impl_->window_height));
         return;
     }
 
@@ -419,8 +709,15 @@ void ModelRenderer::render(const RenderWorld& world) const {
             << "ModelRenderer: world has render objects but no draws were submitted; check mesh "
                "uploads, material program resolution, or visibility flags";
     }
-
     bgfx::frame();
+    if (impl_->presenter.swap_chain) {
+        const HRESULT present_hr = impl_->presenter.swap_chain->Present(1, 0);
+        if (FAILED(present_hr)) {
+            LOG_EVERY_N_SEC(ERROR, 2.0)
+                << "ModelRenderer: DirectComposition swapchain present failed hr="
+                << hr_hex(present_hr);
+        }
+    }
 }
 
 void ModelRenderer::set_debug_overlay_enabled(bool enabled) {
@@ -440,6 +737,7 @@ void ModelRenderer::shutdown() {
     impl_->shader_manager.shutdown();
     destroy_renderer_uniforms(*impl_);
     bgfx::shutdown();
+    shutdown_direct_composition_presenter(impl_->presenter);
     impl_->initialized = false;
     impl_->window = nullptr;
 }

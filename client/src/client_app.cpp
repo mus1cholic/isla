@@ -259,16 +259,17 @@ bool ClientApp::initialize() {
     }
 
     window_ = sdl_runtime_.create_window("isla_overlay", window_width_, window_height_,
-                                         SDL_WINDOW_BORDERLESS | SDL_WINDOW_RESIZABLE);
+                                         SDL_WINDOW_BORDERLESS | SDL_WINDOW_RESIZABLE |
+                                             SDL_WINDOW_TRANSPARENT);
     if (window_ == nullptr) {
         LOG(ERROR) << "ClientApp: SDL window creation failed: " << SDL_GetError();
         return false;
     }
 
     sdl_runtime_.maximize_window(window_);
-    if (!configure_win32_layered_overlay(window_)) {
-        LOG(WARNING)
-            << "ClientApp: layered overlay mode not applied (non-Windows or HWND lookup failure).";
+    if (!configure_win32_alpha_composited_overlay(window_)) {
+        LOG(WARNING) << "ClientApp: alpha-composited overlay mode not applied (non-Windows, DWM "
+                        "unavailable, or HWND lookup failure).";
     }
 
     int pixel_width = window_width_;
@@ -299,9 +300,9 @@ void ClientApp::load_startup_mesh() {
     animated_mesh_bindings_.clear();
     animation_tick_count_ = 0U;
     gpu_skinning_authoritative_ = model_renderer_.supports_gpu_skinning();
-    LOG(INFO) << "ClientApp: GPU skinning authoritative mode "
-              << (gpu_skinning_authoritative_ ? "enabled" : "disabled")
-              << " (renderer support check)";
+    VLOG(1) << "ClientApp: GPU skinning authoritative mode "
+            << (gpu_skinning_authoritative_ ? "enabled" : "disabled")
+            << " (renderer support check)";
 
     const auto try_load_static_asset = [&](const std::string& path,
                                            const char* source_label) -> bool {
@@ -385,17 +386,17 @@ void ClientApp::load_startup_mesh() {
         }
 
         const Material& first_material = world_.materials().front();
-        LOG(INFO) << "ClientApp: loaded static mesh from " << source_label << "='" << path
-                  << "' triangles=" << total_triangle_count
-                  << " primitive_meshes=" << world_.meshes().size()
-                  << " materials=" << world_.materials().size() << " first_material={base_color=["
-                  << first_material.base_color.r << "," << first_material.base_color.g << ","
-                  << first_material.base_color.b << "], base_alpha=" << first_material.base_alpha
-                  << ", alpha_cutoff=" << first_material.alpha_cutoff
-                  << ", blend_mode=" << material_blend_mode_name(first_material.blend_mode)
-                  << ", cull_mode=" << material_cull_mode_name(first_material.cull_mode)
-                  << ", has_albedo_texture="
-                  << (!first_material.albedo_texture_path.empty() ? "true" : "false") << "}";
+        VLOG(1) << "ClientApp: loaded static mesh from " << source_label << "='" << path
+                << "' triangles=" << total_triangle_count
+                << " primitive_meshes=" << world_.meshes().size()
+                << " materials=" << world_.materials().size() << " first_material={base_color=["
+                << first_material.base_color.r << "," << first_material.base_color.g << ","
+                << first_material.base_color.b << "], base_alpha=" << first_material.base_alpha
+                << ", alpha_cutoff=" << first_material.alpha_cutoff
+                << ", blend_mode=" << material_blend_mode_name(first_material.blend_mode)
+                << ", cull_mode=" << material_cull_mode_name(first_material.cull_mode)
+                << ", has_albedo_texture="
+                << (!first_material.albedo_texture_path.empty() ? "true" : "false") << "}";
         return true;
     };
 
@@ -421,10 +422,10 @@ void ClientApp::load_startup_mesh() {
         configure_animation_playback_from_environment();
         populate_world_from_animated_asset();
 
-        LOG(INFO) << "ClientApp: loaded animated glTF from " << source_label << "='" << path
-                  << "', clips=" << animated_asset_->clips.size()
-                  << ", primitives=" << animated_asset_->primitives.size()
-                  << ", playback_meshes=" << animated_mesh_bindings_.size();
+        VLOG(1) << "ClientApp: loaded animated glTF from " << source_label << "='" << path
+                << "', clips=" << animated_asset_->clips.size()
+                << ", primitives=" << animated_asset_->primitives.size()
+                << ", playback_meshes=" << animated_mesh_bindings_.size();
         if (animated_mesh_bindings_.empty()) {
             LOG(WARNING) << "ClientApp: animated glTF loaded but produced zero playable meshes";
         }
@@ -443,22 +444,22 @@ void ClientApp::load_startup_mesh() {
     if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
         const std::string default_path = resolve_default_startup_model_path();
         if (!default_path.empty()) {
-            LOG(INFO) << "ClientApp: no " << kMeshAssetEnvVar << " set; using default model path '"
-                      << default_path << "'";
+            VLOG(1) << "ClientApp: no " << kMeshAssetEnvVar << " set; using default model path '"
+                    << default_path << "'";
             if (try_load_animated_asset(default_path, "default_model_path")) {
                 return;
             }
             resolved_mesh_asset_path = default_path;
             mesh_asset_path = resolved_mesh_asset_path.c_str();
         } else {
-            LOG(INFO) << "ClientApp: no ISLA_MESH_ASSET set and default model path '"
-                      << kDefaultStartupModelPath << "' not found; leaving scene empty";
+            VLOG(1) << "ClientApp: no ISLA_MESH_ASSET set and default model path '"
+                    << kDefaultStartupModelPath << "' not found; leaving scene empty";
             return;
         }
     }
 
     if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
-        LOG(INFO) << "ClientApp: no ISLA_MESH_ASSET set, leaving scene empty";
+        VLOG(1) << "ClientApp: no ISLA_MESH_ASSET set, leaving scene empty";
         return;
     }
 
@@ -480,8 +481,8 @@ void ClientApp::configure_animation_playback_from_environment() {
             LOG(WARNING) << "ClientApp: failed selecting clip index " << clip_index << " error='"
                          << playback_error << "'";
         } else {
-            LOG(INFO) << "ClientApp: selected animation clip index=" << clip_index << " name='"
-                      << animated_asset_->clips[clip_index].name << "'";
+            VLOG(1) << "ClientApp: selected animation clip index=" << clip_index << " name='"
+                    << animated_asset_->clips[clip_index].name << "'";
         }
     } else if (clip_name != nullptr && clip_name[0] != '\0') {
         LOG(WARNING) << "ClientApp: requested clip '" << clip_name
@@ -495,10 +496,10 @@ void ClientApp::configure_animation_playback_from_environment() {
     const std::string mode_value(playback_mode);
     if (mode_value == "clamp") {
         animation_playback_.set_playback_mode(animated_gltf::ClipPlaybackMode::Clamp);
-        LOG(INFO) << "ClientApp: animation playback mode set to clamp";
+        VLOG(1) << "ClientApp: animation playback mode set to clamp";
     } else if (mode_value == "loop") {
         animation_playback_.set_playback_mode(animated_gltf::ClipPlaybackMode::Loop);
-        LOG(INFO) << "ClientApp: animation playback mode set to loop";
+        VLOG(1) << "ClientApp: animation playback mode set to loop";
     } else {
         LOG(WARNING) << "ClientApp: unknown " << kAnimationPlaybackModeEnvVar << " value='"
                      << mode_value << "'; expected 'loop' or 'clamp'";
@@ -548,9 +549,9 @@ void ClientApp::populate_world_from_animated_asset() {
                     palette_sizes +=
                         std::to_string(partitions[partition_index].global_joint_palette.size());
                 }
-                LOG(INFO) << "ClientApp: primitive " << primitive_index << " split into "
-                          << partitions.size() << " GPU skinning partitions (palette_sizes=["
-                          << palette_sizes << "])";
+                VLOG(1) << "ClientApp: primitive " << primitive_index << " split into "
+                        << partitions.size() << " GPU skinning partitions (palette_sizes=["
+                        << palette_sizes << "])";
             }
 
             for (GpuSkinningPartition& partition : partitions) {
@@ -610,9 +611,9 @@ void ClientApp::populate_world_from_animated_asset() {
         });
         animated_mesh_bindings_.push_back(std::move(binding));
     }
-    LOG(INFO) << "ClientApp: animated mesh population complete, bindings="
-              << animated_mesh_bindings_.size() << ", gpu_skinning_authoritative="
-              << (gpu_skinning_authoritative_ ? "true" : "false");
+    VLOG(1) << "ClientApp: animated mesh population complete, bindings="
+            << animated_mesh_bindings_.size()
+            << ", gpu_skinning_authoritative=" << (gpu_skinning_authoritative_ ? "true" : "false");
 }
 
 void ClientApp::tick() {
@@ -649,6 +650,11 @@ void ClientApp::tick() {
                 window_height_ = height;
                 model_renderer_.on_resize(
                     RenderSize{ .width = window_width_, .height = window_height_ });
+                if (!refresh_win32_alpha_composited_overlay(window_)) {
+                    LOG_EVERY_N_SEC(WARNING, 2.0)
+                        << "ClientApp: failed to refresh alpha-composited overlay after window "
+                           "resize/reconfigure";
+                }
             }
         }
     }
@@ -675,7 +681,7 @@ void ClientApp::tick_animation(float dt_seconds) {
     std::size_t recomputed_bounds_mesh_count = 0U;
     const std::vector<Mat4>& skin_matrices = animation_playback_.cached_pose().skin_matrices;
     const auto& playback_state = animation_playback_.state();
-    LOG_EVERY_N_SEC(INFO, 2.0)
+    VLOG_EVERY_N_SEC(1, 2.0)
         << "ClientApp: animation playback tick clip_index=" << playback_state.clip_index
         << ", local_time_seconds=" << playback_state.local_time_seconds << ", mode="
         << (playback_state.playback_mode == animated_gltf::ClipPlaybackMode::Clamp ? "clamp"

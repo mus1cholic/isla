@@ -114,7 +114,7 @@ jobs:
         shell: pwsh
         run: |
           $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
-          & bazel test @bazelFlags //client/src:win32_layered_overlay_test //client/src:animated_mesh_skinning_test //client/src:client_app_animation_test //engine/src/render:overlay_transparency_contract_test //engine/src/render:animation_playback_controller_tests //engine/src/render:render_world_tests //engine/src/render:model_renderer_skinning_utils_tests //engine/src/render:bgfx_mesh_manager_tests //engine/src/render:shader_binary_runtime_tests
+          & bazel test @bazelFlags //client/src:win32_layered_overlay_test //client/src:animated_mesh_skinning_test //client/src:client_app_animation_test //engine/src/render:overlay_transparency_contract_test //engine/src/render:windows_composition_contract_tests //engine/src/render:animation_playback_controller_tests //engine/src/render:render_world_tests //engine/src/render:model_renderer_skinning_utils_tests //engine/src/render:bgfx_mesh_manager_tests //engine/src/render:shader_binary_runtime_tests
 
   linux-cross-windows:
     name: Cross-Build Windows (Ubuntu)

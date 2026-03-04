@@ -4,6 +4,8 @@
 #include <SDL3/SDL.h>
 
 #if defined(_WIN32)
+#include <dwmapi.h>
+#include <iomanip>
 #include <windows.h>
 #endif
 
@@ -14,6 +16,14 @@ namespace isla::client {
 namespace {
 
 WNDPROC g_overlay_original_wndproc = nullptr;
+
+enum class OverlayCompositionMode {
+    Unknown = 0,
+    NonLayeredDirectComposition,
+    LayeredFallback,
+};
+
+OverlayCompositionMode g_overlay_composition_mode = OverlayCompositionMode::Unknown;
 
 LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_NCHITTEST) {
@@ -28,9 +38,10 @@ LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPA
 
 } // namespace
 
-bool configure_win32_layered_overlay(SDL_Window* window) {
+bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
+    g_overlay_composition_mode = OverlayCompositionMode::Unknown;
     if (window == nullptr) {
-        LOG(ERROR) << "Win32Overlay: configure called with null SDL window";
+        LOG(ERROR) << "Win32Overlay: alpha-composited configure called with null SDL window";
         return false;
     }
 
@@ -42,22 +53,58 @@ bool configure_win32_layered_overlay(SDL_Window* window) {
         return false;
     }
 
-    const LONG_PTR existing_ex_style = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-    const LONG_PTR overlay_ex_style =
-        (existing_ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_APPWINDOW) &
-        ~WS_EX_TOOLWINDOW;
-    if (SetWindowLongPtr(hwnd, GWL_EXSTYLE, overlay_ex_style) == 0 && GetLastError() != 0) {
-        LOG(ERROR) << "Win32Overlay: failed to apply extended window styles";
+    BOOL composition_enabled = FALSE;
+    const HRESULT composition_hr = DwmIsCompositionEnabled(&composition_enabled);
+    LOG(INFO) << "Win32Overlay: DwmIsCompositionEnabled hr=0x" << std::hex << composition_hr
+              << std::dec << " enabled=" << (composition_enabled != FALSE ? "true" : "false");
+    if (FAILED(composition_hr) || composition_enabled == FALSE) {
+        LOG(ERROR) << "Win32Overlay: DWM composition unavailable for alpha-composited overlay";
         return false;
+    }
+
+    const LONG_PTR existing_ex_style = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    // Preferred DirectComposition path: non-layered style so per-pixel swapchain alpha is honored.
+    const LONG_PTR non_layered_overlay_ex_style =
+        (existing_ex_style | WS_EX_TRANSPARENT | WS_EX_APPWINDOW) &
+        ~(WS_EX_LAYERED | WS_EX_TOOLWINDOW);
+    SetLastError(0);
+    if (SetWindowLongPtr(hwnd, GWL_EXSTYLE, non_layered_overlay_ex_style) == 0 &&
+        GetLastError() != 0) {
+        const DWORD non_layered_error = GetLastError();
+        LOG(WARNING) << "Win32Overlay: non-layered style apply failed last_error=0x" << std::hex
+                     << non_layered_error << std::dec
+                     << "; falling back to layered-alpha compatibility style";
+
+        const LONG_PTR layered_overlay_ex_style =
+            (existing_ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_APPWINDOW) &
+            ~WS_EX_TOOLWINDOW;
+        SetLastError(0);
+        if (SetWindowLongPtr(hwnd, GWL_EXSTYLE, layered_overlay_ex_style) == 0 &&
+            GetLastError() != 0) {
+            const DWORD layered_style_error = GetLastError();
+            LOG(ERROR) << "Win32Overlay: layered fallback style apply failed last_error=0x"
+                       << std::hex << layered_style_error << std::dec;
+            return false;
+        }
+        if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
+            const DWORD layered_error = GetLastError();
+            LOG(ERROR) << "Win32Overlay: SetLayeredWindowAttributes(LWA_ALPHA,255) failed "
+                       << "last_error=0x" << std::hex << layered_error << std::dec;
+            return false;
+        }
+        g_overlay_composition_mode = OverlayCompositionMode::LayeredFallback;
+        LOG(INFO) << "Win32Overlay: using layered-alpha fallback style";
+    } else {
+        g_overlay_composition_mode = OverlayCompositionMode::NonLayeredDirectComposition;
+        LOG(INFO) << "Win32Overlay: using non-layered DirectComposition style";
     }
     // A non-owned top-level window with APPWINDOW is eligible for taskbar/Alt-Tab.
     SetWindowLongPtr(hwnd, GWLP_HWNDPARENT, 0);
 
-    // Keep the overlay visible while preserving layered/click-through behavior.
-    if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
-        LOG(ERROR) << "Win32Overlay: SetLayeredWindowAttributes(LWA_ALPHA,255) failed";
-        return false;
-    }
+    // DirectComposition path should not depend on legacy blur/frame extension APIs.
+    LOG(INFO) << "Win32Overlay: skipping DwmEnableBlurBehindWindow/DwmExtendFrameIntoClientArea "
+                 "for DirectComposition path";
+
     if (!SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED |
                           SWP_SHOWWINDOW)) {
@@ -75,11 +122,11 @@ bool configure_win32_layered_overlay(SDL_Window* window) {
         }
     }
 
-    LOG(INFO) << "Win32Overlay: layered transparent overlay configured";
+    LOG(INFO) << "Win32Overlay: alpha-composited overlay configured";
     return true;
 }
 
-bool refresh_win32_layered_overlay_surface(SDL_Window* window) {
+bool refresh_win32_alpha_composited_overlay(SDL_Window* window) {
     if (window == nullptr) {
         return false;
     }
@@ -89,18 +136,28 @@ bool refresh_win32_layered_overlay_surface(SDL_Window* window) {
     if (hwnd == nullptr) {
         return false;
     }
-    return SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) != FALSE;
+
+    if (g_overlay_composition_mode == OverlayCompositionMode::LayeredFallback) {
+        if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
+            const DWORD layered_error = GetLastError();
+            LOG_EVERY_N_SEC(WARNING, 2.0)
+                << "Win32Overlay: layered fallback refresh failed "
+                << "last_error=0x" << std::hex << layered_error << std::dec;
+            return false;
+        }
+    }
+    return true;
 }
 
 #else
 
-bool configure_win32_layered_overlay(SDL_Window* window) {
+bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
     (void)window;
     LOG(INFO) << "Win32Overlay: skipped (non-Windows build)";
     return false;
 }
 
-bool refresh_win32_layered_overlay_surface(SDL_Window* window) {
+bool refresh_win32_alpha_composited_overlay(SDL_Window* window) {
     (void)window;
     return false;
 }

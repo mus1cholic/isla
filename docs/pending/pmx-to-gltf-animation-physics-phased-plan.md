@@ -40,8 +40,8 @@ Operational interpretation:
 > - Phase 3.5 is complete (large-skeleton GPU skinning support beyond current fixed palette budget via deterministic remap/partition).
 > - Phase 4 is complete (static glTF visual-fidelity baseline: authored normals/material ingestion, `MASK` semantics hardening, and static-fallback parity guardrails).
 > - Phase 4.1 is complete (static glTF per-primitive material preservation + deterministic aggregate transform + fallback parity + additional loader hardening and contract test refactors).
-> - Phases 4.5-10 remain pending runtime/tooling expansion.
-> - A dedicated Windows alpha-compositing stabilization phase (Phase 4.5) is now added and pending.
+> - Phase 4.5 is complete (Windows DirectComposition-backed transparent overlay path with visible 3D rendering).
+> - Phases 5-10 remain pending runtime/tooling expansion.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
 > Phase 3/3.5 design constraint (current):
@@ -105,6 +105,14 @@ Operational interpretation:
 > - `engine/src/render/include/model_renderer_skinning_utils.hpp` / `engine/src/render/model_renderer_skinning_utils.cpp` (material render-path decision helper extracted from renderer path)
 > - `engine/src/render/model_renderer.cpp` (material render-path helper integration + lower-noise draw diagnostics)
 > - `engine/src/render/mesh_asset_loader_test.cpp` / `client/src/client_app_animation_test.cpp` / `engine/src/render/model_renderer_skinning_utils_test.cpp` (Phase 4.1 regression + determinism + contract coverage)
+>
+> Phase 4.5 artifacts:
+> - `engine/src/render/model_renderer.cpp` (DirectComposition presenter creation + premultiplied-alpha composition swapchain + external backbuffer bgfx path + transparent presentation reset contract)
+> - `client/src/win32_layered_overlay.cpp` / `client/src/win32_layered_overlay.hpp` (authoritative non-layered Windows overlay style path for DirectComposition + compatibility fallback guardrails)
+> - `client/src/client_app.cpp` (startup/resize wiring for the Windows alpha-composited overlay mode)
+> - `engine/src/render/overlay_transparency_contract_test.cpp` / `engine/include/isla/engine/render/overlay_transparency.hpp` (transparent clear-color contract for compositor presentation path)
+> - `engine/src/render/windows_composition_contract_test.cpp` (Windows composition policy/contract guardrails for style/swapchain/bgfx platform-data wiring)
+> - `engine/src/render/BUILD` / `client/src/BUILD` (Windows composition/render link dependencies, including GNU-vs-MSVC linkopts split)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -142,7 +150,7 @@ Add robust runtime structures and pose evaluation needed before full playback/re
   - loader tests, hierarchy tests, interpolation tests (translation/rotation/scale, linear/step, exact-key behavior), playback mode tests
   - fixture-based test organization (`TEST_F`) and hardened temp directory creation
 
-### Known Phase 0 Limits (Intentional)
+### Known Limits (Phase 0, Intentional)
 
 - Matrix-authored joints are hard-failed.
 - `CUBICSPLINE` animation interpolation is hard-failed.
@@ -217,7 +225,7 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
   - runtime static fallback now consumes `alphaMode: MASK` cutoff semantics and treats surviving cutout fragments as opaque
   - absolute/traversal image URI paths are rejected in static glTF texture path resolution; conversion outputs should keep texture URIs package-local
 
-### Known Phase 1 Limits (Intentional)
+### Known Limits (Phase 1, Intentional)
 
 - Validator does not decode raw accessor buffer values for `JOINTS_0`; bounds checks are static and metadata-dependent.
 - Validator enforces conversion contract constraints, but does not execute rendering/runtime playback paths.
@@ -284,7 +292,7 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
     - `//client/src:animated_mesh_skinning_test`
     - `//client/src:client_app_animation_test`
 
-### Known Phase 2 Limits (Intentional / Deferred)
+### Known Limits (Phase 2, Intentional / Deferred)
 
 - This CPU path is functional for visible playback bring-up but not intended as final deformation architecture.
 - CPU deformation remains a temporary compatibility path until Phase 3 GPU skinning is authoritative.
@@ -343,7 +351,7 @@ This is acceptable for initial bring-up, but should be tightened before relying 
   - deferred-bounds interval boundary behavior in client animation tick tests
   - stale workspace and uninitialized workspace rebuild safety tests
 
-### Known Limits (Post-Phase 2.5)
+### Known Limits (Phase 2.5, Post-Implementation)
 
 - CPU skinning remains a temporary deformation path until Phase 3 GPU skinning is authoritative.
 - Bounds recompute is deferred (not per-frame), which is acceptable for current usage because this path does not currently rely on per-frame bounds for culling/physics decisions.
@@ -401,7 +409,7 @@ Render skinned meshes using evaluated joint matrices.
   - GPU program-path decision and palette helper logic
   - GPU-authoritative runtime update stability
 
-### Known Limits (Post-Phase 3 Baseline)
+### Known Limits (Phase 3, Post-Baseline)
 
 - Current GPU skinning palette budget is fixed at 64 joint matrices per skinned draw.
 - This baseline fixed-budget behavior is extended by Phase 3.5 remap/partition support for large-skeleton primitives.
@@ -466,7 +474,7 @@ Support real character assets where skinned primitives reference more than 64 jo
 - Complexity in draw splitting and material/primitive bookkeeping
 - Potential mismatch bugs between remapped indices and uploaded palette entries
 
-### Known Limits (Post-Phase 3.5)
+### Known Limits (Phase 3.5, Post-Implementation)
 
 - Per-draw uniform palette budget remains fixed at 64 joints; large-skeleton support depends on preprocessing partition/remap correctness.
 - Draw count and vertex duplication can increase for large-skeleton primitives that require multiple partitions.
@@ -528,7 +536,7 @@ Ensure static `.gltf/.glb` rendering preserves authored visual fidelity so loade
   - `engine/src/render/shader_contract_test.cpp` (alpha-cutout contract)
   - `engine/src/render/render_world_test.cpp` (neutral default material baseline)
 
-### Known Limits (Post-Phase 4)
+### Known Limits (Phase 4, Post-Implementation)
 
 - Static fallback multi-primitive/multi-material collapse limit is resolved in Phase 4.1.
 - Static texture hookup currently depends on standards-compliant glTF `images/textures` references; converter outputs omitting those fields cannot be recovered runtime-side.
@@ -587,7 +595,7 @@ Preserve authored material partitioning for static `.gltf/.glb` content so multi
   - loader coverage for per-primitive mapping, deterministic repeat-load mapping, default-vs-explicit material behavior, and URI hardening edge cases
   - client coverage for direct static load and animated->static fallback parity, mixed primitive robustness, deterministic repeated-load transforms, and per-object material mapping
 
-### Known Limits (Post-Phase 4.1)
+### Known Limits (Phase 4.1, Post-Implementation)
 
 - `MeshAssetLoadResult` currently retains legacy flattened `triangles` alongside per-primitive data for compatibility, which duplicates static triangle storage; this is explicitly tracked for later cleanup/deprecation of flattened legacy access.
 - Static texture hookup still depends on standards-compliant glTF `images/textures` references.
@@ -621,13 +629,13 @@ Provide a stable Windows composition path where the desktop remains transparent 
   - regression test coverage for overlay contract and window reconfigure behavior
 - Keep non-Windows behavior unchanged.
 
-### Rationale (Current Observed Behavior)
+### Incident Summary (Resolved 2026-03-04)
 
-- Current runtime can render the model reliably with non-transparent presentation (`reset_flags=0`) but background remains black.
-- Enabling transparent backbuffer on current setup causes black/no-model presentation despite successful draw submission and successful DWM API calls.
-- This indicates a Windows presentation/compositing integration gap, not a mesh/animation loading issue.
+- Runtime rendered the model reliably with non-transparent presentation (`reset_flags=0`) but the background remained black.
+- Enabling transparent backbuffer caused black/no-model presentation despite successful draw submission and successful DWM API calls.
+- This confirmed a Windows presentation/compositing integration gap, not a mesh/animation loading issue.
 
-### Observed Diagnostics (2026-03-03)
+### Debug Timeline (Key Findings, 2026-03-03)
 
 What was tried (and why), with observed outcomes:
 
@@ -670,13 +678,47 @@ What this rules out:
 
 Conclusion from diagnostics:
 
-- Current black-screen issue is a Windows presentation/compositing integration problem for this renderer path.
+- The black-screen issue was a Windows presentation/compositing integration problem for this renderer path.
 - A dedicated alpha-composited presentation implementation (DirectComposition + premultiplied-alpha swapchain path) is required for a reliable transparent-desktop + visible-3D result.
 
-### Exit Criteria
+### Final Implementation (2026-03-04)
+
+- Added a DirectComposition-backed presentation path for Windows runtime rendering:
+  - D3D11 device/context creation for composition interop
+  - premultiplied-alpha `IDXGISwapChain1` (`CreateSwapChainForComposition`)
+  - DirectComposition target/visual attachment to the SDL/Win32 host window
+- Switched runtime renderer initialization to an authoritative external-backbuffer path:
+  - bgfx initializes against externally supplied D3D11 context + RTV/DSV
+  - bgfx HWND swapchain ownership is disabled (`platformData.nwh = nullptr`) to avoid mixed presentation ownership
+  - transparent backbuffer reset contract remains explicit (`BGFX_RESET_TRANSPARENT_BACKBUFFER` + clear alpha `0`)
+- Finalized Windows overlay/window style policy for this composition path:
+  - authoritative non-layered DirectComposition-compatible style path
+  - compatibility fallback retained only for style-application failure cases
+  - removed reliance on legacy DWM blur/frame-extension APIs for the composition path
+- Finalized resize/refresh behavior to avoid no-op success masking:
+  - `refresh_win32_alpha_composited_overlay(...)` now performs real re-application work for layered fallback mode
+  - failure in layered fallback refresh path is surfaced instead of silently succeeding
+- Finalized Windows toolchain compatibility for composition link dependencies:
+  - GNU/MinGW lanes use `-ld3d11 -ldxgi -ldcomp -lole32`
+  - MSVC lanes use `d3d11.lib dxgi.lib dcomp.lib ole32.lib`
+- Retained/hardened platform diagnostics from bring-up:
+  - compositor/style-selection logs
+  - swapchain/init failure logs
+  - draw-submission visibility logs for render/composition split debugging
+- Added composition guardrail tests (temporary source-contract style):
+  - transparent clear contract coverage (`overlay_transparency_contract_test`)
+  - Windows composition source-contract coverage (`windows_composition_contract_test`) for swapchain alpha mode, external backbuffer ownership, style policy, and layered fallback refresh behavior
+- Verified final observed runtime outcome on Windows:
+  - transparent desktop/background with visible model in-session
+  - stable runtime loop through repeated frames and clean shutdown event path
+
+### Outcome / Exit Criteria
 
 - On Windows, runtime shows desktop/background transparency and visible 3D model simultaneously in the same session, with stable behavior across startup and resize.
 - Transparency behavior no longer depends on color-key hacks or mutually inconsistent overlay flag combinations.
+- Status: satisfied as of 2026-03-04.
+- Remaining follow-up:
+  - current composition contract tests still include source-text guardrails; migrate to behavior-level unit seams/fakes in cleanup (tracked in Phase 10).
 
 ## Phase 5: Basic Physics Preservation from PMX Conversion
 
@@ -695,6 +737,7 @@ Preserve basic PMX physics intent through glTF metadata ingestion.
 - Keep physics feature scope minimal and stable.
 - Use Phase 1 sidecar schema (`schema_version: 1.0.0`) as ingestion baseline.
 - Integrate against established Phase 2/3/3.5 playback + skeleton runtime state (avoid introducing a parallel animation/deformation state path).
+- Preserve Phase 4.5 Windows presentation baseline while adding physics debug overlays/proxies (no reintroduction of layered/color-key-only transparency behavior).
 
 ### Exit Criteria
 
@@ -716,6 +759,7 @@ Make PMX motion assets usable by converting motion data into glTF clips.
 - Maintain Phase 1 baseline clip naming/acceptance requirements.
 - Target Phase 2 playback controller API as the runtime clip control surface.
 - Validate converted clips against the Phase 3/3.5 GPU skinning runtime path (not CPU fallback-only behavior).
+- Validate representative clip playback on the Phase 4.5 Windows composition path so animation bring-up does not regress transparent overlay behavior.
 
 ### Exit Criteria
 
@@ -745,6 +789,7 @@ Make the pipeline maintainable and testable.
   - static multi-primitive material-preservation behavior (Phase 4.1)
   - deterministic aggregate static-fallback transform behavior across repeated loads
   - material render-path helper contract behavior (blend/alpha/cutout/cull decision invariants)
+  - Windows composition policy contract behavior (DirectComposition swapchain alpha mode, external bgfx backbuffer ownership policy, overlay style fallback/refresh behavior)
   - pose eval determinism
   - interpolation mode handling (`LINEAR`/`STEP` + rejection paths)
   - playback mode behavior (`Loop`/`Clamp`)
@@ -783,6 +828,7 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
 - Revisit Phase 1 conversion caveats once full hierarchy animation support lands.
 - Preserve Phase 2 controller semantics for clip/state APIs while changing evaluation internals.
 - Keep compatibility with Phase 3/3.5 GPU skinning data flow while evaluation internals evolve.
+- Keep compatibility with Phase 4.5 Windows composition presentation contracts while hierarchy evaluation internals evolve.
 
 ### Exit Criteria
 
@@ -803,6 +849,7 @@ Close remaining runtime animation fidelity/performance gaps.
 - Maintain Phase 2 state/pose consistency guarantees (reported local time aligns with sampled pose semantics).
 - Maintain Phase 3/3.5 deformation consistency guarantees (GPU-skinned output remains aligned with evaluated pose semantics).
 - Maintain Phase 4/4.1 static-fidelity guarantees while sampling internals evolve (including unchanged `MASK` cutout semantics and per-primitive static fallback material behavior).
+- Maintain Phase 4.5 compositor-facing alpha/presentation guarantees while interpolation/sampling internals evolve.
 
 ### Exit Criteria
 
@@ -830,6 +877,12 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
   - where to place models (`models/`)
   - supported input extensions (`.pmx`, `.gltf`, `.glb`)
   - PMX auto-convert behavior, cache location/invalidation policy, and troubleshooting steps
+- Execute final test-infrastructure cleanup for Windows composition regression coverage:
+  - treat current source-contract (`StrContains`-style) tests as temporary guardrails
+  - refactor composition/style invariants into testable policy/helper functions and assert behavior directly in unit tests
+  - prefer call-level verification via thin platform abstractions/fakes where practical (style application, swapchain descriptor policy, bgfx platform-data policy)
+  - add/retain at least one runtime-smoke-level composition path assertion where CI/platform constraints allow
+  - remove or minimize text-fragile source assertions once behavioral tests cover the same invariants
 
 ### Exit Criteria
 
@@ -852,7 +905,7 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 4. First large-rig-ready deformation point (>64-joint referenced primitives): after Phase 3.5 (achieved 2026-03-03).
 5. First static glTF visual-fidelity parity point (non-animated fallback path): after Phase 4 (achieved 2026-03-04).
 6. First static multi-material parity point (primitive-level material preservation in fallback path): after Phase 4.1 (achieved 2026-03-04).
-7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5.
+7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5 (achieved 2026-03-04).
 8. First basic PMX parity point (animation + basic physics): after Phase 5/6.
 9. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7.
 10. First hierarchy-fidelity point for complex rigs: after Phase 8.
