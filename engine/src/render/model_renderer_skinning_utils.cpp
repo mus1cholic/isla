@@ -90,6 +90,17 @@ SkinningProgramPath choose_skinning_program_path(const SkinningProgramDecisionIn
     return SkinningProgramPath::SkinnedMesh;
 }
 
+MaterialRenderPathDecision
+choose_material_render_path(const MaterialRenderPathDecisionInputs& inputs) {
+    MaterialRenderPathDecision decision{};
+    decision.alpha = std::clamp(inputs.base_alpha, 0.0F, 1.0F);
+    decision.alpha_cutoff = std::clamp(inputs.alpha_cutoff, -1.0F, 1.0F);
+    decision.alpha_cutout_enabled = decision.alpha_cutoff >= 0.0F;
+    decision.use_alpha_blend_base = inputs.blend_mode == MaterialBlendMode::AlphaBlend ||
+                                    (decision.alpha < 1.0F && !decision.alpha_cutout_enabled);
+    return decision;
+}
+
 bool fill_skin_palette_upload_buffer(std::span<const Mat4> source_palette,
                                      std::span<Mat4> upload_buffer, std::size_t* copied_count) {
     std::fill(upload_buffer.begin(), upload_buffer.end(), Mat4::identity());

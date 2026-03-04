@@ -226,8 +226,18 @@ MeshAssetLoadResult load_obj(std::string_view asset_path) {
         };
     }
 
+    std::vector<MeshAssetPrimitive> primitives;
+    // TODO(isla): Mirrors the glTF flattening/duplication TODO below. While `triangles` remains
+    // in MeshAssetLoadResult for legacy callers, OBJ currently stores the same data in both
+    // `primitives[0].triangles` and top-level `triangles`. Consolidate to a single source of
+    // truth when legacy flattened access is removed or converted to a view/range helper.
+    primitives.push_back(MeshAssetPrimitive{
+        .triangles = triangles,
+        .material = {},
+    });
     return MeshAssetLoadResult{
         .ok = true,
+        .primitives = std::move(primitives),
         .triangles = std::move(triangles),
         .error_message = {},
     };
@@ -340,6 +350,15 @@ std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cg
         uri.rfind("https://", 0U) == 0U || uri.rfind("file://", 0U) == 0U) {
         return {};
     }
+    const bool has_windows_drive_absolute_prefix =
+        uri.size() >= 3U && std::isalpha(static_cast<unsigned char>(uri[0])) != 0 &&
+        uri[1] == ':' && (uri[2] == '/' || uri[2] == '\\');
+    const bool has_unc_prefix = uri.rfind("\\\\", 0U) == 0U || uri.rfind("//", 0U) == 0U;
+    if (has_windows_drive_absolute_prefix || has_unc_prefix) {
+        LOG(WARNING) << "MeshAssetLoader: rejecting absolute image URI path in glTF material: '"
+                     << uri << "'";
+        return {};
+    }
 
     const std::filesystem::path uri_path(uri);
     if (uri_path.is_absolute() || uri_path.has_root_name() || uri_path.has_root_directory()) {
@@ -347,10 +366,26 @@ std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cg
                      << uri << "'";
         return {};
     }
+    const std::filesystem::path normalized_uri_path = uri_path.lexically_normal();
+    for (auto it = normalized_uri_path.begin(); it != normalized_uri_path.end(); ++it) {
+        const std::filesystem::path component = *it;
+        if (component == ".") {
+            continue;
+        }
+        if (component == "..") {
+            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path with parent traversal: '"
+                         << uri << "'";
+            return {};
+        }
+        break;
+    }
 
-    const std::filesystem::path asset_dir = std::filesystem::path(asset_path).parent_path();
+    std::filesystem::path asset_dir = std::filesystem::path(asset_path).parent_path();
+    if (asset_dir.empty()) {
+        asset_dir = ".";
+    }
     const std::filesystem::path normalized_asset_dir = asset_dir.lexically_normal();
-    const std::filesystem::path resolved = (asset_dir / uri_path).lexically_normal();
+    const std::filesystem::path resolved = (asset_dir / normalized_uri_path).lexically_normal();
 
     auto base_it = normalized_asset_dir.begin();
     auto resolved_it = resolved.begin();
@@ -454,6 +489,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
         };
     }
     std::size_t total_triangle_count = 0U;
+    std::size_t total_triangle_primitive_count = 0U;
     for (cgltf_size mesh_i = 0U; mesh_i < data->meshes_count; ++mesh_i) {
         const cgltf_mesh& mesh = data->meshes[mesh_i];
         for (cgltf_size prim_i = 0U; prim_i < mesh.primitives_count; ++prim_i) {
@@ -471,15 +507,15 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                 continue;
             }
             total_triangle_count += inspected.triangle_count;
+            ++total_triangle_primitive_count;
         }
     }
 
+    std::vector<MeshAssetPrimitive> primitives;
+    primitives.reserve(total_triangle_primitive_count);
     std::vector<Triangle> triangles;
     triangles.reserve(total_triangle_count);
     bool found_triangle_primitive = false;
-    MeshAssetMaterial material{};
-    bool material_captured = false;
-    std::unordered_set<const cgltf_material*> triangle_primitive_materials;
     for (cgltf_size mesh_i = 0U; mesh_i < data->meshes_count; ++mesh_i) {
         const cgltf_mesh& mesh = data->meshes[mesh_i];
         for (cgltf_size prim_i = 0U; prim_i < mesh.primitives_count; ++prim_i) {
@@ -497,11 +533,9 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                 continue;
             }
             found_triangle_primitive = true;
-            triangle_primitive_materials.insert(inspected.material);
-            if (!material_captured) {
-                material = make_material_from_gltf_primitive(asset_path, inspected);
-                material_captured = true;
-            }
+            MeshAssetPrimitive primitive_chunk{};
+            primitive_chunk.triangles.reserve(inspected.triangle_count);
+            primitive_chunk.material = make_material_from_gltf_primitive(asset_path, inspected);
 
             if (inspected.indices_accessor != nullptr) {
                 for (cgltf_size i = 0U; i < inspected.indices_accessor->count; i += 3U) {
@@ -515,6 +549,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         ic >= inspected.position_accessor->count) {
                         return MeshAssetLoadResult{
                             .ok = false,
+                            .primitives = {},
                             .triangles = {},
                             .error_message = "glTF index points past POSITION accessor bounds",
                         };
@@ -526,6 +561,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                     if (!a.has_value() || !b.has_value() || !c.has_value()) {
                         return MeshAssetLoadResult{
                             .ok = false,
+                            .primitives = {},
                             .triangles = {},
                             .error_message = "failed reading glTF POSITION values",
                         };
@@ -550,6 +586,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         if (!ta.has_value() || !tb.has_value() || !tc.has_value()) {
                             return MeshAssetLoadResult{
                                 .ok = false,
+                                .primitives = {},
                                 .triangles = {},
                                 .error_message = "failed reading glTF TEXCOORD_0 values",
                             };
@@ -579,8 +616,8 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         if (!na.has_value() || !nb.has_value() || !nc.has_value()) {
                             return MeshAssetLoadResult{
                                 .ok = false,
+                                .primitives = {},
                                 .triangles = {},
-                                .material = {},
                                 .error_message = "failed reading glTF NORMAL values",
                             };
                         }
@@ -590,7 +627,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         has_vertex_normals = true;
                     }
 
-                    triangles.push_back(Triangle{
+                    primitive_chunk.triangles.push_back(Triangle{
                         .a = *a,
                         .b = *b,
                         .c = *c,
@@ -611,6 +648,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                     if (!a.has_value() || !b.has_value() || !c.has_value()) {
                         return MeshAssetLoadResult{
                             .ok = false,
+                            .primitives = {},
                             .triangles = {},
                             .error_message = "failed reading glTF POSITION values",
                         };
@@ -635,6 +673,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         if (!ta.has_value() || !tb.has_value() || !tc.has_value()) {
                             return MeshAssetLoadResult{
                                 .ok = false,
+                                .primitives = {},
                                 .triangles = {},
                                 .error_message = "failed reading glTF TEXCOORD_0 values",
                             };
@@ -663,8 +702,8 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         if (!na.has_value() || !nb.has_value() || !nc.has_value()) {
                             return MeshAssetLoadResult{
                                 .ok = false,
+                                .primitives = {},
                                 .triangles = {},
-                                .material = {},
                                 .error_message = "failed reading glTF NORMAL values",
                             };
                         }
@@ -674,7 +713,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         has_vertex_normals = true;
                     }
 
-                    triangles.push_back(Triangle{
+                    primitive_chunk.triangles.push_back(Triangle{
                         .a = *a,
                         .b = *b,
                         .c = *c,
@@ -688,6 +727,18 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                     });
                 }
             }
+            // TODO(isla): This duplicates triangle storage for glTF loads:
+            // - per-primitive triangles are kept in `primitives` (authoritative Phase 4.1 path)
+            // - flattened `triangles` is still populated for legacy callers
+            // Migrate remaining callers off `MeshAssetLoadResult::triangles` and then remove or
+            // replace this flattening path with range-based views into shared storage.
+            triangles.insert(triangles.end(), primitive_chunk.triangles.begin(),
+                             primitive_chunk.triangles.end());
+            VLOG(1) << "MeshAssetLoader: extracted static glTF primitive mesh_index=" << mesh_i
+                    << " primitive_index=" << prim_i
+                    << " triangles=" << primitive_chunk.triangles.size()
+                    << " has_material=" << (inspected.material != nullptr ? "true" : "false");
+            primitives.push_back(std::move(primitive_chunk));
         }
     }
 
@@ -702,21 +753,21 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
     if (triangles.empty()) {
         return MeshAssetLoadResult{
             .ok = false,
+            .primitives = {},
             .triangles = {},
             .error_message = "glTF contains no triangles",
         };
     }
-    if (triangle_primitive_materials.size() > 1U) {
-        LOG_EVERY_N_SEC(WARNING, 2.0)
-            << "MeshAssetLoader: static glTF includes " << triangle_primitive_materials.size()
-            << " distinct triangle-primitive materials, but current static fallback exports a "
-               "single material baseline (first triangle primitive)";
-    }
 
+    MeshAssetMaterial material{};
+    if (!primitives.empty()) {
+        material = primitives.front().material;
+    }
     return MeshAssetLoadResult{
         .ok = true,
+        .primitives = std::move(primitives),
         .triangles = std::move(triangles),
-        .material = material,
+        .material = std::move(material),
         .error_message = {},
     };
 }

@@ -285,18 +285,27 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
 
     {
         std::ofstream bin_out(bin_path, std::ios::binary);
-        EXPECT_TRUE(bin_out.is_open());
+        if (!bin_out.is_open()) {
+            ADD_FAILURE() << "failed to open skinned fixture BIN output path: " << bin_path;
+            return {};
+        }
         bin_out.write(reinterpret_cast<const char*>(buffer.data()),
                       static_cast<std::streamsize>(buffer.size()));
     }
     {
         std::ofstream texture_out(texture_path, std::ios::binary);
-        EXPECT_TRUE(texture_out.is_open());
+        if (!texture_out.is_open()) {
+            ADD_FAILURE() << "failed to open skinned fixture texture output path: " << texture_path;
+            return {};
+        }
         texture_out << "fake_png";
     }
 
     std::ofstream gltf_out(gltf_path, std::ios::binary);
-    EXPECT_TRUE(gltf_out.is_open());
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open skinned fixture glTF output path: " << gltf_path;
+        return {};
+    }
     gltf_out << "{\n"
              << "  \"asset\": {\"version\": \"2.0\"},\n"
              << "  \"buffers\": [{\"uri\": \"" << bin_path.filename().string()
@@ -351,7 +360,124 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
              << "  \"scenes\": [{\"nodes\": [1]}],\n"
              << "  \"scene\": 0\n"
              << "}\n";
-    EXPECT_TRUE(gltf_out.good());
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write skinned fixture glTF output path: " << gltf_path;
+        return {};
+    }
+    return gltf_path;
+}
+
+std::filesystem::path write_multi_primitive_static_gltf_fixture(const std::filesystem::path& dir) {
+    const std::filesystem::path gltf_path = dir / "multi_primitive_static.gltf";
+    const std::filesystem::path texture_a_path = dir / "albedo_a.png";
+    const std::filesystem::path texture_b_path = dir / "albedo_b.png";
+    {
+        std::ofstream texture_a(texture_a_path, std::ios::binary);
+        if (!texture_a.is_open()) {
+            ADD_FAILURE() << "failed to open multi-primitive fixture texture A path: "
+                          << texture_a_path;
+            return {};
+        }
+        texture_a << "fake_png_a";
+    }
+    {
+        std::ofstream texture_b(texture_b_path, std::ios::binary);
+        if (!texture_b.is_open()) {
+            ADD_FAILURE() << "failed to open multi-primitive fixture texture B path: "
+                          << texture_b_path;
+            return {};
+        }
+        texture_b << "fake_png_b";
+    }
+
+    constexpr char kMultiPrimitiveStaticGltf[] =
+        "{"
+        "\"asset\":{\"version\":\"2.0\"},"
+        "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/"
+        "AAAAAAAAgD8AAIA/"
+        "\",\"byteLength\":72}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":72}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":0,\"byteOffset\":36,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}"
+        "],"
+        "\"images\":[{\"uri\":\"albedo_a.png\"},{\"uri\":\"albedo_b.png\"}],"
+        "\"textures\":[{\"source\":0},{\"source\":1}],"
+        "\"materials\":["
+        "{"
+        "\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.2,0.4,0.6,0.5],\"baseColorTexture\":"
+        "{\"index\":0}},"
+        "\"alphaMode\":\"BLEND\","
+        "\"doubleSided\":true"
+        "},"
+        "{"
+        "\"pbrMetallicRoughness\":{\"baseColorFactor\":[1.0,0.0,0.0,1.0],\"baseColorTexture\":"
+        "{\"index\":1}},"
+        "\"alphaMode\":\"MASK\","
+        "\"alphaCutoff\":0.33"
+        "}"
+        "],"
+        "\"meshes\":[{\"primitives\":["
+        "{\"attributes\":{\"POSITION\":0},\"material\":0,\"mode\":4},"
+        "{\"attributes\":{\"POSITION\":1},\"material\":1,\"mode\":4}"
+        "]}],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"scenes\":[{\"nodes\":[0]}],"
+        "\"scene\":0"
+        "}";
+    std::ofstream gltf_out(gltf_path, std::ios::binary);
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open multi-primitive fixture glTF output path: " << gltf_path;
+        return {};
+    }
+    gltf_out << kMultiPrimitiveStaticGltf;
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write multi-primitive fixture glTF output path: " << gltf_path;
+        return {};
+    }
+    return gltf_path;
+}
+
+std::filesystem::path
+write_mixed_non_triangle_and_triangle_static_gltf_fixture(const std::filesystem::path& dir) {
+    const std::filesystem::path gltf_path = dir / "mixed_line_and_triangle.gltf";
+
+    constexpr char kMixedLineAndTriangleGltf[] =
+        "{"
+        "\"asset\":{\"version\":\"2.0\"},"
+        "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/"
+        "AAAAAAAAgD8AAIA/"
+        "\",\"byteLength\":72}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":72}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":0,\"byteOffset\":36,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}"
+        "],"
+        "\"materials\":["
+        "{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.3,0.3,0.3,1.0]}},"
+        "{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.8,0.1,0.1,0.7]},\"alphaMode\":"
+        "\"BLEND\"}"
+        "],"
+        "\"meshes\":[{\"primitives\":["
+        "{\"attributes\":{\"POSITION\":0},\"material\":0,\"mode\":1},"
+        "{\"attributes\":{\"POSITION\":1},\"material\":1,\"mode\":4}"
+        "]}],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"scenes\":[{\"nodes\":[0]}],"
+        "\"scene\":0"
+        "}";
+    std::ofstream gltf_out(gltf_path, std::ios::binary);
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open mixed-primitive fixture glTF output path: " << gltf_path;
+        return {};
+    }
+    gltf_out << kMixedLineAndTriangleGltf;
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write mixed-primitive fixture glTF output path: " << gltf_path;
+        return {};
+    }
     return gltf_path;
 }
 
@@ -812,11 +938,224 @@ TEST(ClientAppAnimationTest, StaticFallbackAppliesVisibleAutoFitTransform) {
     EXPECT_NE(transform.position.y, 0.0F);
 }
 
+TEST(ClientAppAnimationTest, StaticLoadPreservesPerPrimitiveMaterialsAndSharedTransform) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_multi_primitive_static");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.meshes().size(), 2U);
+    ASSERT_EQ(world.materials().size(), 2U);
+    ASSERT_EQ(world.objects().size(), 2U);
+    EXPECT_EQ(world.objects()[0].mesh_id, 0U);
+    EXPECT_EQ(world.objects()[0].material_id, 0U);
+    EXPECT_EQ(world.objects()[1].mesh_id, 1U);
+    EXPECT_EQ(world.objects()[1].material_id, 1U);
+    EXPECT_NEAR(world.materials()[0].base_color.r, 0.2F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_color.g, 0.4F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_color.b, 0.6F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_alpha, 0.5F, 1.0e-6F);
+    EXPECT_EQ(world.materials()[0].blend_mode, MaterialBlendMode::AlphaBlend);
+    EXPECT_EQ(world.materials()[0].cull_mode, MaterialCullMode::Disabled);
+    EXPECT_EQ(world.materials()[0].albedo_texture_path,
+              (temp_dir.path() / "albedo_a.png").lexically_normal().string());
+    EXPECT_NEAR(world.materials()[1].base_color.r, 1.0F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[1].base_color.g, 0.0F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[1].base_color.b, 0.0F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[1].alpha_cutoff, 0.33F, 1.0e-6F);
+    EXPECT_EQ(world.materials()[1].blend_mode, MaterialBlendMode::Opaque);
+    EXPECT_EQ(world.materials()[1].cull_mode, MaterialCullMode::Clockwise);
+    EXPECT_EQ(world.materials()[1].albedo_texture_path,
+              (temp_dir.path() / "albedo_b.png").lexically_normal().string());
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.scale.x, world.objects()[1].transform.scale.x);
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.scale.y, world.objects()[1].transform.scale.y);
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.scale.z, world.objects()[1].transform.scale.z);
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.x,
+                    world.objects()[1].transform.position.x);
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.y,
+                    world.objects()[1].transform.position.y);
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.z,
+                    world.objects()[1].transform.position.z);
+}
+
+TEST(ClientAppAnimationTest, AnimatedEnvFallbackToStaticPreservesPerPrimitiveMaterialParity) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_multi_primitive_parity");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    FakeSdlRuntime static_runtime;
+    ClientApp static_app(static_runtime);
+    {
+        ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+        ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+        internal::ClientAppTestHooks::load_startup_mesh(static_app);
+    }
+    const RenderWorld& static_world = internal::ClientAppTestHooks::world(static_app);
+    ASSERT_EQ(static_world.materials().size(), 2U);
+    ASSERT_EQ(static_world.meshes().size(), 2U);
+    ASSERT_EQ(static_world.objects().size(), 2U);
+
+    FakeSdlRuntime fallback_runtime;
+    ClientApp fallback_app(fallback_runtime);
+    {
+        ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
+        ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
+        internal::ClientAppTestHooks::load_startup_mesh(fallback_app);
+    }
+    const RenderWorld& fallback_world = internal::ClientAppTestHooks::world(fallback_app);
+    ASSERT_EQ(fallback_world.materials().size(), static_world.materials().size());
+    ASSERT_EQ(fallback_world.meshes().size(), static_world.meshes().size());
+    ASSERT_EQ(fallback_world.objects().size(), static_world.objects().size());
+    for (std::size_t i = 0U; i < static_world.materials().size(); ++i) {
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.r,
+                        static_world.materials()[i].base_color.r);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.g,
+                        static_world.materials()[i].base_color.g);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.b,
+                        static_world.materials()[i].base_color.b);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_alpha,
+                        static_world.materials()[i].base_alpha);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].alpha_cutoff,
+                        static_world.materials()[i].alpha_cutoff);
+        EXPECT_EQ(fallback_world.materials()[i].blend_mode, static_world.materials()[i].blend_mode);
+        EXPECT_EQ(fallback_world.materials()[i].cull_mode, static_world.materials()[i].cull_mode);
+        EXPECT_EQ(fallback_world.materials()[i].albedo_texture_path,
+                  static_world.materials()[i].albedo_texture_path);
+    }
+    for (std::size_t i = 0U; i < static_world.objects().size(); ++i) {
+        EXPECT_EQ(fallback_world.objects()[i].mesh_id, static_world.objects()[i].mesh_id);
+        EXPECT_EQ(fallback_world.objects()[i].material_id, static_world.objects()[i].material_id);
+        EXPECT_FLOAT_EQ(fallback_world.objects()[i].transform.position.x,
+                        static_world.objects()[i].transform.position.x);
+        EXPECT_FLOAT_EQ(fallback_world.objects()[i].transform.position.y,
+                        static_world.objects()[i].transform.position.y);
+        EXPECT_FLOAT_EQ(fallback_world.objects()[i].transform.position.z,
+                        static_world.objects()[i].transform.position.z);
+        EXPECT_FLOAT_EQ(fallback_world.objects()[i].transform.scale.x,
+                        static_world.objects()[i].transform.scale.x);
+        EXPECT_FLOAT_EQ(fallback_world.objects()[i].transform.scale.y,
+                        static_world.objects()[i].transform.scale.y);
+        EXPECT_FLOAT_EQ(fallback_world.objects()[i].transform.scale.z,
+                        static_world.objects()[i].transform.scale.z);
+    }
+}
+
+TEST(ClientAppAnimationTest, StaticLoadSkipsNonTrianglePrimitivesAndLoadsRenderableChunks) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_mixed_primitives");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_mixed_non_triangle_and_triangle_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.meshes().size(), 1U);
+    ASSERT_EQ(world.materials().size(), 1U);
+    ASSERT_EQ(world.objects().size(), 1U);
+    EXPECT_EQ(world.objects()[0].mesh_id, 0U);
+    EXPECT_EQ(world.objects()[0].material_id, 0U);
+    ASSERT_FALSE(world.meshes()[0].triangles().empty());
+    EXPECT_NEAR(world.materials()[0].base_color.r, 0.8F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_color.g, 0.1F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_color.b, 0.1F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_alpha, 0.7F, 1.0e-6F);
+    EXPECT_EQ(world.materials()[0].blend_mode, MaterialBlendMode::AlphaBlend);
+}
+
+TEST(ClientAppAnimationTest, StaticLoadAggregateTransformIsDeterministicAcrossRepeatedLoads) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_transform_determinism");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+
+    const auto load_once = [&]() -> std::vector<Transform> {
+        ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+        ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+        internal::ClientAppTestHooks::load_startup_mesh(app);
+        const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+        std::vector<Transform> transforms;
+        transforms.reserve(world.objects().size());
+        for (const RenderObject& object : world.objects()) {
+            transforms.push_back(object.transform);
+        }
+        return transforms;
+    };
+
+    const std::vector<Transform> first = load_once();
+    const std::vector<Transform> second = load_once();
+    ASSERT_EQ(first.size(), 2U);
+    ASSERT_EQ(second.size(), first.size());
+    for (std::size_t i = 0U; i < first.size(); ++i) {
+        EXPECT_FLOAT_EQ(first[i].position.x, second[i].position.x);
+        EXPECT_FLOAT_EQ(first[i].position.y, second[i].position.y);
+        EXPECT_FLOAT_EQ(first[i].position.z, second[i].position.z);
+        EXPECT_FLOAT_EQ(first[i].scale.x, second[i].scale.x);
+        EXPECT_FLOAT_EQ(first[i].scale.y, second[i].scale.y);
+        EXPECT_FLOAT_EQ(first[i].scale.z, second[i].scale.z);
+    }
+}
+
+TEST(ClientAppAnimationTest, StaticLoadPreservesPerObjectMaterialStateMappingContract) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_material_mapping");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.objects().size(), 2U);
+    ASSERT_EQ(world.materials().size(), 2U);
+
+    const Material& object0_material = world.materials().at(world.objects()[0].material_id);
+    const Material& object1_material = world.materials().at(world.objects()[1].material_id);
+    EXPECT_EQ(object0_material.blend_mode, MaterialBlendMode::AlphaBlend);
+    EXPECT_EQ(object0_material.cull_mode, MaterialCullMode::Disabled);
+    EXPECT_LT(object0_material.alpha_cutoff, 0.0F);
+    EXPECT_EQ(object1_material.blend_mode, MaterialBlendMode::Opaque);
+    EXPECT_EQ(object1_material.cull_mode, MaterialCullMode::Clockwise);
+    EXPECT_NEAR(object1_material.alpha_cutoff, 0.33F, 1.0e-6F);
+}
+
 TEST(ClientAppAnimationTest, AnimatedLoadNoClipsFallsBackToStaticWithFidelityInputs) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_skinned_no_clips");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
         write_skinned_no_animation_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
     const animated_gltf::AnimatedGltfLoadResult animated_loaded =
         animated_gltf::load_from_file(gltf_path.string());

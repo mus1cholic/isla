@@ -17,8 +17,14 @@ struct MeshAssetMaterial {
     MaterialCullMode cull_mode = MaterialCullMode::Clockwise;
 };
 
+struct MeshAssetPrimitive {
+    std::vector<Triangle> triangles;
+    MeshAssetMaterial material{};
+};
+
 struct MeshAssetLoadResult {
     bool ok = false;
+    std::vector<MeshAssetPrimitive> primitives;
     std::vector<Triangle> triangles;
     MeshAssetMaterial material{};
     std::string error_message;

@@ -55,6 +55,64 @@ TEST(ModelRendererSkinningUtilsTest, ProgramSelectionUsesSkinnedWhenAllGatesPass
               SkinningProgramPath::SkinnedMesh);
 }
 
+TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathUsesOpaqueByDefault) {
+    const MaterialRenderPathDecision decision =
+        choose_material_render_path(MaterialRenderPathDecisionInputs{
+            .blend_mode = MaterialBlendMode::Opaque,
+            .base_alpha = 1.0F,
+            .alpha_cutoff = -1.0F,
+        });
+    EXPECT_FLOAT_EQ(decision.alpha, 1.0F);
+    EXPECT_FLOAT_EQ(decision.alpha_cutoff, -1.0F);
+    EXPECT_FALSE(decision.alpha_cutout_enabled);
+    EXPECT_FALSE(decision.use_alpha_blend_base);
+}
+
+TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathUsesAlphaBlendForBlendMode) {
+    const MaterialRenderPathDecision decision =
+        choose_material_render_path(MaterialRenderPathDecisionInputs{
+            .blend_mode = MaterialBlendMode::AlphaBlend,
+            .base_alpha = 1.0F,
+            .alpha_cutoff = -1.0F,
+        });
+    EXPECT_FALSE(decision.alpha_cutout_enabled);
+    EXPECT_TRUE(decision.use_alpha_blend_base);
+}
+
+TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathUsesAlphaBlendForNonCutoutAlpha) {
+    const MaterialRenderPathDecision decision =
+        choose_material_render_path(MaterialRenderPathDecisionInputs{
+            .blend_mode = MaterialBlendMode::Opaque,
+            .base_alpha = 0.35F,
+            .alpha_cutoff = -1.0F,
+        });
+    EXPECT_FALSE(decision.alpha_cutout_enabled);
+    EXPECT_TRUE(decision.use_alpha_blend_base);
+}
+
+TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathKeepsCutoutOnOpaqueBase) {
+    const MaterialRenderPathDecision decision =
+        choose_material_render_path(MaterialRenderPathDecisionInputs{
+            .blend_mode = MaterialBlendMode::Opaque,
+            .base_alpha = 0.2F,
+            .alpha_cutoff = 0.42F,
+        });
+    EXPECT_TRUE(decision.alpha_cutout_enabled);
+    EXPECT_FALSE(decision.use_alpha_blend_base);
+}
+
+TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathClampsAlphaAndCutoff) {
+    const MaterialRenderPathDecision decision =
+        choose_material_render_path(MaterialRenderPathDecisionInputs{
+            .blend_mode = MaterialBlendMode::Opaque,
+            .base_alpha = 2.0F,
+            .alpha_cutoff = -2.0F,
+        });
+    EXPECT_FLOAT_EQ(decision.alpha, 1.0F);
+    EXPECT_FLOAT_EQ(decision.alpha_cutoff, -1.0F);
+    EXPECT_FALSE(decision.alpha_cutout_enabled);
+}
+
 TEST(ModelRendererSkinningUtilsTest, FillSkinPaletteBufferCopiesAndPadsWithIdentity) {
     std::vector<Mat4> upload(4U, Mat4::translation(Vec3{ .x = 99.0F, .y = 99.0F, .z = 99.0F }));
     const std::vector<Mat4> source = {
