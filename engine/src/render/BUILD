@@ -36,6 +36,15 @@ cc_library(
         "@platforms//os:windows": ["//engine/src/render/shaders:bgfx_shader_bins"],
         "//conditions:default": [],
     }),
+    linkopts = select({
+        "@platforms//os:windows": [
+            "d3d11.lib",
+            "dxgi.lib",
+            "dcomp.lib",
+            "ole32.lib",
+        ],
+        "//conditions:default": [],
+    }),
     visibility = ["//visibility:public"],
     deps = [
         "@abseil-cpp//absl/log:check",
@@ -75,6 +84,19 @@ cc_test(
     srcs = ["overlay_transparency_contract_test.cpp"],
     deps = [
         "//engine/include/isla/engine/render",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "windows_composition_contract_tests",
+    srcs = ["windows_composition_contract_test.cpp"],
+    data = [
+        "model_renderer.cpp",
+        "//client/src:win32_layered_overlay.cpp",
+    ],
+    deps = [
+        "@abseil-cpp//absl/strings",
         "@googletest//:gtest_main",
     ],
 )

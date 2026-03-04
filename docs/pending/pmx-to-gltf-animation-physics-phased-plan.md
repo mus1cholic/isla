@@ -40,8 +40,8 @@ Operational interpretation:
 > - Phase 3.5 is complete (large-skeleton GPU skinning support beyond current fixed palette budget via deterministic remap/partition).
 > - Phase 4 is complete (static glTF visual-fidelity baseline: authored normals/material ingestion, `MASK` semantics hardening, and static-fallback parity guardrails).
 > - Phase 4.1 is complete (static glTF per-primitive material preservation + deterministic aggregate transform + fallback parity + additional loader hardening and contract test refactors).
-> - Phases 4.5-10 remain pending runtime/tooling expansion.
-> - A dedicated Windows alpha-compositing stabilization phase (Phase 4.5) is now added and pending.
+> - Phase 4.5 is complete (Windows DirectComposition-backed transparent overlay path with visible 3D rendering).
+> - Phases 5-10 remain pending runtime/tooling expansion.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
 > Phase 3/3.5 design constraint (current):
@@ -105,6 +105,13 @@ Operational interpretation:
 > - `engine/src/render/include/model_renderer_skinning_utils.hpp` / `engine/src/render/model_renderer_skinning_utils.cpp` (material render-path decision helper extracted from renderer path)
 > - `engine/src/render/model_renderer.cpp` (material render-path helper integration + lower-noise draw diagnostics)
 > - `engine/src/render/mesh_asset_loader_test.cpp` / `client/src/client_app_animation_test.cpp` / `engine/src/render/model_renderer_skinning_utils_test.cpp` (Phase 4.1 regression + determinism + contract coverage)
+>
+> Phase 4.5 artifacts:
+> - `engine/src/render/model_renderer.cpp` (DirectComposition presenter creation + premultiplied-alpha composition swapchain + external backbuffer bgfx path + transparent presentation reset contract)
+> - `client/src/win32_layered_overlay.cpp` / `client/src/win32_layered_overlay.hpp` (authoritative non-layered Windows overlay style path for DirectComposition + compatibility fallback guardrails)
+> - `client/src/client_app.cpp` (startup/resize wiring for the Windows alpha-composited overlay mode)
+> - `engine/src/render/overlay_transparency_contract_test.cpp` / `engine/include/isla/engine/render/overlay_transparency.hpp` (transparent clear-color contract for compositor presentation path)
+> - `engine/src/render/BUILD` / `client/src/BUILD` (Windows composition/render link dependencies and runtime wiring updates)
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -673,10 +680,33 @@ Conclusion from diagnostics:
 - Current black-screen issue is a Windows presentation/compositing integration problem for this renderer path.
 - A dedicated alpha-composited presentation implementation (DirectComposition + premultiplied-alpha swapchain path) is required for a reliable transparent-desktop + visible-3D result.
 
+### Implemented (2026-03-04)
+
+- Added a DirectComposition-backed presentation path for Windows runtime rendering:
+  - D3D11 device/context creation for composition interop
+  - premultiplied-alpha `IDXGISwapChain1` (`CreateSwapChainForComposition`)
+  - DirectComposition target/visual attachment to the SDL/Win32 host window
+- Switched runtime renderer initialization to an authoritative external-backbuffer path:
+  - bgfx initializes against externally supplied D3D11 context + RTV/DSV
+  - bgfx HWND swapchain ownership is disabled (`platformData.nwh = nullptr`) to avoid mixed presentation ownership
+  - transparent backbuffer reset contract remains explicit (`BGFX_RESET_TRANSPARENT_BACKBUFFER` + clear alpha `0`)
+- Finalized Windows overlay/window style policy for this composition path:
+  - authoritative non-layered DirectComposition-compatible style path
+  - compatibility fallback retained only for style-application failure cases
+  - removed reliance on legacy DWM blur/frame-extension APIs for the composition path
+- Added and hardened platform diagnostics used during bring-up:
+  - compositor/style-selection logs
+  - swapchain/init failure logs
+  - draw-submission visibility logs for render/composition split debugging
+- Verified final observed runtime outcome on Windows:
+  - transparent desktop/background with visible model in-session
+  - stable runtime loop through repeated frames and clean shutdown event path
+
 ### Exit Criteria
 
 - On Windows, runtime shows desktop/background transparency and visible 3D model simultaneously in the same session, with stable behavior across startup and resize.
 - Transparency behavior no longer depends on color-key hacks or mutually inconsistent overlay flag combinations.
+- Satisfied as of 2026-03-04.
 
 ## Phase 5: Basic Physics Preservation from PMX Conversion
 
@@ -852,7 +882,7 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 4. First large-rig-ready deformation point (>64-joint referenced primitives): after Phase 3.5 (achieved 2026-03-03).
 5. First static glTF visual-fidelity parity point (non-animated fallback path): after Phase 4 (achieved 2026-03-04).
 6. First static multi-material parity point (primitive-level material preservation in fallback path): after Phase 4.1 (achieved 2026-03-04).
-7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5.
+7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5 (achieved 2026-03-04).
 8. First basic PMX parity point (animation + basic physics): after Phase 5/6.
 9. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7.
 10. First hierarchy-fidelity point for complex rigs: after Phase 8.

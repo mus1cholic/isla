@@ -1,5 +1,7 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
+exports_files(["win32_layered_overlay.cpp"])
+
 config_setting(
     name = "windows_gnu",
     values = {"define": "isla_windows_gnu=true"},
@@ -24,8 +26,14 @@ cc_library(
     hdrs = ["win32_layered_overlay.hpp"],
     visibility = ["//visibility:public"],
     linkopts = select({
-        ":windows_gnu": ["-luser32"],
-        ":windows_msvc": ["user32.lib"],
+        ":windows_gnu": [
+            "-luser32",
+            "-ldwmapi",
+        ],
+        ":windows_msvc": [
+            "user32.lib",
+            "dwmapi.lib",
+        ],
         "//conditions:default": [],
     }),
     deps = [
@@ -106,10 +114,12 @@ cc_test(
         ":windows_gnu": [
             "-luser32",
             "-ladvapi32",
+            "-ldwmapi",
         ],
         ":windows_msvc": [
             "user32.lib",
             "advapi32.lib",
+            "dwmapi.lib",
         ],
         "//conditions:default": [],
     }),

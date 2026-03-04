@@ -5,7 +5,7 @@
 namespace isla::client {
 
 TEST(Win32LayeredOverlayTest, ConfigureReturnsFalseForNullWindow) {
-    EXPECT_FALSE(configure_win32_layered_overlay(nullptr));
+    EXPECT_FALSE(configure_win32_alpha_composited_overlay(nullptr));
 }
 
 } // namespace isla::client
