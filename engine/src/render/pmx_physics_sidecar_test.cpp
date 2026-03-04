@@ -319,7 +319,7 @@ TEST(PmxPhysicsSidecarTest, FailsWhenCollisionLayersCountExceedsLimit) {
     std::ofstream out(sidecar_path, std::ios::binary);
     ASSERT_TRUE(out.is_open());
     out << "{"
-        << "\"schema_version\":\"1.0.0\","
+        << R"("schema_version":"1.0.0",)"
         << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
            "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
         << "\"collision_layers\":[";
@@ -327,9 +327,9 @@ TEST(PmxPhysicsSidecarTest, FailsWhenCollisionLayersCountExceedsLimit) {
         if (i > 0U) {
             out << ",";
         }
-        out << "{\"index\":0,\"name\":\"l\"}";
+        out << R"({"index":0,"name":"l"})";
     }
-    out << "],\"colliders\":[],\"constraints\":[]}";
+    out << R"(],"colliders":[],"constraints":[]})";
     out.close();
 
     const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
@@ -349,10 +349,10 @@ TEST(PmxPhysicsSidecarTest, FailsWhenCollidersCountExceedsLimit) {
     std::ofstream out(sidecar_path, std::ios::binary);
     ASSERT_TRUE(out.is_open());
     out << "{"
-        << "\"schema_version\":\"1.0.0\","
+        << R"("schema_version":"1.0.0",)"
         << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
            "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-        << "\"collision_layers\":[{\"index\":0,\"name\":\"default\"}],"
+        << R"("collision_layers":[{"index":0,"name":"default"}],)"
         << "\"colliders\":[";
     for (std::size_t i = 0U; i < (kMaxColliders + 1U); ++i) {
         if (i > 0U) {
@@ -383,17 +383,17 @@ TEST(PmxPhysicsSidecarTest, FailsWhenConstraintsCountExceedsLimit) {
     std::ofstream out(sidecar_path, std::ios::binary);
     ASSERT_TRUE(out.is_open());
     out << "{"
-        << "\"schema_version\":\"1.0.0\","
+        << R"("schema_version":"1.0.0",)"
         << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
            "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-        << "\"collision_layers\":[{\"index\":0,\"name\":\"default\"}],"
+        << R"("collision_layers":[{"index":0,"name":"default"}],)"
         << "\"colliders\":[],"
         << "\"constraints\":[";
     for (std::size_t i = 0U; i < (kMaxConstraints + 1U); ++i) {
         if (i > 0U) {
             out << ",";
         }
-        out << "{\"id\":\"k\",\"bone_a_name\":\"A\",\"bone_b_name\":\"B\",\"type\":\"fixed\"}";
+        out << R"({"id":"k","bone_a_name":"A","bone_b_name":"B","type":"fixed"})";
     }
     out << "]}";
     out.close();
@@ -417,16 +417,16 @@ TEST(PmxPhysicsSidecarTest, OverlongStringFieldsAreRejectedPerEntry) {
         std::ofstream out(sidecar_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
         out << "{"
-            << "\"schema_version\":\"1.0.0\","
+            << R"("schema_version":"1.0.0",)"
             << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
                "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-            << "\"collision_layers\":[{\"index\":0,\"name\":\"default\"}],"
+            << R"("collision_layers":[{"index":0,"name":"default"}],)"
             << "\"colliders\":["
-            << "{\"id\":\"" << long_id
+            << R"({"id":")" << long_id
             << "\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
                "\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,\"layer\":1,\"mask\":1,"
                "\"radius\":0.1},"
-            << "{\"id\":\"" << valid_id
+            << R"({"id":")" << valid_id
             << "\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
                "\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,\"layer\":1,\"mask\":1,"
                "\"radius\":0.1}"
