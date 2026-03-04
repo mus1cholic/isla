@@ -44,6 +44,14 @@ class ClientAppTestHooks {
         app.gpu_skinning_authoritative_ = enabled;
     }
 
+    static void set_physics_sidecar(ClientApp& app, pmx_physics_sidecar::SidecarData sidecar) {
+        app.physics_sidecar_ = std::move(sidecar);
+    }
+
+    static std::size_t physics_collider_binding_count(const ClientApp& app) {
+        return app.physics_collider_bindings_.size();
+    }
+
     static bool gpu_skinning_authoritative(const ClientApp& app) {
         return app.gpu_skinning_authoritative_;
     }
