@@ -30,6 +30,28 @@ constexpr char kAnimationClipEnvVar[] = "ISLA_ANIM_CLIP";
 constexpr char kAnimationPlaybackModeEnvVar[] = "ISLA_ANIM_PLAYBACK_MODE";
 constexpr char kDefaultStartupModelPath[] = "models/model.glb";
 
+const char* material_blend_mode_name(MaterialBlendMode mode) {
+    switch (mode) {
+    case MaterialBlendMode::Opaque:
+        return "opaque";
+    case MaterialBlendMode::AlphaBlend:
+        return "alpha_blend";
+    }
+    return "unknown";
+}
+
+const char* material_cull_mode_name(MaterialCullMode mode) {
+    switch (mode) {
+    case MaterialCullMode::Clockwise:
+        return "clockwise";
+    case MaterialCullMode::CounterClockwise:
+        return "counter_clockwise";
+    case MaterialCullMode::Disabled:
+        return "disabled";
+    }
+    return "unknown";
+}
+
 Transform make_visible_object_transform(const MeshData& mesh) {
     Transform transform{};
     const BoundingSphere bounds = mesh.local_bounds();
@@ -205,7 +227,10 @@ bool ClientApp::initialize() {
 }
 
 void ClientApp::load_startup_mesh() {
+    world_.materials().clear();
     world_.materials().push_back(Material{});
+    world_.meshes().clear();
+    world_.objects().clear();
     animated_asset_.reset();
     animation_playback_.clear_asset();
     animated_mesh_bindings_.clear();
@@ -215,6 +240,47 @@ void ClientApp::load_startup_mesh() {
               << (gpu_skinning_authoritative_ ? "enabled" : "disabled")
               << " (renderer support check)";
 
+    const auto try_load_static_asset = [&](const std::string& path,
+                                           const char* source_label) -> bool {
+        mesh_asset_loader::MeshAssetLoadResult loaded = mesh_asset_loader::load_from_file(path);
+        if (!loaded.ok) {
+            LOG(WARNING) << "ClientApp: static mesh load failed for " << source_label << "='"
+                         << path << "' error='" << loaded.error_message << "'";
+            return false;
+        }
+
+        Material material{};
+        material.base_color = loaded.material.base_color;
+        material.base_alpha = loaded.material.base_alpha;
+        material.alpha_cutoff = loaded.material.alpha_cutoff;
+        material.albedo_texture_path = loaded.material.albedo_texture_path;
+        material.blend_mode = loaded.material.blend_mode;
+        material.cull_mode = loaded.material.cull_mode;
+        world_.materials().clear();
+        world_.materials().push_back(material);
+
+        MeshData mesh;
+        mesh.set_triangles(std::move(loaded.triangles));
+        world_.meshes().push_back(std::move(mesh));
+        world_.objects().push_back(RenderObject{
+            .mesh_id = 0U,
+            .transform = make_visible_object_transform(world_.meshes().back()),
+            .material_id = 0U,
+            .visible = true,
+        });
+        LOG(INFO) << "ClientApp: loaded static mesh from " << source_label << "='" << path
+                  << "' triangles=" << world_.meshes().back().triangles().size()
+                  << " material={base_color=[" << material.base_color.r << ","
+                  << material.base_color.g << "," << material.base_color.b
+                  << "], base_alpha=" << material.base_alpha
+                  << ", alpha_cutoff=" << material.alpha_cutoff
+                  << ", blend_mode=" << material_blend_mode_name(material.blend_mode)
+                  << ", cull_mode=" << material_cull_mode_name(material.cull_mode)
+                  << ", has_albedo_texture="
+                  << (!material.albedo_texture_path.empty() ? "true" : "false") << "}";
+        return true;
+    };
+
     const auto try_load_animated_asset = [&](const std::string& path,
                                              const char* source_label) -> bool {
         animated_gltf::AnimatedGltfLoadResult loaded = animated_gltf::load_from_file(path);
@@ -222,7 +288,7 @@ void ClientApp::load_startup_mesh() {
             LOG(WARNING) << "ClientApp: animated glTF load failed for " << source_label << "='"
                          << path << "' error='" << loaded.error_message
                          << "'; falling back to static mesh path";
-            return false;
+            return try_load_static_asset(path, source_label);
         }
         animated_asset_.emplace(std::move(loaded.asset));
         std::string playback_error;
@@ -232,7 +298,7 @@ void ClientApp::load_startup_mesh() {
                          << "'; falling back to static mesh path";
             animated_asset_.reset();
             animation_playback_.clear_asset();
-            return false;
+            return try_load_static_asset(path, source_label);
         }
         configure_animation_playback_from_environment();
         populate_world_from_animated_asset();
@@ -278,24 +344,10 @@ void ClientApp::load_startup_mesh() {
         return;
     }
 
-    mesh_asset_loader::MeshAssetLoadResult loaded =
-        mesh_asset_loader::load_from_file(mesh_asset_path);
-    if (!loaded.ok) {
+    if (!try_load_static_asset(mesh_asset_path, kMeshAssetEnvVar)) {
         LOG(WARNING) << "ClientApp: mesh load failed for ISLA_MESH_ASSET='" << mesh_asset_path
-                     << "' error='" << loaded.error_message << "'; leaving scene empty";
-        return;
+                     << "'; leaving scene empty";
     }
-
-    MeshData mesh;
-    mesh.set_triangles(std::move(loaded.triangles));
-    world_.meshes().push_back(std::move(mesh));
-    world_.objects().push_back(RenderObject{
-        .mesh_id = 0U,
-        .transform = make_visible_object_transform(world_.meshes().back()),
-        .material_id = 0U,
-        .visible = true,
-    });
-    LOG(INFO) << "ClientApp: loaded mesh from ISLA_MESH_ASSET='" << mesh_asset_path << "'";
 }
 
 void ClientApp::configure_animation_playback_from_environment() {

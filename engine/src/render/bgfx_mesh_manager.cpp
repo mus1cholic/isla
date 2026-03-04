@@ -362,14 +362,23 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
             const Vec3 edge_ab = triangle.b - triangle.a;
             const Vec3 edge_ac = triangle.c - triangle.a;
             const Vec3 normal = normalize(cross(edge_ab, edge_ac));
-            const std::array<std::uint8_t, kNormalPackedElementCount> packed_normal =
+            const std::array<std::uint8_t, kNormalPackedElementCount> packed_face_normal =
                 pack_normal(normal);
+            const std::array<std::uint8_t, kNormalPackedElementCount> packed_normal_a =
+                triangle.has_vertex_normals ? pack_normal(normalize(triangle.normal_a))
+                                            : packed_face_normal;
+            const std::array<std::uint8_t, kNormalPackedElementCount> packed_normal_b =
+                triangle.has_vertex_normals ? pack_normal(normalize(triangle.normal_b))
+                                            : packed_face_normal;
+            const std::array<std::uint8_t, kNormalPackedElementCount> packed_normal_c =
+                triangle.has_vertex_normals ? pack_normal(normalize(triangle.normal_c))
+                                            : packed_face_normal;
 
             const MeshVertex a = MeshVertex{
                 .x = triangle.a.x,
                 .y = triangle.a.y,
                 .z = triangle.a.z,
-                .normal = packed_normal,
+                .normal = packed_normal_a,
                 .u = triangle.uv_a.x,
                 .v = triangle.uv_a.y,
             };
@@ -377,7 +386,7 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
                 .x = triangle.b.x,
                 .y = triangle.b.y,
                 .z = triangle.b.z,
-                .normal = packed_normal,
+                .normal = packed_normal_b,
                 .u = triangle.uv_b.x,
                 .v = triangle.uv_b.y,
             };
@@ -385,7 +394,7 @@ void BgfxMeshManager::upload_dirty_meshes(const RenderWorld& world) {
                 .x = triangle.c.x,
                 .y = triangle.c.y,
                 .z = triangle.c.z,
-                .normal = packed_normal,
+                .normal = packed_normal_c,
                 .u = triangle.uv_c.x,
                 .v = triangle.uv_c.y,
             };

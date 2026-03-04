@@ -9,6 +9,7 @@ uniform vec4 u_dir_light_color;
 uniform vec4 u_ambient_color;
 uniform vec4 u_camera_pos;
 uniform vec4 u_spec_params;
+uniform vec4 u_alpha_params;
 
 void main()
 {
@@ -26,6 +27,14 @@ void main()
     vec3 specular = u_dir_light_color.rgb * spec_term;
 
     vec4 texColor = texture2D(s_texColor, v_texcoord0);
+    float outAlpha = v_color0.a * texColor.a;
+    bool alphaCutoutEnabled = (u_alpha_params.y > 0.5);
+    if (alphaCutoutEnabled && outAlpha < u_alpha_params.x) {
+        discard;
+    }
+    if (alphaCutoutEnabled) {
+        outAlpha = 1.0;
+    }
     gl_FragColor =
-        vec4(v_color0.rgb * texColor.rgb * (ambient + diffuse + specular), v_color0.a * texColor.a);
+        vec4(v_color0.rgb * texColor.rgb * (ambient + diffuse + specular), outAlpha);
 }

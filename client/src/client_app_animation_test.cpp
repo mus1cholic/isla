@@ -211,6 +211,150 @@ std::vector<std::uint8_t> make_minimal_triangle_glb() {
     return glb;
 }
 
+void append_u16_le(std::vector<std::uint8_t>& out, std::uint16_t value) {
+    out.push_back(static_cast<std::uint8_t>(value & 0xFFU));
+    out.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
+}
+
+void append_f32_le(std::vector<std::uint8_t>& out, float value) {
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+    out.insert(out.end(), bytes, bytes + sizeof(float));
+}
+
+std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesystem::path& dir) {
+    const std::filesystem::path gltf_path = dir / "skinned_no_clips.gltf";
+    const std::filesystem::path bin_path = dir / "skinned_no_clips.bin";
+    const std::filesystem::path texture_path = dir / "albedo.png";
+
+    std::vector<std::uint8_t> buffer;
+    buffer.reserve(256U);
+    const std::size_t positions_offset = buffer.size();
+    const float positions[9] = {
+        0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
+    };
+    for (float value : positions) {
+        append_f32_le(buffer, value);
+    }
+    const std::size_t positions_length = buffer.size() - positions_offset;
+
+    const std::size_t normals_offset = buffer.size();
+    const float normals[9] = {
+        0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F,
+    };
+    for (float value : normals) {
+        append_f32_le(buffer, value);
+    }
+    const std::size_t normals_length = buffer.size() - normals_offset;
+
+    const std::size_t joints_offset = buffer.size();
+    for (int i = 0; i < 3; ++i) {
+        append_u16_le(buffer, 0U);
+        append_u16_le(buffer, 0U);
+        append_u16_le(buffer, 0U);
+        append_u16_le(buffer, 0U);
+    }
+    const std::size_t joints_length = buffer.size() - joints_offset;
+
+    const std::size_t weights_offset = buffer.size();
+    for (int i = 0; i < 3; ++i) {
+        append_f32_le(buffer, 1.0F);
+        append_f32_le(buffer, 0.0F);
+        append_f32_le(buffer, 0.0F);
+        append_f32_le(buffer, 0.0F);
+    }
+    const std::size_t weights_length = buffer.size() - weights_offset;
+
+    const std::size_t indices_offset = buffer.size();
+    append_u16_le(buffer, 0U);
+    append_u16_le(buffer, 1U);
+    append_u16_le(buffer, 2U);
+    const std::size_t indices_length = buffer.size() - indices_offset;
+    while ((buffer.size() % 4U) != 0U) {
+        buffer.push_back(0U);
+    }
+
+    const std::size_t ibm_offset = buffer.size();
+    const float identity_mat4[16] = {
+        1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+        0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F,
+    };
+    for (float value : identity_mat4) {
+        append_f32_le(buffer, value);
+    }
+    const std::size_t ibm_length = buffer.size() - ibm_offset;
+
+    {
+        std::ofstream bin_out(bin_path, std::ios::binary);
+        EXPECT_TRUE(bin_out.is_open());
+        bin_out.write(reinterpret_cast<const char*>(buffer.data()),
+                      static_cast<std::streamsize>(buffer.size()));
+    }
+    {
+        std::ofstream texture_out(texture_path, std::ios::binary);
+        EXPECT_TRUE(texture_out.is_open());
+        texture_out << "fake_png";
+    }
+
+    std::ofstream gltf_out(gltf_path, std::ios::binary);
+    EXPECT_TRUE(gltf_out.is_open());
+    gltf_out << "{\n"
+             << "  \"asset\": {\"version\": \"2.0\"},\n"
+             << "  \"buffers\": [{\"uri\": \"" << bin_path.filename().string()
+             << "\", \"byteLength\": " << buffer.size() << "}],\n"
+             << "  \"bufferViews\": [\n"
+             << "    {\"buffer\": 0, \"byteOffset\": " << positions_offset
+             << ", \"byteLength\": " << positions_length << ", \"target\": 34962},\n"
+             << "    {\"buffer\": 0, \"byteOffset\": " << normals_offset
+             << ", \"byteLength\": " << normals_length << ", \"target\": 34962},\n"
+             << "    {\"buffer\": 0, \"byteOffset\": " << joints_offset
+             << ", \"byteLength\": " << joints_length << ", \"target\": 34962},\n"
+             << "    {\"buffer\": 0, \"byteOffset\": " << weights_offset
+             << ", \"byteLength\": " << weights_length << ", \"target\": 34962},\n"
+             << "    {\"buffer\": 0, \"byteOffset\": " << indices_offset
+             << ", \"byteLength\": " << indices_length << ", \"target\": 34963},\n"
+             << "    {\"buffer\": 0, \"byteOffset\": " << ibm_offset
+             << ", \"byteLength\": " << ibm_length << "}\n"
+             << "  ],\n"
+             << "  \"accessors\": [\n"
+             << "    {\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": "
+                "\"VEC3\"},\n"
+             << "    {\"bufferView\": 1, \"componentType\": 5126, \"count\": 3, \"type\": "
+                "\"VEC3\"},\n"
+             << "    {\"bufferView\": 2, \"componentType\": 5123, \"count\": 3, \"type\": "
+                "\"VEC4\"},\n"
+             << "    {\"bufferView\": 3, \"componentType\": 5126, \"count\": 3, \"type\": "
+                "\"VEC4\"},\n"
+             << "    {\"bufferView\": 4, \"componentType\": 5123, \"count\": 3, \"type\": "
+                "\"SCALAR\"},\n"
+             << "    {\"bufferView\": 5, \"componentType\": 5126, \"count\": 1, \"type\": "
+                "\"MAT4\"}\n"
+             << "  ],\n"
+             << "  \"images\": [{\"uri\": \"" << texture_path.filename().string() << "\"}],\n"
+             << "  \"textures\": [{\"source\": 0}],\n"
+             << "  \"materials\": [{\n"
+             << "    \"pbrMetallicRoughness\": {\n"
+             << "      \"baseColorFactor\": [0.3, 0.5, 0.7, 0.4],\n"
+             << "      \"baseColorTexture\": {\"index\": 0}\n"
+             << "    },\n"
+             << "    \"doubleSided\": true,\n"
+             << "    \"alphaMode\": \"MASK\",\n"
+             << "    \"alphaCutoff\": 0.5\n"
+             << "  }],\n"
+             << "  \"meshes\": [{\"primitives\": [{\n"
+             << "    \"attributes\": {\"POSITION\": 0, \"NORMAL\": 1, \"JOINTS_0\": 2, "
+                "\"WEIGHTS_0\": 3},\n"
+             << "    \"indices\": 4,\n"
+             << "    \"material\": 0\n"
+             << "  }]}],\n"
+             << "  \"nodes\": [{\"name\": \"joint0\"}, {\"mesh\": 0, \"skin\": 0}],\n"
+             << "  \"skins\": [{\"joints\": [0], \"inverseBindMatrices\": 5}],\n"
+             << "  \"scenes\": [{\"nodes\": [1]}],\n"
+             << "  \"scene\": 0\n"
+             << "}\n";
+    EXPECT_TRUE(gltf_out.good());
+    return gltf_path;
+}
+
 class FakeSdlRuntime final : public ISdlRuntime {
   public:
     std::uint64_t now_ticks_ns = 0U;
@@ -666,6 +810,92 @@ TEST(ClientAppAnimationTest, StaticFallbackAppliesVisibleAutoFitTransform) {
     EXPECT_GT(transform.scale.z, 1.0F);
     EXPECT_NE(transform.position.x, 0.0F);
     EXPECT_NE(transform.position.y, 0.0F);
+}
+
+TEST(ClientAppAnimationTest, AnimatedLoadNoClipsFallsBackToStaticWithFidelityInputs) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_skinned_no_clips");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_skinned_no_animation_gltf_fixture(temp_dir.path());
+
+    const animated_gltf::AnimatedGltfLoadResult animated_loaded =
+        animated_gltf::load_from_file(gltf_path.string());
+    ASSERT_TRUE(animated_loaded.ok) << animated_loaded.error_message;
+    ASSERT_TRUE(animated_loaded.asset.clips.empty());
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
+
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    EXPECT_FALSE(internal::ClientAppTestHooks::has_animated_asset(app));
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.materials().size(), 1U);
+    ASSERT_EQ(world.meshes().size(), 1U);
+    ASSERT_EQ(world.objects().size(), 1U);
+    EXPECT_NEAR(world.materials()[0].base_color.r, 0.3F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_color.g, 0.5F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_color.b, 0.7F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].base_alpha, 0.4F, 1.0e-6F);
+    EXPECT_NEAR(world.materials()[0].alpha_cutoff, 0.5F, 1.0e-6F);
+    EXPECT_EQ(world.materials()[0].blend_mode, MaterialBlendMode::Opaque);
+    EXPECT_EQ(world.materials()[0].cull_mode, MaterialCullMode::Disabled);
+    EXPECT_EQ(world.materials()[0].albedo_texture_path,
+              (temp_dir.path() / "albedo.png").lexically_normal().string());
+    ASSERT_FALSE(world.meshes()[0].triangles().empty());
+    EXPECT_TRUE(world.meshes()[0].triangles()[0].has_vertex_normals);
+}
+
+TEST(ClientAppAnimationTest, StaticLoadMaterialBaselineMatchesEnvAndDefaultPathFlows) {
+    FakeSdlRuntime env_runtime;
+    ClientApp env_app(env_runtime);
+    ScopedTempDir env_workspace_dir = ScopedTempDir::create("isla_client_app_test_default_flow");
+    ASSERT_TRUE(env_workspace_dir.is_valid());
+    ASSERT_TRUE(std::filesystem::create_directories(env_workspace_dir.path() / "models"));
+    const std::filesystem::path model_path = env_workspace_dir.path() / "models" / "model.glb";
+    const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
+    {
+        std::ofstream out(model_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out.write(reinterpret_cast<const char*>(glb.data()),
+                  static_cast<std::streamsize>(glb.size()));
+    }
+
+    {
+        ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+        ScopedEnvVar mesh_env("ISLA_MESH_ASSET", model_path.string().c_str());
+        internal::ClientAppTestHooks::load_startup_mesh(env_app);
+    }
+    const RenderWorld& env_world = internal::ClientAppTestHooks::world(env_app);
+    ASSERT_EQ(env_world.materials().size(), 1U);
+
+    FakeSdlRuntime default_runtime;
+    ClientApp default_app(default_runtime);
+    ScopedTempDir sandbox_dir = ScopedTempDir::create("isla_client_app_test_default_flow_sandbox");
+    ASSERT_TRUE(sandbox_dir.is_valid());
+    ScopedCurrentPath cwd_guard(sandbox_dir.path());
+    ASSERT_TRUE(cwd_guard.is_armed());
+    {
+        ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+        ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
+        ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY",
+                                   env_workspace_dir.path().string().c_str());
+        internal::ClientAppTestHooks::load_startup_mesh(default_app);
+    }
+    const RenderWorld& default_world = internal::ClientAppTestHooks::world(default_app);
+    ASSERT_EQ(default_world.materials().size(), 1U);
+
+    EXPECT_FLOAT_EQ(env_world.materials()[0].base_color.r,
+                    default_world.materials()[0].base_color.r);
+    EXPECT_FLOAT_EQ(env_world.materials()[0].base_color.g,
+                    default_world.materials()[0].base_color.g);
+    EXPECT_FLOAT_EQ(env_world.materials()[0].base_color.b,
+                    default_world.materials()[0].base_color.b);
+    EXPECT_FLOAT_EQ(env_world.materials()[0].base_alpha, default_world.materials()[0].base_alpha);
+    EXPECT_EQ(env_world.materials()[0].blend_mode, default_world.materials()[0].blend_mode);
+    EXPECT_EQ(env_world.materials()[0].cull_mode, default_world.materials()[0].cull_mode);
 }
 
 } // namespace

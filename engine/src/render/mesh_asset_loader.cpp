@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cstddef>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -12,7 +13,10 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
+
+#include "absl/log/log.h"
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
@@ -259,8 +263,10 @@ std::optional<Vec2> read_vec2(const cgltf_accessor* accessor, cgltf_size index) 
 struct TrianglePrimitiveInspection {
     bool is_triangle = false;
     const cgltf_accessor* position_accessor = nullptr;
+    const cgltf_accessor* normal_accessor = nullptr;
     const cgltf_accessor* texcoord_accessor = nullptr;
     const cgltf_accessor* indices_accessor = nullptr;
+    const cgltf_material* material = nullptr;
     std::size_t triangle_count = 0U;
 };
 
@@ -276,10 +282,13 @@ bool inspect_triangle_primitive(const cgltf_primitive& primitive, TrianglePrimit
         const cgltf_attribute& attribute = primitive.attributes[attr_i];
         if (attribute.type == cgltf_attribute_type_position) {
             out.position_accessor = attribute.data;
+        } else if (attribute.type == cgltf_attribute_type_normal) {
+            out.normal_accessor = attribute.data;
         } else if (attribute.type == cgltf_attribute_type_texcoord && attribute.index == 0U) {
             out.texcoord_accessor = attribute.data;
         }
     }
+    out.material = primitive.material;
 
     if (out.position_accessor == nullptr) {
         error_message = "glTF primitive has no POSITION accessor";
@@ -294,6 +303,12 @@ bool inspect_triangle_primitive(const cgltf_primitive& primitive, TrianglePrimit
         (out.texcoord_accessor->type != cgltf_type_vec2 ||
          out.texcoord_accessor->component_type != cgltf_component_type_r_32f)) {
         error_message = "glTF TEXCOORD_0 accessor must be float VEC2";
+        return false;
+    }
+    if (out.normal_accessor != nullptr &&
+        (out.normal_accessor->type != cgltf_type_vec3 ||
+         out.normal_accessor->component_type != cgltf_component_type_r_32f)) {
+        error_message = "glTF NORMAL accessor must be float VEC3";
         return false;
     }
 
@@ -313,6 +328,99 @@ bool inspect_triangle_primitive(const cgltf_primitive& primitive, TrianglePrimit
     }
     out.triangle_count = static_cast<std::size_t>(out.position_accessor->count / 3U);
     return true;
+}
+
+std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cgltf_image* image) {
+    if (image == nullptr || image->uri == nullptr || image->uri[0] == '\0') {
+        return {};
+    }
+
+    const std::string uri(image->uri);
+    if (uri.rfind("data:", 0U) == 0U || uri.rfind("http://", 0U) == 0U ||
+        uri.rfind("https://", 0U) == 0U || uri.rfind("file://", 0U) == 0U) {
+        return {};
+    }
+
+    const std::filesystem::path uri_path(uri);
+    if (uri_path.is_absolute() || uri_path.has_root_name() || uri_path.has_root_directory()) {
+        LOG(WARNING) << "MeshAssetLoader: rejecting absolute image URI path in glTF material: '"
+                     << uri << "'";
+        return {};
+    }
+
+    const std::filesystem::path asset_dir = std::filesystem::path(asset_path).parent_path();
+    const std::filesystem::path normalized_asset_dir = asset_dir.lexically_normal();
+    const std::filesystem::path resolved = (asset_dir / uri_path).lexically_normal();
+
+    auto base_it = normalized_asset_dir.begin();
+    auto resolved_it = resolved.begin();
+    for (; base_it != normalized_asset_dir.end() && resolved_it != resolved.end();
+         ++base_it, ++resolved_it) {
+#if defined(_WIN32)
+        std::wstring lhs = base_it->native();
+        std::wstring rhs = resolved_it->native();
+        std::transform(lhs.begin(), lhs.end(), lhs.begin(), ::towlower);
+        std::transform(rhs.begin(), rhs.end(), rhs.begin(), ::towlower);
+        if (lhs != rhs) {
+            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
+                         << uri << "'";
+            return {};
+        }
+#else
+        if (*base_it != *resolved_it) {
+            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
+                         << uri << "'";
+            return {};
+        }
+#endif
+    }
+    if (base_it != normalized_asset_dir.end()) {
+        LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
+                     << uri << "'";
+        return {};
+    }
+
+    return resolved.string();
+}
+
+MeshAssetMaterial make_material_from_gltf_primitive(std::string_view asset_path,
+                                                    const TrianglePrimitiveInspection& inspected) {
+    MeshAssetMaterial material{};
+    const cgltf_material* primitive_material = inspected.material;
+    if (primitive_material == nullptr) {
+        return material;
+    }
+
+    const cgltf_pbr_metallic_roughness& pbr = primitive_material->pbr_metallic_roughness;
+    material.base_color = Color3{
+        .r = pbr.base_color_factor[0],
+        .g = pbr.base_color_factor[1],
+        .b = pbr.base_color_factor[2],
+    };
+    material.base_alpha = pbr.base_color_factor[3];
+    if (primitive_material->alpha_mode == cgltf_alpha_mode_blend) {
+        material.blend_mode = MaterialBlendMode::AlphaBlend;
+    } else {
+        material.blend_mode = MaterialBlendMode::Opaque;
+    }
+    if (primitive_material->alpha_mode == cgltf_alpha_mode_mask) {
+        material.alpha_cutoff = primitive_material->alpha_cutoff;
+    }
+    material.cull_mode =
+        primitive_material->double_sided ? MaterialCullMode::Disabled : MaterialCullMode::Clockwise;
+
+    if (pbr.base_color_texture.texture != nullptr &&
+        pbr.base_color_texture.texture->image != nullptr) {
+        material.albedo_texture_path =
+            resolve_gltf_image_uri_to_path(asset_path, pbr.base_color_texture.texture->image);
+    }
+    if (primitive_material->alpha_mode == cgltf_alpha_mode_mask &&
+        material.albedo_texture_path.empty()) {
+        LOG_EVERY_N_SEC(WARNING, 2.0)
+            << "MeshAssetLoader: MASK material has no resolvable baseColorTexture path; "
+               "cutout appearance may degrade to blocky silhouettes";
+    }
+    return material;
 }
 
 MeshAssetLoadResult load_gltf(std::string_view asset_path) {
@@ -369,6 +477,9 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
     std::vector<Triangle> triangles;
     triangles.reserve(total_triangle_count);
     bool found_triangle_primitive = false;
+    MeshAssetMaterial material{};
+    bool material_captured = false;
+    std::unordered_set<const cgltf_material*> triangle_primitive_materials;
     for (cgltf_size mesh_i = 0U; mesh_i < data->meshes_count; ++mesh_i) {
         const cgltf_mesh& mesh = data->meshes[mesh_i];
         for (cgltf_size prim_i = 0U; prim_i < mesh.primitives_count; ++prim_i) {
@@ -386,6 +497,11 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                 continue;
             }
             found_triangle_primitive = true;
+            triangle_primitive_materials.insert(inspected.material);
+            if (!material_captured) {
+                material = make_material_from_gltf_primitive(asset_path, inspected);
+                material_captured = true;
+            }
 
             if (inspected.indices_accessor != nullptr) {
                 for (cgltf_size i = 0U; i < inspected.indices_accessor->count; i += 3U) {
@@ -443,6 +559,37 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         uv_c = *tc;
                     }
 
+                    Vec3 normal_a{};
+                    Vec3 normal_b{};
+                    Vec3 normal_c{};
+                    bool has_vertex_normals = false;
+                    if (inspected.normal_accessor != nullptr) {
+                        const std::optional<Vec3> na =
+                            ia < inspected.normal_accessor->count
+                                ? read_vec3(inspected.normal_accessor, ia)
+                                : std::optional<Vec3>{};
+                        const std::optional<Vec3> nb =
+                            ib < inspected.normal_accessor->count
+                                ? read_vec3(inspected.normal_accessor, ib)
+                                : std::optional<Vec3>{};
+                        const std::optional<Vec3> nc =
+                            ic < inspected.normal_accessor->count
+                                ? read_vec3(inspected.normal_accessor, ic)
+                                : std::optional<Vec3>{};
+                        if (!na.has_value() || !nb.has_value() || !nc.has_value()) {
+                            return MeshAssetLoadResult{
+                                .ok = false,
+                                .triangles = {},
+                                .material = {},
+                                .error_message = "failed reading glTF NORMAL values",
+                            };
+                        }
+                        normal_a = *na;
+                        normal_b = *nb;
+                        normal_c = *nc;
+                        has_vertex_normals = true;
+                    }
+
                     triangles.push_back(Triangle{
                         .a = *a,
                         .b = *b,
@@ -450,6 +597,10 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         .uv_a = uv_a,
                         .uv_b = uv_b,
                         .uv_c = uv_c,
+                        .normal_a = normal_a,
+                        .normal_b = normal_b,
+                        .normal_c = normal_c,
+                        .has_vertex_normals = has_vertex_normals,
                     });
                 }
             } else {
@@ -493,6 +644,36 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         uv_c = *tc;
                     }
 
+                    Vec3 normal_a{};
+                    Vec3 normal_b{};
+                    Vec3 normal_c{};
+                    bool has_vertex_normals = false;
+                    if (inspected.normal_accessor != nullptr) {
+                        const std::optional<Vec3> na = i < inspected.normal_accessor->count
+                                                           ? read_vec3(inspected.normal_accessor, i)
+                                                           : std::optional<Vec3>{};
+                        const std::optional<Vec3> nb =
+                            (i + 1U) < inspected.normal_accessor->count
+                                ? read_vec3(inspected.normal_accessor, i + 1U)
+                                : std::optional<Vec3>{};
+                        const std::optional<Vec3> nc =
+                            (i + 2U) < inspected.normal_accessor->count
+                                ? read_vec3(inspected.normal_accessor, i + 2U)
+                                : std::optional<Vec3>{};
+                        if (!na.has_value() || !nb.has_value() || !nc.has_value()) {
+                            return MeshAssetLoadResult{
+                                .ok = false,
+                                .triangles = {},
+                                .material = {},
+                                .error_message = "failed reading glTF NORMAL values",
+                            };
+                        }
+                        normal_a = *na;
+                        normal_b = *nb;
+                        normal_c = *nc;
+                        has_vertex_normals = true;
+                    }
+
                     triangles.push_back(Triangle{
                         .a = *a,
                         .b = *b,
@@ -500,6 +681,10 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                         .uv_a = uv_a,
                         .uv_b = uv_b,
                         .uv_c = uv_c,
+                        .normal_a = normal_a,
+                        .normal_b = normal_b,
+                        .normal_c = normal_c,
+                        .has_vertex_normals = has_vertex_normals,
                     });
                 }
             }
@@ -521,10 +706,17 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
             .error_message = "glTF contains no triangles",
         };
     }
+    if (triangle_primitive_materials.size() > 1U) {
+        LOG_EVERY_N_SEC(WARNING, 2.0)
+            << "MeshAssetLoader: static glTF includes " << triangle_primitive_materials.size()
+            << " distinct triangle-primitive materials, but current static fallback exports a "
+               "single material baseline (first triangle primitive)";
+    }
 
     return MeshAssetLoadResult{
         .ok = true,
         .triangles = std::move(triangles),
+        .material = material,
         .error_message = {},
     };
 }
