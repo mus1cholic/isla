@@ -366,10 +366,26 @@ std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cg
                      << uri << "'";
         return {};
     }
+    const std::filesystem::path normalized_uri_path = uri_path.lexically_normal();
+    for (auto it = normalized_uri_path.begin(); it != normalized_uri_path.end(); ++it) {
+        const std::filesystem::path component = *it;
+        if (component == ".") {
+            continue;
+        }
+        if (component == "..") {
+            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path with parent traversal: '"
+                         << uri << "'";
+            return {};
+        }
+        break;
+    }
 
-    const std::filesystem::path asset_dir = std::filesystem::path(asset_path).parent_path();
+    std::filesystem::path asset_dir = std::filesystem::path(asset_path).parent_path();
+    if (asset_dir.empty()) {
+        asset_dir = ".";
+    }
     const std::filesystem::path normalized_asset_dir = asset_dir.lexically_normal();
-    const std::filesystem::path resolved = (asset_dir / uri_path).lexically_normal();
+    const std::filesystem::path resolved = (asset_dir / normalized_uri_path).lexically_normal();
 
     auto base_it = normalized_asset_dir.begin();
     auto resolved_it = resolved.begin();

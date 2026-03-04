@@ -11,6 +11,39 @@
 namespace isla::client::mesh_asset_loader {
 namespace {
 
+class ScopedCurrentPath {
+  public:
+    explicit ScopedCurrentPath(const std::filesystem::path& path) {
+        std::error_code ec;
+        original_ = std::filesystem::current_path(ec);
+        if (ec) {
+            return;
+        }
+        std::filesystem::current_path(path, ec);
+        if (ec) {
+            original_.clear();
+            return;
+        }
+        armed_ = true;
+    }
+
+    ~ScopedCurrentPath() {
+        if (!armed_) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::current_path(original_, ec);
+    }
+
+    [[nodiscard]] bool is_armed() const {
+        return armed_;
+    }
+
+  private:
+    std::filesystem::path original_;
+    bool armed_ = false;
+};
+
 class ScopedTempDir {
   public:
     static ScopedTempDir create(std::string_view prefix) {
@@ -503,6 +536,40 @@ TEST(MeshAssetLoaderTests, RejectsImageUriParentTraversalOutsideAssetDirectory) 
     }
 
     const MeshAssetLoadResult loaded = load_from_file(gltf_path.string());
+    ASSERT_TRUE(loaded.ok) << loaded.error_message;
+    EXPECT_TRUE(loaded.material.albedo_texture_path.empty());
+}
+
+TEST(MeshAssetLoaderTests, RejectsImageUriParentTraversalForParentlessRelativeAssetPath) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_mesh_loader_test");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = temp_dir.path() / "model.gltf";
+
+    constexpr char kParentlessTraversalUriGltf[] =
+        "{"
+        "\"asset\":{\"version\":\"2.0\"},"
+        "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAA\",\"byteLength\":36}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],"
+        "\"images\":[{\"uri\":\"../outside.png\"}],"
+        "\"textures\":[{\"source\":0}],"
+        "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"material\":0,\"mode\":4}]}"
+        "],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"scenes\":[{\"nodes\":[0]}],"
+        "\"scene\":0"
+        "}";
+    {
+        std::ofstream stream(gltf_path, std::ios::binary);
+        ASSERT_TRUE(stream.is_open());
+        stream << kParentlessTraversalUriGltf;
+    }
+
+    ScopedCurrentPath cwd_guard(temp_dir.path());
+    ASSERT_TRUE(cwd_guard.is_armed());
+    const MeshAssetLoadResult loaded = load_from_file("model.gltf");
     ASSERT_TRUE(loaded.ok) << loaded.error_message;
     EXPECT_TRUE(loaded.material.albedo_texture_path.empty());
 }
