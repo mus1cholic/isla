@@ -133,9 +133,24 @@ TEST(WindowsCompositionContractTest, OverlayPrefersNonLayeredDirectCompositionSt
     EXPECT_TRUE(contains_normalized(source, "~(WS_EX_LAYERED | WS_EX_TOOLWINDOW)"));
     EXPECT_TRUE(contains_normalized(source, "using layered-alpha fallback style"));
     EXPECT_TRUE(contains_normalized(
+        source, "g_overlay_composition_mode = OverlayCompositionMode::LayeredFallback;"));
+    EXPECT_TRUE(contains_normalized(
+        source,
+        "g_overlay_composition_mode = OverlayCompositionMode::NonLayeredDirectComposition;"));
+    EXPECT_TRUE(contains_normalized(
         source, "skipping DwmEnableBlurBehindWindow/DwmExtendFrameIntoClientArea"));
     EXPECT_FALSE(contains_normalized(source, "DwmEnableBlurBehindWindow("));
     EXPECT_FALSE(contains_normalized(source, "DwmExtendFrameIntoClientArea("));
+}
+
+TEST(WindowsCompositionContractTest, OverlayRefreshReappliesLayeredAlphaInFallbackModeContract) {
+    const std::string source = load_source_file("client/src/win32_layered_overlay.cpp");
+    ASSERT_FALSE(source.empty()) << "Could not load win32_layered_overlay.cpp source";
+
+    EXPECT_TRUE(contains_normalized(
+        source, "g_overlay_composition_mode == OverlayCompositionMode::LayeredFallback"));
+    EXPECT_TRUE(contains_normalized(source, "SetLayeredWindowAttributes(hwnd,0,255,LWA_ALPHA)"));
+    EXPECT_TRUE(contains_normalized(source, "layered fallback refresh failed"));
 }
 
 } // namespace

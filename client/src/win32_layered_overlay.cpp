@@ -17,6 +17,14 @@ namespace {
 
 WNDPROC g_overlay_original_wndproc = nullptr;
 
+enum class OverlayCompositionMode {
+    Unknown = 0,
+    NonLayeredDirectComposition,
+    LayeredFallback,
+};
+
+OverlayCompositionMode g_overlay_composition_mode = OverlayCompositionMode::Unknown;
+
 LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_NCHITTEST) {
         return HTTRANSPARENT;
@@ -31,6 +39,7 @@ LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPA
 } // namespace
 
 bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
+    g_overlay_composition_mode = OverlayCompositionMode::Unknown;
     if (window == nullptr) {
         LOG(ERROR) << "Win32Overlay: alpha-composited configure called with null SDL window";
         return false;
@@ -83,8 +92,10 @@ bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
                        << "last_error=0x" << std::hex << layered_error << std::dec;
             return false;
         }
+        g_overlay_composition_mode = OverlayCompositionMode::LayeredFallback;
         LOG(INFO) << "Win32Overlay: using layered-alpha fallback style";
     } else {
+        g_overlay_composition_mode = OverlayCompositionMode::NonLayeredDirectComposition;
         LOG(INFO) << "Win32Overlay: using non-layered DirectComposition style";
     }
     // A non-owned top-level window with APPWINDOW is eligible for taskbar/Alt-Tab.
@@ -126,7 +137,15 @@ bool refresh_win32_alpha_composited_overlay(SDL_Window* window) {
         return false;
     }
 
-    (void)hwnd;
+    if (g_overlay_composition_mode == OverlayCompositionMode::LayeredFallback) {
+        if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
+            const DWORD layered_error = GetLastError();
+            LOG_EVERY_N_SEC(WARNING, 2.0)
+                << "Win32Overlay: layered fallback refresh failed "
+                << "last_error=0x" << std::hex << layered_error << std::dec;
+            return false;
+        }
+    }
     return true;
 }
 

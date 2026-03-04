@@ -1,5 +1,15 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
+config_setting(
+    name = "windows_gnu",
+    values = {"define": "isla_windows_gnu=true"},
+)
+
+config_setting(
+    name = "windows_msvc",
+    values = {"define": "isla_windows_gnu=false"},
+)
+
 cc_library(
     name = "render",
     srcs = [
@@ -37,7 +47,13 @@ cc_library(
         "//conditions:default": [],
     }),
     linkopts = select({
-        "@platforms//os:windows": [
+        ":windows_gnu": [
+            "-ld3d11",
+            "-ldxgi",
+            "-ldcomp",
+            "-lole32",
+        ],
+        ":windows_msvc": [
             "d3d11.lib",
             "dxgi.lib",
             "dcomp.lib",
