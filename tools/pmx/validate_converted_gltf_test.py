@@ -68,6 +68,17 @@ class ValidateConvertedGltfTest(unittest.TestCase):
             "\n".join(errors),
         )
 
+    def test_fails_collider_layer_out_of_range(self):
+        errors, _warnings = self._run_validator(
+            "tools/pmx/testdata/pass_minimal.gltf",
+            "tools/pmx/testdata/fail_layer_out_of_range.physics.json",
+        )
+        self.assertTrue(errors)
+        self.assertIn(
+            "collider[0] layer must be int in [0, 31]",
+            "\n".join(errors),
+        )
+
     def test_returns_error_instead_of_raising_for_no_skin(self):
         errors, _warnings = self._run_validator(
             "tools/pmx/testdata/fail_no_skin.gltf",

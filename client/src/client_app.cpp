@@ -627,7 +627,14 @@ void ClientApp::load_physics_sidecar_for_asset(std::string_view asset_path) {
     std::filesystem::path sidecar_path = std::filesystem::path(asset_path);
     sidecar_path.replace_extension(".physics.json");
     std::error_code exists_error;
-    if (!std::filesystem::exists(sidecar_path, exists_error) || exists_error) {
+    const bool sidecar_exists = std::filesystem::exists(sidecar_path, exists_error);
+    if (exists_error) {
+        LOG(WARNING) << "ClientApp: failed checking physics sidecar path '"
+                     << sidecar_path.string() << "': " << exists_error.message()
+                     << "; skipping Phase 5 collider proxy import";
+        return;
+    }
+    if (!sidecar_exists) {
         VLOG(1) << "ClientApp: no physics sidecar found at '" << sidecar_path.string()
                 << "'; skipping Phase 5 collider proxy import";
         return;

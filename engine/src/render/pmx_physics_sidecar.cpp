@@ -108,16 +108,23 @@ std::optional<Vec3> read_required_vec3(const json& object, std::string_view key)
 }
 
 bool parse_collision_layers(const json& root, SidecarData& out_data,
-                            std::vector<std::string>& warnings) {
+                            std::vector<std::string>& warnings, std::string* failure_reason) {
     const json* layers_value = object_find(root, "collision_layers");
     if (layers_value == nullptr || !layers_value->is_array()) {
         warnings.emplace_back("physics sidecar missing valid collision_layers array");
+        if (failure_reason != nullptr) {
+            *failure_reason = "missing/invalid collision_layers array";
+        }
         return false;
     }
     if (layers_value->size() > kMaxCollisionLayers) {
-        warnings.emplace_back(absl::StrCat("physics sidecar collision_layers count ",
-                                           layers_value->size(), " exceeds maximum allowed ",
-                                           kMaxCollisionLayers));
+        const std::string reason = absl::StrCat("collision_layers count ", layers_value->size(),
+                                                " exceeds maximum allowed ",
+                                                kMaxCollisionLayers);
+        warnings.emplace_back(absl::StrCat("physics sidecar ", reason));
+        if (failure_reason != nullptr) {
+            *failure_reason = reason;
+        }
         return false;
     }
 
@@ -147,16 +154,23 @@ bool parse_collision_layers(const json& root, SidecarData& out_data,
 }
 
 bool parse_constraints(const json& root, SidecarData& out_data,
-                       std::vector<std::string>& warnings) {
+                       std::vector<std::string>& warnings, std::string* failure_reason) {
     const json* constraints_value = object_find(root, "constraints");
     if (constraints_value == nullptr || !constraints_value->is_array()) {
         warnings.emplace_back("physics sidecar missing valid constraints array");
+        if (failure_reason != nullptr) {
+            *failure_reason = "missing/invalid constraints array";
+        }
         return false;
     }
     if (constraints_value->size() > kMaxConstraints) {
-        warnings.emplace_back(absl::StrCat("physics sidecar constraints count ",
-                                           constraints_value->size(), " exceeds maximum allowed ",
-                                           kMaxConstraints));
+        const std::string reason = absl::StrCat("constraints count ", constraints_value->size(),
+                                                " exceeds maximum allowed ",
+                                                kMaxConstraints);
+        warnings.emplace_back(absl::StrCat("physics sidecar ", reason));
+        if (failure_reason != nullptr) {
+            *failure_reason = reason;
+        }
         return false;
     }
 
@@ -205,16 +219,24 @@ bool parse_constraints(const json& root, SidecarData& out_data,
 }
 
 bool parse_colliders(const json& root, std::span<const std::string> joint_names,
-                     SidecarData& out_data, std::vector<std::string>& warnings) {
+                     SidecarData& out_data, std::vector<std::string>& warnings,
+                     std::string* failure_reason) {
     const json* colliders_value = object_find(root, "colliders");
     if (colliders_value == nullptr || !colliders_value->is_array()) {
         warnings.emplace_back("physics sidecar missing valid colliders array");
+        if (failure_reason != nullptr) {
+            *failure_reason = "missing/invalid colliders array";
+        }
         return false;
     }
     if (colliders_value->size() > kMaxColliders) {
-        warnings.emplace_back(absl::StrCat("physics sidecar colliders count ",
-                                           colliders_value->size(), " exceeds maximum allowed ",
-                                           kMaxColliders));
+        const std::string reason = absl::StrCat("colliders count ", colliders_value->size(),
+                                                " exceeds maximum allowed ",
+                                                kMaxColliders);
+        warnings.emplace_back(absl::StrCat("physics sidecar ", reason));
+        if (failure_reason != nullptr) {
+            *failure_reason = reason;
+        }
         return false;
     }
 
@@ -243,6 +265,13 @@ bool parse_colliders(const json& root, std::span<const std::string> joint_names,
             !offset.has_value() || !rotation.has_value() || !is_trigger.has_value() ||
             !layer.has_value() || !mask.has_value()) {
             warnings.emplace_back("physics sidecar collider missing required fields");
+            continue;
+        }
+        if (*layer > kMaxCollisionLayerIndex) {
+            warnings.emplace_back(
+                absl::StrCat("physics sidecar collider layer ", *layer,
+                             " exceeds maximum collision-layer index ",
+                             kMaxCollisionLayerIndex));
             continue;
         }
         if (!known_joint_names.empty() && !known_joint_names.contains(*bone_name)) {
@@ -320,9 +349,34 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
         return result;
     }
 
+    std::string json_text;
+    constexpr std::size_t kReadChunkBytes = 4096U;
+    char chunk[kReadChunkBytes];
+    std::size_t bytes_read_total = 0U;
+    while (stream.good()) {
+        stream.read(chunk, static_cast<std::streamsize>(kReadChunkBytes));
+        const std::streamsize bytes_read = stream.gcount();
+        if (bytes_read <= 0) {
+            break;
+        }
+        bytes_read_total += static_cast<std::size_t>(bytes_read);
+        if (bytes_read_total > kMaxSidecarFileSizeBytes) {
+            result.error_message = make_sidecar_error(
+                sidecar_path,
+                absl::StrCat("file size exceeds maximum allowed ", kMaxSidecarFileSizeBytes,
+                             " bytes"));
+            return result;
+        }
+        json_text.append(chunk, static_cast<std::size_t>(bytes_read));
+    }
+    if (stream.bad()) {
+        result.error_message = make_sidecar_error(sidecar_path, "failed while reading file");
+        return result;
+    }
+
     json root;
     try {
-        stream >> root;
+        root = json::parse(json_text);
     } catch (const json::parse_error& e) {
         result.error_message = make_sidecar_error(sidecar_path, "failed to parse JSON (" +
                                                                     std::string(e.what()) + ")");
@@ -354,12 +408,26 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
     }
 
     SidecarData sidecar;
-    const bool layers_ok = parse_collision_layers(root, sidecar, result.warnings);
-    const bool colliders_ok = parse_colliders(root, joint_names, sidecar, result.warnings);
-    const bool constraints_ok = parse_constraints(root, sidecar, result.warnings);
-    if (!layers_ok || !colliders_ok || !constraints_ok) {
-        result.error_message =
-            make_sidecar_error(sidecar_path, "missing required top-level arrays");
+    std::string top_level_failure_reason;
+    if (!parse_collision_layers(root, sidecar, result.warnings, &top_level_failure_reason)) {
+        result.error_message = make_sidecar_error(
+            sidecar_path, top_level_failure_reason.empty()
+                              ? "missing required top-level arrays"
+                              : top_level_failure_reason);
+        return result;
+    }
+    if (!parse_colliders(root, joint_names, sidecar, result.warnings, &top_level_failure_reason)) {
+        result.error_message = make_sidecar_error(
+            sidecar_path, top_level_failure_reason.empty()
+                              ? "missing required top-level arrays"
+                              : top_level_failure_reason);
+        return result;
+    }
+    if (!parse_constraints(root, sidecar, result.warnings, &top_level_failure_reason)) {
+        result.error_message = make_sidecar_error(
+            sidecar_path, top_level_failure_reason.empty()
+                              ? "missing required top-level arrays"
+                              : top_level_failure_reason);
         return result;
     }
 

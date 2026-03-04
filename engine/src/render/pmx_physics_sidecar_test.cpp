@@ -190,7 +190,8 @@ TEST(PmxPhysicsSidecarTest, FailsWhenRequiredTopLevelFieldsMissing) {
 
     const SidecarLoadResult loaded = load_from_file(sidecar_path.string());
     EXPECT_FALSE(loaded.ok);
-    EXPECT_NE(loaded.error_message.find("missing required top-level arrays"), std::string::npos);
+    EXPECT_NE(loaded.error_message.find("missing/invalid collision_layers array"),
+              std::string::npos);
 }
 
 TEST(PmxPhysicsSidecarTest, SkipsInvalidShapeParametersAndRetainsValidColliders) {

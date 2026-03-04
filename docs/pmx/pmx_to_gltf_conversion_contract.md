@@ -95,7 +95,7 @@ Each collider entry MUST define:
 - `offset` (xyz)
 - `rotation_euler_deg` (xyz)
 - `is_trigger` (bool)
-- `layer` and `mask` (uint32)
+- `layer` (collision-layer index `0..31`) and `mask` (uint32 bitmask)
 
 Shape parameters:
 - Sphere: `radius`
