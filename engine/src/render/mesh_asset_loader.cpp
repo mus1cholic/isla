@@ -227,6 +227,10 @@ MeshAssetLoadResult load_obj(std::string_view asset_path) {
     }
 
     std::vector<MeshAssetPrimitive> primitives;
+    // TODO(isla): Mirrors the glTF flattening/duplication TODO below. While `triangles` remains
+    // in MeshAssetLoadResult for legacy callers, OBJ currently stores the same data in both
+    // `primitives[0].triangles` and top-level `triangles`. Consolidate to a single source of
+    // truth when legacy flattened access is removed or converted to a view/range helper.
     primitives.push_back(MeshAssetPrimitive{
         .triangles = triangles,
         .material = {},
@@ -344,6 +348,15 @@ std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cg
     const std::string uri(image->uri);
     if (uri.rfind("data:", 0U) == 0U || uri.rfind("http://", 0U) == 0U ||
         uri.rfind("https://", 0U) == 0U || uri.rfind("file://", 0U) == 0U) {
+        return {};
+    }
+    const bool has_windows_drive_absolute_prefix =
+        uri.size() >= 3U && std::isalpha(static_cast<unsigned char>(uri[0])) != 0 &&
+        uri[1] == ':' && (uri[2] == '/' || uri[2] == '\\');
+    const bool has_unc_prefix = uri.rfind("\\\\", 0U) == 0U || uri.rfind("//", 0U) == 0U;
+    if (has_windows_drive_absolute_prefix || has_unc_prefix) {
+        LOG(WARNING) << "MeshAssetLoader: rejecting absolute image URI path in glTF material: '"
+                     << uri << "'";
         return {};
     }
 
@@ -698,6 +711,11 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
                     });
                 }
             }
+            // TODO(isla): This duplicates triangle storage for glTF loads:
+            // - per-primitive triangles are kept in `primitives` (authoritative Phase 4.1 path)
+            // - flattened `triangles` is still populated for legacy callers
+            // Migrate remaining callers off `MeshAssetLoadResult::triangles` and then remove or
+            // replace this flattening path with range-based views into shared storage.
             triangles.insert(triangles.end(), primitive_chunk.triangles.begin(),
                              primitive_chunk.triangles.end());
             VLOG(1) << "MeshAssetLoader: extracted static glTF primitive mesh_index=" << mesh_i
@@ -733,7 +751,7 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
         .ok = true,
         .primitives = std::move(primitives),
         .triangles = std::move(triangles),
-        .material = material,
+        .material = std::move(material),
         .error_message = {},
     };
 }

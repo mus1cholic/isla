@@ -319,12 +319,6 @@ void ClientApp::load_startup_mesh() {
             world_.meshes().push_back(std::move(mesh));
             const std::size_t mesh_id = world_.meshes().size() - 1U;
             const std::size_t material_id = world_.materials().size() - 1U;
-            if (material_id >= world_.materials().size()) {
-                LOG(WARNING) << "ClientApp: invalid static primitive material mapping index="
-                             << material_id << " for chunk index=" << chunk_index
-                             << "; material_count=" << world_.materials().size();
-                continue;
-            }
             world_.objects().push_back(RenderObject{
                 .mesh_id = mesh_id,
                 .material_id = material_id,
@@ -341,8 +335,8 @@ void ClientApp::load_startup_mesh() {
         VLOG(1) << "ClientApp: static aggregate transform applied to " << world_.objects().size()
                 << " object(s) position=[" << aggregate_transform.position.x << ","
                 << aggregate_transform.position.y << "," << aggregate_transform.position.z
-                << "] scale=[" << aggregate_transform.scale.x << ","
-                << aggregate_transform.scale.y << "," << aggregate_transform.scale.z << "]";
+                << "] scale=[" << aggregate_transform.scale.x << "," << aggregate_transform.scale.y
+                << "," << aggregate_transform.scale.z << "]";
         for (RenderObject& object : world_.objects()) {
             object.transform = aggregate_transform;
         }
@@ -351,10 +345,9 @@ void ClientApp::load_startup_mesh() {
         LOG(INFO) << "ClientApp: loaded static mesh from " << source_label << "='" << path
                   << "' triangles=" << total_triangle_count
                   << " primitive_meshes=" << world_.meshes().size()
-                  << " materials=" << world_.materials().size()
-                  << " first_material={base_color=[" << first_material.base_color.r << ","
-                  << first_material.base_color.g << "," << first_material.base_color.b
-                  << "], base_alpha=" << first_material.base_alpha
+                  << " materials=" << world_.materials().size() << " first_material={base_color=["
+                  << first_material.base_color.r << "," << first_material.base_color.g << ","
+                  << first_material.base_color.b << "], base_alpha=" << first_material.base_alpha
                   << ", alpha_cutoff=" << first_material.alpha_cutoff
                   << ", blend_mode=" << material_blend_mode_name(first_material.blend_mode)
                   << ", cull_mode=" << material_cull_mode_name(first_material.cull_mode)

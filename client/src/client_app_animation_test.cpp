@@ -285,18 +285,27 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
 
     {
         std::ofstream bin_out(bin_path, std::ios::binary);
-        EXPECT_TRUE(bin_out.is_open());
+        if (!bin_out.is_open()) {
+            ADD_FAILURE() << "failed to open skinned fixture BIN output path: " << bin_path;
+            return {};
+        }
         bin_out.write(reinterpret_cast<const char*>(buffer.data()),
                       static_cast<std::streamsize>(buffer.size()));
     }
     {
         std::ofstream texture_out(texture_path, std::ios::binary);
-        EXPECT_TRUE(texture_out.is_open());
+        if (!texture_out.is_open()) {
+            ADD_FAILURE() << "failed to open skinned fixture texture output path: " << texture_path;
+            return {};
+        }
         texture_out << "fake_png";
     }
 
     std::ofstream gltf_out(gltf_path, std::ios::binary);
-    EXPECT_TRUE(gltf_out.is_open());
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open skinned fixture glTF output path: " << gltf_path;
+        return {};
+    }
     gltf_out << "{\n"
              << "  \"asset\": {\"version\": \"2.0\"},\n"
              << "  \"buffers\": [{\"uri\": \"" << bin_path.filename().string()
@@ -351,7 +360,10 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
              << "  \"scenes\": [{\"nodes\": [1]}],\n"
              << "  \"scene\": 0\n"
              << "}\n";
-    EXPECT_TRUE(gltf_out.good());
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write skinned fixture glTF output path: " << gltf_path;
+        return {};
+    }
     return gltf_path;
 }
 
@@ -361,12 +373,20 @@ std::filesystem::path write_multi_primitive_static_gltf_fixture(const std::files
     const std::filesystem::path texture_b_path = dir / "albedo_b.png";
     {
         std::ofstream texture_a(texture_a_path, std::ios::binary);
-        EXPECT_TRUE(texture_a.is_open());
+        if (!texture_a.is_open()) {
+            ADD_FAILURE() << "failed to open multi-primitive fixture texture A path: "
+                          << texture_a_path;
+            return {};
+        }
         texture_a << "fake_png_a";
     }
     {
         std::ofstream texture_b(texture_b_path, std::ios::binary);
-        EXPECT_TRUE(texture_b.is_open());
+        if (!texture_b.is_open()) {
+            ADD_FAILURE() << "failed to open multi-primitive fixture texture B path: "
+                          << texture_b_path;
+            return {};
+        }
         texture_b << "fake_png_b";
     }
 
@@ -407,9 +427,15 @@ std::filesystem::path write_multi_primitive_static_gltf_fixture(const std::files
         "\"scene\":0"
         "}";
     std::ofstream gltf_out(gltf_path, std::ios::binary);
-    EXPECT_TRUE(gltf_out.is_open());
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open multi-primitive fixture glTF output path: " << gltf_path;
+        return {};
+    }
     gltf_out << kMultiPrimitiveStaticGltf;
-    EXPECT_TRUE(gltf_out.good());
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write multi-primitive fixture glTF output path: " << gltf_path;
+        return {};
+    }
     return gltf_path;
 }
 
@@ -443,9 +469,15 @@ write_mixed_non_triangle_and_triangle_static_gltf_fixture(const std::filesystem:
         "\"scene\":0"
         "}";
     std::ofstream gltf_out(gltf_path, std::ios::binary);
-    EXPECT_TRUE(gltf_out.is_open());
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open mixed-primitive fixture glTF output path: " << gltf_path;
+        return {};
+    }
     gltf_out << kMixedLineAndTriangleGltf;
-    EXPECT_TRUE(gltf_out.good());
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write mixed-primitive fixture glTF output path: " << gltf_path;
+        return {};
+    }
     return gltf_path;
 }
 
@@ -909,7 +941,10 @@ TEST(ClientAppAnimationTest, StaticFallbackAppliesVisibleAutoFitTransform) {
 TEST(ClientAppAnimationTest, StaticLoadPreservesPerPrimitiveMaterialsAndSharedTransform) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_multi_primitive_static");
     ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    const std::filesystem::path gltf_path =
+        write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
     FakeSdlRuntime runtime;
     ClientApp app(runtime);
@@ -945,15 +980,21 @@ TEST(ClientAppAnimationTest, StaticLoadPreservesPerPrimitiveMaterialsAndSharedTr
     EXPECT_FLOAT_EQ(world.objects()[0].transform.scale.x, world.objects()[1].transform.scale.x);
     EXPECT_FLOAT_EQ(world.objects()[0].transform.scale.y, world.objects()[1].transform.scale.y);
     EXPECT_FLOAT_EQ(world.objects()[0].transform.scale.z, world.objects()[1].transform.scale.z);
-    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.x, world.objects()[1].transform.position.x);
-    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.y, world.objects()[1].transform.position.y);
-    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.z, world.objects()[1].transform.position.z);
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.x,
+                    world.objects()[1].transform.position.x);
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.y,
+                    world.objects()[1].transform.position.y);
+    EXPECT_FLOAT_EQ(world.objects()[0].transform.position.z,
+                    world.objects()[1].transform.position.z);
 }
 
 TEST(ClientAppAnimationTest, AnimatedEnvFallbackToStaticPreservesPerPrimitiveMaterialParity) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_multi_primitive_parity");
     ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    const std::filesystem::path gltf_path =
+        write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
     FakeSdlRuntime static_runtime;
     ClientApp static_app(static_runtime);
@@ -979,11 +1020,16 @@ TEST(ClientAppAnimationTest, AnimatedEnvFallbackToStaticPreservesPerPrimitiveMat
     ASSERT_EQ(fallback_world.meshes().size(), static_world.meshes().size());
     ASSERT_EQ(fallback_world.objects().size(), static_world.objects().size());
     for (std::size_t i = 0U; i < static_world.materials().size(); ++i) {
-        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.r, static_world.materials()[i].base_color.r);
-        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.g, static_world.materials()[i].base_color.g);
-        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.b, static_world.materials()[i].base_color.b);
-        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_alpha, static_world.materials()[i].base_alpha);
-        EXPECT_FLOAT_EQ(fallback_world.materials()[i].alpha_cutoff, static_world.materials()[i].alpha_cutoff);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.r,
+                        static_world.materials()[i].base_color.r);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.g,
+                        static_world.materials()[i].base_color.g);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_color.b,
+                        static_world.materials()[i].base_color.b);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].base_alpha,
+                        static_world.materials()[i].base_alpha);
+        EXPECT_FLOAT_EQ(fallback_world.materials()[i].alpha_cutoff,
+                        static_world.materials()[i].alpha_cutoff);
         EXPECT_EQ(fallback_world.materials()[i].blend_mode, static_world.materials()[i].blend_mode);
         EXPECT_EQ(fallback_world.materials()[i].cull_mode, static_world.materials()[i].cull_mode);
         EXPECT_EQ(fallback_world.materials()[i].albedo_texture_path,
@@ -1012,6 +1058,8 @@ TEST(ClientAppAnimationTest, StaticLoadSkipsNonTrianglePrimitivesAndLoadsRendera
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
         write_mixed_non_triangle_and_triangle_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
     FakeSdlRuntime runtime;
     ClientApp app(runtime);
@@ -1037,7 +1085,10 @@ TEST(ClientAppAnimationTest, StaticLoadSkipsNonTrianglePrimitivesAndLoadsRendera
 TEST(ClientAppAnimationTest, StaticLoadAggregateTransformIsDeterministicAcrossRepeatedLoads) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_transform_determinism");
     ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    const std::filesystem::path gltf_path =
+        write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
     FakeSdlRuntime runtime;
     ClientApp app(runtime);
@@ -1072,7 +1123,10 @@ TEST(ClientAppAnimationTest, StaticLoadAggregateTransformIsDeterministicAcrossRe
 TEST(ClientAppAnimationTest, StaticLoadPreservesPerObjectMaterialStateMappingContract) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_material_mapping");
     ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    const std::filesystem::path gltf_path =
+        write_multi_primitive_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
     FakeSdlRuntime runtime;
     ClientApp app(runtime);
@@ -1100,6 +1154,8 @@ TEST(ClientAppAnimationTest, AnimatedLoadNoClipsFallsBackToStaticWithFidelityInp
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
         write_skinned_no_animation_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
     const animated_gltf::AnimatedGltfLoadResult animated_loaded =
         animated_gltf::load_from_file(gltf_path.string());
