@@ -363,35 +363,37 @@ void ModelRenderer::render(const RenderWorld& world) const {
         }
         const bgfx::TextureHandle texture =
             impl_->texture_manager.resolve_texture(material.albedo_texture_path);
-        const float alpha = std::clamp(material.base_alpha, 0.0F, 1.0F);
-        const float alpha_cutoff = std::clamp(material.alpha_cutoff, -1.0F, 1.0F);
-        const bool alpha_cutout_enabled = alpha_cutoff >= 0.0F;
+        const MaterialRenderPathDecision material_path =
+            choose_material_render_path(MaterialRenderPathDecisionInputs{
+                .blend_mode = material.blend_mode,
+                .base_alpha = material.base_alpha,
+                .alpha_cutoff = material.alpha_cutoff,
+            });
         const std::array<float, 4> object_color{
             material.base_color.r,
             material.base_color.g,
             material.base_color.b,
-            alpha,
+            material_path.alpha,
         };
         const std::array<float, 4> alpha_params{
-            alpha_cutoff,
-            alpha_cutout_enabled ? 1.0F : 0.0F,
+            material_path.alpha_cutoff,
+            material_path.alpha_cutout_enabled ? 1.0F : 0.0F,
             0.0F,
             0.0F,
         };
-        if (alpha_cutout_enabled) {
+        if (material_path.alpha_cutout_enabled) {
             VLOG(1) << "ModelRenderer: alpha-cutout active for mesh_id=" << object.mesh_id
-                    << " material_id=" << object.material_id << " cutoff=" << alpha_cutoff;
+                    << " material_id=" << object.material_id
+                    << " cutoff=" << material_path.alpha_cutoff;
         }
         const Mat4 model = Mat4::from_position_scale_quat(
             object.transform.position, object.transform.scale, object.transform.rotation);
-        const std::uint64_t render_state_base =
-            (material.blend_mode == MaterialBlendMode::AlphaBlend ||
-             (alpha < 1.0F && !alpha_cutout_enabled))
-                ? kAlphaBlendRenderStateBase
-                : kOpaqueRenderStateBase;
-        if (alpha_cutout_enabled) {
+        const std::uint64_t render_state_base = material_path.use_alpha_blend_base
+                                                    ? kAlphaBlendRenderStateBase
+                                                    : kOpaqueRenderStateBase;
+        if (material_path.alpha_cutout_enabled) {
             ++alpha_cutout_draws;
-        } else if (render_state_base == kAlphaBlendRenderStateBase) {
+        } else if (material_path.use_alpha_blend_base) {
             ++alpha_blend_draws;
         } else {
             ++opaque_draws;
@@ -408,12 +410,15 @@ void ModelRenderer::render(const RenderWorld& world) const {
         bgfx::submit(kBgfxViewId, program);
         ++submitted_draws;
     }
-    LOG_EVERY_N_SEC(INFO, 2.0) << "ModelRenderer: frame draw summary submitted_draws="
-                               << submitted_draws << " opaque=" << opaque_draws
-                               << " alpha_blend=" << alpha_blend_draws
-                               << " alpha_cutout=" << alpha_cutout_draws
-                               << " world_objects=" << world.objects().size()
-                               << " world_meshes=" << world.meshes().size();
+    VLOG(1) << "ModelRenderer: frame draw summary submitted_draws=" << submitted_draws
+            << " opaque=" << opaque_draws << " alpha_blend=" << alpha_blend_draws
+            << " alpha_cutout=" << alpha_cutout_draws << " world_objects=" << world.objects().size()
+            << " world_meshes=" << world.meshes().size();
+    if (!world.objects().empty() && submitted_draws == 0U) {
+        LOG_EVERY_N_SEC(WARNING, 2.0)
+            << "ModelRenderer: world has render objects but no draws were submitted; check mesh "
+               "uploads, material program resolution, or visibility flags";
+    }
 
     bgfx::frame();
 }

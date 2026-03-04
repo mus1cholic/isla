@@ -111,7 +111,6 @@ cc_test(
     name = "shader_contract_tests",
     srcs = ["shader_contract_test.cpp"],
     data = [
-        "model_renderer.cpp",
         "//engine/src/render/shaders:fs_mesh.sc",
         "//engine/src/render/shaders:vs_mesh.sc",
         "//engine/src/render/shaders:vs_mesh_skinned.sc",

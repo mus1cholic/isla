@@ -70,23 +70,66 @@ Transform make_visible_object_transform(const MeshData& mesh) {
 }
 
 Transform make_visible_object_transform_for_meshes(std::span<const MeshData> meshes) {
-    MeshData aggregate_mesh;
-    MeshData::TriangleList aggregate_triangles;
-    std::size_t aggregate_triangle_count = 0U;
+    bool has_bounds = false;
+    Vec3 aggregate_center{};
+    float aggregate_radius = 0.0F;
+
     for (const MeshData& mesh : meshes) {
-        aggregate_triangle_count += mesh.triangles().size();
+        const BoundingSphere bounds = mesh.local_bounds();
+        if (!std::isfinite(bounds.center.x) || !std::isfinite(bounds.center.y) ||
+            !std::isfinite(bounds.center.z) || !std::isfinite(bounds.radius) ||
+            bounds.radius <= 0.0F) {
+            continue;
+        }
+        if (!has_bounds) {
+            aggregate_center = bounds.center;
+            aggregate_radius = bounds.radius;
+            has_bounds = true;
+            continue;
+        }
+
+        const Vec3 delta{
+            .x = bounds.center.x - aggregate_center.x,
+            .y = bounds.center.y - aggregate_center.y,
+            .z = bounds.center.z - aggregate_center.z,
+        };
+        const float center_distance =
+            std::sqrt((delta.x * delta.x) + (delta.y * delta.y) + (delta.z * delta.z));
+
+        if (aggregate_radius >= center_distance + bounds.radius) {
+            continue;
+        }
+        if (bounds.radius >= center_distance + aggregate_radius) {
+            aggregate_center = bounds.center;
+            aggregate_radius = bounds.radius;
+            continue;
+        }
+        const float new_radius = (center_distance + aggregate_radius + bounds.radius) * 0.5F;
+        if (center_distance > 1.0e-6F) {
+            const float center_shift = (new_radius - aggregate_radius) / center_distance;
+            aggregate_center.x += delta.x * center_shift;
+            aggregate_center.y += delta.y * center_shift;
+            aggregate_center.z += delta.z * center_shift;
+        }
+        aggregate_radius = new_radius;
     }
-    if (aggregate_triangle_count == 0U) {
+
+    if (!has_bounds) {
         return {};
     }
 
-    aggregate_triangles.reserve(aggregate_triangle_count);
-    for (const MeshData& mesh : meshes) {
-        aggregate_triangles.insert(aggregate_triangles.end(), mesh.triangles().begin(),
-                                   mesh.triangles().end());
+    if (!std::isfinite(aggregate_radius) || aggregate_radius <= 0.0F) {
+        return {};
     }
-    aggregate_mesh.set_triangles(std::move(aggregate_triangles));
-    return make_visible_object_transform(aggregate_mesh);
+
+    constexpr float kTargetRadius = 1.0F;
+    const float scale = kTargetRadius / std::max(aggregate_radius, 1.0e-4F);
+    Transform transform{};
+    transform.scale = Vec3{ .x = scale, .y = scale, .z = scale };
+    transform.position = Vec3{ .x = -aggregate_center.x * scale,
+                               .y = -aggregate_center.y * scale,
+                               .z = -aggregate_center.z * scale };
+    return transform;
 }
 
 std::string resolve_default_startup_model_path() {

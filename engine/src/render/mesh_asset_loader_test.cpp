@@ -375,13 +375,15 @@ TEST(MeshAssetLoaderTests, MultiPrimitiveMaterialMappingIsDeterministicAcrossLoa
                         second.primitives[i].material.base_color.g);
         EXPECT_FLOAT_EQ(first.primitives[i].material.base_color.b,
                         second.primitives[i].material.base_color.b);
-        EXPECT_FLOAT_EQ(first.primitives[i].material.base_alpha, second.primitives[i].material.base_alpha);
-        EXPECT_EQ(first.primitives[i].material.blend_mode, second.primitives[i].material.blend_mode);
+        EXPECT_FLOAT_EQ(first.primitives[i].material.base_alpha,
+                        second.primitives[i].material.base_alpha);
+        EXPECT_EQ(first.primitives[i].material.blend_mode,
+                  second.primitives[i].material.blend_mode);
         EXPECT_EQ(first.primitives[i].material.cull_mode, second.primitives[i].material.cull_mode);
     }
 }
 
-TEST(MeshAssetLoaderTests, PreservesDefaultMaterialOnlyForUnmaterialedPrimitive) {
+TEST(MeshAssetLoaderTests, PreservesDefaultMaterialOnlyForPrimitiveWithoutMaterial) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_mesh_loader_test");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "mixed_material_presence.gltf";

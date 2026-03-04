@@ -28,6 +28,22 @@ struct SkinningProgramDecisionInputs {
 [[nodiscard]] SkinningProgramPath
 choose_skinning_program_path(const SkinningProgramDecisionInputs& inputs);
 
+struct MaterialRenderPathDecisionInputs {
+    MaterialBlendMode blend_mode = MaterialBlendMode::Opaque;
+    float base_alpha = 1.0F;
+    float alpha_cutoff = -1.0F;
+};
+
+struct MaterialRenderPathDecision {
+    float alpha = 1.0F;
+    float alpha_cutoff = -1.0F;
+    bool alpha_cutout_enabled = false;
+    bool use_alpha_blend_base = false;
+};
+
+[[nodiscard]] MaterialRenderPathDecision
+choose_material_render_path(const MaterialRenderPathDecisionInputs& inputs);
+
 // Fills destination with identity matrices, then copies as much source palette as fits.
 // Returns true when source palette was truncated.
 [[nodiscard]] bool fill_skin_palette_upload_buffer(std::span<const Mat4> source_palette,

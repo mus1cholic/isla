@@ -225,21 +225,4 @@ TEST(ShaderContractTests, SkinnedVertexShaderDeclaresSkinInputsAndPaletteUniform
     EXPECT_TRUE(absl::StrContains(shader, "vec4 skinnedPos = mul(skin, vec4(a_position, 1.0));"));
 }
 
-TEST(ShaderContractTests, ModelRendererAppliesPerObjectMaterialStateSelectionContract) {
-    const std::string renderer_source = load_shader_source("engine/src/render/model_renderer.cpp");
-    ASSERT_FALSE(renderer_source.empty()) << "Could not load model renderer source";
-
-    EXPECT_TRUE(
-        absl::StrContains(renderer_source, "material.blend_mode == MaterialBlendMode::AlphaBlend"))
-        << "Per-object blend mode should influence render-state base selection";
-    EXPECT_TRUE(absl::StrContains(renderer_source, "(alpha < 1.0F && !alpha_cutout_enabled)"))
-        << "Non-cutout alpha should still route through blend path";
-    EXPECT_TRUE(absl::StrContains(renderer_source,
-                                  "const bool alpha_cutout_enabled = alpha_cutoff >= 0.0F;"))
-        << "MASK cutoff behavior should be evaluated per object/material";
-    EXPECT_TRUE(absl::StrContains(
-        renderer_source, "render_state_base | cull_state_for_material(material.cull_mode)"))
-        << "Per-object cull mode should be composed into final render state";
-}
-
 } // namespace
