@@ -44,9 +44,15 @@ Operational interpretation:
 > - Phase 4.6 is complete (coordinate system mirroring documentation + Alpha Blend depth sorting assertions).
 > - Phase 5 is complete (basic PMX physics sidecar ingestion + skeleton-aligned collider proxy runtime path + parser hardening guardrails).
 > - Phase 6 is complete (motion contract/schema + validator + regression fixtures/tests + CLI smoke + effective root-motion policy precedence + CI wiring).
-> - Phases 7-10 remain pending runtime/tooling expansion.
+> - Phase 7 is in progress (runtime model-intake orchestration landed and hardened: deterministic
+>   `models/` scan policy, `.gltf/.glb` direct load, `.pmx` auto-convert trigger with cache
+>   metadata/invalidation, fallback diagnostics, shell-less converter process execution
+>   (no `std::system`), robust converter-template token handling, and regression coverage via
+>   `//client/src:model_intake_test`).
+> - Phases 8-10 remain pending runtime/tooling expansion.
 > - Phase 7.5 (runtime material/primitive introspection + deterministic texture-remap override path) remains pending.
-> - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
+> - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is now partially implemented in Phase 7 and finalized in Phase 10.
+> - PMX conversion remains orchestration-driven (external converter command), not native PMX runtime parsing.
 >
 > Phase 3/3.5 design constraint (current):
 > - Shader-side per-draw GPU palette budget remains fixed at 64 joints (`u_joint_palette[64]`).
@@ -129,9 +135,25 @@ Operational interpretation:
 > - `docs/pmx/schemas/pmx_motion_metadata.schema.json` / `docs/pmx/examples/sample.motion.json`
 > - `docs/pmx/pmx_to_gltf_conversion_contract.md` / `tools/pmx/README.md` (Phase 6 contract + usage updates)
 > - `tools/pmx/BUILD` / `.github/workflows/ci.yml` (Bazel + CI wiring for motion validator tests and smoke)
+>
+> Phase 7 artifacts (in progress):
+> - `client/src/model_intake.hpp` / `client/src/model_intake.cpp` (deterministic `models/` intake +
+>   PMX auto-convert orchestration + cache metadata)
+> - `client/src/client_app.cpp` (runtime startup intake integration + startup selection diagnostics)
+> - `client/src/model_intake_test.cpp` (intake/conversion/cache/injection-hardening regression suite)
+> - `client/src/BUILD` / `.github/workflows/ci.yml` (Bazel target + Windows smoke inclusion for
+>   `//client/src:model_intake_test`)
+> - `tools/pmx/README.md` (Phase 7 intake behavior + troubleshooting updates)
 
 ### Changelog
 
+- 2026-03-05 (Phase 7 hardening): replaced shell-based PMX converter invocation with shell-less
+  argv process execution (`_spawnvp`/`fork+execvp`) to mitigate command-injection risk, added
+  regression coverage for dangerous filenames and shell-metacharacter templates, fixed Windows path
+  backslash handling in converter-template parsing, added incomplete-token template handling
+  diagnostics (`{input}`/`{output}`) with positional-arg fallback, and expanded startup/intake
+  observability logging.
+- 2026-03-05 (Phase 7 partial): added runtime `models/` intake orchestration with deterministic candidate selection (`model.glb`/`model.gltf`/`model.pmx` preference + stable extension/name ordering), direct `.gltf/.glb` startup load path, `.pmx` auto-convert trigger into `models/.isla_converted/`, cache metadata-based reconversion guard (source size/mtime + converter command/version), conversion failure diagnostics/fallback behavior, new model-intake regression suite (`//client/src:model_intake_test`), and Windows smoke CI inclusion for that test target.
 - 2026-03-05 (Phase 6 close-out): finalized motion contract/schema + validator implementation, added Phase 6 fixture/test matrix (including CLI smoke), wired PMX validation tests into CI, aligned default motion sidecar auto-discovery with contract naming (`<character>.motion.gltf/.glb` -> `<character>.motion.json`) with legacy fallback, and hardened root-motion policy evaluation to use effective per-clip precedence (`clip override` -> `sidecar default` -> `CLI fallback`) with actionable diagnostics.
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
@@ -877,48 +899,81 @@ Make the pipeline maintainable and testable.
 
 ### Scope
 
-- Expand the Phase 1 validator/checklist into broader CI/runtime coverage (do not replace it).
-- Add model intake orchestration for app/runtime workflows:
-  - define a default `models/` directory scan/input policy
-  - accept both `.pmx` and `.gltf/.glb` files in that intake directory
-  - if input is `.pmx`, run conversion automatically at app launch (or first-use) to produce runtime glTF/GLB output
-  - if input is `.gltf/.glb`, load directly without conversion
-  - cache converted outputs and avoid unnecessary reconversion when source + converter version are unchanged
-  - produce clear logs/errors for conversion failures and fallback/skip behavior
-  - define deterministic model selection policy when multiple candidates exist
-- Add automated tests for:
-  - loader failures (missing skin/joints/weights)
-  - static-loader texture URI hardening behavior (absolute/traversal image URI rejection, including parentless-relative-path traversal and Windows absolute-style URI rejection)
-  - `MASK` cutout shader/render-state contract behavior
-  - static multi-primitive material-preservation behavior (Phase 4.1)
-  - deterministic aggregate static-fallback transform behavior across repeated loads
-  - material render-path helper contract behavior (blend/alpha/cutout/cull decision invariants)
-  - Windows composition policy contract behavior (DirectComposition swapchain alpha mode, external bgfx backbuffer ownership policy, overlay style fallback/refresh behavior)
-  - pose eval determinism
-  - interpolation mode handling (`LINEAR`/`STEP` + rejection paths)
-  - playback mode behavior (`Loop`/`Clamp`)
-  - shader contract for skinning path
-  - GPU skinning guard/fallback behavior and large-skeleton partition/remap correctness around palette/index limits
-  - physics metadata parsing fallbacks + parser/resource hardening limits (file-size cap, array-count caps, string-length caps, layer-index bounds)
-  - model intake orchestration (`models/` scan, PMX auto-convert trigger, converted-output cache hit path)
-- Add CI target(s) for animation/physics pipeline tests.
-- Add CI wiring for PMX conversion/motion validator tests:
-  - `//tools/pmx:validate_converted_gltf_test`
-  - `//tools/pmx:validate_motion_clips_test`
-  - `//tools/pmx:validate_motion_clips_smoke_test`
-- Extend CI/smoke wiring from current baseline that already includes:
-  - `//engine/src/render:animation_playback_controller_tests`
-  - `//engine/src/render:render_world_tests`
-  - `//client/src:animated_mesh_skinning_test`
-  - `//client/src:client_app_animation_test`
-  - `//engine/src/render:bgfx_mesh_manager_tests`
-  - `//engine/src/render:model_renderer_skinning_utils_tests`
-  - `//engine/src/render:shader_binary_runtime_tests`
+- `[done]` Expand the Phase 1 validator/checklist into broader CI/runtime coverage (do not replace it).
+- `[partial]` Add model intake orchestration for app/runtime workflows:
+  - `[done]` define a default `models/` directory scan/input policy
+  - `[done]` accept both `.pmx` and `.gltf/.glb` files in that intake directory
+  - `[done]` if input is `.pmx`, run conversion automatically at app launch (or first-use) to produce runtime glTF/GLB output
+  - `[done]` if input is `.gltf/.glb`, load directly without conversion
+  - `[done]` cache converted outputs and avoid unnecessary reconversion when source + converter version are unchanged
+  - `[done]` produce clear logs/errors for conversion failures and fallback/skip behavior
+  - `[done]` define deterministic model selection policy when multiple candidates exist
+  - `[pending]` remove external converter dependency (Phase 10 readiness/sign-off scope)
+- `[done]` Add automated tests for:
+  - `[done]` loader failures (missing skin/joints/weights)
+  - `[done]` static-loader texture URI hardening behavior (absolute/traversal image URI rejection, including parentless-relative-path traversal and Windows absolute-style URI rejection)
+  - `[done]` `MASK` cutout shader/render-state contract behavior
+  - `[done]` static multi-primitive material-preservation behavior (Phase 4.1)
+  - `[done]` deterministic aggregate static-fallback transform behavior across repeated loads
+  - `[done]` material render-path helper contract behavior (blend/alpha/cutout/cull decision invariants)
+  - `[done]` Windows composition policy contract behavior (DirectComposition swapchain alpha mode, external bgfx backbuffer ownership policy, overlay style fallback/refresh behavior)
+  - `[done]` pose eval determinism
+  - `[done]` interpolation mode handling (`LINEAR`/`STEP` + rejection paths)
+  - `[done]` playback mode behavior (`Loop`/`Clamp`)
+  - `[done]` shader contract for skinning path
+  - `[done]` GPU skinning guard/fallback behavior and large-skeleton partition/remap correctness around palette/index limits
+  - `[done]` physics metadata parsing fallbacks + parser/resource hardening limits (file-size cap, array-count caps, string-length caps, layer-index bounds)
+  - `[done]` model intake orchestration (`models/` scan, PMX auto-convert trigger, converted-output cache hit path)
+- `[done]` Add CI target(s) for animation/physics pipeline tests.
+- `[done]` Add CI wiring for PMX conversion/motion validator tests:
+  - `[done]` `//tools/pmx:validate_converted_gltf_test`
+  - `[done]` `//tools/pmx:validate_motion_clips_test`
+  - `[done]` `//tools/pmx:validate_motion_clips_smoke_test`
+- `[done]` Extend CI/smoke wiring from current baseline that already includes:
+  - `[done]` `//engine/src/render:animation_playback_controller_tests`
+  - `[done]` `//engine/src/render:render_world_tests`
+  - `[done]` `//client/src:animated_mesh_skinning_test`
+  - `[done]` `//client/src:client_app_animation_test`
+  - `[done]` `//engine/src/render:bgfx_mesh_manager_tests`
+  - `[done]` `//engine/src/render:model_renderer_skinning_utils_tests`
+  - `[done]` `//engine/src/render:shader_binary_runtime_tests`
+  - `[done]` `//client/src:model_intake_test`
+
+### Implemented (2026-03-05, In Progress)
+
+- Added runtime `models/` intake orchestration:
+  - deterministic discovery/selection policy (`model.glb`/`model.gltf`/`model.pmx` preference,
+    then stable extension+filename ordering)
+  - direct `.gltf/.glb` startup load path
+  - `.pmx` auto-convert trigger into `models/.isla_converted/<stem>.auto.glb`
+  - conversion cache metadata (`<stem>.auto.cache`) keyed by source size/mtime + converter
+    command/version
+- Added runtime startup diagnostics for resolved intake selection and conversion/cache outcomes.
+- Added security hardening for converter invocation:
+  - removed shell-based command execution (`std::system`)
+  - shell-less process execution via argument vectors (`_spawnvp` on Windows, `fork+execvp` on POSIX)
+  - regression coverage for dangerous filenames and shell-metacharacter command-template inputs
+- Added converter-template robustness hardening:
+  - Windows backslash path preservation in template tokenization
+  - incomplete token template diagnostics with positional fallback for missing
+    `{input}`/`{output}`
+- Added/updated tests and CI wiring:
+  - `//client/src:model_intake_test` (selection/auto-convert/cache/failure/security parser behavior)
+  - Windows smoke includes `//client/src:model_intake_test`
+
+### Known Limits (Phase 7, Current)
+
+- PMX conversion remains orchestration-driven and depends on an external converter executable/toolchain
+  (default command template targets `pmx2gltf`).
+- Runtime currently does not ship a native PMX parser/exporter; missing converter binaries still
+  produce conversion failure diagnostics and fallback/skip behavior.
 
 ### Exit Criteria
 
 - Pipeline regressions are detected automatically in CI.
 - App/tooling flow supports `models/` intake where `.pmx` inputs are auto-converted to runtime glTF/GLB and then loaded for display, while `.gltf/.glb` inputs load directly.
+- Status: in progress as of 2026-03-05; model-intake + conversion orchestration + security-hardening
+  sub-scope is implemented.
 
 ## Phase 7.5: Runtime Material Introspection + Texture Remap Overrides
 
@@ -1027,6 +1082,8 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
 - Preserve Phase 2 controller semantics for clip/state APIs while changing evaluation internals.
 - Keep compatibility with Phase 3/3.5 GPU skinning data flow while evaluation internals evolve.
 - Keep compatibility with Phase 4.5 Windows composition presentation contracts while hierarchy evaluation internals evolve.
+- Keep compatibility with Phase 7 startup model-intake orchestration and converter-security behavior
+  while hierarchy evaluation internals evolve.
 - Update Phase 6 motion contract/validator caveats after landing:
   - revisit any conversion-side non-joint bake/avoid guidance
   - adjust validator expectations if non-joint animation channels become runtime-supported.
@@ -1051,6 +1108,8 @@ Close remaining runtime animation fidelity/performance gaps.
 - Maintain Phase 3/3.5 deformation consistency guarantees (GPU-skinned output remains aligned with evaluated pose semantics).
 - Maintain Phase 4/4.1 static-fidelity guarantees while sampling internals evolve (including unchanged `MASK` cutout semantics and per-primitive static fallback material behavior).
 - Maintain Phase 4.5 compositor-facing alpha/presentation guarantees while interpolation/sampling internals evolve.
+- Maintain Phase 7 intake/launch guarantees and converter-orchestration contracts while sampling
+  internals evolve.
 - Update Phase 6 motion validator contract checks when interpolation support expands:
   - once `CUBICSPLINE` is runtime-supported, remove/replace current hard-fail behavior in motion validation.
 
@@ -1110,7 +1169,7 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 6. First static multi-material parity point (primitive-level material preservation in fallback path): after Phase 4.1 (achieved 2026-03-04).
 7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5 (achieved 2026-03-04).
 8. First basic PMX parity point (animation + basic physics): after Phase 5/6.
-9. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7.
+9. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7 (in progress; orchestration path landed 2026-03-05, external converter dependency remains).
 10. First deterministic runtime material/texture targeting point (primitive/material introspection + explicit texture remap overrides): after Phase 7.5.
 11. First hierarchy-fidelity point for complex rigs: after Phase 8.
 12. First interpolation-complete point: after Phase 9.
