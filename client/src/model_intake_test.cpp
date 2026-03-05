@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <random>
 #include <span>
 #include <string>
@@ -208,20 +209,54 @@ void write_binary_file(const std::filesystem::path& path, std::span<const std::u
     ASSERT_TRUE(stream.good());
 }
 
-TEST(ModelIntakeTest, ResolvesPreferredNamedDefaultModelFirst) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
+class ModelIntakeFixture : public ::testing::Test {
+  protected:
+    void SetUp() override {
+        sandbox_ = ScopedTempDir::create("isla_model_intake_sandbox");
+        workspace_ = ScopedTempDir::create("isla_model_intake_workspace");
+        ASSERT_TRUE(sandbox_.is_valid());
+        ASSERT_TRUE(workspace_.is_valid());
+        ASSERT_TRUE(std::filesystem::create_directories(models_dir()));
 
-    const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-    write_binary_file(workspace.path() / "models" / "model.glb", glb);
-    write_binary_file(workspace.path() / "models" / "aaa.glb", glb);
+        cwd_guard_ = std::make_unique<ScopedCurrentPath>(sandbox_.path());
+        ASSERT_TRUE(cwd_guard_->is_armed());
+        workspace_env_ = std::make_unique<ScopedEnvVar>("BUILD_WORKSPACE_DIRECTORY",
+                                                        workspace_.path().string().c_str());
+    }
 
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+    [[nodiscard]] std::filesystem::path models_dir() const {
+        return workspace_.path() / "models";
+    }
+
+    [[nodiscard]] std::filesystem::path model_path(std::string_view filename) const {
+        return models_dir() / std::string(filename);
+    }
+
+    [[nodiscard]] std::filesystem::path converted_output_for(std::string_view stem) const {
+        return models_dir() / ".isla_converted" / (std::string(stem) + ".auto.glb");
+    }
+
+    void write_glb(std::string_view filename) const {
+        const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
+        write_binary_file(model_path(filename), glb);
+    }
+
+    void write_text(std::string_view filename, std::string_view contents) const {
+        std::ofstream out(model_path(filename));
+        ASSERT_TRUE(out.is_open());
+        out << contents;
+        ASSERT_TRUE(out.good());
+    }
+
+    ScopedTempDir sandbox_;
+    ScopedTempDir workspace_;
+    std::unique_ptr<ScopedCurrentPath> cwd_guard_;
+    std::unique_ptr<ScopedEnvVar> workspace_env_;
+};
+
+TEST_F(ModelIntakeFixture, ResolvesPreferredNamedDefaultModelFirst) {
+    write_glb("model.glb");
+    write_glb("aaa.glb");
 
     const ResolveStartupAssetResult result = resolve_startup_asset_from_models();
     ASSERT_TRUE(result.has_asset);
@@ -229,55 +264,21 @@ TEST(ModelIntakeTest, ResolvesPreferredNamedDefaultModelFirst) {
     EXPECT_EQ(result.source_label, "models_preferred_default");
 }
 
-TEST(ModelIntakeTest, ResolvesDeterministicallyByExtensionThenFilenameWhenNoPreferredName) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-    write_binary_file(workspace.path() / "models" / "zeta.glb", glb);
-    write_binary_file(workspace.path() / "models" / "alpha.glb", glb);
-    {
-        std::ofstream gltf(workspace.path() / "models" / "beta.gltf");
-        ASSERT_TRUE(gltf.is_open());
-        gltf << "{}";
-    }
-    {
-        std::ofstream pmx(workspace.path() / "models" / "char.pmx");
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, ResolvesDeterministicallyByExtensionThenFilenameWhenNoPreferredName) {
+    write_glb("zeta.glb");
+    write_glb("alpha.glb");
+    write_text("beta.gltf", "{}");
+    write_text("char.pmx", "pmx");
 
     const ResolveStartupAssetResult result = resolve_startup_asset_from_models();
     ASSERT_TRUE(result.has_asset);
     EXPECT_EQ(std::filesystem::path(result.runtime_asset_path).filename().string(), "alpha.glb");
 }
 
-TEST(ModelIntakeTest, AutoConvertsPmxWhenOnlyPmxCandidateExists) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    const std::filesystem::path pmx_path = workspace.path() / "models" / "model.pmx";
-    {
-        std::ofstream pmx(pmx_path);
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-    const std::filesystem::path expected_output =
-        workspace.path() / "models" / ".isla_converted" / "model.auto.glb";
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, AutoConvertsPmxWhenOnlyPmxCandidateExists) {
+    const std::filesystem::path pmx_path = model_path("model.pmx");
+    write_text("model.pmx", "pmx");
+    const std::filesystem::path expected_output = converted_output_for("model");
 
     int run_count = 0;
     ResolveStartupAssetOptions options;
@@ -304,25 +305,9 @@ TEST(ModelIntakeTest, AutoConvertsPmxWhenOnlyPmxCandidateExists) {
     EXPECT_EQ(run_count, 1);
 }
 
-TEST(ModelIntakeTest, UsesDefaultConverterTemplateWhenNoCommandConfigured) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    const std::filesystem::path pmx_path = workspace.path() / "models" / "model.pmx";
-    {
-        std::ofstream pmx(pmx_path);
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-    const std::filesystem::path expected_output =
-        workspace.path() / "models" / ".isla_converted" / "model.auto.glb";
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, UsesDefaultConverterTemplateWhenNoCommandConfigured) {
+    write_text("model.pmx", "pmx");
+    const std::filesystem::path expected_output = converted_output_for("model");
     ScopedEnvVar converter_cmd_env("ISLA_PMX_CONVERTER_COMMAND", "");
     ScopedEnvVar converter_ver_env("ISLA_PMX_CONVERTER_VERSION", "");
 
@@ -357,25 +342,9 @@ TEST(ModelIntakeTest, UsesDefaultConverterTemplateWhenNoCommandConfigured) {
     EXPECT_NE(observed_command.find("--output"), std::string::npos);
 }
 
-TEST(ModelIntakeTest, UsesPmxConversionCacheWhenSourceAndConverterUnchanged) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    const std::filesystem::path pmx_path = workspace.path() / "models" / "model.pmx";
-    {
-        std::ofstream pmx(pmx_path);
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-    const std::filesystem::path expected_output =
-        workspace.path() / "models" / ".isla_converted" / "model.auto.glb";
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, UsesPmxConversionCacheWhenSourceAndConverterUnchanged) {
+    write_text("model.pmx", "pmx");
+    const std::filesystem::path expected_output = converted_output_for("model");
 
     int run_count = 0;
     ResolveStartupAssetOptions options;
@@ -407,25 +376,10 @@ TEST(ModelIntakeTest, UsesPmxConversionCacheWhenSourceAndConverterUnchanged) {
     EXPECT_EQ(run_count, 1);
 }
 
-TEST(ModelIntakeTest, FallsBackToDirectGltfOrGlbWhenPmxConversionFails) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    {
-        std::ofstream pmx(workspace.path() / "models" / "model.pmx");
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-    const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-    const std::filesystem::path fallback_glb = workspace.path() / "models" / "z_fallback.glb";
-    write_binary_file(fallback_glb, glb);
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, FallsBackToDirectGltfOrGlbWhenPmxConversionFails) {
+    write_text("model.pmx", "pmx");
+    const std::filesystem::path fallback_glb = model_path("z_fallback.glb");
+    write_glb("z_fallback.glb");
 
     ResolveStartupAssetOptions options;
     options.pmx_converter_command_template = "fake-converter --in {input} --out {output}";
@@ -442,22 +396,8 @@ TEST(ModelIntakeTest, FallsBackToDirectGltfOrGlbWhenPmxConversionFails) {
     EXPECT_FALSE(result.warnings.empty());
 }
 
-TEST(ModelIntakeTest, ReturnsNoAssetWhenOnlyPmxExistsAndConverterInvocationFails) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    {
-        std::ofstream pmx(workspace.path() / "models" / "model.pmx");
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, ReturnsNoAssetWhenOnlyPmxExistsAndConverterInvocationFails) {
+    write_text("model.pmx", "pmx");
 
     ResolveStartupAssetOptions options;
     options.pmx_converter_command_template = "missing_converter --input {input} --output {output}";
@@ -480,25 +420,10 @@ TEST(ModelIntakeTest, ReturnsNoAssetWhenOnlyPmxExistsAndConverterInvocationFails
     EXPECT_TRUE(found_exit_code);
 }
 
-TEST(ModelIntakeTest, PassesDangerousFilenameAsSingleArgWithoutShellEvaluation) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    const std::filesystem::path pmx_path = workspace.path() / "models" / "$(id).pmx";
-    {
-        std::ofstream pmx(pmx_path);
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-    const std::filesystem::path expected_output =
-        workspace.path() / "models" / ".isla_converted" / "$(id).auto.glb";
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, PassesDangerousFilenameAsSingleArgWithoutShellEvaluation) {
+    const std::filesystem::path pmx_path = model_path("$(id).pmx");
+    write_text("$(id).pmx", "pmx");
+    const std::filesystem::path expected_output = converted_output_for("$(id)");
 
     int run_count = 0;
     std::vector<std::string> captured_argv;
@@ -529,23 +454,8 @@ TEST(ModelIntakeTest, PassesDangerousFilenameAsSingleArgWithoutShellEvaluation) 
     EXPECT_EQ(captured_argv[4], expected_output.lexically_normal().string());
 }
 
-TEST(ModelIntakeTest, TemplateShellMetacharactersRemainInArgvAndAreNotInterpreted) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    const std::filesystem::path pmx_path = workspace.path() / "models" / "model.pmx";
-    {
-        std::ofstream pmx(pmx_path);
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, TemplateShellMetacharactersRemainInArgvAndAreNotInterpreted) {
+    write_text("model.pmx", "pmx");
 
     bool observed_semicolon_arg = false;
     ResolveStartupAssetOptions options;
@@ -566,25 +476,10 @@ TEST(ModelIntakeTest, TemplateShellMetacharactersRemainInArgvAndAreNotInterprete
     EXPECT_TRUE(observed_semicolon_arg);
 }
 
-TEST(ModelIntakeTest, PreservesWindowsStyleExecutablePathBackslashesInTemplate) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    const std::filesystem::path pmx_path = workspace.path() / "models" / "model.pmx";
-    {
-        std::ofstream pmx(pmx_path);
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-    const std::filesystem::path expected_output =
-        workspace.path() / "models" / ".isla_converted" / "model.auto.glb";
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, PreservesWindowsStyleExecutablePathBackslashesInTemplate) {
+    const std::filesystem::path pmx_path = model_path("model.pmx");
+    write_text("model.pmx", "pmx");
+    const std::filesystem::path expected_output = converted_output_for("model");
 
     std::vector<std::string> captured_argv;
     ResolveStartupAssetOptions options;
@@ -613,25 +508,10 @@ TEST(ModelIntakeTest, PreservesWindowsStyleExecutablePathBackslashesInTemplate) 
     EXPECT_EQ(captured_argv[4], expected_output.lexically_normal().string());
 }
 
-TEST(ModelIntakeTest, AppendsMissingOutputArgWhenOnlyInputTokenProvided) {
-    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
-    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
-    ASSERT_TRUE(sandbox.is_valid());
-    ASSERT_TRUE(workspace.is_valid());
-    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
-
-    const std::filesystem::path pmx_path = workspace.path() / "models" / "model.pmx";
-    {
-        std::ofstream pmx(pmx_path);
-        ASSERT_TRUE(pmx.is_open());
-        pmx << "pmx";
-    }
-    const std::filesystem::path expected_output =
-        workspace.path() / "models" / ".isla_converted" / "model.auto.glb";
-
-    ScopedCurrentPath cwd_guard(sandbox.path());
-    ASSERT_TRUE(cwd_guard.is_armed());
-    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+TEST_F(ModelIntakeFixture, AppendsMissingOutputArgWhenOnlyInputTokenProvided) {
+    const std::filesystem::path pmx_path = model_path("model.pmx");
+    write_text("model.pmx", "pmx");
+    const std::filesystem::path expected_output = converted_output_for("model");
 
     std::vector<std::string> captured_argv;
     ResolveStartupAssetOptions options;

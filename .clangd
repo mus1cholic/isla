@@ -1,10 +1,12 @@
 ---
 If:
-  PathMatch: '.*(_test|_tests|\.spec)\.cpp$'
+  PathMatch: '.*(_test|_tests|\.spec)\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$'
 Diagnostics:
   ClangTidy:
     Remove:
       - cppcoreguidelines-avoid-non-const-global-variables
+      - cppcoreguidelines-avoid-magic-numbers
+      - readability-magic-numbers
 
 ---
 If:

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
 #include <string>
 #include <utility>
@@ -177,8 +178,8 @@ std::vector<std::uint8_t> make_minimal_triangle_glb() {
         out.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xFFU));
     };
 
-    const std::uint32_t json_chunk_length = static_cast<std::uint32_t>(json_chunk.size());
-    const std::uint32_t bin_chunk_length = static_cast<std::uint32_t>(bin_chunk.size());
+    const auto json_chunk_length = static_cast<std::uint32_t>(json_chunk.size());
+    const auto bin_chunk_length = static_cast<std::uint32_t>(bin_chunk.size());
     const std::uint32_t total_length = 12U + 8U + json_chunk_length + 8U + bin_chunk_length;
 
     std::vector<std::uint8_t> glb;
@@ -914,95 +915,138 @@ animated_gltf::AnimatedGltfAsset make_large_joint_test_asset() {
     return asset;
 }
 
-TEST(ClientAppAnimationTest, NonMonotonicClockClampsTickDeltaToZero) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 100U);
-    runtime.now_ticks_ns = 50U;
+class ClientAppAnimationTestFixture : public ::testing::Test {
+  protected:
+    void load_startup_mesh_with_env(const std::string& animated_asset_path,
+                                    const std::string& mesh_asset_path) {
+        ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", animated_asset_path.c_str());
+        ScopedEnvVar mesh_env("ISLA_MESH_ASSET", mesh_asset_path.c_str());
+        internal::ClientAppTestHooks::load_startup_mesh(app_);
+    }
 
-    internal::ClientAppTestHooks::tick(app);
-    EXPECT_NEAR(internal::ClientAppTestHooks::world(app).sim_time_seconds(), 0.0F, 1.0e-6F);
+    [[nodiscard]] const RenderWorld& world() const {
+        return internal::ClientAppTestHooks::world(app_);
+    }
+
+    FakeSdlRuntime runtime_;
+    ClientApp app_{ runtime_ };
+};
+
+struct TextureRemapExpectation {
+    std::optional<std::string> material0_texture_file;
+    std::optional<std::string> material1_texture_file;
+    bool expect_material0_texture_empty = false;
+    bool expect_material1_texture_empty = false;
+    std::optional<float> material0_alpha_cutoff;
+    std::optional<std::size_t> objects_size;
+};
+
+struct TextureRemapCase {
+    std::string test_name;
+    std::string temp_dir_prefix;
+    bool use_ambiguous_fixture = false;
+    std::string texturemap_file_name;
+    std::vector<std::pair<std::string, std::string>> files_to_create;
+    std::string texturemap_json;
+    TextureRemapExpectation expectation;
+};
+
+class ClientAppTextureRemapParamFixture : public ClientAppAnimationTestFixture,
+                                          public ::testing::WithParamInterface<TextureRemapCase> {
+  protected:
+    std::filesystem::path create_fixture_asset(const TextureRemapCase& test_case,
+                                               const std::filesystem::path& dir) {
+        return test_case.use_ambiguous_fixture ? write_texturemap_ambiguous_material_fixture(dir)
+                                               : write_texturemap_static_gltf_fixture(dir);
+    }
+
+    void write_file(const std::filesystem::path& path, std::string_view contents) {
+        std::ofstream out(path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << contents;
+        ASSERT_TRUE(out.good());
+    }
+};
+
+TEST_F(ClientAppAnimationTestFixture, NonMonotonicClockClampsTickDeltaToZero) {
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 100U);
+    runtime_.now_ticks_ns = 50U;
+
+    internal::ClientAppTestHooks::tick(app_);
+    EXPECT_NEAR(internal::ClientAppTestHooks::world(app_).sim_time_seconds(), 0.0F, 1.0e-6F);
 }
 
-TEST(ClientAppAnimationTest, TickAdvancesAnimationAndMeshTriangles) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
-    runtime.now_ticks_ns = 500000000ULL;
+TEST_F(ClientAppAnimationTestFixture, TickAdvancesAnimationAndMeshTriangles) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
+    runtime_.now_ticks_ns = 500000000ULL;
 
-    internal::ClientAppTestHooks::tick(app);
+    internal::ClientAppTestHooks::tick(app_);
 
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     ASSERT_FALSE(world.meshes().empty());
     ASSERT_FALSE(world.meshes()[0].triangles().empty());
     EXPECT_NEAR(world.sim_time_seconds(), 0.5F, 1.0e-4F);
     EXPECT_NEAR(world.meshes()[0].triangles()[0].a.x, 1.0F, 1.0e-4F);
 }
 
-TEST(ClientAppAnimationTest, AnimatedTickUpdatesMeshInPlaceWithoutTriangleReallocation) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
-    runtime.now_ticks_ns = 500000000ULL;
+TEST_F(ClientAppAnimationTestFixture, AnimatedTickUpdatesMeshInPlaceWithoutTriangleReallocation) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
+    runtime_.now_ticks_ns = 500000000ULL;
 
-    internal::ClientAppTestHooks::tick(app);
+    internal::ClientAppTestHooks::tick(app_);
 
-    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
+    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app_);
     ASSERT_FALSE(world.meshes().empty());
     const Triangle* triangles_ptr_after_first_tick = world.meshes()[0].triangles().data();
     const std::size_t triangles_capacity_after_first_tick =
         world.meshes()[0].triangles().capacity();
 
-    runtime.now_ticks_ns = 1000000000ULL;
-    internal::ClientAppTestHooks::tick(app);
+    runtime_.now_ticks_ns = 1000000000ULL;
+    internal::ClientAppTestHooks::tick(app_);
 
     ASSERT_FALSE(world.meshes()[0].triangles().empty());
     EXPECT_EQ(world.meshes()[0].triangles().data(), triangles_ptr_after_first_tick);
     EXPECT_EQ(world.meshes()[0].triangles().capacity(), triangles_capacity_after_first_tick);
 }
 
-TEST(ClientAppAnimationTest, AnimatedTickKeepsTriangleStorageStableAcrossManyFrames) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
-    runtime.now_ticks_ns = 500000000ULL;
+TEST_F(ClientAppAnimationTestFixture, AnimatedTickKeepsTriangleStorageStableAcrossManyFrames) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
+    runtime_.now_ticks_ns = 500000000ULL;
 
-    internal::ClientAppTestHooks::tick(app);
+    internal::ClientAppTestHooks::tick(app_);
 
-    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
+    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app_);
     ASSERT_FALSE(world.meshes().empty());
     const Triangle* stable_ptr = world.meshes()[0].triangles().data();
     const std::size_t stable_capacity = world.meshes()[0].triangles().capacity();
 
     for (int frame = 0; frame < 120; ++frame) {
-        runtime.now_ticks_ns += 16666666ULL;
-        internal::ClientAppTestHooks::tick(app);
+        runtime_.now_ticks_ns += 16666666ULL;
+        internal::ClientAppTestHooks::tick(app_);
         ASSERT_FALSE(world.meshes()[0].triangles().empty());
         EXPECT_EQ(world.meshes()[0].triangles().data(), stable_ptr);
         EXPECT_EQ(world.meshes()[0].triangles().capacity(), stable_capacity);
     }
 }
 
-TEST(ClientAppAnimationTest, AnimatedTickDefersBoundsRecomputeUntilIntervalBoundary) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+TEST_F(ClientAppAnimationTestFixture, AnimatedTickDefersBoundsRecomputeUntilIntervalBoundary) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
 
-    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
+    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app_);
     ASSERT_FALSE(world.meshes().empty());
     const BoundingSphere initial_bounds = world.meshes()[0].local_bounds();
 
     for (int frame = 0; frame < 29; ++frame) {
-        runtime.now_ticks_ns += 16666666ULL;
-        internal::ClientAppTestHooks::tick(app);
+        runtime_.now_ticks_ns += 16666666ULL;
+        internal::ClientAppTestHooks::tick(app_);
     }
 
     const BoundingSphere deferred_bounds = world.meshes()[0].local_bounds();
@@ -1011,49 +1055,46 @@ TEST(ClientAppAnimationTest, AnimatedTickDefersBoundsRecomputeUntilIntervalBound
     EXPECT_FLOAT_EQ(deferred_bounds.center.z, initial_bounds.center.z);
     EXPECT_FLOAT_EQ(deferred_bounds.radius, initial_bounds.radius);
 
-    runtime.now_ticks_ns += 16666666ULL;
-    internal::ClientAppTestHooks::tick(app);
+    runtime_.now_ticks_ns += 16666666ULL;
+    internal::ClientAppTestHooks::tick(app_);
     const BoundingSphere refreshed_bounds = world.meshes()[0].local_bounds();
     EXPECT_GT(refreshed_bounds.center.x, initial_bounds.center.x + 0.1F);
 }
 
-TEST(ClientAppAnimationTest, GpuAuthoritativeAnimationUpdatesPaletteWithoutGeometryChurn) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
-    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+TEST_F(ClientAppAnimationTestFixture, GpuAuthoritativeAnimationUpdatesPaletteWithoutGeometryChurn) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_test_asset_with_two_clips());
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app_, true);
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
 
-    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app);
+    RenderWorld& world = internal::ClientAppTestHooks::mutable_world(app_);
     ASSERT_FALSE(world.meshes().empty());
     ASSERT_TRUE(world.meshes()[0].has_skinned_geometry());
     ASSERT_FALSE(world.meshes()[0].skin_palette().empty());
     const std::uint64_t stable_geometry_revision = world.meshes()[0].geometry_revision();
 
-    runtime.now_ticks_ns = 500000000ULL;
-    internal::ClientAppTestHooks::tick(app);
+    runtime_.now_ticks_ns = 500000000ULL;
+    internal::ClientAppTestHooks::tick(app_);
     ASSERT_FALSE(world.meshes()[0].skin_palette().empty());
     const float tx_after_first_tick = world.meshes()[0].skin_palette()[0].elements[12];
     EXPECT_NEAR(tx_after_first_tick, 1.0F, 1.0e-4F);
     EXPECT_EQ(world.meshes()[0].geometry_revision(), stable_geometry_revision);
 
-    runtime.now_ticks_ns = 1000000000ULL;
-    internal::ClientAppTestHooks::tick(app);
+    runtime_.now_ticks_ns = 1000000000ULL;
+    internal::ClientAppTestHooks::tick(app_);
     ASSERT_FALSE(world.meshes()[0].skin_palette().empty());
     const float tx_after_second_tick = world.meshes()[0].skin_palette()[0].elements[12];
     EXPECT_NEAR(tx_after_second_tick, 0.0F, 1.0e-4F);
     EXPECT_EQ(world.meshes()[0].geometry_revision(), stable_geometry_revision);
 }
 
-TEST(ClientAppAnimationTest, GpuAuthoritativeLargeSkeletonIsPartitionedToLocalPaletteBudget) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_animated_asset(app, make_large_joint_test_asset());
-    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+TEST_F(ClientAppAnimationTestFixture,
+       GpuAuthoritativeLargeSkeletonIsPartitionedToLocalPaletteBudget) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_large_joint_test_asset());
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app_, true);
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
 
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     ASSERT_GE(world.meshes().size(), 2U);
     for (const MeshData& mesh : world.meshes()) {
         ASSERT_TRUE(mesh.has_skinned_geometry());
@@ -1064,14 +1105,12 @@ TEST(ClientAppAnimationTest, GpuAuthoritativeLargeSkeletonIsPartitionedToLocalPa
     }
 }
 
-TEST(ClientAppAnimationTest, GpuAuthoritativePartitioningIsStableAcrossRepeatedPopulate) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_animated_asset(app, make_large_joint_test_asset());
-    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
+TEST_F(ClientAppAnimationTestFixture, GpuAuthoritativePartitioningIsStableAcrossRepeatedPopulate) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_large_joint_test_asset());
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app_, true);
 
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    const RenderWorld& first_world = internal::ClientAppTestHooks::world(app);
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    const RenderWorld& first_world = internal::ClientAppTestHooks::world(app_);
     ASSERT_FALSE(first_world.meshes().empty());
     std::vector<std::size_t> first_palette_sizes;
     first_palette_sizes.reserve(first_world.meshes().size());
@@ -1081,8 +1120,8 @@ TEST(ClientAppAnimationTest, GpuAuthoritativePartitioningIsStableAcrossRepeatedP
     const std::size_t first_mesh_count = first_world.meshes().size();
     const std::size_t first_object_count = first_world.objects().size();
 
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    const RenderWorld& second_world = internal::ClientAppTestHooks::world(app);
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    const RenderWorld& second_world = internal::ClientAppTestHooks::world(app_);
     ASSERT_EQ(second_world.meshes().size(), first_mesh_count);
     ASSERT_EQ(second_world.objects().size(), first_object_count);
     ASSERT_EQ(second_world.meshes().size(), first_palette_sizes.size());
@@ -1091,12 +1130,10 @@ TEST(ClientAppAnimationTest, GpuAuthoritativePartitioningIsStableAcrossRepeatedP
     }
 }
 
-TEST(ClientAppAnimationTest, PhysicsColliderProxyFollowsAnimatedJointPose) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
+TEST_F(ClientAppAnimationTestFixture, PhysicsColliderProxyFollowsAnimatedJointPose) {
     animated_gltf::AnimatedGltfAsset asset = make_test_asset_with_two_clips();
     asset.skeleton.joints[0].name = "root";
-    internal::ClientAppTestHooks::set_animated_asset(app, std::move(asset));
+    internal::ClientAppTestHooks::set_animated_asset(app_, std::move(asset));
 
     pmx_physics_sidecar::SidecarData sidecar;
     sidecar.colliders.push_back(pmx_physics_sidecar::Collider{
@@ -1110,12 +1147,12 @@ TEST(ClientAppAnimationTest, PhysicsColliderProxyFollowsAnimatedJointPose) {
         .mask = 1U,
         .radius = 0.5F,
     });
-    internal::ClientAppTestHooks::set_physics_sidecar(app, std::move(sidecar));
+    internal::ClientAppTestHooks::set_physics_sidecar(app_, std::move(sidecar));
 
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    ASSERT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app), 1U);
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    ASSERT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app_), 1U);
 
-    const RenderWorld& world_at_bind = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world_at_bind = internal::ClientAppTestHooks::world(app_);
     ASSERT_GE(world_at_bind.meshes().size(), 2U);
     ASSERT_GE(world_at_bind.objects().size(), 2U);
     ASSERT_GE(world_at_bind.materials().size(), 1U);
@@ -1125,18 +1162,18 @@ TEST(ClientAppAnimationTest, PhysicsColliderProxyFollowsAnimatedJointPose) {
     const float bind_x = world_at_bind.meshes()[proxy_mesh_id].triangles()[0].a.x;
     EXPECT_NEAR(bind_x, 0.0F, 1.0e-4F);
 
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
-    runtime.now_ticks_ns = 500000000ULL;
-    internal::ClientAppTestHooks::tick(app);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
+    runtime_.now_ticks_ns = 500000000ULL;
+    internal::ClientAppTestHooks::tick(app_);
 
-    const RenderWorld& world_after_tick = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world_after_tick = internal::ClientAppTestHooks::world(app_);
     ASSERT_LT(proxy_mesh_id, world_after_tick.meshes().size());
     ASSERT_FALSE(world_after_tick.meshes()[proxy_mesh_id].triangles().empty());
     const float proxy_x = world_after_tick.meshes()[proxy_mesh_id].triangles()[0].a.x;
     EXPECT_NEAR(proxy_x, 1.0F, 1.0e-4F);
 }
 
-TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedSidecarCreatesColliderProxyBindings) {
+TEST_F(ClientAppAnimationTestFixture, LoadStartupMeshAnimatedSidecarCreatesColliderProxyBindings) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_anim_sidecar");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
@@ -1158,38 +1195,30 @@ TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedSidecarCreatesColliderProxyB
         out << "\"constraints\":[]";
         out << "}";
     }
+    load_startup_mesh_with_env(gltf_path.string(), "");
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app));
-    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app), 1U);
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app_));
+    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app_), 1U);
+    const RenderWorld& world = this->world();
     EXPECT_GE(world.meshes().size(), 2U);
     EXPECT_GE(world.objects().size(), 2U);
 }
 
-TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedMissingSidecarKeepsPlaybackWithoutPhysics) {
+TEST_F(ClientAppAnimationTestFixture,
+       LoadStartupMeshAnimatedMissingSidecarKeepsPlaybackWithoutPhysics) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_anim_no_sidecar");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
         write_skinned_with_animation_gltf_fixture(temp_dir.path());
     ASSERT_FALSE(gltf_path.empty());
+    load_startup_mesh_with_env(gltf_path.string(), "");
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app));
-    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app), 0U);
+    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app_));
+    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app_), 0U);
 }
 
-TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedInvalidSidecarDoesNotBlockAnimationLoad) {
+TEST_F(ClientAppAnimationTestFixture,
+       LoadStartupMeshAnimatedInvalidSidecarDoesNotBlockAnimationLoad) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_anim_bad_sidecar");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
@@ -1207,23 +1236,16 @@ TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedInvalidSidecarDoesNotBlockAn
         out << R"("collision_layers":[],"colliders":[],"constraints":[])";
         out << "}";
     }
+    load_startup_mesh_with_env(gltf_path.string(), "");
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app));
-    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app), 0U);
+    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app_));
+    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app_), 0U);
 }
 
-TEST(ClientAppAnimationTest, PhysicsProxyTriangleStorageStaysStableAcrossManyTicks) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
+TEST_F(ClientAppAnimationTestFixture, PhysicsProxyTriangleStorageStaysStableAcrossManyTicks) {
     animated_gltf::AnimatedGltfAsset asset = make_test_asset_with_two_clips();
     asset.skeleton.joints[0].name = "root";
-    internal::ClientAppTestHooks::set_animated_asset(app, std::move(asset));
+    internal::ClientAppTestHooks::set_animated_asset(app_, std::move(asset));
 
     pmx_physics_sidecar::SidecarData sidecar;
     sidecar.colliders.push_back(pmx_physics_sidecar::Collider{
@@ -1237,11 +1259,11 @@ TEST(ClientAppAnimationTest, PhysicsProxyTriangleStorageStaysStableAcrossManyTic
         .mask = 1U,
         .radius = 0.5F,
     });
-    internal::ClientAppTestHooks::set_physics_sidecar(app, std::move(sidecar));
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+    internal::ClientAppTestHooks::set_physics_sidecar(app_, std::move(sidecar));
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
 
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     ASSERT_GE(world.objects().size(), 2U);
     const std::size_t proxy_mesh_id = world.objects().back().mesh_id;
     ASSERT_LT(proxy_mesh_id, world.meshes().size());
@@ -1249,22 +1271,21 @@ TEST(ClientAppAnimationTest, PhysicsProxyTriangleStorageStaysStableAcrossManyTic
     const std::size_t stable_capacity = world.meshes()[proxy_mesh_id].triangles().capacity();
 
     for (int frame = 0; frame < 120; ++frame) {
-        runtime.now_ticks_ns += 16666666ULL;
-        internal::ClientAppTestHooks::tick(app);
-        const RenderWorld& tick_world = internal::ClientAppTestHooks::world(app);
+        runtime_.now_ticks_ns += 16666666ULL;
+        internal::ClientAppTestHooks::tick(app_);
+        const RenderWorld& tick_world = internal::ClientAppTestHooks::world(app_);
         ASSERT_LT(proxy_mesh_id, tick_world.meshes().size());
         EXPECT_EQ(tick_world.meshes()[proxy_mesh_id].triangles().data(), stable_ptr);
         EXPECT_EQ(tick_world.meshes()[proxy_mesh_id].triangles().capacity(), stable_capacity);
     }
 }
 
-TEST(ClientAppAnimationTest, GpuAuthoritativeTickUpdatesSkinPaletteAndPhysicsProxyTogether) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
+TEST_F(ClientAppAnimationTestFixture,
+       GpuAuthoritativeTickUpdatesSkinPaletteAndPhysicsProxyTogether) {
     animated_gltf::AnimatedGltfAsset asset = make_test_asset_with_two_clips();
     asset.skeleton.joints[0].name = "root";
-    internal::ClientAppTestHooks::set_animated_asset(app, std::move(asset));
-    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
+    internal::ClientAppTestHooks::set_animated_asset(app_, std::move(asset));
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app_, true);
 
     pmx_physics_sidecar::SidecarData sidecar;
     sidecar.colliders.push_back(pmx_physics_sidecar::Collider{
@@ -1278,11 +1299,11 @@ TEST(ClientAppAnimationTest, GpuAuthoritativeTickUpdatesSkinPaletteAndPhysicsPro
         .mask = 1U,
         .radius = 0.5F,
     });
-    internal::ClientAppTestHooks::set_physics_sidecar(app, std::move(sidecar));
-    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
-    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+    internal::ClientAppTestHooks::set_physics_sidecar(app_, std::move(sidecar));
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
 
-    const RenderWorld& bind_world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& bind_world = internal::ClientAppTestHooks::world(app_);
     ASSERT_GE(bind_world.objects().size(), 2U);
     const std::size_t skinned_mesh_id = bind_world.objects().front().mesh_id;
     const std::size_t proxy_mesh_id = bind_world.objects().back().mesh_id;
@@ -1293,10 +1314,10 @@ TEST(ClientAppAnimationTest, GpuAuthoritativeTickUpdatesSkinPaletteAndPhysicsPro
     const float bind_proxy_x = bind_world.meshes()[proxy_mesh_id].triangles()[0].a.x;
     EXPECT_NEAR(bind_proxy_x, 0.0F, 1.0e-4F);
 
-    runtime.now_ticks_ns = 500000000ULL;
-    internal::ClientAppTestHooks::tick(app);
+    runtime_.now_ticks_ns = 500000000ULL;
+    internal::ClientAppTestHooks::tick(app_);
 
-    const RenderWorld& tick_world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& tick_world = internal::ClientAppTestHooks::world(app_);
     ASSERT_LT(skinned_mesh_id, tick_world.meshes().size());
     ASSERT_LT(proxy_mesh_id, tick_world.meshes().size());
     ASSERT_FALSE(tick_world.meshes()[skinned_mesh_id].skin_palette().empty());
@@ -1305,50 +1326,36 @@ TEST(ClientAppAnimationTest, GpuAuthoritativeTickUpdatesSkinPaletteAndPhysicsPro
     EXPECT_NEAR(tick_world.meshes()[proxy_mesh_id].triangles()[0].a.x, 1.0F, 1.0e-4F);
 }
 
-TEST(ClientAppAnimationTest, LoadStartupMeshResetsGpuAuthoritativeFlagWhenRendererUnsupported) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
+TEST_F(ClientAppAnimationTestFixture,
+       LoadStartupMeshResetsGpuAuthoritativeFlagWhenRendererUnsupported) {
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app_, true);
 
-    ScopedEnvVar anim_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
-    internal::ClientAppTestHooks::load_startup_mesh(app);
+    load_startup_mesh_with_env("", "");
 
-    EXPECT_FALSE(internal::ClientAppTestHooks::gpu_skinning_authoritative(app));
+    EXPECT_FALSE(internal::ClientAppTestHooks::gpu_skinning_authoritative(app_));
 }
 
-TEST(ClientAppAnimationTest, EnvironmentConfigSelectsClipAndClampMode) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    internal::ClientAppTestHooks::set_animated_asset(app, make_test_asset_with_two_clips());
+TEST_F(ClientAppAnimationTestFixture, EnvironmentConfigSelectsClipAndClampMode) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_test_asset_with_two_clips());
 
     ScopedEnvVar clip_env("ISLA_ANIM_CLIP", "walk");
     ScopedEnvVar mode_env("ISLA_ANIM_PLAYBACK_MODE", "clamp");
 
-    internal::ClientAppTestHooks::configure_animation_playback_from_environment(app);
+    internal::ClientAppTestHooks::configure_animation_playback_from_environment(app_);
 
-    const auto& state = internal::ClientAppTestHooks::animation_playback(app).state();
+    const auto& state = internal::ClientAppTestHooks::animation_playback(app_).state();
     EXPECT_EQ(state.clip_index, 1U);
     EXPECT_EQ(state.playback_mode, animated_gltf::ClipPlaybackMode::Clamp);
 }
 
-TEST(ClientAppAnimationTest, FallbackWhenAnimatedAssetFailsToLoad) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
+TEST_F(ClientAppAnimationTestFixture, FallbackWhenAnimatedAssetFailsToLoad) {
+    load_startup_mesh_with_env("missing_file.gltf", "");
 
-    ScopedEnvVar anim_env("ISLA_ANIMATED_GLTF_ASSET", "missing_file.gltf");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
-
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    EXPECT_FALSE(internal::ClientAppTestHooks::has_animated_asset(app));
-    EXPECT_TRUE(internal::ClientAppTestHooks::world(app).meshes().empty());
+    EXPECT_FALSE(internal::ClientAppTestHooks::has_animated_asset(app_));
+    EXPECT_TRUE(internal::ClientAppTestHooks::world(app_).meshes().empty());
 }
 
-TEST(ClientAppAnimationTest, LoadStartupMeshUsesWorkspaceDefaultModelPathWhenUnset) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-
+TEST_F(ClientAppAnimationTestFixture, LoadStartupMeshUsesWorkspaceDefaultModelPathWhenUnset) {
     ScopedTempDir sandbox_dir = ScopedTempDir::create("isla_client_app_test_sandbox");
     ScopedTempDir workspace_dir = ScopedTempDir::create("isla_client_app_test_workspace");
     ASSERT_TRUE(sandbox_dir.is_valid());
@@ -1370,17 +1377,15 @@ TEST(ClientAppAnimationTest, LoadStartupMeshUsesWorkspaceDefaultModelPathWhenUns
     ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
     ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace_dir.path().string().c_str());
 
-    internal::ClientAppTestHooks::load_startup_mesh(app);
+    internal::ClientAppTestHooks::load_startup_mesh(app_);
 
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = this->world();
     ASSERT_EQ(world.meshes().size(), 1U);
     ASSERT_EQ(world.objects().size(), 1U);
     EXPECT_FALSE(world.meshes()[0].triangles().empty());
 }
 
-TEST(ClientAppAnimationTest, StaticFallbackAppliesVisibleAutoFitTransform) {
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
+TEST_F(ClientAppAnimationTestFixture, StaticFallbackAppliesVisibleAutoFitTransform) {
 
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_obj");
     ASSERT_TRUE(temp_dir.is_valid());
@@ -1394,12 +1399,9 @@ TEST(ClientAppAnimationTest, StaticFallbackAppliesVisibleAutoFitTransform) {
         out << "f 1 2 3\n";
     }
 
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", obj_path.string().c_str());
+    load_startup_mesh_with_env("", obj_path.string());
 
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     ASSERT_EQ(world.objects().size(), 1U);
     const Transform& transform = world.objects()[0].transform;
     EXPECT_GT(transform.scale.x, 1.0F);
@@ -1409,22 +1411,16 @@ TEST(ClientAppAnimationTest, StaticFallbackAppliesVisibleAutoFitTransform) {
     EXPECT_NE(transform.position.y, 0.0F);
 }
 
-TEST(ClientAppAnimationTest, StaticLoadPreservesPerPrimitiveMaterialsAndSharedTransform) {
+TEST_F(ClientAppAnimationTestFixture, StaticLoadPreservesPerPrimitiveMaterialsAndSharedTransform) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_multi_primitive_static");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
         write_multi_primitive_static_gltf_fixture(temp_dir.path());
     ASSERT_FALSE(gltf_path.empty());
     ASSERT_TRUE(std::filesystem::exists(gltf_path));
+    load_startup_mesh_with_env("", gltf_path.string());
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     ASSERT_EQ(world.meshes().size(), 2U);
     ASSERT_EQ(world.materials().size(), 2U);
     ASSERT_EQ(world.objects().size(), 2U);
@@ -1459,52 +1455,7 @@ TEST(ClientAppAnimationTest, StaticLoadPreservesPerPrimitiveMaterialsAndSharedTr
                     world.objects()[1].transform.position.z);
 }
 
-TEST(ClientAppAnimationTest, StaticLoadAppliesTextureRemapByMaterialNameWhenMissing) {
-    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap");
-    ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
-    ASSERT_FALSE(gltf_path.empty());
-    ASSERT_TRUE(std::filesystem::exists(gltf_path));
-
-    const std::filesystem::path texturemap_path =
-        temp_dir.path() / "texturemap_static.texturemap.json";
-    {
-        std::ofstream out(texturemap_path, std::ios::binary);
-        ASSERT_TRUE(out.is_open());
-        out << "{"
-            << R"("schema_version":"1.0.0",)"
-            << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
-               "only\"},"
-            << "\"mappings\":["
-            << "{"
-            << R"("id":"head_by_name",)"
-            << R"("target":{"material_name":"Head"},)"
-            << R"("albedo_texture":"head_override.png",)"
-            << "\"alpha_cutoff\":0.5"
-            << "}"
-            << "]"
-            << "}";
-        ASSERT_TRUE(out.good());
-    }
-
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
-    ASSERT_EQ(world.materials().size(), 2U);
-    ASSERT_EQ(world.objects().size(), 2U);
-    EXPECT_EQ(world.materials()[0].albedo_texture_path,
-              (temp_dir.path() / "head_override.png").lexically_normal().string());
-    EXPECT_NEAR(world.materials()[0].alpha_cutoff, 0.5F, 1.0e-6F);
-    EXPECT_EQ(world.materials()[1].albedo_texture_path,
-              (temp_dir.path() / "body.png").lexically_normal().string());
-}
-
-TEST(ClientAppAnimationTest, StaticLoadFailsWhenTextureRemapSidecarSchemaIsInvalid) {
+TEST_F(ClientAppAnimationTestFixture, StaticLoadFailsWhenTextureRemapSidecarSchemaIsInvalid) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_invalid");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
@@ -1524,236 +1475,198 @@ TEST(ClientAppAnimationTest, StaticLoadFailsWhenTextureRemapSidecarSchemaIsInval
             << "}";
         ASSERT_TRUE(out.good());
     }
+    load_startup_mesh_with_env("", gltf_path.string());
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     EXPECT_TRUE(world.meshes().empty());
     EXPECT_TRUE(world.objects().empty());
 }
 
-TEST(ClientAppAnimationTest, StaticLoadTextureRemapAlwaysOverridesExistingGltfTexture) {
-    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_always");
+TEST_P(ClientAppTextureRemapParamFixture, StaticLoadTextureRemapCaseMatrix) {
+    const TextureRemapCase& test_case = GetParam();
+    ScopedTempDir temp_dir = ScopedTempDir::create(test_case.temp_dir_prefix);
     ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
+    const std::filesystem::path gltf_path = create_fixture_asset(test_case, temp_dir.path());
     ASSERT_FALSE(gltf_path.empty());
     ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
-    {
-        std::ofstream override_tex(temp_dir.path() / "body_override.png", std::ios::binary);
-        ASSERT_TRUE(override_tex.is_open());
-        override_tex << "fake_png_body_override";
+    for (const auto& [filename, contents] : test_case.files_to_create) {
+        write_file(temp_dir.path() / filename, contents);
     }
-    const std::filesystem::path texturemap_path =
-        temp_dir.path() / "texturemap_static.texturemap.json";
-    {
-        std::ofstream out(texturemap_path, std::ios::binary);
-        ASSERT_TRUE(out.is_open());
-        out << "{"
-            << R"("schema_version":"1.0.0",)"
-            << R"("policy":{"override_mode":"always","path_scope":"asset_relative_only"},)"
-            << "\"mappings\":[{"
-            << R"("id":"body_override",)"
-            << R"("target":{"material_name":"Body"},)"
-            << R"("albedo_texture":"body_override.png")"
-            << "}]"
-            << "}";
-        ASSERT_TRUE(out.good());
+    write_file(temp_dir.path() / test_case.texturemap_file_name, test_case.texturemap_json);
+    load_startup_mesh_with_env("", gltf_path.string());
+
+    const RenderWorld& loaded_world = world();
+    ASSERT_EQ(loaded_world.materials().size(), 2U);
+    if (test_case.expectation.objects_size.has_value()) {
+        EXPECT_EQ(loaded_world.objects().size(), test_case.expectation.objects_size.value());
     }
-
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
-    ASSERT_EQ(world.materials().size(), 2U);
-    EXPECT_EQ(world.materials()[1].albedo_texture_path,
-              (temp_dir.path() / "body_override.png").lexically_normal().string());
+    if (test_case.expectation.material0_texture_file.has_value()) {
+        EXPECT_EQ(loaded_world.materials()[0].albedo_texture_path,
+                  (temp_dir.path() / test_case.expectation.material0_texture_file.value())
+                      .lexically_normal()
+                      .string());
+    }
+    if (test_case.expectation.material1_texture_file.has_value()) {
+        EXPECT_EQ(loaded_world.materials()[1].albedo_texture_path,
+                  (temp_dir.path() / test_case.expectation.material1_texture_file.value())
+                      .lexically_normal()
+                      .string());
+    }
+    if (test_case.expectation.expect_material0_texture_empty) {
+        EXPECT_TRUE(loaded_world.materials()[0].albedo_texture_path.empty());
+    }
+    if (test_case.expectation.expect_material1_texture_empty) {
+        EXPECT_TRUE(loaded_world.materials()[1].albedo_texture_path.empty());
+    }
+    if (test_case.expectation.material0_alpha_cutoff.has_value()) {
+        EXPECT_NEAR(loaded_world.materials()[0].alpha_cutoff,
+                    test_case.expectation.material0_alpha_cutoff.value(), 1.0e-6F);
+    }
 }
 
-TEST(ClientAppAnimationTest, StaticLoadTextureRemapAppliesByMeshPrimitiveTuple) {
-    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_tuple");
-    ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
-    ASSERT_FALSE(gltf_path.empty());
-    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+INSTANTIATE_TEST_SUITE_P(
+    StaticTextureRemapCases, ClientAppTextureRemapParamFixture,
+    ::testing::Values(
+        [] {
+            TextureRemapCase value;
+            value.test_name = "ByMaterialNameWhenMissing";
+            value.temp_dir_prefix = "isla_client_app_test_texturemap";
+            value.texturemap_file_name = "texturemap_static.texturemap.json";
+            value.texturemap_json =
+                "{"
+                "\"schema_version\":\"1.0.0\","
+                "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
+                "only\"},"
+                "\"mappings\":["
+                "{"
+                "\"id\":\"head_by_name\","
+                "\"target\":{\"material_name\":\"Head\"},"
+                "\"albedo_texture\":\"head_override.png\","
+                "\"alpha_cutoff\":0.5"
+                "}"
+                "]"
+                "}";
+            value.expectation.material0_texture_file = "head_override.png";
+            value.expectation.material1_texture_file = "body.png";
+            value.expectation.material0_alpha_cutoff = 0.5F;
+            value.expectation.objects_size = 2U;
+            return value;
+        }(),
+        [] {
+            TextureRemapCase value;
+            value.test_name = "AlwaysOverridesExistingGltfTexture";
+            value.temp_dir_prefix = "isla_client_app_test_texturemap_always";
+            value.texturemap_file_name = "texturemap_static.texturemap.json";
+            value.files_to_create = { { "body_override.png", "fake_png_body_override" } };
+            value.texturemap_json =
+                "{"
+                "\"schema_version\":\"1.0.0\","
+                "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+                "\"mappings\":[{"
+                "\"id\":\"body_override\","
+                "\"target\":{\"material_name\":\"Body\"},"
+                "\"albedo_texture\":\"body_override.png\""
+                "}]"
+                "}";
+            value.expectation.material1_texture_file = "body_override.png";
+            return value;
+        }(),
+        [] {
+            TextureRemapCase value;
+            value.test_name = "AppliesByMeshPrimitiveTuple";
+            value.temp_dir_prefix = "isla_client_app_test_texturemap_tuple";
+            value.texturemap_file_name = "texturemap_static.texturemap.json";
+            value.files_to_create = { { "body_tuple_override.png",
+                                        "fake_png_body_tuple_override" } };
+            value.texturemap_json =
+                "{"
+                "\"schema_version\":\"1.0.0\","
+                "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+                "\"mappings\":[{"
+                "\"id\":\"body_by_tuple\","
+                "\"target\":{\"mesh_index\":0,\"primitive_index\":1},"
+                "\"albedo_texture\":\"body_tuple_override.png\""
+                "}]"
+                "}";
+            value.expectation.material1_texture_file = "body_tuple_override.png";
+            return value;
+        }(),
+        [] {
+            TextureRemapCase value;
+            value.test_name = "DuplicateKeyCollisionKeepsFirstMappingOnly";
+            value.temp_dir_prefix = "isla_client_app_test_texturemap_duplicate";
+            value.texturemap_file_name = "texturemap_static.texturemap.json";
+            value.files_to_create = {
+                { "head_first.png", "fake_png_head_first" },
+                { "head_second.png", "fake_png_head_second" },
+            };
+            value.texturemap_json =
+                "{"
+                "\"schema_version\":\"1.0.0\","
+                "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
+                "only\"},"
+                "\"mappings\":["
+                "{"
+                "\"id\":\"head_first\","
+                "\"target\":{\"material_name\":\"Head\"},"
+                "\"albedo_texture\":\"head_first.png\""
+                "},"
+                "{"
+                "\"id\":\"head_second_duplicate\","
+                "\"target\":{\"material_name\":\"Head\"},"
+                "\"albedo_texture\":\"head_second.png\""
+                "}"
+                "]"
+                "}";
+            value.expectation.material0_texture_file = "head_first.png";
+            return value;
+        }(),
+        [] {
+            TextureRemapCase value;
+            value.test_name = "AmbiguousMaterialNameSkipsOverride";
+            value.temp_dir_prefix = "isla_client_app_test_texturemap_ambiguous";
+            value.use_ambiguous_fixture = true;
+            value.texturemap_file_name = "texturemap_ambiguous.texturemap.json";
+            value.files_to_create = { { "shared_override.png", "fake_png_shared_override" } };
+            value.texturemap_json =
+                "{"
+                "\"schema_version\":\"1.0.0\","
+                "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+                "\"mappings\":[{"
+                "\"id\":\"shared_by_name\","
+                "\"target\":{\"material_name\":\"Shared\"},"
+                "\"albedo_texture\":\"shared_override.png\""
+                "}]"
+                "}";
+            value.expectation.expect_material0_texture_empty = true;
+            value.expectation.expect_material1_texture_empty = true;
+            return value;
+        }(),
+        [] {
+            TextureRemapCase value;
+            value.test_name = "MissingTextureFileSkipsMapping";
+            value.temp_dir_prefix = "isla_client_app_test_texturemap_missing_file";
+            value.texturemap_file_name = "texturemap_static.texturemap.json";
+            value.texturemap_json =
+                "{"
+                "\"schema_version\":\"1.0.0\","
+                "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
+                "only\"},"
+                "\"mappings\":[{"
+                "\"id\":\"head_missing_file\","
+                "\"target\":{\"material_name\":\"Head\"},"
+                "\"albedo_texture\":\"missing_head.png\""
+                "}]"
+                "}";
+            value.expectation.expect_material0_texture_empty = true;
+            value.expectation.material1_texture_file = "body.png";
+            return value;
+        }()),
+    [](const ::testing::TestParamInfo<TextureRemapCase>& info) { return info.param.test_name; });
 
-    {
-        std::ofstream override_tex(temp_dir.path() / "body_tuple_override.png", std::ios::binary);
-        ASSERT_TRUE(override_tex.is_open());
-        override_tex << "fake_png_body_tuple_override";
-    }
-    const std::filesystem::path texturemap_path =
-        temp_dir.path() / "texturemap_static.texturemap.json";
-    {
-        std::ofstream out(texturemap_path, std::ios::binary);
-        ASSERT_TRUE(out.is_open());
-        out << "{"
-            << "\"schema_version\":\"1.0.0\","
-            << "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
-            << "\"mappings\":[{"
-            << "\"id\":\"body_by_tuple\","
-            << "\"target\":{\"mesh_index\":0,\"primitive_index\":1},"
-            << "\"albedo_texture\":\"body_tuple_override.png\""
-            << "}]"
-            << "}";
-        ASSERT_TRUE(out.good());
-    }
-
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
-    ASSERT_EQ(world.materials().size(), 2U);
-    EXPECT_EQ(world.materials()[1].albedo_texture_path,
-              (temp_dir.path() / "body_tuple_override.png").lexically_normal().string());
-}
-
-TEST(ClientAppAnimationTest, StaticLoadTextureRemapDuplicateKeyCollisionKeepsFirstMappingOnly) {
-    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_duplicate");
-    ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
-    ASSERT_FALSE(gltf_path.empty());
-    ASSERT_TRUE(std::filesystem::exists(gltf_path));
-
-    {
-        std::ofstream tex_first(temp_dir.path() / "head_first.png", std::ios::binary);
-        ASSERT_TRUE(tex_first.is_open());
-        tex_first << "fake_png_head_first";
-    }
-    {
-        std::ofstream tex_second(temp_dir.path() / "head_second.png", std::ios::binary);
-        ASSERT_TRUE(tex_second.is_open());
-        tex_second << "fake_png_head_second";
-    }
-    const std::filesystem::path texturemap_path =
-        temp_dir.path() / "texturemap_static.texturemap.json";
-    {
-        std::ofstream out(texturemap_path, std::ios::binary);
-        ASSERT_TRUE(out.is_open());
-        out << "{"
-            << R"("schema_version":"1.0.0",)"
-            << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
-               "only\"},"
-            << "\"mappings\":["
-            << "{"
-            << R"("id":"head_first",)"
-            << R"("target":{"material_name":"Head"},)"
-            << R"("albedo_texture":"head_first.png")"
-            << "},"
-            << "{"
-            << R"("id":"head_second_duplicate",)"
-            << R"("target":{"material_name":"Head"},)"
-            << R"("albedo_texture":"head_second.png")"
-            << "}"
-            << "]"
-            << "}";
-        ASSERT_TRUE(out.good());
-    }
-
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
-    ASSERT_EQ(world.materials().size(), 2U);
-    EXPECT_EQ(world.materials()[0].albedo_texture_path,
-              (temp_dir.path() / "head_first.png").lexically_normal().string());
-}
-
-TEST(ClientAppAnimationTest, StaticLoadTextureRemapAmbiguousMaterialNameSkipsOverride) {
-    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_ambiguous");
-    ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path =
-        write_texturemap_ambiguous_material_fixture(temp_dir.path());
-    ASSERT_FALSE(gltf_path.empty());
-    ASSERT_TRUE(std::filesystem::exists(gltf_path));
-
-    {
-        std::ofstream tex(temp_dir.path() / "shared_override.png", std::ios::binary);
-        ASSERT_TRUE(tex.is_open());
-        tex << "fake_png_shared_override";
-    }
-    const std::filesystem::path texturemap_path =
-        temp_dir.path() / "texturemap_ambiguous.texturemap.json";
-    {
-        std::ofstream out(texturemap_path, std::ios::binary);
-        ASSERT_TRUE(out.is_open());
-        out << "{"
-            << "\"schema_version\":\"1.0.0\","
-            << "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
-            << "\"mappings\":[{"
-            << "\"id\":\"shared_by_name\","
-            << "\"target\":{\"material_name\":\"Shared\"},"
-            << "\"albedo_texture\":\"shared_override.png\""
-            << "}]"
-            << "}";
-        ASSERT_TRUE(out.good());
-    }
-
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
-    ASSERT_EQ(world.materials().size(), 2U);
-    EXPECT_TRUE(world.materials()[0].albedo_texture_path.empty());
-    EXPECT_TRUE(world.materials()[1].albedo_texture_path.empty());
-}
-
-TEST(ClientAppAnimationTest, StaticLoadTextureRemapMissingTextureFileSkipsMapping) {
-    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_missing_file");
-    ASSERT_TRUE(temp_dir.is_valid());
-    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
-    ASSERT_FALSE(gltf_path.empty());
-    ASSERT_TRUE(std::filesystem::exists(gltf_path));
-
-    const std::filesystem::path texturemap_path =
-        temp_dir.path() / "texturemap_static.texturemap.json";
-    {
-        std::ofstream out(texturemap_path, std::ios::binary);
-        ASSERT_TRUE(out.is_open());
-        out << "{"
-            << "\"schema_version\":\"1.0.0\","
-            << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
-               "only\"},"
-            << "\"mappings\":[{"
-            << "\"id\":\"head_missing_file\","
-            << "\"target\":{\"material_name\":\"Head\"},"
-            << "\"albedo_texture\":\"missing_head.png\""
-            << "}]"
-            << "}";
-        ASSERT_TRUE(out.good());
-    }
-
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
-    ASSERT_EQ(world.materials().size(), 2U);
-    EXPECT_TRUE(world.materials()[0].albedo_texture_path.empty());
-    EXPECT_EQ(world.materials()[1].albedo_texture_path,
-              (temp_dir.path() / "body.png").lexically_normal().string());
-}
-
-TEST(ClientAppAnimationTest, AnimatedEnvFallbackToStaticPreservesPerPrimitiveMaterialParity) {
+TEST_F(ClientAppAnimationTestFixture,
+       AnimatedEnvFallbackToStaticPreservesPerPrimitiveMaterialParity) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_multi_primitive_parity");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
@@ -1818,22 +1731,17 @@ TEST(ClientAppAnimationTest, AnimatedEnvFallbackToStaticPreservesPerPrimitiveMat
     }
 }
 
-TEST(ClientAppAnimationTest, StaticLoadSkipsNonTrianglePrimitivesAndLoadsRenderableChunks) {
+TEST_F(ClientAppAnimationTestFixture,
+       StaticLoadSkipsNonTrianglePrimitivesAndLoadsRenderableChunks) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_mixed_primitives");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
         write_mixed_non_triangle_and_triangle_static_gltf_fixture(temp_dir.path());
     ASSERT_FALSE(gltf_path.empty());
     ASSERT_TRUE(std::filesystem::exists(gltf_path));
+    load_startup_mesh_with_env("", gltf_path.string());
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     ASSERT_EQ(world.meshes().size(), 1U);
     ASSERT_EQ(world.materials().size(), 1U);
     ASSERT_EQ(world.objects().size(), 1U);
@@ -1847,7 +1755,8 @@ TEST(ClientAppAnimationTest, StaticLoadSkipsNonTrianglePrimitivesAndLoadsRendera
     EXPECT_EQ(world.materials()[0].blend_mode, MaterialBlendMode::AlphaBlend);
 }
 
-TEST(ClientAppAnimationTest, StaticLoadAggregateTransformIsDeterministicAcrossRepeatedLoads) {
+TEST_F(ClientAppAnimationTestFixture,
+       StaticLoadAggregateTransformIsDeterministicAcrossRepeatedLoads) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_transform_determinism");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
@@ -1855,14 +1764,9 @@ TEST(ClientAppAnimationTest, StaticLoadAggregateTransformIsDeterministicAcrossRe
     ASSERT_FALSE(gltf_path.empty());
     ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-
     const auto load_once = [&]() -> std::vector<Transform> {
-        ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-        ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-        internal::ClientAppTestHooks::load_startup_mesh(app);
-        const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+        load_startup_mesh_with_env("", gltf_path.string());
+        const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
         std::vector<Transform> transforms;
         transforms.reserve(world.objects().size());
         for (const RenderObject& object : world.objects()) {
@@ -1885,22 +1789,16 @@ TEST(ClientAppAnimationTest, StaticLoadAggregateTransformIsDeterministicAcrossRe
     }
 }
 
-TEST(ClientAppAnimationTest, StaticLoadPreservesPerObjectMaterialStateMappingContract) {
+TEST_F(ClientAppAnimationTestFixture, StaticLoadPreservesPerObjectMaterialStateMappingContract) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_material_mapping");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
         write_multi_primitive_static_gltf_fixture(temp_dir.path());
     ASSERT_FALSE(gltf_path.empty());
     ASSERT_TRUE(std::filesystem::exists(gltf_path));
+    load_startup_mesh_with_env("", gltf_path.string());
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
-
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     ASSERT_EQ(world.objects().size(), 2U);
     ASSERT_EQ(world.materials().size(), 2U);
 
@@ -1914,7 +1812,7 @@ TEST(ClientAppAnimationTest, StaticLoadPreservesPerObjectMaterialStateMappingCon
     EXPECT_NEAR(object1_material.alpha_cutoff, 0.33F, 1.0e-6F);
 }
 
-TEST(ClientAppAnimationTest, AnimatedLoadNoClipsFallsBackToStaticWithFidelityInputs) {
+TEST_F(ClientAppAnimationTestFixture, AnimatedLoadNoClipsFallsBackToStaticWithFidelityInputs) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_skinned_no_clips");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path =
@@ -1926,16 +1824,10 @@ TEST(ClientAppAnimationTest, AnimatedLoadNoClipsFallsBackToStaticWithFidelityInp
         animated_gltf::load_from_file(gltf_path.string());
     ASSERT_TRUE(animated_loaded.ok) << animated_loaded.error_message;
     ASSERT_TRUE(animated_loaded.asset.clips.empty());
+    load_startup_mesh_with_env(gltf_path.string(), "");
 
-    FakeSdlRuntime runtime;
-    ClientApp app(runtime);
-    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
-    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
-
-    internal::ClientAppTestHooks::load_startup_mesh(app);
-
-    EXPECT_FALSE(internal::ClientAppTestHooks::has_animated_asset(app));
-    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    EXPECT_FALSE(internal::ClientAppTestHooks::has_animated_asset(app_));
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
     ASSERT_EQ(world.materials().size(), 1U);
     ASSERT_EQ(world.meshes().size(), 1U);
     ASSERT_EQ(world.objects().size(), 1U);
@@ -1952,7 +1844,7 @@ TEST(ClientAppAnimationTest, AnimatedLoadNoClipsFallsBackToStaticWithFidelityInp
     EXPECT_TRUE(world.meshes()[0].triangles()[0].has_vertex_normals);
 }
 
-TEST(ClientAppAnimationTest, StaticLoadMaterialBaselineMatchesEnvAndDefaultPathFlows) {
+TEST_F(ClientAppAnimationTestFixture, StaticLoadMaterialBaselineMatchesEnvAndDefaultPathFlows) {
     FakeSdlRuntime env_runtime;
     ClientApp env_app(env_runtime);
     ScopedTempDir env_workspace_dir = ScopedTempDir::create("isla_client_app_test_default_flow");
