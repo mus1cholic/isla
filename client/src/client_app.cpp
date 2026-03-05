@@ -32,12 +32,12 @@ namespace {
 
 constexpr std::uint64_t kNanosecondsPerSecond = 1000000000ULL;
 constexpr std::uint32_t kAnimatedBoundsRecomputeIntervalTicks = 30U;
-constexpr char kMeshAssetEnvVar[] = "ISLA_MESH_ASSET";
-constexpr char kAnimatedGltfAssetEnvVar[] = "ISLA_ANIMATED_GLTF_ASSET";
-constexpr char kAnimationClipEnvVar[] = "ISLA_ANIM_CLIP";
-constexpr char kAnimationPlaybackModeEnvVar[] = "ISLA_ANIM_PLAYBACK_MODE";
+constexpr std::string_view kMeshAssetEnvVar = "ISLA_MESH_ASSET";
+constexpr std::string_view kAnimatedGltfAssetEnvVar = "ISLA_ANIMATED_GLTF_ASSET";
+constexpr std::string_view kAnimationClipEnvVar = "ISLA_ANIM_CLIP";
+constexpr std::string_view kAnimationPlaybackModeEnvVar = "ISLA_ANIM_PLAYBACK_MODE";
 constexpr float kPhysicsProxyMaterialAlpha = 0.25F;
-constexpr char kPhysicsProxyShaderName[] = "mesh";
+constexpr std::string_view kPhysicsProxyShaderName = "mesh";
 
 const char* material_blend_mode_name(MaterialBlendMode mode) {
     switch (mode) {
@@ -784,15 +784,15 @@ void ClientApp::load_startup_mesh() {
         return true;
     };
 
-    const char* animated_asset_path = std::getenv(kAnimatedGltfAssetEnvVar);
+    const char* animated_asset_path = std::getenv(kAnimatedGltfAssetEnvVar.data());
     if (animated_asset_path != nullptr && animated_asset_path[0] != '\0') {
-        if (try_load_animated_asset(animated_asset_path, kAnimatedGltfAssetEnvVar)) {
+        if (try_load_animated_asset(animated_asset_path, kAnimatedGltfAssetEnvVar.data())) {
             return;
         }
     }
 
     std::string resolved_mesh_asset_path;
-    const char* mesh_asset_path = std::getenv(kMeshAssetEnvVar);
+    const char* mesh_asset_path = std::getenv(kMeshAssetEnvVar.data());
     if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
         const model_intake::ResolveStartupAssetResult intake_result =
             model_intake::resolve_startup_asset_from_models();
@@ -832,7 +832,7 @@ void ClientApp::load_startup_mesh() {
         return;
     }
 
-    if (!try_load_static_asset(mesh_asset_path, kMeshAssetEnvVar)) {
+    if (!try_load_static_asset(mesh_asset_path, kMeshAssetEnvVar.data())) {
         LOG(WARNING) << "ClientApp: mesh load failed for ISLA_MESH_ASSET='" << mesh_asset_path
                      << "'; leaving scene empty";
     }
@@ -843,7 +843,7 @@ void ClientApp::configure_animation_playback_from_environment() {
         return;
     }
     std::string playback_error;
-    const char* clip_name = std::getenv(kAnimationClipEnvVar);
+    const char* clip_name = std::getenv(kAnimationClipEnvVar.data());
     const std::size_t clip_index = find_clip_index_by_name(*animated_asset_, clip_name);
     if (clip_index < animated_asset_->clips.size()) {
         if (!animation_playback_.set_clip_index(clip_index, &playback_error)) {
@@ -858,7 +858,7 @@ void ClientApp::configure_animation_playback_from_environment() {
                      << "' not found; defaulting to clip index 0";
     }
 
-    const char* playback_mode = std::getenv(kAnimationPlaybackModeEnvVar);
+    const char* playback_mode = std::getenv(kAnimationPlaybackModeEnvVar.data());
     if (playback_mode == nullptr) {
         return;
     }
@@ -1039,7 +1039,7 @@ void ClientApp::append_physics_proxy_meshes() {
     if (!physics_proxy_material_id_.has_value() ||
         *physics_proxy_material_id_ >= world_.materials().size()) {
         Material physics_material{};
-        physics_material.shader_name = kPhysicsProxyShaderName;
+        physics_material.shader_name = std::string(kPhysicsProxyShaderName);
         physics_material.base_color = Color3{ .r = 0.2F, .g = 0.95F, .b = 0.35F };
         physics_material.base_alpha = kPhysicsProxyMaterialAlpha;
         physics_material.blend_mode = MaterialBlendMode::AlphaBlend;

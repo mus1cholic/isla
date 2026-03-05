@@ -9,7 +9,6 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
-#include "absl/strings/string_view.h"
 #include <gtest/gtest.h>
 
 namespace {
@@ -42,7 +41,7 @@ std::string find_path_in_runfiles_manifest(const std::string& relative_path) {
     const std::string needle = absl::StrCat("_main/", relative_path);
     std::string line;
     while (std::getline(manifest_stream, line)) {
-        const std::vector<absl::string_view> parts = absl::StrSplit(line, absl::MaxSplits(' ', 1));
+        const std::vector<std::string_view> parts = absl::StrSplit(line, absl::MaxSplits(' ', 1));
         if (parts.size() != 2U) {
             continue;
         }

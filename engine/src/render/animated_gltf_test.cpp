@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -69,22 +70,24 @@ class AnimatedGltfTest : public ::testing::Test {
     }
 
     static void append_f32(std::vector<std::uint8_t>& buffer, float value) {
-        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+        std::uint8_t bytes[sizeof(value)]{};
+        std::memcpy(bytes, &value, sizeof(value));
         buffer.insert(buffer.end(), bytes, bytes + sizeof(value));
     }
 
     static void append_u16(std::vector<std::uint8_t>& buffer, std::uint16_t value) {
-        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+        std::uint8_t bytes[sizeof(value)]{};
+        std::memcpy(bytes, &value, sizeof(value));
         buffer.insert(buffer.end(), bytes, bytes + sizeof(value));
     }
 
-    static ::testing::AssertionResult write_binary_file(
-        const std::filesystem::path& path, const std::vector<std::uint8_t>& buffer) {
+    static ::testing::AssertionResult write_binary_file(const std::filesystem::path& path,
+                                                        const std::vector<std::uint8_t>& buffer) {
         std::ofstream bin_stream(path, std::ios::binary);
         if (!bin_stream.is_open()) {
             return ::testing::AssertionFailure() << "failed to open binary file: " << path;
         }
-        bin_stream.write(reinterpret_cast<const char*>(buffer.data()),
+        bin_stream.write(static_cast<const char*>(static_cast<const void*>(buffer.data())),
                          static_cast<std::streamsize>(buffer.size()));
         if (!bin_stream.good()) {
             return ::testing::AssertionFailure() << "failed to write binary file: " << path;
@@ -105,18 +108,21 @@ class AnimatedGltfTest : public ::testing::Test {
         return ::testing::AssertionSuccess();
     }
 
-    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(
-        const AnimatedGltfAsset& asset, float sample_time_seconds, EvaluatedPose& pose,
-        std::string* error) {
+    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(const AnimatedGltfAsset& asset,
+                                                                   float sample_time_seconds,
+                                                                   EvaluatedPose& pose,
+                                                                   std::string* error) {
         if (!evaluate_clip_pose(asset, 0U, sample_time_seconds, pose, error)) {
             return ::testing::AssertionFailure() << (error != nullptr ? *error : "");
         }
         return ::testing::AssertionSuccess();
     }
 
-    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(
-        const AnimatedGltfAsset& asset, float sample_time_seconds, EvaluatedPose& pose,
-        std::string* error, ClipPlaybackMode playback_mode) {
+    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(const AnimatedGltfAsset& asset,
+                                                                   float sample_time_seconds,
+                                                                   EvaluatedPose& pose,
+                                                                   std::string* error,
+                                                                   ClipPlaybackMode playback_mode) {
         if (!evaluate_clip_pose(asset, 0U, sample_time_seconds, pose, error, playback_mode)) {
             return ::testing::AssertionFailure() << (error != nullptr ? *error : "");
         }

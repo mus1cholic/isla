@@ -4,6 +4,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <string_view>
 
 #include "engine/src/render/include/mesh_asset_loader.hpp"
 #include "shared/src/test_runfiles.hpp"
@@ -154,7 +155,7 @@ TEST(MeshAssetLoaderTests, LoadsAllTrianglePrimitivesAcrossMeshes) {
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "multi_mesh_two_triangles.gltf";
 
-    constexpr char kMultiMeshGltf[] =
+    constexpr std::string_view kMultiMeshGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -201,7 +202,7 @@ TEST(MeshAssetLoaderTests, LoadsGltfNormalsAndMaterialInputs) {
         texture_stream << "not_a_real_png";
     }
 
-    constexpr char kTriangleNormalsMaterialGltf[] =
+    constexpr std::string_view kTriangleNormalsMaterialGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -267,7 +268,7 @@ TEST(MeshAssetLoaderTests, LoadsGltfMaskAlphaCutoffMaterial) {
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "triangle_mask_material.gltf";
 
-    constexpr char kTriangleMaskMaterialGltf[] =
+    constexpr std::string_view kTriangleMaskMaterialGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -298,7 +299,7 @@ TEST(MeshAssetLoaderTests, PreservesPerPrimitiveMaterialMappingForMultiPrimitive
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "multi_primitive_materials.gltf";
 
-    constexpr char kMultiPrimitiveMaterialGltf[] =
+    constexpr std::string_view kMultiPrimitiveMaterialGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -383,7 +384,7 @@ TEST(MeshAssetLoaderTests, MultiPrimitiveMaterialMappingIsDeterministicAcrossLoa
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "multi_primitive_deterministic.gltf";
 
-    constexpr char kMultiPrimitiveMaterialGltf[] =
+    constexpr std::string_view kMultiPrimitiveMaterialGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -442,7 +443,7 @@ TEST(MeshAssetLoaderTests, PreservesDefaultMaterialOnlyForPrimitiveWithoutMateri
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "mixed_material_presence.gltf";
 
-    constexpr char kMixedMaterialPresenceGltf[] =
+    constexpr std::string_view kMixedMaterialPresenceGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -500,7 +501,7 @@ TEST(MeshAssetLoaderTests, RejectsAbsoluteImageUriPath) {
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "triangle_absolute_uri.gltf";
 
-    constexpr char kTriangleAbsoluteUriGltf[] =
+    constexpr std::string_view kTriangleAbsoluteUriGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -534,7 +535,7 @@ TEST(MeshAssetLoaderTests, RejectsImageUriParentTraversalOutsideAssetDirectory) 
     ASSERT_TRUE(std::filesystem::create_directories(nested_dir));
     const std::filesystem::path gltf_path = nested_dir / "triangle_parent_traversal_uri.gltf";
 
-    constexpr char kTriangleParentTraversalUriGltf[] =
+    constexpr std::string_view kTriangleParentTraversalUriGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -566,7 +567,7 @@ TEST(MeshAssetLoaderTests, RejectsImageUriParentTraversalForParentlessRelativeAs
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "model.gltf";
 
-    constexpr char kParentlessTraversalUriGltf[] =
+    constexpr std::string_view kParentlessTraversalUriGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"

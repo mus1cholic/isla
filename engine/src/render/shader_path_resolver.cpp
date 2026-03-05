@@ -7,7 +7,6 @@
 
 #include "absl/log/log.h"
 #include "absl/strings/str_split.h"
-#include "absl/strings/string_view.h"
 
 namespace isla::client {
 
@@ -28,7 +27,7 @@ std::string find_runfiles_manifest_match(std::string_view manifest_path,
 
     std::string line;
     while (std::getline(manifest_stream, line)) {
-        const std::vector<absl::string_view> parts = absl::StrSplit(line, absl::MaxSplits(' ', 1));
+        const std::vector<std::string_view> parts = absl::StrSplit(line, absl::MaxSplits(' ', 1));
         if (parts.size() != 2U) {
             continue;
         }

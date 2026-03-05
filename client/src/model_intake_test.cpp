@@ -2,8 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -162,11 +164,12 @@ std::vector<std::uint8_t> make_minimal_triangle_glb() {
     }
 
     std::vector<std::uint8_t> bin_chunk;
-    const float vertices[9] = {
+    const std::array<float, 9U> vertices = {
         0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
     };
     for (float value : vertices) {
-        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+        std::uint8_t bytes[sizeof(value)]{};
+        std::memcpy(bytes, &value, sizeof(value));
         bin_chunk.insert(bin_chunk.end(), bytes, bytes + sizeof(float));
     }
     while ((bin_chunk.size() % 4U) != 0U) {
@@ -207,7 +210,7 @@ std::vector<std::uint8_t> make_minimal_triangle_glb() {
     if (!stream.is_open()) {
         return ::testing::AssertionFailure() << "failed to open binary file: " << path;
     }
-    stream.write(reinterpret_cast<const char*>(bytes.data()),
+    stream.write(static_cast<const char*>(static_cast<const void*>(bytes.data())),
                  static_cast<std::streamsize>(bytes.size()));
     if (!stream.good()) {
         return ::testing::AssertionFailure() << "failed to write binary file: " << path;
@@ -251,13 +254,13 @@ class ModelIntakeFixture : public ::testing::Test {
                                           std::string_view contents) const {
         std::ofstream out(model_path(filename));
         if (!out.is_open()) {
-            return ::testing::AssertionFailure() << "failed to open text file: "
-                                                 << model_path(filename);
+            return ::testing::AssertionFailure()
+                   << "failed to open text file: " << model_path(filename);
         }
         out << contents;
         if (!out.good()) {
-            return ::testing::AssertionFailure() << "failed to write text file: "
-                                                 << model_path(filename);
+            return ::testing::AssertionFailure()
+                   << "failed to write text file: " << model_path(filename);
         }
         return ::testing::AssertionSuccess();
     }

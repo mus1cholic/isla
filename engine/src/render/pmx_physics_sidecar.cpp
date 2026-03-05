@@ -3,6 +3,7 @@
 #include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -347,10 +348,10 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
 
     std::string json_text;
     constexpr std::size_t kReadChunkBytes = 4096U;
-    char chunk[kReadChunkBytes];
+    std::array<char, kReadChunkBytes> chunk{};
     std::size_t bytes_read_total = 0U;
     while (stream.good()) {
-        stream.read(chunk, static_cast<std::streamsize>(kReadChunkBytes));
+        stream.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
         const std::streamsize bytes_read = stream.gcount();
         if (bytes_read <= 0) {
             break;
@@ -362,7 +363,7 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
                                                               kMaxSidecarFileSizeBytes, " bytes"));
             return result;
         }
-        json_text.append(chunk, static_cast<std::size_t>(bytes_read));
+        json_text.append(chunk.data(), static_cast<std::size_t>(bytes_read));
     }
     if (stream.bad()) {
         result.error_message = make_sidecar_error(sidecar_path, "failed while reading file");
@@ -392,7 +393,7 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
     if (*schema_version != kExpectedSchemaVersion) {
         result.error_message = make_sidecar_error(
             sidecar_path, "schema_version is unsupported: got '" + *schema_version +
-                              "', expected '" + kExpectedSchemaVersion + "'");
+                              "', expected '" + std::string(kExpectedSchemaVersion) + "'");
         return result;
     }
 

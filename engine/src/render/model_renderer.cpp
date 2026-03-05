@@ -92,9 +92,16 @@ std::uint8_t clamp_color_channel(float value) {
 }
 
 std::string hr_hex(HRESULT hr) {
-    char buffer[32];
-    snprintf(buffer, sizeof(buffer), "0x%08lx", static_cast<unsigned long>(hr));
-    return std::string(buffer);
+    std::string buffer(32U, '\0');
+    const int written =
+        snprintf(buffer.data(), buffer.size(), "0x%08lx", static_cast<unsigned long>(hr));
+    if (written <= 0) {
+        return {};
+    }
+    const std::size_t used = std::min<std::size_t>(static_cast<std::size_t>(written),
+                                                   buffer.empty() ? 0U : (buffer.size() - 1U));
+    buffer.resize(used);
+    return buffer;
 }
 
 std::uint64_t cull_state_for_material(MaterialCullMode mode) {
@@ -118,8 +125,7 @@ bool create_presenter_backbuffers(DirectCompositionPresenter& presenter, int wid
     }
 
     ComPtr<ID3D11Texture2D> backbuffer;
-    HRESULT hr = presenter.swap_chain->GetBuffer(
-        0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()));
+    HRESULT hr = presenter.swap_chain->GetBuffer(0, IID_PPV_ARGS(backbuffer.GetAddressOf()));
     if (FAILED(hr)) {
         LOG(ERROR) << "ModelRenderer: swapchain GetBuffer failed hr=" << hr_hex(hr);
         return false;
@@ -170,16 +176,16 @@ bool initialize_direct_composition_presenter(DirectCompositionPresenter& present
         return false;
     }
 
-    constexpr D3D_FEATURE_LEVEL kFeatureLevels[] = {
+    constexpr std::array<D3D_FEATURE_LEVEL, 2U> kFeatureLevels = {
         D3D_FEATURE_LEVEL_11_1,
         D3D_FEATURE_LEVEL_11_0,
     };
     D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
     const UINT device_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, device_flags,
-                                   kFeatureLevels, ARRAYSIZE(kFeatureLevels), D3D11_SDK_VERSION,
-                                   presenter.device.GetAddressOf(), &feature_level,
-                                   presenter.device_context.GetAddressOf());
+                                   kFeatureLevels.data(), static_cast<UINT>(kFeatureLevels.size()),
+                                   D3D11_SDK_VERSION, presenter.device.GetAddressOf(),
+                                   &feature_level, presenter.device_context.GetAddressOf());
     if (FAILED(hr)) {
         LOG(ERROR) << "ModelRenderer: D3D11CreateDevice failed hr=" << hr_hex(hr);
         return false;
@@ -198,8 +204,7 @@ bool initialize_direct_composition_presenter(DirectCompositionPresenter& present
         LOG(ERROR) << "ModelRenderer: IDXGIDevice::GetAdapter failed hr=" << hr_hex(hr);
         return false;
     }
-    hr = dxgi_adapter->GetParent(__uuidof(IDXGIFactory2),
-                                 reinterpret_cast<void**>(dxgi_factory.GetAddressOf()));
+    hr = dxgi_adapter->GetParent(IID_PPV_ARGS(dxgi_factory.GetAddressOf()));
     if (FAILED(hr)) {
         LOG(ERROR) << "ModelRenderer: IDXGIAdapter::GetParent(IDXGIFactory2) failed hr="
                    << hr_hex(hr);
@@ -223,8 +228,8 @@ bool initialize_direct_composition_presenter(DirectCompositionPresenter& present
         return false;
     }
 
-    hr = DCompositionCreateDevice(dxgi_device.Get(), __uuidof(IDCompositionDevice),
-                                  reinterpret_cast<void**>(presenter.dcomp_device.GetAddressOf()));
+    hr = DCompositionCreateDevice(dxgi_device.Get(),
+                                  IID_PPV_ARGS(presenter.dcomp_device.GetAddressOf()));
     if (FAILED(hr)) {
         LOG(ERROR) << "ModelRenderer: DCompositionCreateDevice failed hr=" << hr_hex(hr);
         return false;
