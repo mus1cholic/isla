@@ -48,6 +48,30 @@
       "options": {
         "cwd": "${workspaceFolder}"
       }
+    },
+    {
+      "label": "Clangd: Reload",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$ErrorActionPreference = 'SilentlyContinue'; Get-Process clangd | Stop-Process -Force"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dev: Refresh compile_commands + reload clangd",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Refresh compile_commands (Bazel)",
+        "Clangd: Reload"
+      ],
+      "problemMatcher": []
     }
   ]
 }
