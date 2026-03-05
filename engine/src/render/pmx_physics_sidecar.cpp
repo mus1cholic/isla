@@ -119,8 +119,7 @@ bool parse_collision_layers(const json& root, SidecarData& out_data,
     }
     if (layers_value->size() > kMaxCollisionLayers) {
         const std::string reason = absl::StrCat("collision_layers count ", layers_value->size(),
-                                                " exceeds maximum allowed ",
-                                                kMaxCollisionLayers);
+                                                " exceeds maximum allowed ", kMaxCollisionLayers);
         warnings.emplace_back(absl::StrCat("physics sidecar ", reason));
         if (failure_reason != nullptr) {
             *failure_reason = reason;
@@ -153,8 +152,8 @@ bool parse_collision_layers(const json& root, SidecarData& out_data,
     return true;
 }
 
-bool parse_constraints(const json& root, SidecarData& out_data,
-                       std::vector<std::string>& warnings, std::string* failure_reason) {
+bool parse_constraints(const json& root, SidecarData& out_data, std::vector<std::string>& warnings,
+                       std::string* failure_reason) {
     const json* constraints_value = object_find(root, "constraints");
     if (constraints_value == nullptr || !constraints_value->is_array()) {
         warnings.emplace_back("physics sidecar missing valid constraints array");
@@ -165,8 +164,7 @@ bool parse_constraints(const json& root, SidecarData& out_data,
     }
     if (constraints_value->size() > kMaxConstraints) {
         const std::string reason = absl::StrCat("constraints count ", constraints_value->size(),
-                                                " exceeds maximum allowed ",
-                                                kMaxConstraints);
+                                                " exceeds maximum allowed ", kMaxConstraints);
         warnings.emplace_back(absl::StrCat("physics sidecar ", reason));
         if (failure_reason != nullptr) {
             *failure_reason = reason;
@@ -231,8 +229,7 @@ bool parse_colliders(const json& root, std::span<const std::string> joint_names,
     }
     if (colliders_value->size() > kMaxColliders) {
         const std::string reason = absl::StrCat("colliders count ", colliders_value->size(),
-                                                " exceeds maximum allowed ",
-                                                kMaxColliders);
+                                                " exceeds maximum allowed ", kMaxColliders);
         warnings.emplace_back(absl::StrCat("physics sidecar ", reason));
         if (failure_reason != nullptr) {
             *failure_reason = reason;
@@ -268,10 +265,9 @@ bool parse_colliders(const json& root, std::span<const std::string> joint_names,
             continue;
         }
         if (*layer > kMaxCollisionLayerIndex) {
-            warnings.emplace_back(
-                absl::StrCat("physics sidecar collider layer ", *layer,
-                             " exceeds maximum collision-layer index ",
-                             kMaxCollisionLayerIndex));
+            warnings.emplace_back(absl::StrCat("physics sidecar collider layer ", *layer,
+                                               " exceeds maximum collision-layer index ",
+                                               kMaxCollisionLayerIndex));
             continue;
         }
         if (!known_joint_names.empty() && !known_joint_names.contains(*bone_name)) {
@@ -361,10 +357,9 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
         }
         bytes_read_total += static_cast<std::size_t>(bytes_read);
         if (bytes_read_total > kMaxSidecarFileSizeBytes) {
-            result.error_message = make_sidecar_error(
-                sidecar_path,
-                absl::StrCat("file size exceeds maximum allowed ", kMaxSidecarFileSizeBytes,
-                             " bytes"));
+            result.error_message =
+                make_sidecar_error(sidecar_path, absl::StrCat("file size exceeds maximum allowed ",
+                                                              kMaxSidecarFileSizeBytes, " bytes"));
             return result;
         }
         json_text.append(chunk, static_cast<std::size_t>(bytes_read));
@@ -392,53 +387,52 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
     if (!schema_version.has_value()) {
         result.error_message = make_sidecar_error(sidecar_path, "missing schema_version");
         return result;
-    }
-    if (*schema_version != kExpectedSchemaVersion) {
-        result.error_message = make_sidecar_error(
-            sidecar_path, "schema_version is unsupported: got '" + *schema_version +
-                              "', expected '" + kExpectedSchemaVersion + "'");
-        return result;
-    }
 
-    const json* converter = object_find(root, "converter");
-    if (converter == nullptr || !converter->is_object()) {
-        result.error_message =
-            make_sidecar_error(sidecar_path, "converter section missing or invalid");
-        return result;
-    }
+        if (*schema_version != kExpectedSchemaVersion) {
+            result.error_message = make_sidecar_error(
+                sidecar_path, "schema_version is unsupported: got '" + *schema_version +
+                                  "', expected '" + kExpectedSchemaVersion + "'");
+            return result;
+        }
 
-    SidecarData sidecar;
-    std::string top_level_failure_reason;
-    if (!parse_collision_layers(root, sidecar, result.warnings, &top_level_failure_reason)) {
-        result.error_message = make_sidecar_error(
-            sidecar_path, top_level_failure_reason.empty()
-                              ? "missing required top-level arrays"
-                              : top_level_failure_reason);
-        return result;
-    }
-    if (!parse_colliders(root, joint_names, sidecar, result.warnings, &top_level_failure_reason)) {
-        result.error_message = make_sidecar_error(
-            sidecar_path, top_level_failure_reason.empty()
-                              ? "missing required top-level arrays"
-                              : top_level_failure_reason);
-        return result;
-    }
-    if (!parse_constraints(root, sidecar, result.warnings, &top_level_failure_reason)) {
-        result.error_message = make_sidecar_error(
-            sidecar_path, top_level_failure_reason.empty()
-                              ? "missing required top-level arrays"
-                              : top_level_failure_reason);
-        return result;
-    }
+        const json* converter = object_find(root, "converter");
+        if (converter == nullptr || !converter->is_object()) {
+            result.error_message =
+                make_sidecar_error(sidecar_path, "converter section missing or invalid");
+            return result;
+        }
 
-    result.ok = true;
-    result.sidecar = std::move(sidecar);
-    VLOG(1) << "PmxPhysicsSidecar: loaded '" << sidecar_path
-            << "' colliders=" << result.sidecar.colliders.size()
-            << " constraints=" << result.sidecar.constraints.size()
-            << " collision_layers=" << result.sidecar.collision_layers.size()
-            << " warnings=" << result.warnings.size();
-    return result;
+        SidecarData sidecar;
+        std::string top_level_failure_reason;
+        if (!parse_collision_layers(root, sidecar, result.warnings, &top_level_failure_reason)) {
+            result.error_message = make_sidecar_error(
+                sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
+                                                               : top_level_failure_reason);
+            return result;
+        }
+        if (!parse_colliders(root, joint_names, sidecar, result.warnings,
+                             &top_level_failure_reason)) {
+            result.error_message = make_sidecar_error(
+                sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
+                                                               : top_level_failure_reason);
+            return result;
+        }
+        if (!parse_constraints(root, sidecar, result.warnings, &top_level_failure_reason)) {
+            result.error_message = make_sidecar_error(
+                sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
+                                                               : top_level_failure_reason);
+            return result;
+        }
+
+        result.ok = true;
+        result.sidecar = std::move(sidecar);
+        VLOG(1) << "PmxPhysicsSidecar: loaded '" << sidecar_path
+                << "' colliders=" << result.sidecar.colliders.size()
+                << " constraints=" << result.sidecar.constraints.size()
+                << " collision_layers=" << result.sidecar.collision_layers.size()
+                << " warnings=" << result.warnings.size();
+        return result;
+    }
 }
 
 } // namespace isla::client::pmx_physics_sidecar

@@ -1044,16 +1044,16 @@ TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedSidecarCreatesColliderProxyB
     {
         std::ofstream out(sidecar_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
-        out << "{"
-            << R"("schema_version":"1.0.0",)"
-            << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
-               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-            << R"("collision_layers":[{"index":0,"name":"default"}],)"
-            << "\"colliders\":[{\"id\":\"c0\",\"bone_name\":\"joint0\",\"shape\":\"sphere\","
+        out << "{";
+        out << R"("schema_version":"1.0.0",)";
+        out << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},";
+        out << R"("collision_layers":[{"index":0,"name":"default"}],)";
+        out << "\"colliders\":[{\"id\":\"c0\",\"bone_name\":\"joint0\",\"shape\":\"sphere\","
                "\"offset\":[0,0,0],\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,"
-               "\"layer\":1,\"mask\":1,\"radius\":0.2}],"
-            << "\"constraints\":[]"
-            << "}";
+               "\"layer\":1,\"mask\":1,\"radius\":0.2}],";
+        out << "\"constraints\":[]";
+        out << "}";
     }
 
     FakeSdlRuntime runtime;
@@ -1097,12 +1097,12 @@ TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedInvalidSidecarDoesNotBlockAn
     {
         std::ofstream out(sidecar_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
-        out << "{"
-            << R"("schema_version":"1.0.1",)"
-            << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
-               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-            << R"("collision_layers":[],"colliders":[],"constraints":[])"
-            << "}";
+        out << "{";
+        out << R"("schema_version":"1.0.1",)";
+        out << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},";
+        out << R"("collision_layers":[],"colliders":[],"constraints":[])";
+        out << "}";
     }
 
     FakeSdlRuntime runtime;
