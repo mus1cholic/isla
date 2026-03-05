@@ -98,7 +98,7 @@
           "maximum": 1.0
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   },
   "additionalProperties": true
