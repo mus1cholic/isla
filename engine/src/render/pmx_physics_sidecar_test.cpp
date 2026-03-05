@@ -446,4 +446,3 @@ TEST(PmxPhysicsSidecarTest, OverlongStringFieldsAreRejectedPerEntry) {
 
 } // namespace
 } // namespace isla::client::pmx_physics_sidecar
-

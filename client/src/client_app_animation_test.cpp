@@ -767,7 +767,7 @@ class FakeSdlRuntime final : public ISdlRuntime {
         (void)width;
         (void)height;
         (void)flags;
-        return std::bit_cast<SDL_Window*>(static_cast<std::uintptr_t>(1U));
+        return reinterpret_cast<SDL_Window*>(static_cast<std::uintptr_t>(1U));
     }
     [[nodiscard]] SDL_Renderer* create_renderer(SDL_Window* window) const override {
         (void)window;
@@ -1908,4 +1908,3 @@ TEST_F(ClientAppAnimationTestFixture, StaticLoadMaterialBaselineMatchesEnvAndDef
 
 } // namespace
 } // namespace isla::client
-

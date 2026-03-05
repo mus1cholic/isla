@@ -374,12 +374,12 @@ std::vector<std::filesystem::path> discover_models_directories() {
     std::error_code cwd_error;
     const std::filesystem::path cwd = std::filesystem::current_path(cwd_error);
     if (!cwd_error) {
-        try_add(cwd / std::string(kModelsDirectoryName));
+        try_add(cwd / kModelsDirectoryName);
     }
 
     const char* workspace_dir = std::getenv(kWorkspaceDirEnvVar.data());
     if (workspace_dir != nullptr && workspace_dir[0] != '\0') {
-        try_add(std::filesystem::path(workspace_dir) / std::string(kModelsDirectoryName));
+        try_add(std::filesystem::path(workspace_dir) / kModelsDirectoryName);
     }
     return dirs;
 }
@@ -446,8 +446,7 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
                                            const ResolveStartupAssetOptions& options) {
     PmxConversionOutcome outcome;
     const std::filesystem::path source_path = candidate.path;
-    const std::filesystem::path converted_dir =
-        source_path.parent_path() / std::string(kConvertedSubdirName);
+    const std::filesystem::path converted_dir = source_path.parent_path() / kConvertedSubdirName;
     const std::filesystem::path output_path =
         converted_dir / (source_path.stem().string() + ".auto.glb");
     const std::filesystem::path cache_path =
