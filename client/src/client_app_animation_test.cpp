@@ -7,13 +7,14 @@
 #include <array>
 #include <bit>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
 #include <random>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -549,7 +550,7 @@ std::filesystem::path write_multi_primitive_static_gltf_fixture(const std::files
         texture_b << "fake_png_b";
     }
 
-    const std::string kMultiPrimitiveStaticGltf =
+    constexpr std::string_view kMultiPrimitiveStaticGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -602,7 +603,7 @@ std::filesystem::path
 write_mixed_non_triangle_and_triangle_static_gltf_fixture(const std::filesystem::path& dir) {
     const std::filesystem::path gltf_path = dir / "mixed_line_and_triangle.gltf";
 
-    const std::string kMixedLineAndTriangleGltf =
+    constexpr std::string_view kMixedLineAndTriangleGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -661,7 +662,7 @@ std::filesystem::path write_texturemap_static_gltf_fixture(const std::filesystem
         head_texture << "fake_png_head";
     }
 
-    const std::string kTexturemapStaticGltf =
+    constexpr std::string_view kTexturemapStaticGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -704,7 +705,7 @@ std::filesystem::path write_texturemap_static_gltf_fixture(const std::filesystem
 std::filesystem::path
 write_texturemap_ambiguous_material_fixture(const std::filesystem::path& dir) {
     const std::filesystem::path gltf_path = dir / "texturemap_ambiguous.gltf";
-    const std::string kTexturemapAmbiguousStaticGltf =
+    constexpr std::string_view kTexturemapAmbiguousStaticGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -1907,3 +1908,4 @@ TEST_F(ClientAppAnimationTestFixture, StaticLoadMaterialBaselineMatchesEnvAndDef
 
 } // namespace
 } // namespace isla::client
+

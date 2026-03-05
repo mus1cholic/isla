@@ -81,8 +81,8 @@ class AnimatedGltfTest : public ::testing::Test {
         buffer.insert(buffer.end(), bytes, bytes + sizeof(value));
     }
 
-    static ::testing::AssertionResult write_binary_file(
-        const std::filesystem::path& path, const std::vector<std::uint8_t>& buffer) {
+    static ::testing::AssertionResult write_binary_file(const std::filesystem::path& path,
+                                                        const std::vector<std::uint8_t>& buffer) {
         std::ofstream bin_stream(path, std::ios::binary);
         if (!bin_stream.is_open()) {
             return ::testing::AssertionFailure() << "failed to open binary file: " << path;
@@ -108,18 +108,21 @@ class AnimatedGltfTest : public ::testing::Test {
         return ::testing::AssertionSuccess();
     }
 
-    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(
-        const AnimatedGltfAsset& asset, float sample_time_seconds, EvaluatedPose& pose,
-        std::string* error) {
+    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(const AnimatedGltfAsset& asset,
+                                                                   float sample_time_seconds,
+                                                                   EvaluatedPose& pose,
+                                                                   std::string* error) {
         if (!evaluate_clip_pose(asset, 0U, sample_time_seconds, pose, error)) {
             return ::testing::AssertionFailure() << (error != nullptr ? *error : "");
         }
         return ::testing::AssertionSuccess();
     }
 
-    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(
-        const AnimatedGltfAsset& asset, float sample_time_seconds, EvaluatedPose& pose,
-        std::string* error, ClipPlaybackMode playback_mode) {
+    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(const AnimatedGltfAsset& asset,
+                                                                   float sample_time_seconds,
+                                                                   EvaluatedPose& pose,
+                                                                   std::string* error,
+                                                                   ClipPlaybackMode playback_mode) {
         if (!evaluate_clip_pose(asset, 0U, sample_time_seconds, pose, error, playback_mode)) {
             return ::testing::AssertionFailure() << (error != nullptr ? *error : "");
         }

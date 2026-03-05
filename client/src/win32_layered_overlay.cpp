@@ -4,10 +4,11 @@
 #include <SDL3/SDL.h>
 
 #if defined(_WIN32)
+#include <bit>
 #include <dwmapi.h>
-#include <cstring>
 #include <iomanip>
 #include <windows.h>
+
 #endif
 
 namespace isla::client {
@@ -15,14 +16,6 @@ namespace isla::client {
 #if defined(_WIN32)
 
 namespace {
-
-template <typename To, typename From>
-To bitwise_cast(const From& from) {
-    static_assert(sizeof(To) == sizeof(From));
-    To to{};
-    std::memcpy(&to, &from, sizeof(To));
-    return to;
-}
 
 WNDPROC g_overlay_original_wndproc = nullptr;
 
@@ -114,9 +107,9 @@ bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
     LOG(INFO) << "Win32Overlay: skipping DwmEnableBlurBehindWindow/DwmExtendFrameIntoClientArea "
                  "for DirectComposition path";
 
-    if (!SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED |
-                          SWP_SHOWWINDOW)) {
+    if (SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED |
+                         SWP_SHOWWINDOW) == 0) {
         LOG(ERROR) << "Win32Overlay: SetWindowPos failed";
         return false;
     }
@@ -124,8 +117,8 @@ bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
 
     if (g_overlay_original_wndproc == nullptr) {
         const LONG_PTR previous_wndproc =
-            SetWindowLongPtr(hwnd, GWLP_WNDPROC, bitwise_cast<LONG_PTR>(&overlay_window_proc));
-        g_overlay_original_wndproc = bitwise_cast<WNDPROC>(previous_wndproc);
+            SetWindowLongPtr(hwnd, GWLP_WNDPROC, std::bit_cast<LONG_PTR>(&overlay_window_proc));
+        g_overlay_original_wndproc = std::bit_cast<WNDPROC>(previous_wndproc);
         if (g_overlay_original_wndproc == nullptr && GetLastError() != 0) {
             LOG(ERROR) << "Win32Overlay: failed to install overlay window procedure";
             return false;
@@ -148,7 +141,7 @@ bool refresh_win32_alpha_composited_overlay(SDL_Window* window) {
     }
 
     if (g_overlay_composition_mode == OverlayCompositionMode::LayeredFallback) {
-        if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
+        if (SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) == 0) {
             const DWORD layered_error = GetLastError();
             LOG_EVERY_N_SEC(WARNING, 2.0)
                 << "Win32Overlay: layered fallback refresh failed "

@@ -4,6 +4,7 @@
 
 #include "absl/log/log.h"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -103,10 +104,10 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path, std::string_view
 
     std::string json_text;
     constexpr std::size_t kReadChunkBytes = 4096U;
-    std::string chunk(kReadChunkBytes, '\0');
+    std::array<char, kReadChunkBytes> chunk{};
     std::size_t bytes_read_total = 0U;
     while (stream.good()) {
-        stream.read(chunk.data(), static_cast<std::streamsize>(kReadChunkBytes));
+        stream.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
         const std::streamsize bytes_read = stream.gcount();
         if (bytes_read <= 0) {
             break;

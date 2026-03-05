@@ -386,11 +386,11 @@ std::vector<std::filesystem::path> discover_models_directories() {
 
 std::vector<CandidateFile> list_candidates_for_directory(const std::filesystem::path& models_dir) {
     std::vector<CandidateFile> preferred;
-    const std::array<std::pair<const char*, CandidateKind>, 3U> preferred_names = {{
+    const std::array<std::pair<const char*, CandidateKind>, 3U> preferred_names = { {
         { "model.glb", CandidateKind::Glb },
         { "model.gltf", CandidateKind::Gltf },
         { "model.pmx", CandidateKind::Pmx },
-    }};
+    } };
     for (const auto& [name, kind] : preferred_names) {
         const std::filesystem::path candidate = models_dir / name;
         std::error_code exists_error;

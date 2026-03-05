@@ -4,8 +4,8 @@
 
 #include <array>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -254,13 +254,13 @@ class ModelIntakeFixture : public ::testing::Test {
                                           std::string_view contents) const {
         std::ofstream out(model_path(filename));
         if (!out.is_open()) {
-            return ::testing::AssertionFailure() << "failed to open text file: "
-                                                 << model_path(filename);
+            return ::testing::AssertionFailure()
+                   << "failed to open text file: " << model_path(filename);
         }
         out << contents;
         if (!out.good()) {
-            return ::testing::AssertionFailure() << "failed to write text file: "
-                                                 << model_path(filename);
+            return ::testing::AssertionFailure()
+                   << "failed to write text file: " << model_path(filename);
         }
         return ::testing::AssertionSuccess();
     }
