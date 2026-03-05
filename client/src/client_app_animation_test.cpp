@@ -635,6 +635,109 @@ write_mixed_non_triangle_and_triangle_static_gltf_fixture(const std::filesystem:
     return gltf_path;
 }
 
+std::filesystem::path write_texturemap_static_gltf_fixture(const std::filesystem::path& dir) {
+    const std::filesystem::path gltf_path = dir / "texturemap_static.gltf";
+    const std::filesystem::path body_texture_path = dir / "body.png";
+    const std::filesystem::path head_override_path = dir / "head_override.png";
+    {
+        std::ofstream body_texture(body_texture_path, std::ios::binary);
+        if (!body_texture.is_open()) {
+            ADD_FAILURE() << "failed to open body texture fixture path: " << body_texture_path;
+            return {};
+        }
+        body_texture << "fake_png_body";
+    }
+    {
+        std::ofstream head_texture(head_override_path, std::ios::binary);
+        if (!head_texture.is_open()) {
+            ADD_FAILURE() << "failed to open head override fixture path: " << head_override_path;
+            return {};
+        }
+        head_texture << "fake_png_head";
+    }
+
+    constexpr char kTexturemapStaticGltf[] =
+        "{"
+        "\"asset\":{\"version\":\"2.0\"},"
+        "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/"
+        "AAAAAAAAgD8AAIA/"
+        "\",\"byteLength\":72}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":72}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":0,\"byteOffset\":36,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}"
+        "],"
+        "\"images\":[{\"uri\":\"body.png\"}],"
+        "\"textures\":[{\"source\":0}],"
+        "\"materials\":["
+        "{\"name\":\"Head\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[1.0,1.0,1.0,1.0]}},"
+        "{\"name\":\"Body\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.9,0.8,0.7,1.0],"
+        "\"baseColorTexture\":{\"index\":0}}}"
+        "],"
+        "\"meshes\":[{\"primitives\":["
+        "{\"attributes\":{\"POSITION\":0},\"material\":0,\"mode\":4},"
+        "{\"attributes\":{\"POSITION\":1},\"material\":1,\"mode\":4}"
+        "]}],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"scenes\":[{\"nodes\":[0]}],"
+        "\"scene\":0"
+        "}";
+    std::ofstream gltf_out(gltf_path, std::ios::binary);
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open texturemap fixture glTF output path: " << gltf_path;
+        return {};
+    }
+    gltf_out << kTexturemapStaticGltf;
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write texturemap fixture glTF output path: " << gltf_path;
+        return {};
+    }
+    return gltf_path;
+}
+
+std::filesystem::path
+write_texturemap_ambiguous_material_fixture(const std::filesystem::path& dir) {
+    const std::filesystem::path gltf_path = dir / "texturemap_ambiguous.gltf";
+    constexpr char kTexturemapAmbiguousStaticGltf[] =
+        "{"
+        "\"asset\":{\"version\":\"2.0\"},"
+        "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAIA/"
+        "AAAAAAAAgD8AAIA/"
+        "\",\"byteLength\":72}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":72}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":0,\"byteOffset\":36,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}"
+        "],"
+        "\"materials\":["
+        "{\"name\":\"Shared\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[1.0,1.0,1.0,1.0]}},"
+        "{\"name\":\"Shared\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.6,0.6,0.6,1.0]}}"
+        "],"
+        "\"meshes\":[{\"primitives\":["
+        "{\"attributes\":{\"POSITION\":0},\"material\":0,\"mode\":4},"
+        "{\"attributes\":{\"POSITION\":1},\"material\":1,\"mode\":4}"
+        "]}],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"scenes\":[{\"nodes\":[0]}],"
+        "\"scene\":0"
+        "}";
+    std::ofstream gltf_out(gltf_path, std::ios::binary);
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open ambiguous texturemap fixture glTF output path: "
+                      << gltf_path;
+        return {};
+    }
+    gltf_out << kTexturemapAmbiguousStaticGltf;
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write ambiguous texturemap fixture glTF output path: "
+                      << gltf_path;
+        return {};
+    }
+    return gltf_path;
+}
+
 class FakeSdlRuntime final : public ISdlRuntime {
   public:
     std::uint64_t now_ticks_ns = 0U;
@@ -1354,6 +1457,300 @@ TEST(ClientAppAnimationTest, StaticLoadPreservesPerPrimitiveMaterialsAndSharedTr
                     world.objects()[1].transform.position.y);
     EXPECT_FLOAT_EQ(world.objects()[0].transform.position.z,
                     world.objects()[1].transform.position.z);
+}
+
+TEST(ClientAppAnimationTest, StaticLoadAppliesTextureRemapByMaterialNameWhenMissing) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    const std::filesystem::path texturemap_path =
+        temp_dir.path() / "texturemap_static.texturemap.json";
+    {
+        std::ofstream out(texturemap_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{"
+            << "\"schema_version\":\"1.0.0\","
+            << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
+               "only\"},"
+            << "\"mappings\":["
+            << "{"
+            << "\"id\":\"head_by_name\","
+            << "\"target\":{\"material_name\":\"Head\"},"
+            << "\"albedo_texture\":\"head_override.png\","
+            << "\"alpha_cutoff\":0.5"
+            << "}"
+            << "]"
+            << "}";
+        ASSERT_TRUE(out.good());
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.materials().size(), 2U);
+    ASSERT_EQ(world.objects().size(), 2U);
+    EXPECT_EQ(world.materials()[0].albedo_texture_path,
+              (temp_dir.path() / "head_override.png").lexically_normal().string());
+    EXPECT_NEAR(world.materials()[0].alpha_cutoff, 0.5F, 1.0e-6F);
+    EXPECT_EQ(world.materials()[1].albedo_texture_path,
+              (temp_dir.path() / "body.png").lexically_normal().string());
+}
+
+TEST(ClientAppAnimationTest, StaticLoadFailsWhenTextureRemapSidecarSchemaIsInvalid) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_invalid");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    const std::filesystem::path texturemap_path =
+        temp_dir.path() / "texturemap_static.texturemap.json";
+    {
+        std::ofstream out(texturemap_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{"
+            << "\"schema_version\":\"1.0.1\","
+            << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
+               "only\"},"
+            << "\"mappings\":[]"
+            << "}";
+        ASSERT_TRUE(out.good());
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    EXPECT_TRUE(world.meshes().empty());
+    EXPECT_TRUE(world.objects().empty());
+}
+
+TEST(ClientAppAnimationTest, StaticLoadTextureRemapAlwaysOverridesExistingGltfTexture) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_always");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    {
+        std::ofstream override_tex(temp_dir.path() / "body_override.png", std::ios::binary);
+        ASSERT_TRUE(override_tex.is_open());
+        override_tex << "fake_png_body_override";
+    }
+    const std::filesystem::path texturemap_path =
+        temp_dir.path() / "texturemap_static.texturemap.json";
+    {
+        std::ofstream out(texturemap_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{"
+            << "\"schema_version\":\"1.0.0\","
+            << "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+            << "\"mappings\":[{"
+            << "\"id\":\"body_override\","
+            << "\"target\":{\"material_name\":\"Body\"},"
+            << "\"albedo_texture\":\"body_override.png\""
+            << "}]"
+            << "}";
+        ASSERT_TRUE(out.good());
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.materials().size(), 2U);
+    EXPECT_EQ(world.materials()[1].albedo_texture_path,
+              (temp_dir.path() / "body_override.png").lexically_normal().string());
+}
+
+TEST(ClientAppAnimationTest, StaticLoadTextureRemapAppliesByMeshPrimitiveTuple) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_tuple");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    {
+        std::ofstream override_tex(temp_dir.path() / "body_tuple_override.png", std::ios::binary);
+        ASSERT_TRUE(override_tex.is_open());
+        override_tex << "fake_png_body_tuple_override";
+    }
+    const std::filesystem::path texturemap_path =
+        temp_dir.path() / "texturemap_static.texturemap.json";
+    {
+        std::ofstream out(texturemap_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{"
+            << "\"schema_version\":\"1.0.0\","
+            << "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+            << "\"mappings\":[{"
+            << "\"id\":\"body_by_tuple\","
+            << "\"target\":{\"mesh_index\":0,\"primitive_index\":1},"
+            << "\"albedo_texture\":\"body_tuple_override.png\""
+            << "}]"
+            << "}";
+        ASSERT_TRUE(out.good());
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.materials().size(), 2U);
+    EXPECT_EQ(world.materials()[1].albedo_texture_path,
+              (temp_dir.path() / "body_tuple_override.png").lexically_normal().string());
+}
+
+TEST(ClientAppAnimationTest, StaticLoadTextureRemapDuplicateKeyCollisionKeepsFirstMappingOnly) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_duplicate");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    {
+        std::ofstream tex_first(temp_dir.path() / "head_first.png", std::ios::binary);
+        ASSERT_TRUE(tex_first.is_open());
+        tex_first << "fake_png_head_first";
+    }
+    {
+        std::ofstream tex_second(temp_dir.path() / "head_second.png", std::ios::binary);
+        ASSERT_TRUE(tex_second.is_open());
+        tex_second << "fake_png_head_second";
+    }
+    const std::filesystem::path texturemap_path =
+        temp_dir.path() / "texturemap_static.texturemap.json";
+    {
+        std::ofstream out(texturemap_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{"
+            << "\"schema_version\":\"1.0.0\","
+            << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
+               "only\"},"
+            << "\"mappings\":["
+            << "{"
+            << "\"id\":\"head_first\","
+            << "\"target\":{\"material_name\":\"Head\"},"
+            << "\"albedo_texture\":\"head_first.png\""
+            << "},"
+            << "{"
+            << "\"id\":\"head_second_duplicate\","
+            << "\"target\":{\"material_name\":\"Head\"},"
+            << "\"albedo_texture\":\"head_second.png\""
+            << "}"
+            << "]"
+            << "}";
+        ASSERT_TRUE(out.good());
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.materials().size(), 2U);
+    EXPECT_EQ(world.materials()[0].albedo_texture_path,
+              (temp_dir.path() / "head_first.png").lexically_normal().string());
+}
+
+TEST(ClientAppAnimationTest, StaticLoadTextureRemapAmbiguousMaterialNameSkipsOverride) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_ambiguous");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_texturemap_ambiguous_material_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    {
+        std::ofstream tex(temp_dir.path() / "shared_override.png", std::ios::binary);
+        ASSERT_TRUE(tex.is_open());
+        tex << "fake_png_shared_override";
+    }
+    const std::filesystem::path texturemap_path =
+        temp_dir.path() / "texturemap_ambiguous.texturemap.json";
+    {
+        std::ofstream out(texturemap_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{"
+            << "\"schema_version\":\"1.0.0\","
+            << "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+            << "\"mappings\":[{"
+            << "\"id\":\"shared_by_name\","
+            << "\"target\":{\"material_name\":\"Shared\"},"
+            << "\"albedo_texture\":\"shared_override.png\""
+            << "}]"
+            << "}";
+        ASSERT_TRUE(out.good());
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.materials().size(), 2U);
+    EXPECT_TRUE(world.materials()[0].albedo_texture_path.empty());
+    EXPECT_TRUE(world.materials()[1].albedo_texture_path.empty());
+}
+
+TEST(ClientAppAnimationTest, StaticLoadTextureRemapMissingTextureFileSkipsMapping) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_texturemap_missing_file");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path = write_texturemap_static_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    ASSERT_TRUE(std::filesystem::exists(gltf_path));
+
+    const std::filesystem::path texturemap_path =
+        temp_dir.path() / "texturemap_static.texturemap.json";
+    {
+        std::ofstream out(texturemap_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{"
+            << "\"schema_version\":\"1.0.0\","
+            << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
+               "only\"},"
+            << "\"mappings\":[{"
+            << "\"id\":\"head_missing_file\","
+            << "\"target\":{\"material_name\":\"Head\"},"
+            << "\"albedo_texture\":\"missing_head.png\""
+            << "}]"
+            << "}";
+        ASSERT_TRUE(out.good());
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", "");
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", gltf_path.string().c_str());
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_EQ(world.materials().size(), 2U);
+    EXPECT_TRUE(world.materials()[0].albedo_texture_path.empty());
+    EXPECT_EQ(world.materials()[1].albedo_texture_path,
+              (temp_dir.path() / "body.png").lexically_normal().string());
 }
 
 TEST(ClientAppAnimationTest, AnimatedEnvFallbackToStaticPreservesPerPrimitiveMaterialParity) {

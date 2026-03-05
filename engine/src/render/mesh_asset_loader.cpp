@@ -234,6 +234,10 @@ MeshAssetLoadResult load_obj(std::string_view asset_path) {
     primitives.push_back(MeshAssetPrimitive{
         .triangles = triangles,
         .material = {},
+        .has_source_identity = false,
+        .source_mesh_index = 0U,
+        .source_primitive_index = 0U,
+        .source_material_name = {},
     });
     return MeshAssetLoadResult{
         .ok = true,
@@ -340,12 +344,14 @@ bool inspect_triangle_primitive(const cgltf_primitive& primitive, TrianglePrimit
     return true;
 }
 
-std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cgltf_image* image) {
-    if (image == nullptr || image->uri == nullptr || image->uri[0] == '\0') {
+std::string resolve_asset_relative_texture_path_impl(std::string_view asset_path,
+                                                     std::string_view texture_path,
+                                                     std::string_view source_label) {
+    if (texture_path.empty()) {
         return {};
     }
 
-    const std::string uri(image->uri);
+    const std::string uri(texture_path);
     if (uri.rfind("data:", 0U) == 0U || uri.rfind("http://", 0U) == 0U ||
         uri.rfind("https://", 0U) == 0U || uri.rfind("file://", 0U) == 0U) {
         return {};
@@ -355,15 +361,15 @@ std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cg
         uri[1] == ':' && (uri[2] == '/' || uri[2] == '\\');
     const bool has_unc_prefix = uri.rfind("\\\\", 0U) == 0U || uri.rfind("//", 0U) == 0U;
     if (has_windows_drive_absolute_prefix || has_unc_prefix) {
-        LOG(WARNING) << "MeshAssetLoader: rejecting absolute image URI path in glTF material: '"
-                     << uri << "'";
+        LOG(WARNING) << "MeshAssetLoader: rejecting absolute " << source_label << " path: '" << uri
+                     << "'";
         return {};
     }
 
     const std::filesystem::path uri_path(uri);
     if (uri_path.is_absolute() || uri_path.has_root_name() || uri_path.has_root_directory()) {
-        LOG(WARNING) << "MeshAssetLoader: rejecting absolute image URI path in glTF material: '"
-                     << uri << "'";
+        LOG(WARNING) << "MeshAssetLoader: rejecting absolute " << source_label << " path: '" << uri
+                     << "'";
         return {};
     }
     const std::filesystem::path normalized_uri_path = uri_path.lexically_normal();
@@ -373,8 +379,8 @@ std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cg
             continue;
         }
         if (component == "..") {
-            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path with parent traversal: '"
-                         << uri << "'";
+            LOG(WARNING) << "MeshAssetLoader: rejecting " << source_label
+                         << " path with parent traversal: '" << uri << "'";
             return {};
         }
         break;
@@ -397,25 +403,33 @@ std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cg
         std::transform(lhs.begin(), lhs.end(), lhs.begin(), ::towlower);
         std::transform(rhs.begin(), rhs.end(), rhs.begin(), ::towlower);
         if (lhs != rhs) {
-            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
-                         << uri << "'";
+            LOG(WARNING) << "MeshAssetLoader: rejecting " << source_label
+                         << " path escaping asset directory: '" << uri << "'";
             return {};
         }
 #else
         if (*base_it != *resolved_it) {
-            LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
-                         << uri << "'";
+            LOG(WARNING) << "MeshAssetLoader: rejecting " << source_label
+                         << " path escaping asset directory: '" << uri << "'";
             return {};
         }
 #endif
     }
     if (base_it != normalized_asset_dir.end()) {
-        LOG(WARNING) << "MeshAssetLoader: rejecting image URI path escaping asset directory: '"
-                     << uri << "'";
+        LOG(WARNING) << "MeshAssetLoader: rejecting " << source_label
+                     << " path escaping asset directory: '" << uri << "'";
         return {};
     }
 
     return resolved.string();
+}
+
+std::string resolve_gltf_image_uri_to_path(std::string_view asset_path, const cgltf_image* image) {
+    if (image == nullptr || image->uri == nullptr || image->uri[0] == '\0') {
+        return {};
+    }
+    return resolve_asset_relative_texture_path_impl(asset_path, image->uri,
+                                                    "image URI in glTF material");
 }
 
 MeshAssetMaterial make_material_from_gltf_primitive(std::string_view asset_path,
@@ -536,6 +550,12 @@ MeshAssetLoadResult load_gltf(std::string_view asset_path) {
             MeshAssetPrimitive primitive_chunk{};
             primitive_chunk.triangles.reserve(inspected.triangle_count);
             primitive_chunk.material = make_material_from_gltf_primitive(asset_path, inspected);
+            primitive_chunk.has_source_identity = true;
+            primitive_chunk.source_mesh_index = static_cast<std::size_t>(mesh_i);
+            primitive_chunk.source_primitive_index = static_cast<std::size_t>(prim_i);
+            if (inspected.material != nullptr && inspected.material->name != nullptr) {
+                primitive_chunk.source_material_name = inspected.material->name;
+            }
 
             if (inspected.indices_accessor != nullptr) {
                 for (cgltf_size i = 0U; i < inspected.indices_accessor->count; i += 3U) {
@@ -792,6 +812,12 @@ MeshAssetLoadResult load_from_file(std::string_view asset_path) {
         .triangles = {},
         .error_message = "unsupported mesh asset extension",
     };
+}
+
+std::string resolve_asset_relative_texture_path(std::string_view asset_path,
+                                                std::string_view texture_path) {
+    return resolve_asset_relative_texture_path_impl(asset_path, texture_path,
+                                                    "runtime texture override");
 }
 
 } // namespace isla::client::mesh_asset_loader

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,6 +24,10 @@ struct MeshAssetMaterial {
 struct MeshAssetPrimitive {
     std::vector<Triangle> triangles;
     MeshAssetMaterial material{};
+    bool has_source_identity = false;
+    std::size_t source_mesh_index = 0U;
+    std::size_t source_primitive_index = 0U;
+    std::string source_material_name;
 };
 
 struct MeshAssetLoadResult {
@@ -34,5 +39,10 @@ struct MeshAssetLoadResult {
 };
 
 [[nodiscard]] MeshAssetLoadResult load_from_file(std::string_view asset_path);
+
+// Resolves a texture path relative to the asset's parent directory while enforcing
+// the same hardening rules used for glTF image URI resolution.
+[[nodiscard]] std::string resolve_asset_relative_texture_path(std::string_view asset_path,
+                                                              std::string_view texture_path);
 
 } // namespace isla::client::mesh_asset_loader

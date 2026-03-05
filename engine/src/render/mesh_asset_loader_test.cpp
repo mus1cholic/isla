@@ -103,6 +103,7 @@ TEST(MeshAssetLoaderTests, LoadsObjAndTriangulatesFace) {
     ASSERT_EQ(loaded.primitives.size(), 1U);
     ASSERT_EQ(loaded.triangles.size(), 2U);
     ASSERT_EQ(loaded.primitives[0].triangles.size(), loaded.triangles.size());
+    EXPECT_FALSE(loaded.primitives[0].has_source_identity);
 
     EXPECT_FLOAT_EQ(loaded.triangles[0].a.x, 0.0F);
     EXPECT_FLOAT_EQ(loaded.triangles[0].a.y, 0.0F);
@@ -177,7 +178,14 @@ TEST(MeshAssetLoaderTests, LoadsAllTrianglePrimitivesAcrossMeshes) {
 
     const MeshAssetLoadResult loaded = load_from_file(gltf_path.string());
     ASSERT_TRUE(loaded.ok) << loaded.error_message;
+    ASSERT_EQ(loaded.primitives.size(), 2U);
     ASSERT_EQ(loaded.triangles.size(), 2U);
+    EXPECT_TRUE(loaded.primitives[0].has_source_identity);
+    EXPECT_TRUE(loaded.primitives[1].has_source_identity);
+    EXPECT_EQ(loaded.primitives[0].source_mesh_index, 0U);
+    EXPECT_EQ(loaded.primitives[0].source_primitive_index, 0U);
+    EXPECT_EQ(loaded.primitives[1].source_mesh_index, 1U);
+    EXPECT_EQ(loaded.primitives[1].source_primitive_index, 0U);
     EXPECT_FLOAT_EQ(loaded.triangles[0].a.z, 0.0F);
     EXPECT_FLOAT_EQ(loaded.triangles[1].a.z, 1.0F);
 }
@@ -325,6 +333,10 @@ TEST(MeshAssetLoaderTests, PreservesPerPrimitiveMaterialMappingForMultiPrimitive
     ASSERT_TRUE(loaded.ok) << loaded.error_message;
     ASSERT_EQ(loaded.primitives.size(), 2U);
     ASSERT_EQ(loaded.triangles.size(), 2U);
+    EXPECT_EQ(loaded.primitives[0].source_mesh_index, 0U);
+    EXPECT_EQ(loaded.primitives[0].source_primitive_index, 0U);
+    EXPECT_EQ(loaded.primitives[1].source_mesh_index, 0U);
+    EXPECT_EQ(loaded.primitives[1].source_primitive_index, 1U);
     EXPECT_EQ(loaded.primitives[0].triangles.size(), 1U);
     EXPECT_EQ(loaded.primitives[1].triangles.size(), 1U);
     EXPECT_NEAR(loaded.primitives[0].material.base_color.r, 0.25F, 1.0e-6F);
@@ -336,6 +348,15 @@ TEST(MeshAssetLoaderTests, PreservesPerPrimitiveMaterialMappingForMultiPrimitive
     EXPECT_NEAR(loaded.primitives[1].material.base_color.g, 0.0F, 1.0e-6F);
     EXPECT_NEAR(loaded.primitives[1].material.base_color.b, 0.0F, 1.0e-6F);
     EXPECT_EQ(loaded.primitives[1].material.blend_mode, MaterialBlendMode::Opaque);
+}
+
+TEST(MeshAssetLoaderTests, ResolveAssetRelativeTexturePathRejectsTraversalAndAbsolutePaths) {
+    const std::string base = "models/example/model.gltf";
+    EXPECT_TRUE(resolve_asset_relative_texture_path(base, "../outside.png").empty());
+    EXPECT_TRUE(resolve_asset_relative_texture_path(base, "C:/Windows/win.ini").empty());
+    EXPECT_TRUE(resolve_asset_relative_texture_path(base, "\\\\server\\share\\a.png").empty());
+    EXPECT_TRUE(resolve_asset_relative_texture_path(base, "https://example.com/a.png").empty());
+    EXPECT_FALSE(resolve_asset_relative_texture_path(base, "textures/a.png").empty());
 }
 
 TEST(MeshAssetLoaderTests, ObjLoadResultPrimitivesCompatibilityMatchesLegacyTriangles) {

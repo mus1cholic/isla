@@ -50,7 +50,7 @@ Operational interpretation:
 >   (no `std::system`), robust converter-template token handling, and regression coverage via
 >   `//client/src:model_intake_test`).
 > - Phases 8-10 remain pending runtime/tooling expansion.
-> - Phase 7.5 (runtime material/primitive introspection + deterministic texture-remap override path) remains pending.
+> - Phase 7.5 is complete (runtime material/primitive introspection + deterministic texture-remap override path for static load/fallback with sidecar-driven overrides and diagnostics).
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is now partially implemented in Phase 7 and finalized in Phase 10.
 > - PMX conversion remains orchestration-driven (external converter command), not native PMX runtime parsing.
 >
@@ -144,9 +144,21 @@ Operational interpretation:
 > - `client/src/BUILD` / `.github/workflows/ci.yml` (Bazel target + Windows smoke inclusion for
 >   `//client/src:model_intake_test`)
 > - `tools/pmx/README.md` (Phase 7 intake behavior + troubleshooting updates)
+>
+> Phase 7.5 artifacts:
+> - `engine/src/render/include/mesh_asset_loader.hpp` / `engine/src/render/mesh_asset_loader.cpp` (primitive source identity metadata + reusable hardened asset-relative texture-path resolver)
+> - `engine/src/render/include/pmx_texture_remap_sidecar.hpp` / `engine/src/render/pmx_texture_remap_sidecar.cpp` (texture remap sidecar parser/policy ingestion)
+> - `client/src/client_app.cpp` (static startup texturemap ingestion/application + deterministic inventory diagnostics)
+> - `engine/src/render/mesh_asset_loader_test.cpp` / `client/src/client_app_animation_test.cpp` (Phase 7.5 regression coverage)
 
 ### Changelog
 
+- 2026-03-05 (Phase 7.5): added static runtime primitive/material source-identity introspection
+  (source mesh/primitive/material name), startup structured material inventory diagnostics, and
+  deterministic `<asset>.texturemap.json` override ingestion with policy support (`if_missing`,
+  `always`), keying by material name or mesh/primitive tuple, duplicate/ambiguous/unknown-target
+  diagnostics, missing-file handling, and reuse of hardened asset-relative texture-path constraints
+  for override path validation.
 - 2026-03-05 (Phase 7 hardening): replaced shell-based PMX converter invocation with shell-less
   argv process execution (`_spawnvp`/`fork+execvp`) to mitigate command-injection risk, added
   regression coverage for dangerous filenames and shell-metacharacter templates, fixed Windows path

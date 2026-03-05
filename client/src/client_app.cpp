@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -14,11 +15,13 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "animated_mesh_skinning.hpp"
 #include "engine/src/render/include/mesh_asset_loader.hpp"
 #include "engine/src/render/include/model_renderer_skinning_utils.hpp"
+#include "engine/src/render/include/pmx_texture_remap_sidecar.hpp"
 #include "model_intake.hpp"
 #include "win32_layered_overlay.hpp"
 
@@ -313,6 +316,186 @@ std::vector<std::string> collect_joint_names(const animated_gltf::AnimatedGltfAs
     return names;
 }
 
+struct StaticTextureRemapApplicationResult {
+    bool sidecar_load_failed = false;
+    std::vector<bool> applied_from_texturemap;
+    std::vector<std::string> warnings;
+    std::vector<std::string> infos;
+    std::size_t mappings_total = 0U;
+    std::size_t mappings_applied = 0U;
+    std::size_t mappings_skipped_duplicate = 0U;
+    std::size_t mappings_skipped_ambiguous = 0U;
+    std::size_t mappings_skipped_missing_texture = 0U;
+    std::size_t mappings_skipped_unmatched = 0U;
+    std::size_t mappings_skipped_if_missing_existing_texture = 0U;
+    std::size_t mappings_skipped_rejected_path = 0U;
+};
+
+std::string to_lower_ascii_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+std::string mapping_target_key(const pmx_texture_remap_sidecar::Mapping& mapping) {
+    if (mapping.target.material_name.has_value()) {
+        return "material:" + to_lower_ascii_copy(*mapping.target.material_name);
+    }
+    if (mapping.target.mesh_index.has_value() && mapping.target.primitive_index.has_value()) {
+        return "index:" + std::to_string(*mapping.target.mesh_index) + ":" +
+               std::to_string(*mapping.target.primitive_index);
+    }
+    return "unknown_target";
+}
+
+StaticTextureRemapApplicationResult
+apply_static_texture_remap(const std::string& asset_path,
+                           std::span<mesh_asset_loader::MeshAssetPrimitive> primitives) {
+    StaticTextureRemapApplicationResult result;
+    result.applied_from_texturemap.assign(primitives.size(), false);
+    if (primitives.empty()) {
+        return result;
+    }
+
+    std::filesystem::path sidecar_path(asset_path);
+    sidecar_path.replace_extension(".texturemap.json");
+    std::error_code exists_error;
+    const bool sidecar_exists = std::filesystem::exists(sidecar_path, exists_error);
+    if (exists_error) {
+        result.warnings.push_back("failed checking texture remap sidecar path '" +
+                                  sidecar_path.string() + "': " + exists_error.message());
+        return result;
+    }
+    if (!sidecar_exists) {
+        return result;
+    }
+
+    const pmx_texture_remap_sidecar::SidecarLoadResult sidecar_loaded =
+        pmx_texture_remap_sidecar::load_from_file(sidecar_path.string(), asset_path);
+    result.mappings_total = sidecar_loaded.sidecar.mappings.size();
+    for (const std::string& warning : sidecar_loaded.warnings) {
+        result.warnings.push_back("texture remap sidecar warning: " + warning);
+    }
+    if (!sidecar_loaded.ok) {
+        result.sidecar_load_failed = true;
+        result.warnings.push_back("failed to load texture remap sidecar '" + sidecar_path.string() +
+                                  "': " + sidecar_loaded.error_message);
+        return result;
+    }
+    result.infos.push_back(
+        "loaded texture remap sidecar '" + sidecar_path.string() +
+        "' mappings=" + std::to_string(sidecar_loaded.sidecar.mappings.size()) + " mode=" +
+        (sidecar_loaded.sidecar.override_mode == pmx_texture_remap_sidecar::OverrideMode::Always
+             ? "always"
+             : "if_missing"));
+
+    std::unordered_set<std::string> seen_mapping_keys;
+    seen_mapping_keys.reserve(sidecar_loaded.sidecar.mappings.size());
+    for (const pmx_texture_remap_sidecar::Mapping& mapping : sidecar_loaded.sidecar.mappings) {
+        const std::string mapping_key = mapping_target_key(mapping);
+        if (!mapping_key.empty() && seen_mapping_keys.contains(mapping_key)) {
+            result.warnings.push_back("texture remap mapping id='" + mapping.id +
+                                      "' skipped due to duplicate key collision key='" +
+                                      mapping_key + "'");
+            ++result.mappings_skipped_duplicate;
+            continue;
+        }
+        if (!mapping_key.empty()) {
+            seen_mapping_keys.insert(mapping_key);
+        }
+
+        std::vector<std::size_t> matches;
+        matches.reserve(4U);
+        if (mapping.target.material_name.has_value()) {
+            const std::string target_name_lower =
+                to_lower_ascii_copy(*mapping.target.material_name);
+            for (std::size_t i = 0U; i < primitives.size(); ++i) {
+                const std::string material_name_lower =
+                    to_lower_ascii_copy(primitives[i].source_material_name);
+                if (!material_name_lower.empty() && material_name_lower == target_name_lower) {
+                    matches.push_back(i);
+                }
+            }
+        } else if (mapping.target.mesh_index.has_value() &&
+                   mapping.target.primitive_index.has_value()) {
+            for (std::size_t i = 0U; i < primitives.size(); ++i) {
+                if (!primitives[i].has_source_identity) {
+                    continue;
+                }
+                if (primitives[i].source_mesh_index == *mapping.target.mesh_index &&
+                    primitives[i].source_primitive_index == *mapping.target.primitive_index) {
+                    matches.push_back(i);
+                }
+            }
+        }
+
+        if (matches.empty()) {
+            result.warnings.push_back("texture remap mapping id='" + mapping.id +
+                                      "' target did not match any primitive key='" + mapping_key +
+                                      "'");
+            ++result.mappings_skipped_unmatched;
+            continue;
+        }
+        if (matches.size() > 1U) {
+            result.warnings.push_back("texture remap mapping id='" + mapping.id +
+                                      "' is ambiguous and matched multiple primitives key='" +
+                                      mapping_key + "'");
+            ++result.mappings_skipped_ambiguous;
+            continue;
+        }
+
+        if (mapping.albedo_texture_path.empty()) {
+            result.warnings.push_back("texture remap mapping id='" + mapping.id +
+                                      "' has rejected or unsupported albedo texture path key='" +
+                                      mapping_key + "'");
+            ++result.mappings_skipped_rejected_path;
+            continue;
+        }
+
+        const std::filesystem::path texture_path(mapping.albedo_texture_path);
+        std::error_code texture_exists_error;
+        if (!std::filesystem::exists(texture_path, texture_exists_error) || texture_exists_error) {
+            result.warnings.push_back("texture remap mapping id='" + mapping.id +
+                                      "' points to missing texture file '" +
+                                      mapping.albedo_texture_path + "' key='" + mapping_key + "'");
+            ++result.mappings_skipped_missing_texture;
+            continue;
+        }
+
+        const std::size_t primitive_index = matches.front();
+        mesh_asset_loader::MeshAssetPrimitive& primitive = primitives[primitive_index];
+        if (sidecar_loaded.sidecar.override_mode ==
+                pmx_texture_remap_sidecar::OverrideMode::IfMissing &&
+            !primitive.material.albedo_texture_path.empty()) {
+            ++result.mappings_skipped_if_missing_existing_texture;
+            result.infos.push_back("texture remap mapping id='" + mapping.id +
+                                   "' skipped by policy override_mode=if_missing because target "
+                                   "already has glTF texture key='" +
+                                   mapping_key + "'");
+            continue;
+        }
+        primitive.material.albedo_texture_path = mapping.albedo_texture_path;
+        if (mapping.alpha_cutoff.has_value()) {
+            primitive.material.alpha_cutoff = *mapping.alpha_cutoff;
+        }
+        result.applied_from_texturemap[primitive_index] = true;
+        ++result.mappings_applied;
+    }
+
+    result.infos.push_back(
+        "texture remap apply summary mappings_total=" + std::to_string(result.mappings_total) +
+        " mappings_applied=" + std::to_string(result.mappings_applied) +
+        " skipped_duplicate=" + std::to_string(result.mappings_skipped_duplicate) +
+        " skipped_ambiguous=" + std::to_string(result.mappings_skipped_ambiguous) +
+        " skipped_missing_texture=" + std::to_string(result.mappings_skipped_missing_texture) +
+        " skipped_unmatched=" + std::to_string(result.mappings_skipped_unmatched) +
+        " skipped_if_missing_existing_texture=" +
+        std::to_string(result.mappings_skipped_if_missing_existing_texture) +
+        " skipped_rejected_path=" + std::to_string(result.mappings_skipped_rejected_path));
+
+    return result;
+}
+
 } // namespace
 
 ClientApp::ClientApp() : ClientApp(default_sdl_runtime()) {}
@@ -406,6 +589,20 @@ void ClientApp::load_startup_mesh() {
                 .material = loaded.material,
             });
         }
+        const StaticTextureRemapApplicationResult texturemap_result =
+            apply_static_texture_remap(path, primitive_chunks);
+        for (const std::string& info : texturemap_result.infos) {
+            LOG(INFO) << "ClientApp: " << info;
+        }
+        for (const std::string& warning : texturemap_result.warnings) {
+            LOG(WARNING) << "ClientApp: " << warning;
+        }
+        if (texturemap_result.sidecar_load_failed) {
+            LOG(ERROR) << "ClientApp: static mesh load aborted due to invalid texture remap "
+                          "sidecar for "
+                       << source_label << "='" << path << "'";
+            return false;
+        }
 
         world_.materials().clear();
         world_.meshes().clear();
@@ -440,6 +637,9 @@ void ClientApp::load_startup_mesh() {
                     << " uses MASK-like alpha cutoff without albedo texture path; cutout "
                        "appearance may degrade";
             }
+            const bool has_texture = !material.albedo_texture_path.empty();
+            const std::string texture_path_for_log =
+                has_texture ? material.albedo_texture_path : "<none>";
             world_.materials().push_back(std::move(material));
 
             MeshData mesh;
@@ -453,6 +653,23 @@ void ClientApp::load_startup_mesh() {
                 .material_id = material_id,
                 .visible = true,
             });
+            const std::string source_mesh_index =
+                chunk.has_source_identity ? std::to_string(chunk.source_mesh_index) : "n/a";
+            const std::string source_primitive_index =
+                chunk.has_source_identity ? std::to_string(chunk.source_primitive_index) : "n/a";
+            const std::string source_material_name =
+                chunk.source_material_name.empty() ? "<none>" : chunk.source_material_name;
+            const bool from_texturemap =
+                chunk_index < texturemap_result.applied_from_texturemap.size() &&
+                texturemap_result.applied_from_texturemap[chunk_index];
+            const char* texture_source =
+                !has_texture ? "none" : (from_texturemap ? "texturemap" : "gltf");
+            LOG(INFO) << "ClientApp: static material inventory slot material_id=" << material_id
+                      << " source_mesh_index=" << source_mesh_index
+                      << " source_primitive_index=" << source_primitive_index
+                      << " source_material_name='" << source_material_name << "'"
+                      << " texture_source=" << texture_source << " texture_path='"
+                      << texture_path_for_log << "'";
         }
         if (world_.meshes().empty()) {
             LOG(WARNING) << "ClientApp: static mesh load produced no renderable primitive chunks "
