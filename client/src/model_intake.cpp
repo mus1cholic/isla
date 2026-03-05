@@ -1,17 +1,24 @@
 #include "model_intake.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace isla::client::model_intake {
 namespace {
@@ -86,21 +93,6 @@ int kind_priority(CandidateKind kind) {
     return 3;
 }
 
-std::string quote_for_shell(const std::filesystem::path& path) {
-    std::string raw = path.lexically_normal().string();
-    std::string escaped;
-    escaped.reserve(raw.size() + 2U);
-    escaped.push_back('"');
-    for (char c : raw) {
-        if (c == '"') {
-            escaped.push_back('\\');
-        }
-        escaped.push_back(c);
-    }
-    escaped.push_back('"');
-    return escaped;
-}
-
 bool contains_token(std::string_view text, std::string_view token) {
     return text.find(token) != std::string_view::npos;
 }
@@ -113,23 +105,77 @@ void replace_all(std::string& text, std::string_view token, std::string_view rep
     }
 }
 
-std::string build_converter_command(const std::string& command_template,
-                                    const std::filesystem::path& input_path,
-                                    const std::filesystem::path& output_path) {
-    std::string command = command_template;
-    const std::string quoted_input = quote_for_shell(input_path);
-    const std::string quoted_output = quote_for_shell(output_path);
-    const bool has_input_token = contains_token(command, "{input}");
-    const bool has_output_token = contains_token(command, "{output}");
-    replace_all(command, "{input}", quoted_input);
-    replace_all(command, "{output}", quoted_output);
-    if (!has_input_token && !has_output_token) {
-        command += " " + quoted_input + " " + quoted_output;
+std::vector<std::string> split_command_template(std::string_view command_template) {
+    std::vector<std::string> args;
+    std::string current;
+    bool in_single_quote = false;
+    bool in_double_quote = false;
+    bool escaping = false;
+
+    for (char c : command_template) {
+        if (escaping) {
+            current.push_back(c);
+            escaping = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaping = true;
+            continue;
+        }
+        if (!in_double_quote && c == '\'') {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+        if (!in_single_quote && c == '"') {
+            in_double_quote = !in_double_quote;
+            continue;
+        }
+        const bool is_space = std::isspace(static_cast<unsigned char>(c)) != 0;
+        if (!in_single_quote && !in_double_quote && is_space) {
+            if (!current.empty()) {
+                args.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        current.push_back(c);
     }
-    return command;
+    if (escaping) {
+        current.push_back('\\');
+    }
+    if (!current.empty()) {
+        args.push_back(current);
+    }
+    return args;
 }
 
-std::unordered_map<std::string, std::string> read_cache_metadata(const std::filesystem::path& path) {
+std::vector<std::string> build_converter_argv(const std::string& command_template,
+                                              const std::filesystem::path& input_path,
+                                              const std::filesystem::path& output_path) {
+    std::vector<std::string> argv = split_command_template(command_template);
+    const std::string input = input_path.lexically_normal().string();
+    const std::string output = output_path.lexically_normal().string();
+    bool has_input_token = false;
+    bool has_output_token = false;
+    for (std::string& arg : argv) {
+        if (contains_token(arg, "{input}")) {
+            has_input_token = true;
+        }
+        if (contains_token(arg, "{output}")) {
+            has_output_token = true;
+        }
+        replace_all(arg, "{input}", input);
+        replace_all(arg, "{output}", output);
+    }
+    if (!has_input_token && !has_output_token) {
+        argv.push_back(input);
+        argv.push_back(output);
+    }
+    return argv;
+}
+
+std::unordered_map<std::string, std::string>
+read_cache_metadata(const std::filesystem::path& path) {
     std::unordered_map<std::string, std::string> values;
     std::ifstream stream(path);
     if (!stream.is_open()) {
@@ -157,12 +203,8 @@ bool write_cache_metadata(const std::filesystem::path& path,
         return false;
     }
     const char* ordered_keys[] = {
-        "schema",
-        "source_path",
-        "source_size",
-        "source_mtime_ns",
-        "converter_command",
-        "converter_version",
+        "schema",          "source_path",       "source_size",
+        "source_mtime_ns", "converter_command", "converter_version",
         "output_path",
     };
     for (const char* key : ordered_keys) {
@@ -240,12 +282,56 @@ std::string describe_cache_miss(const std::filesystem::path& cache_path,
     return "cache_metadata_mismatch";
 }
 
-int run_converter_command(const std::string& command,
-                          const std::function<int(std::string_view)>& runner) {
+int run_converter_command(std::span<const std::string> argv,
+                          const std::function<int(std::span<const std::string>)>& runner) {
     if (runner) {
-        return runner(command);
+        return runner(argv);
     }
-    return std::system(command.c_str());
+    if (argv.empty() || argv.front().empty()) {
+        return 127;
+    }
+
+#if defined(_WIN32)
+    std::vector<std::string> args_copy(argv.begin(), argv.end());
+    std::vector<char*> arg_ptrs;
+    arg_ptrs.reserve(args_copy.size() + 1U);
+    for (std::string& arg : args_copy) {
+        arg_ptrs.push_back(arg.data());
+    }
+    arg_ptrs.push_back(nullptr);
+    const int rc = _spawnvp(_P_WAIT, arg_ptrs[0], arg_ptrs.data());
+    if (rc < 0) {
+        return 127;
+    }
+    return rc;
+#else
+    std::vector<std::string> args_copy(argv.begin(), argv.end());
+    std::vector<char*> arg_ptrs;
+    arg_ptrs.reserve(args_copy.size() + 1U);
+    for (std::string& arg : args_copy) {
+        arg_ptrs.push_back(arg.data());
+    }
+    arg_ptrs.push_back(nullptr);
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        return 127;
+    }
+    if (pid == 0) {
+        execvp(arg_ptrs[0], arg_ptrs.data());
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            return 127;
+        }
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return 127;
+#endif
 }
 
 std::vector<std::filesystem::path> discover_models_directories() {
@@ -330,7 +416,8 @@ std::vector<CandidateFile> list_candidates_for_directory(const std::filesystem::
         if (ap != bp) {
             return ap < bp;
         }
-        return to_lower_ascii(a.path.filename().string()) < to_lower_ascii(b.path.filename().string());
+        return to_lower_ascii(a.path.filename().string()) <
+               to_lower_ascii(b.path.filename().string());
     });
 
     preferred.insert(preferred.end(), others.begin(), others.end());
@@ -342,8 +429,10 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
     PmxConversionOutcome outcome;
     const std::filesystem::path source_path = candidate.path;
     const std::filesystem::path converted_dir = source_path.parent_path() / kConvertedSubdirName;
-    const std::filesystem::path output_path = converted_dir / (source_path.stem().string() + ".auto.glb");
-    const std::filesystem::path cache_path = converted_dir / (source_path.stem().string() + ".auto.cache");
+    const std::filesystem::path output_path =
+        converted_dir / (source_path.stem().string() + ".auto.glb");
+    const std::filesystem::path cache_path =
+        converted_dir / (source_path.stem().string() + ".auto.cache");
 
     std::error_code source_size_error;
     const std::uintmax_t source_size = std::filesystem::file_size(source_path, source_size_error);
@@ -359,7 +448,8 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
         return outcome;
     }
     const auto source_mtime_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(source_mtime.time_since_epoch()).count();
+        std::chrono::duration_cast<std::chrono::nanoseconds>(source_mtime.time_since_epoch())
+            .count();
 
     std::unordered_map<std::string, std::string> expected_cache = {
         { "schema", kCacheSchemaVersion },
@@ -389,12 +479,17 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
         return outcome;
     }
 
-    const std::string command = build_converter_command(options.pmx_converter_command_template,
-                                                        source_path, output_path);
+    const std::vector<std::string> argv =
+        build_converter_argv(options.pmx_converter_command_template, source_path, output_path);
+    if (argv.empty()) {
+        outcome.warning = "PMX conversion command template produced empty argv for '" +
+                          source_path.string() + "'";
+        return outcome;
+    }
     outcome.info += " | invoking converter command template='" +
                     options.pmx_converter_command_template + "' converter_version='" +
-                    options.pmx_converter_version + "'";
-    const int exit_code = run_converter_command(command, options.run_command);
+                    options.pmx_converter_version + "' executable='" + argv.front() + "'";
+    const int exit_code = run_converter_command(argv, options.run_command);
     if (exit_code != 0) {
         outcome.warning = "PMX conversion command failed for '" + source_path.filename().string() +
                           "' exit_code=" + std::to_string(exit_code) + " output_path='" +
@@ -448,8 +543,8 @@ ResolveStartupAssetOptions make_effective_options(const ResolveStartupAssetOptio
 
 } // namespace
 
-ResolveStartupAssetResult resolve_startup_asset_from_models(
-    const ResolveStartupAssetOptions& options) {
+ResolveStartupAssetResult
+resolve_startup_asset_from_models(const ResolveStartupAssetOptions& options) {
     ResolveStartupAssetResult result;
     const ResolveStartupAssetOptions effective = make_effective_options(options);
     const std::vector<std::filesystem::path> model_dirs = discover_models_directories();
@@ -475,8 +570,8 @@ ResolveStartupAssetResult resolve_startup_asset_from_models(
         if (candidate.kind == CandidateKind::Glb || candidate.kind == CandidateKind::Gltf) {
             result.has_asset = true;
             result.runtime_asset_path = candidate.path.string();
-            result.source_label = candidate.preferred_name ? "models_preferred_default"
-                                                           : "models_directory_scan";
+            result.source_label =
+                candidate.preferred_name ? "models_preferred_default" : "models_directory_scan";
             result.infos.push_back("selected startup asset '" + candidate.path.filename().string() +
                                    "' (direct glTF/GLB)");
             return result;

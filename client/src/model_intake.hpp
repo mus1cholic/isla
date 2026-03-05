@@ -1,8 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <span>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace isla::client::model_intake {
@@ -10,7 +10,7 @@ namespace isla::client::model_intake {
 struct ResolveStartupAssetOptions {
     std::string pmx_converter_command_template;
     std::string pmx_converter_version;
-    std::function<int(std::string_view)> run_command;
+    std::function<int(std::span<const std::string>)> run_command;
 };
 
 struct ResolveStartupAssetResult {
@@ -23,7 +23,7 @@ struct ResolveStartupAssetResult {
     std::vector<std::string> warnings;
 };
 
-ResolveStartupAssetResult resolve_startup_asset_from_models(
-    const ResolveStartupAssetOptions& options = {});
+ResolveStartupAssetResult
+resolve_startup_asset_from_models(const ResolveStartupAssetOptions& options = {});
 
 } // namespace isla::client::model_intake

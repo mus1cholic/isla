@@ -551,16 +551,15 @@ void ClientApp::load_startup_mesh() {
             LOG(WARNING) << "ClientApp: model intake warning: " << warning;
         }
         if (intake_result.has_asset) {
+            const char* source_label = intake_result.source_label.empty()
+                                           ? "models_intake"
+                                           : intake_result.source_label.c_str();
             LOG(INFO) << "ClientApp: startup asset selected from models intake path='"
-                      << intake_result.runtime_asset_path << "' source_label='"
-                      << (intake_result.source_label.empty() ? "models_intake"
-                                                            : intake_result.source_label)
+                      << intake_result.runtime_asset_path << "' source_label='" << source_label
                       << "' used_pmx_conversion="
                       << (intake_result.used_pmx_conversion ? "true" : "false")
                       << " pmx_conversion_cache_hit="
                       << (intake_result.pmx_conversion_cache_hit ? "true" : "false");
-            const char* source_label =
-                intake_result.source_label.empty() ? "models_intake" : intake_result.source_label.c_str();
             if (try_load_animated_asset(intake_result.runtime_asset_path, source_label)) {
                 LOG(INFO) << "ClientApp: startup asset loaded successfully via animated/static "
                              "startup path from models intake";
@@ -569,8 +568,9 @@ void ClientApp::load_startup_mesh() {
             resolved_mesh_asset_path = intake_result.runtime_asset_path;
             mesh_asset_path = resolved_mesh_asset_path.c_str();
         } else {
-            VLOG(1) << "ClientApp: no " << kMeshAssetEnvVar
-                    << " set and models intake did not resolve a startup asset; leaving scene empty";
+            VLOG(1)
+                << "ClientApp: no " << kMeshAssetEnvVar
+                << " set and models intake did not resolve a startup asset; leaving scene empty";
             return;
         }
     }
