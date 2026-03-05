@@ -3,8 +3,8 @@
 #include "client_sdl_runtime.hpp"
 #include "isla/engine/render/animated_gltf.hpp"
 #include "isla/engine/render/animation_playback_controller.hpp"
-#include "isla/engine/render/pmx_physics_sidecar.hpp"
 #include "isla/engine/render/model_renderer.hpp"
+#include "isla/engine/render/pmx_physics_sidecar.hpp"
 #include "isla/engine/render/render_world.hpp"
 
 #include <cstdint>

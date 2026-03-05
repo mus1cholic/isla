@@ -142,6 +142,7 @@ cc_test(
     }),
     deps = [
         ":win32_layered_overlay",
+        "//shared/src:test_runfiles",
         "@abseil-cpp//absl/strings",
         "@googletest//:gtest_main",
     ],
