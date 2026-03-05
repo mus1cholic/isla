@@ -398,7 +398,8 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
 
     const json* converter = object_find(root, "converter");
     if (converter == nullptr || !converter->is_object()) {
-        result.error_message = make_sidecar_error(sidecar_path, "converter section missing or invalid");
+        result.error_message =
+            make_sidecar_error(sidecar_path, "converter section missing or invalid");
         return result;
     }
 
