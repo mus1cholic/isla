@@ -566,5 +566,106 @@ TEST(ModelIntakeTest, TemplateShellMetacharactersRemainInArgvAndAreNotInterprete
     EXPECT_TRUE(observed_semicolon_arg);
 }
 
+TEST(ModelIntakeTest, PreservesWindowsStyleExecutablePathBackslashesInTemplate) {
+    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
+    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
+    ASSERT_TRUE(sandbox.is_valid());
+    ASSERT_TRUE(workspace.is_valid());
+    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
+
+    const std::filesystem::path pmx_path = workspace.path() / "models" / "model.pmx";
+    {
+        std::ofstream pmx(pmx_path);
+        ASSERT_TRUE(pmx.is_open());
+        pmx << "pmx";
+    }
+    const std::filesystem::path expected_output =
+        workspace.path() / "models" / ".isla_converted" / "model.auto.glb";
+
+    ScopedCurrentPath cwd_guard(sandbox.path());
+    ASSERT_TRUE(cwd_guard.is_armed());
+    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+
+    std::vector<std::string> captured_argv;
+    ResolveStartupAssetOptions options;
+    options.pmx_converter_command_template =
+        "C:\\Tools\\pmx2gltf.exe --input {input} --output {output}";
+    options.pmx_converter_version = "v1";
+    options.run_command = [&](std::span<const std::string> argv) -> int {
+        captured_argv.assign(argv.begin(), argv.end());
+        std::error_code ec;
+        std::filesystem::create_directories(expected_output.parent_path(), ec);
+        if (ec) {
+            return 1;
+        }
+        const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
+        write_binary_file(expected_output, glb);
+        return 0;
+    };
+
+    const ResolveStartupAssetResult result = resolve_startup_asset_from_models(options);
+    ASSERT_TRUE(result.has_asset);
+    ASSERT_GE(captured_argv.size(), 5U);
+    EXPECT_EQ(captured_argv[0], "C:\\Tools\\pmx2gltf.exe");
+    EXPECT_EQ(captured_argv[1], "--input");
+    EXPECT_EQ(captured_argv[2], pmx_path.lexically_normal().string());
+    EXPECT_EQ(captured_argv[3], "--output");
+    EXPECT_EQ(captured_argv[4], expected_output.lexically_normal().string());
+}
+
+TEST(ModelIntakeTest, AppendsMissingOutputArgWhenOnlyInputTokenProvided) {
+    ScopedTempDir sandbox = ScopedTempDir::create("isla_model_intake_sandbox");
+    ScopedTempDir workspace = ScopedTempDir::create("isla_model_intake_workspace");
+    ASSERT_TRUE(sandbox.is_valid());
+    ASSERT_TRUE(workspace.is_valid());
+    ASSERT_TRUE(std::filesystem::create_directories(workspace.path() / "models"));
+
+    const std::filesystem::path pmx_path = workspace.path() / "models" / "model.pmx";
+    {
+        std::ofstream pmx(pmx_path);
+        ASSERT_TRUE(pmx.is_open());
+        pmx << "pmx";
+    }
+    const std::filesystem::path expected_output =
+        workspace.path() / "models" / ".isla_converted" / "model.auto.glb";
+
+    ScopedCurrentPath cwd_guard(sandbox.path());
+    ASSERT_TRUE(cwd_guard.is_armed());
+    ScopedEnvVar workspace_env("BUILD_WORKSPACE_DIRECTORY", workspace.path().string().c_str());
+
+    std::vector<std::string> captured_argv;
+    ResolveStartupAssetOptions options;
+    options.pmx_converter_command_template = "fake-converter --input {input}";
+    options.pmx_converter_version = "v1";
+    options.run_command = [&](std::span<const std::string> argv) -> int {
+        captured_argv.assign(argv.begin(), argv.end());
+        std::error_code ec;
+        std::filesystem::create_directories(expected_output.parent_path(), ec);
+        if (ec) {
+            return 1;
+        }
+        const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
+        write_binary_file(expected_output, glb);
+        return 0;
+    };
+
+    const ResolveStartupAssetResult result = resolve_startup_asset_from_models(options);
+    ASSERT_TRUE(result.has_asset);
+    ASSERT_FALSE(result.warnings.empty());
+    bool found_template_warning = false;
+    for (const std::string& warning : result.warnings) {
+        if (warning.find("{output}") != std::string::npos) {
+            found_template_warning = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found_template_warning);
+    ASSERT_GE(captured_argv.size(), 4U);
+    EXPECT_EQ(captured_argv[0], "fake-converter");
+    EXPECT_EQ(captured_argv[1], "--input");
+    EXPECT_EQ(captured_argv[2], pmx_path.lexically_normal().string());
+    EXPECT_EQ(captured_argv.back(), expected_output.lexically_normal().string());
+}
+
 } // namespace
 } // namespace isla::client::model_intake

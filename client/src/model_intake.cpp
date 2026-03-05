@@ -2,12 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -50,6 +50,12 @@ struct PmxConversionOutcome {
     std::filesystem::path output_path;
     std::string info;
     std::string warning;
+};
+
+struct ConverterArgvBuildResult {
+    std::vector<std::string> argv;
+    bool missing_input_token = false;
+    bool missing_output_token = false;
 };
 
 std::string to_lower_ascii(std::string value) {
@@ -110,18 +116,8 @@ std::vector<std::string> split_command_template(std::string_view command_templat
     std::string current;
     bool in_single_quote = false;
     bool in_double_quote = false;
-    bool escaping = false;
-
-    for (char c : command_template) {
-        if (escaping) {
-            current.push_back(c);
-            escaping = false;
-            continue;
-        }
-        if (c == '\\') {
-            escaping = true;
-            continue;
-        }
+    for (std::size_t i = 0; i < command_template.size(); ++i) {
+        const char c = command_template[i];
         if (!in_double_quote && c == '\'') {
             in_single_quote = !in_single_quote;
             continue;
@@ -138,10 +134,15 @@ std::vector<std::string> split_command_template(std::string_view command_templat
             }
             continue;
         }
+        if (c == '\\' && in_double_quote && (i + 1U) < command_template.size()) {
+            const char next = command_template[i + 1U];
+            if (next == '"' || next == '\\') {
+                current.push_back(next);
+                ++i;
+                continue;
+            }
+        }
         current.push_back(c);
-    }
-    if (escaping) {
-        current.push_back('\\');
     }
     if (!current.empty()) {
         args.push_back(current);
@@ -149,15 +150,26 @@ std::vector<std::string> split_command_template(std::string_view command_templat
     return args;
 }
 
-std::vector<std::string> build_converter_argv(const std::string& command_template,
+void append_message(std::string& target, std::string_view message, std::string_view separator) {
+    if (message.empty()) {
+        return;
+    }
+    if (!target.empty()) {
+        target += separator;
+    }
+    target += message;
+}
+
+ConverterArgvBuildResult build_converter_argv(const std::string& command_template,
                                               const std::filesystem::path& input_path,
                                               const std::filesystem::path& output_path) {
-    std::vector<std::string> argv = split_command_template(command_template);
+    ConverterArgvBuildResult out;
+    out.argv = split_command_template(command_template);
     const std::string input = input_path.lexically_normal().string();
     const std::string output = output_path.lexically_normal().string();
     bool has_input_token = false;
     bool has_output_token = false;
-    for (std::string& arg : argv) {
+    for (std::string& arg : out.argv) {
         if (contains_token(arg, "{input}")) {
             has_input_token = true;
         }
@@ -167,11 +179,15 @@ std::vector<std::string> build_converter_argv(const std::string& command_templat
         replace_all(arg, "{input}", input);
         replace_all(arg, "{output}", output);
     }
-    if (!has_input_token && !has_output_token) {
-        argv.push_back(input);
-        argv.push_back(output);
+    if (!has_input_token) {
+        out.argv.push_back(input);
+        out.missing_input_token = true;
     }
-    return argv;
+    if (!has_output_token) {
+        out.argv.push_back(output);
+        out.missing_output_token = true;
+    }
+    return out;
 }
 
 std::unordered_map<std::string, std::string>
@@ -479,12 +495,24 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
         return outcome;
     }
 
-    const std::vector<std::string> argv =
+    const ConverterArgvBuildResult built_argv =
         build_converter_argv(options.pmx_converter_command_template, source_path, output_path);
+    const std::vector<std::string>& argv = built_argv.argv;
     if (argv.empty()) {
         outcome.warning = "PMX conversion command template produced empty argv for '" +
                           source_path.string() + "'";
         return outcome;
+    }
+    if (built_argv.missing_input_token || built_argv.missing_output_token) {
+        std::string template_warning = "PMX conversion command template omitted token(s):";
+        if (built_argv.missing_input_token) {
+            template_warning += " {input}";
+        }
+        if (built_argv.missing_output_token) {
+            template_warning += " {output}";
+        }
+        template_warning += "; appended missing path argument(s) positionally";
+        append_message(outcome.warning, template_warning, " | ");
     }
     outcome.info += " | invoking converter command template='" +
                     options.pmx_converter_command_template + "' converter_version='" +
@@ -506,9 +534,7 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
 
     std::string cache_warning;
     (void)write_cache_metadata(cache_path, expected_cache, &cache_warning);
-    if (!cache_warning.empty()) {
-        outcome.warning = cache_warning;
-    }
+    append_message(outcome.warning, cache_warning, " | ");
     outcome.ok = true;
     outcome.output_path = output_path.lexically_normal();
     if (outcome.warning.empty()) {
@@ -596,7 +622,8 @@ resolve_startup_asset_from_models(const ResolveStartupAssetOptions& options) {
         return result;
     }
 
-    result.warnings.push_back("no loadable startup model candidate resolved from models directory");
+    result.warnings.emplace_back(
+        "no loadable startup model candidate resolved from models directory");
     return result;
 }
 
