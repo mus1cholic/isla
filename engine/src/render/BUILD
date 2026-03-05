@@ -79,6 +79,23 @@ cc_library(
     }),
 )
 
+cc_library(
+    name = "pmx_native_runtime",
+    srcs = [
+        "include/pmx_saba_bridge.hpp",
+        "pmx_native_runtime.cpp",
+        "pmx_saba_bridge.cpp",
+    ],
+    visibility = [
+        "//engine/include/isla/engine/render:__pkg__",
+        "//engine/src/render:__pkg__",
+    ],
+    deps = [
+        "//engine/include/isla/engine/render",
+        "//third_party/saba:saba_pmx_parser",
+    ],
+)
+
 cc_test(
     name = "model_renderer_skinning_utils_tests",
     srcs = ["model_renderer_skinning_utils_test.cpp"],
@@ -119,6 +136,8 @@ cc_test(
 )
 
 exports_files([
+    "testdata/pmx_phase0_feature_warnings.pmx",
+    "testdata/pmx_phase0_valid_minimal.pmx",
     "testdata/textured_quad.obj",
     "testdata/triangle_embedded.gltf",
 ])
@@ -227,6 +246,20 @@ cc_test(
     srcs = ["pmx_texture_remap_sidecar_test.cpp"],
     deps = [
         ":render",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "pmx_native_runtime_tests",
+    srcs = ["pmx_native_runtime_test.cpp"],
+    data = [
+        "testdata/pmx_phase0_feature_warnings.pmx",
+        "testdata/pmx_phase0_valid_minimal.pmx",
+    ],
+    deps = [
+        ":pmx_native_runtime",
+        "//shared/src:test_runfiles",
         "@googletest//:gtest_main",
     ],
 )
