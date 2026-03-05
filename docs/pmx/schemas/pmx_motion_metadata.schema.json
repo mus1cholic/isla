@@ -17,22 +17,44 @@
     },
     "converter": {
       "type": "object",
-      "required": ["name", "version", "command", "timestamp_utc"],
+      "required": [
+        "name",
+        "version",
+        "command",
+        "timestamp_utc"
+      ],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "version": { "type": "string", "minLength": 1 },
-        "command": { "type": "string", "minLength": 1 },
-        "timestamp_utc": { "type": "string", "format": "date-time" }
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timestamp_utc": {
+          "type": "string",
+          "format": "date-time"
+        }
       },
       "additionalProperties": true
     },
     "retarget": {
       "type": "object",
-      "required": ["mode"],
+      "required": [
+        "mode"
+      ],
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["exact_joint_name", "map_file"]
+          "enum": [
+            "exact_joint_name",
+            "map_file"
+          ]
         },
         "map_path": {
           "type": "string",
@@ -43,7 +65,10 @@
     },
     "root_motion_policy": {
       "type": "string",
-      "enum": ["in_place", "allow"]
+      "enum": [
+        "in_place",
+        "allow"
+      ]
     },
     "clips": {
       "type": "array",
@@ -63,12 +88,24 @@
         "expected_duration_seconds"
       ],
       "properties": {
-        "clip_name": { "type": "string", "minLength": 1 },
-        "source_vmd": { "type": "string", "minLength": 1 },
-        "output_asset": { "type": "string", "minLength": 1 },
+        "clip_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_vmd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_asset": {
+          "type": "string",
+          "minLength": 1
+        },
         "root_motion_mode": {
           "type": "string",
-          "enum": ["in_place", "allow"]
+          "enum": [
+            "in_place",
+            "allow"
+          ]
         },
         "expected_duration_seconds": {
           "type": "number",

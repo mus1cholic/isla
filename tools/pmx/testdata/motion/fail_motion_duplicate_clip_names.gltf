@@ -14,7 +14,7 @@
   ],
   "animations": [
     {
-      "name": "idle",
+    "name": "idle",
       "samplers": [
         { "input": 0, "output": 1, "interpolation": "LINEAR" }
       ],
