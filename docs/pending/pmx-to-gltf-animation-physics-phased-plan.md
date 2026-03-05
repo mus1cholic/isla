@@ -43,7 +43,8 @@ Operational interpretation:
 > - Phase 4.5 is complete (Windows DirectComposition-backed transparent overlay path with visible 3D rendering).
 > - Phase 4.6 is complete (coordinate system mirroring documentation + Alpha Blend depth sorting assertions).
 > - Phase 5 is complete (basic PMX physics sidecar ingestion + skeleton-aligned collider proxy runtime path + parser hardening guardrails).
-> - Phases 6-10 remain pending runtime/tooling expansion.
+> - Phase 6 foundation is in progress (motion clip schema + validator + tests + contract integration).
+> - Phases 7-10 remain pending runtime/tooling expansion.
 > - Phase 7.5 (runtime material/primitive introspection + deterministic texture-remap override path) remains pending.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
@@ -812,6 +813,27 @@ Make PMX motion assets usable by converting motion data into glTF clips.
 - Target Phase 2 playback controller API as the runtime clip control surface.
 - Validate converted clips against the Phase 3/3.5 GPU skinning runtime path (not CPU fallback-only behavior).
 - Validate representative clip playback on the Phase 4.5 Windows composition path so animation bring-up does not regress transparent overlay behavior.
+
+### Implemented (2026-03-05, Foundation)
+
+- Added Phase 6 motion validation tooling:
+  - `tools/pmx/validate_motion_clips.py`
+  - `tools/pmx/validate_motion_clips_test.py`
+  - `tools/pmx/testdata/motion/*`
+  - Bazel target: `//tools/pmx:validate_motion_clips_test`
+- Added motion metadata schema + example sidecar:
+  - `docs/pmx/schemas/pmx_motion_metadata.schema.json`
+  - `docs/pmx/examples/sample.motion.json`
+- Updated conversion contract and tool docs with Phase 6 motion workflow/requirements:
+  - `docs/pmx/pmx_to_gltf_conversion_contract.md`
+  - `tools/pmx/README.md`
+
+### Remaining for Full Phase 6 Exit
+
+- Converter orchestration pinning for concrete VMD-to-glTF CLI(s) and retarget map production.
+- End-to-end runtime verification with converted PMX motion assets on:
+  - Phase 3/3.5 GPU-authoritative skinning path.
+  - Phase 4.5 Windows composition path.
 
 ### Exit Criteria
 

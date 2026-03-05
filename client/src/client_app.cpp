@@ -531,6 +531,20 @@ void ClientApp::load_startup_mesh() {
         configure_animation_playback_from_environment();
         load_physics_sidecar_for_asset(path);
         populate_world_from_animated_asset();
+        const auto& playback_state = animation_playback_.state();
+        const bool clip_index_valid = playback_state.clip_index < animated_asset_->clips.size();
+        const std::string_view selected_clip_name =
+            clip_index_valid ? std::string_view(animated_asset_->clips[playback_state.clip_index].name)
+                             : std::string_view("<invalid_clip_index>");
+        const float selected_clip_duration =
+            clip_index_valid ? animated_asset_->clips[playback_state.clip_index].duration_seconds
+                             : -1.0F;
+        LOG(INFO) << "ClientApp: animated startup summary clip='"
+                  << std::string(selected_clip_name) << "' duration_seconds="
+                  << selected_clip_duration
+                  << " gpu_skinning_authoritative="
+                  << (gpu_skinning_authoritative_ ? "true" : "false")
+                  << " physics_sidecar_loaded=" << (physics_sidecar_.has_value() ? "true" : "false");
 
         VLOG(1) << "ClientApp: loaded animated glTF from " << source_label << "='" << path
                 << "', clips=" << animated_asset_->clips.size()

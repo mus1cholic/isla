@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://isla.local/schemas/pmx_motion_metadata.schema.json",
+  "title": "PMX Motion Metadata Sidecar",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "converter",
+    "retarget",
+    "root_motion_policy",
+    "clips"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "converter": {
+      "type": "object",
+      "required": ["name", "version", "command", "timestamp_utc"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "timestamp_utc": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": true
+    },
+    "retarget": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["exact_joint_name", "map_file"]
+        },
+        "map_path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "root_motion_policy": {
+      "type": "string",
+      "enum": ["in_place", "allow"]
+    },
+    "clips": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/clip"
+      }
+    }
+  },
+  "$defs": {
+    "clip": {
+      "type": "object",
+      "required": [
+        "clip_name",
+        "source_vmd",
+        "output_asset",
+        "root_motion_mode",
+        "expected_duration_seconds"
+      ],
+      "properties": {
+        "clip_name": { "type": "string", "minLength": 1 },
+        "source_vmd": { "type": "string", "minLength": 1 },
+        "output_asset": { "type": "string", "minLength": 1 },
+        "root_motion_mode": {
+          "type": "string",
+          "enum": ["in_place", "allow"]
+        },
+        "expected_duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
