@@ -2,6 +2,7 @@
 
 #include "absl/log/log.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -101,6 +102,8 @@ void populate_world_from_animated_asset(
 
         internal::AnimatedMeshBinding binding;
         binding.primitive_index = primitive_index;
+        binding.skinning_workspace =
+            std::make_unique<animated_mesh_skinning::PrimitiveSkinningWorkspace>();
         std::vector<Triangle> initial_triangles =
             animated_mesh_skinning::make_initial_triangles_and_workspace(
                 primitive, binding.skinning_workspace.get());

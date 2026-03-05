@@ -53,6 +53,10 @@ Operational interpretation:
 > - Phase 7.5 is complete (runtime material/primitive introspection + deterministic texture-remap
 >   override path for static load/fallback with sidecar-driven overrides, hardened integer parsing,
 >   structured diagnostics, and regression/CI coverage).
+> - Client runtime orchestration was refactored for maintainability: startup loading, animation
+>   world population/tick, physics proxy updates, geometry helpers, and static texture-remap
+>   application now live in focused `client_app_*` modules with `client_app.cpp` acting as
+>   coordinator.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is now partially implemented in Phase 7 and finalized in Phase 10.
 > - PMX conversion remains orchestration-driven (external converter command), not native PMX runtime parsing.
 >
@@ -150,12 +154,19 @@ Operational interpretation:
 > Phase 7.5 artifacts:
 > - `engine/src/render/include/mesh_asset_loader.hpp` / `engine/src/render/mesh_asset_loader.cpp` (primitive source identity metadata + reusable hardened asset-relative texture-path resolver)
 > - `engine/src/render/include/pmx_texture_remap_sidecar.hpp` / `engine/src/render/pmx_texture_remap_sidecar.cpp` (texture remap sidecar parser/policy ingestion)
-> - `client/src/client_app.cpp` (static startup texturemap ingestion/application + deterministic inventory diagnostics)
+> - `client/src/client_app_texture_remap.hpp` / `client/src/client_app_texture_remap.cpp` (static startup texturemap ingestion/application + deterministic diagnostics/summaries)
+> - `client/src/client_app_startup_loader.hpp` / `client/src/client_app_startup_loader.cpp` (startup static-load integration for texturemap application)
+> - `client/src/client_app.cpp` (orchestration/wiring only after module split)
 > - `engine/src/render/pmx_texture_remap_sidecar_test.cpp` / `engine/src/render/mesh_asset_loader_test.cpp` / `client/src/client_app_animation_test.cpp` (Phase 7.5 regression coverage)
 > - `.github/workflows/ci.yml` (Windows smoke includes `//engine/src/render:pmx_texture_remap_sidecar_tests`)
 
 ### Changelog
 
+- 2026-03-05 (client refactor follow-up): split `client/src/client_app.cpp` into focused modules
+  (`client_app_startup_loader.*`, `client_app_texture_remap.*`, `client_app_geometry_utils.*`,
+  `client_app_animation_world.*`, `client_app_physics_proxies.*`) plus shared
+  `client_app_internal_types.*`, tightened internal Bazel visibility/dependency boundaries, and
+  reduced `client_app.cpp` to orchestration-focused runtime wiring.
 - 2026-03-05 (Phase 7.5 follow-up hardening): refactored runtime texture-remap application into
   focused helper functions for maintainability, expanded diagnostics with mapping-keyed skip
   reasons and per-run summary counters, promoted invalid sidecar startup abort to explicit error
@@ -853,7 +864,7 @@ Preserve basic PMX physics intent through glTF metadata ingestion.
 ### Known Limits (Phase 5, Post-Implementation)
 
 - Current `Capsule` visual proxy shape is intentionally approximated with a scaled box for lightweight debug rendering.
-- Follow-up is tracked inline in `client/src/client_app.cpp` as a TODO to replace this with a low-poly capsule mesh (cylinder + hemispherical caps) when proxy-shape fidelity refinement is scheduled.
+- Follow-up is tracked inline in `client/src/client_app_geometry_utils.cpp` as a TODO to replace this with a low-poly capsule mesh (cylinder + hemispherical caps) when proxy-shape fidelity refinement is scheduled.
 
 ### Exit Criteria
 

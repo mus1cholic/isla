@@ -1,8 +1,8 @@
 #pragma once
 
-#include <memory>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "isla/engine/math/mat4.hpp"

@@ -216,6 +216,8 @@ std::vector<Triangle> make_triangles_for_collider(const pmx_physics_sidecar::Col
             .y = collider.height + (collider.radius * 2.0F),
             .z = collider.radius * 2.0F,
         };
+        // TODO(isla): Replace this box proxy with a low-poly capsule mesh (cylinder + hemispheres)
+        // for better visual fidelity once Phase 5 proxy-shape refinement is scheduled.
         return scale_triangles(make_unit_cube_triangles(), scale);
     }
     return scale_triangles(make_unit_cube_triangles(), collider.size);

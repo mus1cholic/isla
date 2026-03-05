@@ -150,9 +150,21 @@ void apply_single_texture_mapping(const pmx_texture_remap_sidecar::Mapping& mapp
         return;
     }
 
+    // Invariant: mapping.albedo_texture_path is pre-sanitized and resolved asset-relative by
+    // pmx_texture_remap_sidecar::load_from_file via
+    // mesh_asset_loader::resolve_asset_relative_texture_path.
     const std::filesystem::path texture_path(mapping.albedo_texture_path);
     std::error_code texture_exists_error;
-    if (!std::filesystem::exists(texture_path, texture_exists_error) || texture_exists_error) {
+    const bool texture_exists = std::filesystem::exists(texture_path, texture_exists_error);
+    if (texture_exists_error) {
+        result.warnings.push_back("texture remap mapping id='" + mapping.id +
+                                  "' failed checking texture file '" +
+                                  mapping.albedo_texture_path + "' key='" + mapping_key +
+                                  "' error='" + texture_exists_error.message() + "'");
+        ++result.mappings_skipped_missing_texture;
+        return;
+    }
+    if (!texture_exists) {
         result.warnings.push_back("texture remap mapping id='" + mapping.id +
                                   "' points to missing texture file '" +
                                   mapping.albedo_texture_path + "' key='" + mapping_key + "'");
