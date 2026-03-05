@@ -387,52 +387,50 @@ SidecarLoadResult load_from_file(std::string_view sidecar_path,
     if (!schema_version.has_value()) {
         result.error_message = make_sidecar_error(sidecar_path, "missing schema_version");
         return result;
+    }
 
-        if (*schema_version != kExpectedSchemaVersion) {
-            result.error_message = make_sidecar_error(
-                sidecar_path, "schema_version is unsupported: got '" + *schema_version +
-                                  "', expected '" + kExpectedSchemaVersion + "'");
-            return result;
-        }
-
-        const json* converter = object_find(root, "converter");
-        if (converter == nullptr || !converter->is_object()) {
-            result.error_message =
-                make_sidecar_error(sidecar_path, "converter section missing or invalid");
-            return result;
-        }
-
-        SidecarData sidecar;
-        std::string top_level_failure_reason;
-        if (!parse_collision_layers(root, sidecar, result.warnings, &top_level_failure_reason)) {
-            result.error_message = make_sidecar_error(
-                sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
-                                                               : top_level_failure_reason);
-            return result;
-        }
-        if (!parse_colliders(root, joint_names, sidecar, result.warnings,
-                             &top_level_failure_reason)) {
-            result.error_message = make_sidecar_error(
-                sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
-                                                               : top_level_failure_reason);
-            return result;
-        }
-        if (!parse_constraints(root, sidecar, result.warnings, &top_level_failure_reason)) {
-            result.error_message = make_sidecar_error(
-                sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
-                                                               : top_level_failure_reason);
-            return result;
-        }
-
-        result.ok = true;
-        result.sidecar = std::move(sidecar);
-        VLOG(1) << "PmxPhysicsSidecar: loaded '" << sidecar_path
-                << "' colliders=" << result.sidecar.colliders.size()
-                << " constraints=" << result.sidecar.constraints.size()
-                << " collision_layers=" << result.sidecar.collision_layers.size()
-                << " warnings=" << result.warnings.size();
+    if (*schema_version != kExpectedSchemaVersion) {
+        result.error_message = make_sidecar_error(
+            sidecar_path, "schema_version is unsupported: got '" + *schema_version +
+                              "', expected '" + kExpectedSchemaVersion + "'");
         return result;
     }
+
+    const json* converter = object_find(root, "converter");
+    if (converter == nullptr || !converter->is_object()) {
+        result.error_message = make_sidecar_error(sidecar_path, "converter section missing or invalid");
+        return result;
+    }
+
+    SidecarData sidecar;
+    std::string top_level_failure_reason;
+    if (!parse_collision_layers(root, sidecar, result.warnings, &top_level_failure_reason)) {
+        result.error_message = make_sidecar_error(
+            sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
+                                                           : top_level_failure_reason);
+        return result;
+    }
+    if (!parse_colliders(root, joint_names, sidecar, result.warnings, &top_level_failure_reason)) {
+        result.error_message = make_sidecar_error(
+            sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
+                                                           : top_level_failure_reason);
+        return result;
+    }
+    if (!parse_constraints(root, sidecar, result.warnings, &top_level_failure_reason)) {
+        result.error_message = make_sidecar_error(
+            sidecar_path, top_level_failure_reason.empty() ? "missing required top-level arrays"
+                                                           : top_level_failure_reason);
+        return result;
+    }
+
+    result.ok = true;
+    result.sidecar = std::move(sidecar);
+    VLOG(1) << "PmxPhysicsSidecar: loaded '" << sidecar_path
+            << "' colliders=" << result.sidecar.colliders.size()
+            << " constraints=" << result.sidecar.constraints.size()
+            << " collision_layers=" << result.sidecar.collision_layers.size()
+            << " warnings=" << result.warnings.size();
+    return result;
 }
 
 } // namespace isla::client::pmx_physics_sidecar

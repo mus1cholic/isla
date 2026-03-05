@@ -629,8 +629,8 @@ void ClientApp::load_physics_sidecar_for_asset(std::string_view asset_path) {
     std::error_code exists_error;
     const bool sidecar_exists = std::filesystem::exists(sidecar_path, exists_error);
     if (exists_error) {
-        LOG(WARNING) << "ClientApp: failed checking physics sidecar path '"
-                     << sidecar_path.string() << "': " << exists_error.message()
+        LOG(WARNING) << "ClientApp: failed checking physics sidecar path '" << sidecar_path.string()
+                     << "': " << exists_error.message()
                      << "; skipping Phase 5 collider proxy import";
         return;
     }
