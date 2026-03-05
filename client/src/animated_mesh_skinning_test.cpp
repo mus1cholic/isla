@@ -10,9 +10,47 @@ namespace {
 using animated_gltf::SkinnedPrimitive;
 using animated_gltf::SkinnedVertex;
 
-TEST(AnimatedMeshSkinningTest, BlendsTwoJointInfluences) {
-    SkinnedPrimitive primitive;
-    primitive.vertices = {
+class AnimatedMeshSkinningFixture : public ::testing::Test {
+  protected:
+    static SkinnedVertex vertex(float x, float y, float z) {
+        return SkinnedVertex{ .position = Vec3{ .x = x, .y = y, .z = z } };
+    }
+
+    static SkinnedVertex rigid_vertex(float x, float y, float z, std::uint16_t joint = 0U) {
+        return SkinnedVertex{
+            .position = Vec3{ .x = x, .y = y, .z = z },
+            .joints = { joint, 0U, 0U, 0U },
+            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
+        };
+    }
+
+    static SkinnedPrimitive single_triangle_primitive(const SkinnedVertex& a,
+                                                      const SkinnedVertex& b,
+                                                      const SkinnedVertex& c) {
+        SkinnedPrimitive primitive;
+        primitive.vertices = { a, b, c };
+        primitive.indices = { 0U, 1U, 2U };
+        return primitive;
+    }
+
+    static Mat4 translate_x(float x) {
+        return Mat4::from_position_scale_quat(Vec3{ .x = x, .y = 0.0F, .z = 0.0F },
+                                              Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F },
+                                              Quat::identity());
+    }
+
+    static std::vector<Mat4> x_translations(std::initializer_list<float> x_offsets) {
+        std::vector<Mat4> matrices;
+        matrices.reserve(x_offsets.size());
+        for (const float x : x_offsets) {
+            matrices.push_back(translate_x(x));
+        }
+        return matrices;
+    }
+};
+
+TEST_F(AnimatedMeshSkinningFixture, BlendsTwoJointInfluences) {
+    SkinnedPrimitive primitive = single_triangle_primitive(
         SkinnedVertex{
             .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
             .joints = { 0U, 1U, 0U, 0U },
@@ -27,16 +65,9 @@ TEST(AnimatedMeshSkinningTest, BlendsTwoJointInfluences) {
             .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
             .joints = { 0U, 1U, 0U, 0U },
             .weights = { 0.5F, 0.5F, 0.0F, 0.0F },
-        },
-    };
-    primitive.indices = { 0U, 1U, 2U };
+        });
 
-    const std::vector<Mat4> skin_matrices = {
-        Mat4::from_position_scale_quat(Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F },
-                                       Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F }, Quat::identity()),
-        Mat4::from_position_scale_quat(Vec3{ .x = 4.0F, .y = 0.0F, .z = 0.0F },
-                                       Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F }, Quat::identity()),
-    };
+    const std::vector<Mat4> skin_matrices = x_translations({ 2.0F, 4.0F });
 
     const std::vector<Triangle> triangles =
         make_triangles_from_skinned_primitive(primitive, &skin_matrices);
@@ -46,22 +77,14 @@ TEST(AnimatedMeshSkinningTest, BlendsTwoJointInfluences) {
     EXPECT_NEAR(triangles[0].c.x, 3.0F, 1.0e-4F);
 }
 
-TEST(AnimatedMeshSkinningTest, OutOfRangeJointFallsBackToOriginalPosition) {
-    SkinnedPrimitive primitive;
-    primitive.vertices = {
+TEST_F(AnimatedMeshSkinningFixture, OutOfRangeJointFallsBackToOriginalPosition) {
+    SkinnedPrimitive primitive = single_triangle_primitive(
         SkinnedVertex{
             .position = Vec3{ .x = 5.0F, .y = 0.0F, .z = 0.0F },
             .joints = { 8U, 0U, 0U, 0U },
             .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
         },
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
-        },
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
-        },
-    };
-    primitive.indices = { 0U, 1U, 2U };
+        vertex(0.0F, 0.0F, 0.0F), vertex(0.0F, 1.0F, 0.0F));
     const std::vector<Mat4> skin_matrices = { Mat4::identity() };
 
     const std::vector<Triangle> triangles =
@@ -70,26 +93,15 @@ TEST(AnimatedMeshSkinningTest, OutOfRangeJointFallsBackToOriginalPosition) {
     EXPECT_NEAR(triangles[0].a.x, 5.0F, 1.0e-4F);
 }
 
-TEST(AnimatedMeshSkinningTest, RenormalizesWhenSomeInfluencesAreInvalid) {
-    SkinnedPrimitive primitive;
-    primitive.vertices = {
+TEST_F(AnimatedMeshSkinningFixture, RenormalizesWhenSomeInfluencesAreInvalid) {
+    SkinnedPrimitive primitive = single_triangle_primitive(
         SkinnedVertex{
             .position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F },
             .joints = { 0U, 9U, 0U, 0U },
             .weights = { 0.5F, 0.5F, 0.0F, 0.0F },
         },
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
-        },
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
-        },
-    };
-    primitive.indices = { 0U, 1U, 2U };
-    const std::vector<Mat4> skin_matrices = {
-        Mat4::from_position_scale_quat(Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F },
-                                       Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F }, Quat::identity()),
-    };
+        vertex(0.0F, 0.0F, 0.0F), vertex(0.0F, 1.0F, 0.0F));
+    const std::vector<Mat4> skin_matrices = x_translations({ 2.0F });
 
     const std::vector<Triangle> triangles =
         make_triangles_from_skinned_primitive(primitive, &skin_matrices);
@@ -97,7 +109,7 @@ TEST(AnimatedMeshSkinningTest, RenormalizesWhenSomeInfluencesAreInvalid) {
     EXPECT_NEAR(triangles[0].a.x, 3.0F, 1.0e-4F);
 }
 
-TEST(AnimatedMeshSkinningTest, SkipsIncompleteOrInvalidTrianglesSafely) {
+TEST_F(AnimatedMeshSkinningFixture, SkipsIncompleteOrInvalidTrianglesSafely) {
     SkinnedPrimitive primitive;
     primitive.vertices.resize(2U);
     primitive.indices = { 0U, 1U, 5U, 0U, 1U };
@@ -107,13 +119,13 @@ TEST(AnimatedMeshSkinningTest, SkipsIncompleteOrInvalidTrianglesSafely) {
     EXPECT_TRUE(triangles.empty());
 }
 
-TEST(AnimatedMeshSkinningTest, WorkspaceBuildSkipsInvalidTrianglesAndKeepsValidTopology) {
+TEST_F(AnimatedMeshSkinningFixture, WorkspaceBuildSkipsInvalidTrianglesAndKeepsValidTopology) {
     SkinnedPrimitive primitive;
     primitive.vertices = {
-        SkinnedVertex{ .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } },
-        SkinnedVertex{ .position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F } },
-        SkinnedVertex{ .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F } },
-        SkinnedVertex{ .position = Vec3{ .x = 1.0F, .y = 1.0F, .z = 0.0F } },
+        vertex(0.0F, 0.0F, 0.0F),
+        vertex(1.0F, 0.0F, 0.0F),
+        vertex(0.0F, 1.0F, 0.0F),
+        vertex(1.0F, 1.0F, 0.0F),
     };
     primitive.indices = { 0U, 1U, 2U, 0U, 1U, 9U };
 
@@ -128,26 +140,10 @@ TEST(AnimatedMeshSkinningTest, WorkspaceBuildSkipsInvalidTrianglesAndKeepsValidT
     EXPECT_EQ(workspace.triangle_vertex_indices[2], 2U);
 }
 
-TEST(AnimatedMeshSkinningTest, InPlaceSkinningReusesTriangleStorageAcrossTicks) {
-    SkinnedPrimitive primitive;
-    primitive.vertices = {
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-        SkinnedVertex{
-            .position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-    };
-    primitive.indices = { 0U, 1U, 2U };
+TEST_F(AnimatedMeshSkinningFixture, InPlaceSkinningReusesTriangleStorageAcrossTicks) {
+    SkinnedPrimitive primitive =
+        single_triangle_primitive(rigid_vertex(0.0F, 0.0F, 0.0F), rigid_vertex(1.0F, 0.0F, 0.0F),
+                                  rigid_vertex(0.0F, 1.0F, 0.0F));
 
     PrimitiveSkinningWorkspace workspace;
     std::vector<Triangle> triangles = make_initial_triangles_and_workspace(primitive, &workspace);
@@ -155,33 +151,23 @@ TEST(AnimatedMeshSkinningTest, InPlaceSkinningReusesTriangleStorageAcrossTicks) 
     const Triangle* original_data = triangles.data();
     const std::size_t original_capacity = triangles.capacity();
 
-    const std::vector<Mat4> tick0_matrices = {
-        Mat4::from_position_scale_quat(Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F },
-                                       Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F }, Quat::identity()),
-    };
+    const std::vector<Mat4> tick0_matrices = x_translations({ 1.0F });
     skin_primitive_in_place(primitive, &tick0_matrices, &workspace, &triangles);
     EXPECT_NEAR(triangles[0].a.x, 1.0F, 1.0e-4F);
 
-    const std::vector<Mat4> tick1_matrices = {
-        Mat4::from_position_scale_quat(Vec3{ .x = 3.0F, .y = 0.0F, .z = 0.0F },
-                                       Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F }, Quat::identity()),
-    };
+    const std::vector<Mat4> tick1_matrices = x_translations({ 3.0F });
     skin_primitive_in_place(primitive, &tick1_matrices, &workspace, &triangles);
     EXPECT_NEAR(triangles[0].a.x, 3.0F, 1.0e-4F);
     EXPECT_EQ(triangles.data(), original_data);
     EXPECT_EQ(triangles.capacity(), original_capacity);
 }
 
-TEST(AnimatedMeshSkinningTest, InPlaceSkinningKeepsWorkspaceAndTriangleCapacityStable) {
+TEST_F(AnimatedMeshSkinningFixture, InPlaceSkinningKeepsWorkspaceAndTriangleCapacityStable) {
     SkinnedPrimitive primitive;
     primitive.vertices.reserve(96U);
     for (std::uint32_t i = 0U; i < 96U; ++i) {
-        primitive.vertices.push_back(SkinnedVertex{
-            .position =
-                Vec3{ .x = static_cast<float>(i), .y = static_cast<float>(i % 7U), .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        });
+        primitive.vertices.push_back(
+            rigid_vertex(static_cast<float>(i), static_cast<float>(i % 7U), 0.0F));
     }
     for (std::uint32_t i = 0U; i + 2U < 96U; i += 3U) {
         primitive.indices.push_back(i);
@@ -192,10 +178,7 @@ TEST(AnimatedMeshSkinningTest, InPlaceSkinningKeepsWorkspaceAndTriangleCapacityS
     PrimitiveSkinningWorkspace workspace;
     std::vector<Triangle> triangles = make_initial_triangles_and_workspace(primitive, &workspace);
     ASSERT_FALSE(triangles.empty());
-    const std::vector<Mat4> skin_matrices = {
-        Mat4::from_position_scale_quat(Vec3{ .x = 0.25F, .y = 0.0F, .z = 0.0F },
-                                       Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F }, Quat::identity()),
-    };
+    const std::vector<Mat4> skin_matrices = x_translations({ 0.25F });
 
     skin_primitive_in_place(primitive, &skin_matrices, &workspace, &triangles);
     const Triangle* triangle_data = triangles.data();
@@ -212,13 +195,13 @@ TEST(AnimatedMeshSkinningTest, InPlaceSkinningKeepsWorkspaceAndTriangleCapacityS
     }
 }
 
-TEST(AnimatedMeshSkinningTest, InPlaceSkinningRebuildsWorkspaceWhenTopologyIsStale) {
+TEST_F(AnimatedMeshSkinningFixture, InPlaceSkinningRebuildsWorkspaceWhenTopologyIsStale) {
     SkinnedPrimitive primitive_a;
     primitive_a.vertices = {
-        SkinnedVertex{ .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } },
-        SkinnedVertex{ .position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F } },
-        SkinnedVertex{ .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F } },
-        SkinnedVertex{ .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 1.0F } },
+        vertex(0.0F, 0.0F, 0.0F),
+        vertex(1.0F, 0.0F, 0.0F),
+        vertex(0.0F, 1.0F, 0.0F),
+        vertex(0.0F, 0.0F, 1.0F),
     };
     primitive_a.indices = { 0U, 1U, 3U };
 
@@ -228,30 +211,11 @@ TEST(AnimatedMeshSkinningTest, InPlaceSkinningRebuildsWorkspaceWhenTopologyIsSta
     ASSERT_EQ(workspace.triangle_vertex_indices.size(), 3U);
     EXPECT_EQ(workspace.triangle_vertex_indices[2], 3U);
 
-    SkinnedPrimitive primitive_b;
-    primitive_b.vertices = {
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-        SkinnedVertex{
-            .position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-    };
-    primitive_b.indices = { 0U, 1U, 2U };
+    SkinnedPrimitive primitive_b =
+        single_triangle_primitive(rigid_vertex(0.0F, 0.0F, 0.0F), rigid_vertex(1.0F, 0.0F, 0.0F),
+                                  rigid_vertex(0.0F, 1.0F, 0.0F));
 
-    const std::vector<Mat4> skin_matrices = {
-        Mat4::from_position_scale_quat(Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F },
-                                       Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F }, Quat::identity()),
-    };
+    const std::vector<Mat4> skin_matrices = x_translations({ 2.0F });
 
     skin_primitive_in_place(primitive_b, &skin_matrices, &workspace, &triangles);
     ASSERT_EQ(triangles.size(), 1U);
@@ -261,26 +225,10 @@ TEST(AnimatedMeshSkinningTest, InPlaceSkinningRebuildsWorkspaceWhenTopologyIsSta
     EXPECT_NEAR(triangles[0].a.x, 2.0F, 1.0e-4F);
 }
 
-TEST(AnimatedMeshSkinningTest, InPlaceSkinningRebuildsWhenWorkspaceIsUninitialized) {
-    SkinnedPrimitive primitive;
-    primitive.vertices = {
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-        SkinnedVertex{
-            .position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-        SkinnedVertex{
-            .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
-            .joints = { 0U, 0U, 0U, 0U },
-            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
-        },
-    };
-    primitive.indices = { 0U, 1U, 2U };
+TEST_F(AnimatedMeshSkinningFixture, InPlaceSkinningRebuildsWhenWorkspaceIsUninitialized) {
+    SkinnedPrimitive primitive =
+        single_triangle_primitive(rigid_vertex(0.0F, 0.0F, 0.0F), rigid_vertex(1.0F, 0.0F, 0.0F),
+                                  rigid_vertex(0.0F, 1.0F, 0.0F));
 
     PrimitiveSkinningWorkspace workspace;
     std::vector<Triangle> triangles = {
@@ -292,10 +240,7 @@ TEST(AnimatedMeshSkinningTest, InPlaceSkinningRebuildsWhenWorkspaceIsUninitializ
     };
     ASSERT_TRUE(workspace.triangle_vertex_indices.empty());
 
-    const std::vector<Mat4> skin_matrices = {
-        Mat4::from_position_scale_quat(Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F },
-                                       Vec3{ .x = 1.0F, .y = 1.0F, .z = 1.0F }, Quat::identity()),
-    };
+    const std::vector<Mat4> skin_matrices = x_translations({ 1.0F });
 
     skin_primitive_in_place(primitive, &skin_matrices, &workspace, &triangles);
 

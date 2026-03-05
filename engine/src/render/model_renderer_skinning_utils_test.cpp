@@ -14,104 +14,152 @@ namespace {
 
 using namespace render_math;
 
-TEST(ModelRendererSkinningUtilsTest, ProgramSelectionFallsBackToStaticWhenAnyGateFails) {
-    EXPECT_EQ(choose_skinning_program_path(SkinningProgramDecisionInputs{
-                  .mesh_is_skinned = false,
-                  .has_skin_palette = true,
-                  .gpu_skinning_supported = true,
-                  .skinned_program_valid = true,
-              }),
-              SkinningProgramPath::StaticMesh);
-    EXPECT_EQ(choose_skinning_program_path(SkinningProgramDecisionInputs{
-                  .mesh_is_skinned = true,
-                  .has_skin_palette = false,
-                  .gpu_skinning_supported = true,
-                  .skinned_program_valid = true,
-              }),
-              SkinningProgramPath::StaticMesh);
-    EXPECT_EQ(choose_skinning_program_path(SkinningProgramDecisionInputs{
-                  .mesh_is_skinned = true,
-                  .has_skin_palette = true,
-                  .gpu_skinning_supported = false,
-                  .skinned_program_valid = true,
-              }),
-              SkinningProgramPath::StaticMesh);
-    EXPECT_EQ(choose_skinning_program_path(SkinningProgramDecisionInputs{
-                  .mesh_is_skinned = true,
-                  .has_skin_palette = true,
-                  .gpu_skinning_supported = true,
-                  .skinned_program_valid = false,
-              }),
-              SkinningProgramPath::StaticMesh);
+struct ProgramSelectionCase {
+    SkinningProgramDecisionInputs inputs;
+    SkinningProgramPath expected;
+};
+
+class ProgramSelectionParamTest : public ::testing::TestWithParam<ProgramSelectionCase> {};
+
+TEST_P(ProgramSelectionParamTest, ChoosesExpectedPath) {
+    const ProgramSelectionCase& tc = GetParam();
+    EXPECT_EQ(choose_skinning_program_path(tc.inputs), tc.expected);
 }
 
-TEST(ModelRendererSkinningUtilsTest, ProgramSelectionUsesSkinnedWhenAllGatesPass) {
-    EXPECT_EQ(choose_skinning_program_path(SkinningProgramDecisionInputs{
-                  .mesh_is_skinned = true,
-                  .has_skin_palette = true,
-                  .gpu_skinning_supported = true,
-                  .skinned_program_valid = true,
-              }),
-              SkinningProgramPath::SkinnedMesh);
+INSTANTIATE_TEST_SUITE_P(ProgramSelectionCases, ProgramSelectionParamTest,
+                         ::testing::Values(
+                             ProgramSelectionCase{
+                                 .inputs =
+                                     SkinningProgramDecisionInputs{
+                                         .mesh_is_skinned = false,
+                                         .has_skin_palette = true,
+                                         .gpu_skinning_supported = true,
+                                         .skinned_program_valid = true,
+                                     },
+                                 .expected = SkinningProgramPath::StaticMesh,
+                             },
+                             ProgramSelectionCase{
+                                 .inputs =
+                                     SkinningProgramDecisionInputs{
+                                         .mesh_is_skinned = true,
+                                         .has_skin_palette = false,
+                                         .gpu_skinning_supported = true,
+                                         .skinned_program_valid = true,
+                                     },
+                                 .expected = SkinningProgramPath::StaticMesh,
+                             },
+                             ProgramSelectionCase{
+                                 .inputs =
+                                     SkinningProgramDecisionInputs{
+                                         .mesh_is_skinned = true,
+                                         .has_skin_palette = true,
+                                         .gpu_skinning_supported = false,
+                                         .skinned_program_valid = true,
+                                     },
+                                 .expected = SkinningProgramPath::StaticMesh,
+                             },
+                             ProgramSelectionCase{
+                                 .inputs =
+                                     SkinningProgramDecisionInputs{
+                                         .mesh_is_skinned = true,
+                                         .has_skin_palette = true,
+                                         .gpu_skinning_supported = true,
+                                         .skinned_program_valid = false,
+                                     },
+                                 .expected = SkinningProgramPath::StaticMesh,
+                             },
+                             ProgramSelectionCase{
+                                 .inputs =
+                                     SkinningProgramDecisionInputs{
+                                         .mesh_is_skinned = true,
+                                         .has_skin_palette = true,
+                                         .gpu_skinning_supported = true,
+                                         .skinned_program_valid = true,
+                                     },
+                                 .expected = SkinningProgramPath::SkinnedMesh,
+                             }));
+
+struct MaterialRenderPathCase {
+    MaterialRenderPathDecisionInputs inputs;
+    float expected_alpha;
+    float expected_alpha_cutoff;
+    bool expected_alpha_cutout_enabled;
+    bool expected_use_alpha_blend_base;
+};
+
+class MaterialRenderPathParamTest : public ::testing::TestWithParam<MaterialRenderPathCase> {};
+
+TEST_P(MaterialRenderPathParamTest, ChoosesExpectedFlagsAndClampedValues) {
+    const MaterialRenderPathCase& tc = GetParam();
+    const MaterialRenderPathDecision decision = choose_material_render_path(tc.inputs);
+    EXPECT_FLOAT_EQ(decision.alpha, tc.expected_alpha);
+    EXPECT_FLOAT_EQ(decision.alpha_cutoff, tc.expected_alpha_cutoff);
+    EXPECT_EQ(decision.alpha_cutout_enabled, tc.expected_alpha_cutout_enabled);
+    EXPECT_EQ(decision.use_alpha_blend_base, tc.expected_use_alpha_blend_base);
 }
 
-TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathUsesOpaqueByDefault) {
-    const MaterialRenderPathDecision decision =
-        choose_material_render_path(MaterialRenderPathDecisionInputs{
-            .blend_mode = MaterialBlendMode::Opaque,
-            .base_alpha = 1.0F,
-            .alpha_cutoff = -1.0F,
-        });
-    EXPECT_FLOAT_EQ(decision.alpha, 1.0F);
-    EXPECT_FLOAT_EQ(decision.alpha_cutoff, -1.0F);
-    EXPECT_FALSE(decision.alpha_cutout_enabled);
-    EXPECT_FALSE(decision.use_alpha_blend_base);
-}
-
-TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathUsesAlphaBlendForBlendMode) {
-    const MaterialRenderPathDecision decision =
-        choose_material_render_path(MaterialRenderPathDecisionInputs{
-            .blend_mode = MaterialBlendMode::AlphaBlend,
-            .base_alpha = 1.0F,
-            .alpha_cutoff = -1.0F,
-        });
-    EXPECT_FALSE(decision.alpha_cutout_enabled);
-    EXPECT_TRUE(decision.use_alpha_blend_base);
-}
-
-TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathUsesAlphaBlendForNonCutoutAlpha) {
-    const MaterialRenderPathDecision decision =
-        choose_material_render_path(MaterialRenderPathDecisionInputs{
-            .blend_mode = MaterialBlendMode::Opaque,
-            .base_alpha = 0.35F,
-            .alpha_cutoff = -1.0F,
-        });
-    EXPECT_FALSE(decision.alpha_cutout_enabled);
-    EXPECT_TRUE(decision.use_alpha_blend_base);
-}
-
-TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathKeepsCutoutOnOpaqueBase) {
-    const MaterialRenderPathDecision decision =
-        choose_material_render_path(MaterialRenderPathDecisionInputs{
-            .blend_mode = MaterialBlendMode::Opaque,
-            .base_alpha = 0.2F,
-            .alpha_cutoff = 0.42F,
-        });
-    EXPECT_TRUE(decision.alpha_cutout_enabled);
-    EXPECT_FALSE(decision.use_alpha_blend_base);
-}
-
-TEST(ModelRendererSkinningUtilsTest, MaterialRenderPathClampsAlphaAndCutoff) {
-    const MaterialRenderPathDecision decision =
-        choose_material_render_path(MaterialRenderPathDecisionInputs{
-            .blend_mode = MaterialBlendMode::Opaque,
-            .base_alpha = 2.0F,
-            .alpha_cutoff = -2.0F,
-        });
-    EXPECT_FLOAT_EQ(decision.alpha, 1.0F);
-    EXPECT_FLOAT_EQ(decision.alpha_cutoff, -1.0F);
-    EXPECT_FALSE(decision.alpha_cutout_enabled);
-}
+INSTANTIATE_TEST_SUITE_P(MaterialRenderPathCases, MaterialRenderPathParamTest,
+                         ::testing::Values(
+                             MaterialRenderPathCase{
+                                 .inputs =
+                                     MaterialRenderPathDecisionInputs{
+                                         .blend_mode = MaterialBlendMode::Opaque,
+                                         .base_alpha = 1.0F,
+                                         .alpha_cutoff = -1.0F,
+                                     },
+                                 .expected_alpha = 1.0F,
+                                 .expected_alpha_cutoff = -1.0F,
+                                 .expected_alpha_cutout_enabled = false,
+                                 .expected_use_alpha_blend_base = false,
+                             },
+                             MaterialRenderPathCase{
+                                 .inputs =
+                                     MaterialRenderPathDecisionInputs{
+                                         .blend_mode = MaterialBlendMode::AlphaBlend,
+                                         .base_alpha = 1.0F,
+                                         .alpha_cutoff = -1.0F,
+                                     },
+                                 .expected_alpha = 1.0F,
+                                 .expected_alpha_cutoff = -1.0F,
+                                 .expected_alpha_cutout_enabled = false,
+                                 .expected_use_alpha_blend_base = true,
+                             },
+                             MaterialRenderPathCase{
+                                 .inputs =
+                                     MaterialRenderPathDecisionInputs{
+                                         .blend_mode = MaterialBlendMode::Opaque,
+                                         .base_alpha = 0.35F,
+                                         .alpha_cutoff = -1.0F,
+                                     },
+                                 .expected_alpha = 0.35F,
+                                 .expected_alpha_cutoff = -1.0F,
+                                 .expected_alpha_cutout_enabled = false,
+                                 .expected_use_alpha_blend_base = true,
+                             },
+                             MaterialRenderPathCase{
+                                 .inputs =
+                                     MaterialRenderPathDecisionInputs{
+                                         .blend_mode = MaterialBlendMode::Opaque,
+                                         .base_alpha = 0.2F,
+                                         .alpha_cutoff = 0.42F,
+                                     },
+                                 .expected_alpha = 0.2F,
+                                 .expected_alpha_cutoff = 0.42F,
+                                 .expected_alpha_cutout_enabled = true,
+                                 .expected_use_alpha_blend_base = false,
+                             },
+                             MaterialRenderPathCase{
+                                 .inputs =
+                                     MaterialRenderPathDecisionInputs{
+                                         .blend_mode = MaterialBlendMode::Opaque,
+                                         .base_alpha = 2.0F,
+                                         .alpha_cutoff = -2.0F,
+                                     },
+                                 .expected_alpha = 1.0F,
+                                 .expected_alpha_cutoff = -1.0F,
+                                 .expected_alpha_cutout_enabled = false,
+                                 .expected_use_alpha_blend_base = false,
+                             }));
 
 TEST(ModelRendererSkinningUtilsTest, FillSkinPaletteBufferCopiesAndPadsWithIdentity) {
     std::vector<Mat4> upload(4U, Mat4::translation(Vec3{ .x = 99.0F, .y = 99.0F, .z = 99.0F }));
@@ -275,7 +323,7 @@ Vec3 skin_position(const SkinnedMeshVertex& vertex, std::span<const Mat4> palett
         if (weight <= 1.0e-6F) {
             continue;
         }
-        const std::size_t joint = static_cast<std::size_t>(vertex.joints[i]);
+        const auto joint = static_cast<std::size_t>(vertex.joints[i]);
         if (joint >= palette.size()) {
             continue;
         }
@@ -294,7 +342,7 @@ Vec3 skin_normal(const SkinnedMeshVertex& vertex, std::span<const Mat4> palette)
         if (weight <= 1.0e-6F) {
             continue;
         }
-        const std::size_t joint = static_cast<std::size_t>(vertex.joints[i]);
+        const auto joint = static_cast<std::size_t>(vertex.joints[i]);
         if (joint >= palette.size()) {
             continue;
         }
@@ -410,41 +458,44 @@ TEST(ModelRendererSkinningUtilsTest, BuildGpuSkinningPartitionsPreservesSharedVe
     }
 }
 
-TEST(ModelRendererSkinningUtilsTest,
-     BuildGpuSkinningPartitionsRejectsIncompleteTriangleIndexBuffer) {
-    const std::vector<SkinnedMeshVertex> vertices = {
-        make_joint_vertex(1U),
-        make_joint_vertex(2U),
-    };
-    const std::vector<std::uint32_t> indices = { 0U, 1U };
+struct InvalidPartitionInputCase {
+    std::vector<SkinnedMeshVertex> vertices;
+    std::vector<std::uint32_t> indices;
+};
+
+class InvalidPartitionInputParamTest : public ::testing::TestWithParam<InvalidPartitionInputCase> {
+};
+
+TEST_P(InvalidPartitionInputParamTest, BuildGpuSkinningPartitionsRejectsInvalidInputs) {
+    const InvalidPartitionInputCase& tc = GetParam();
     std::vector<GpuSkinningPartition> partitions;
     std::string error;
-    EXPECT_FALSE(build_gpu_skinning_partitions(vertices, indices, kMaxGpuSkinningJoints, partitions,
-                                               &error));
+    EXPECT_FALSE(build_gpu_skinning_partitions(tc.vertices, tc.indices, kMaxGpuSkinningJoints,
+                                               partitions, &error));
 }
 
-TEST(ModelRendererSkinningUtilsTest, BuildGpuSkinningPartitionsRejectsOutOfRangeTriangleIndex) {
-    const std::vector<SkinnedMeshVertex> vertices = {
-        make_joint_vertex(1U),
-        make_joint_vertex(2U),
-        make_joint_vertex(3U),
-    };
-    const std::vector<std::uint32_t> indices = { 0U, 1U, 9U };
-    std::vector<GpuSkinningPartition> partitions;
-    std::string error;
-    EXPECT_FALSE(build_gpu_skinning_partitions(vertices, indices, kMaxGpuSkinningJoints, partitions,
-                                               &error));
-}
-
-TEST(ModelRendererSkinningUtilsTest,
-     BuildGpuSkinningPartitionsRejectsNonEmptyIndicesWithEmptyVertices) {
-    const std::vector<SkinnedMeshVertex> vertices;
-    const std::vector<std::uint32_t> indices = { 0U, 1U, 2U };
-    std::vector<GpuSkinningPartition> partitions;
-    std::string error;
-    EXPECT_FALSE(build_gpu_skinning_partitions(vertices, indices, kMaxGpuSkinningJoints, partitions,
-                                               &error));
-}
+INSTANTIATE_TEST_SUITE_P(
+    InvalidPartitionInputs, InvalidPartitionInputParamTest,
+    ::testing::Values(
+        InvalidPartitionInputCase{
+            .vertices = {
+                make_joint_vertex(1U),
+                make_joint_vertex(2U),
+            },
+            .indices = { 0U, 1U },
+        },
+        InvalidPartitionInputCase{
+            .vertices = {
+                make_joint_vertex(1U),
+                make_joint_vertex(2U),
+                make_joint_vertex(3U),
+            },
+            .indices = { 0U, 1U, 9U },
+        },
+        InvalidPartitionInputCase{
+            .vertices = {},
+            .indices = { 0U, 1U, 2U },
+        }));
 
 } // namespace
 } // namespace isla::client
