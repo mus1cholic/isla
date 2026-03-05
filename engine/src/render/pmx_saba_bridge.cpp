@@ -10,6 +10,24 @@
 namespace isla::client::pmx_native::internal {
 namespace {
 
+bool is_ascii_alpha(char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+}
+
+bool is_absolute_texture_path(std::string_view texture_path) {
+    if (texture_path.empty()) {
+        return false;
+    }
+    if (texture_path.size() >= 3 && is_ascii_alpha(texture_path[0]) && texture_path[1] == ':' &&
+        (texture_path[2] == '/' || texture_path[2] == '\\')) {
+        return true;
+    }
+    if (texture_path[0] == '/' || texture_path[0] == '\\') {
+        return true;
+    }
+    return false;
+}
+
 bool has_parent_traversal(std::string_view texture_path) {
     const std::filesystem::path path(texture_path);
     for (const std::filesystem::path& component : path) {
@@ -89,13 +107,13 @@ ProbeResult probe_with_saba(std::string_view asset_path) {
 
     for (const saba::PMXTexture& texture : pmx.m_textures) {
         const std::filesystem::path texture_path(texture.m_textureName);
-        if (texture_path.is_absolute()) {
+        if (is_absolute_texture_path(texture.m_textureName)) {
             ++result.summary.absolute_texture_reference_count;
         }
         if (has_parent_traversal(texture.m_textureName)) {
             ++result.summary.parent_traversal_texture_reference_count;
         }
-        if (!texture.m_textureName.empty() && !texture_path.is_absolute() &&
+        if (!texture.m_textureName.empty() && !is_absolute_texture_path(texture.m_textureName) &&
             !has_parent_traversal(texture.m_textureName)) {
             const std::filesystem::path resolved_texture_path =
                 (asset_directory / texture_path).lexically_normal();
@@ -132,32 +150,31 @@ ProbeResult probe_with_saba(std::string_view asset_path) {
                                   "rather than a supported direct runtime skinning path");
     }
     if (result.summary.morph_count > 0U) {
-        result.warnings.push_back("PMX probe detected morph data count=" +
-                                  std::to_string(result.summary.morph_count) +
-                                  "; morph runtime parity is deferred beyond the initial native "
-                                  "PMX baseline");
+        result.warnings.push_back(
+            "PMX probe detected morph data count=" + std::to_string(result.summary.morph_count) +
+            "; morph runtime parity is deferred beyond the initial native "
+            "PMX baseline");
     }
     if (result.summary.rigidbody_count > 0U || result.summary.joint_count > 0U ||
         result.summary.softbody_count > 0U) {
         result.warnings.push_back("PMX probe detected physics-related data rigidbodies=" +
-                                  std::to_string(result.summary.rigidbody_count) + " joints=" +
-                                  std::to_string(result.summary.joint_count) + " softbodies=" +
-                                  std::to_string(result.summary.softbody_count) +
+                                  std::to_string(result.summary.rigidbody_count) +
+                                  " joints=" + std::to_string(result.summary.joint_count) +
+                                  " softbodies=" + std::to_string(result.summary.softbody_count) +
                                   "; native PMX physics is deferred beyond the initial runtime "
                                   "baseline");
     }
     if (result.summary.sphere_texture_material_count > 0U ||
         result.summary.toon_texture_material_count > 0U ||
         result.summary.edge_enabled_material_count > 0U) {
-        result.warnings.push_back("PMX probe detected toon/sphere/edge material channels "
-                                  "sphere_materials=" +
-                                  std::to_string(result.summary.sphere_texture_material_count) +
-                                  " toon_materials=" +
-                                  std::to_string(result.summary.toon_texture_material_count) +
-                                  " edge_materials=" +
-                                  std::to_string(result.summary.edge_enabled_material_count) +
-                                  "; Phase 0 keeps those channels explicitly deferred instead of "
-                                  "silently approximating them");
+        result.warnings.push_back(
+            "PMX probe detected toon/sphere/edge material channels "
+            "sphere_materials=" +
+            std::to_string(result.summary.sphere_texture_material_count) +
+            " toon_materials=" + std::to_string(result.summary.toon_texture_material_count) +
+            " edge_materials=" + std::to_string(result.summary.edge_enabled_material_count) +
+            "; Phase 0 keeps those channels explicitly deferred instead of "
+            "silently approximating them");
     }
     if (result.summary.absolute_texture_reference_count > 0U ||
         result.summary.parent_traversal_texture_reference_count > 0U) {
@@ -179,13 +196,13 @@ ProbeResult probe_with_saba(std::string_view asset_path) {
                            "' vertices=" + std::to_string(result.summary.vertex_count) +
                            " faces=" + std::to_string(result.summary.face_count) +
                            " materials=" + std::to_string(result.summary.material_count) +
-                           " bones=" + std::to_string(result.summary.bone_count) + " warnings=" +
-                           std::to_string(result.warnings.size()) + " skinning={BDEF1:" +
-                           std::to_string(result.summary.bdef1_vertex_count) + ",BDEF2:" +
-                           std::to_string(result.summary.bdef2_vertex_count) + ",BDEF4:" +
-                           std::to_string(result.summary.bdef4_vertex_count) + ",SDEF:" +
-                           std::to_string(result.summary.sdef_vertex_count) + ",QDEF:" +
-                           std::to_string(result.summary.qdef_vertex_count) + "}");
+                           " bones=" + std::to_string(result.summary.bone_count) +
+                           " warnings=" + std::to_string(result.warnings.size()) +
+                           " skinning={BDEF1:" + std::to_string(result.summary.bdef1_vertex_count) +
+                           ",BDEF2:" + std::to_string(result.summary.bdef2_vertex_count) +
+                           ",BDEF4:" + std::to_string(result.summary.bdef4_vertex_count) +
+                           ",SDEF:" + std::to_string(result.summary.sdef_vertex_count) +
+                           ",QDEF:" + std::to_string(result.summary.qdef_vertex_count) + "}");
     return result;
 }
 
