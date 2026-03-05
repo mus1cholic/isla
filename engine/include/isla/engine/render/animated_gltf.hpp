@@ -60,20 +60,37 @@ struct JointAnimationTrack {
     TrackInterpolation scale_interpolation = TrackInterpolation::Linear;
 };
 
+struct AnimatedNode {
+    std::string name;
+    int parent_index = -1;
+    Transform bind_local_transform{};
+    Mat4 bind_local_matrix = Mat4::identity();
+    bool uses_trs = true;
+};
+
 struct AnimationClip {
     std::string name;
     float duration_seconds = 0.0F;
+    // Legacy/manual joint-only assets still populate joint_tracks directly.
     std::vector<JointAnimationTrack> joint_tracks;
+    // Runtime-loaded glTF assets populate node_tracks for full hierarchy evaluation.
+    std::vector<JointAnimationTrack> node_tracks;
 };
 
 struct AnimatedGltfAsset {
     std::vector<SkinnedPrimitive> primitives;
     Skeleton skeleton;
+    // Legacy/manual joint-only fallback bind locals. Runtime-loaded assets also populate these for
+    // direct joint access.
     std::vector<Transform> bind_local_transforms;
-    // Static transform chain between nearest joint-parent and this joint.
-    // Local joint animation is evaluated in bind_local_transforms, then prefixed by this matrix.
-    std::vector<Mat4> bind_prefix_matrices;
+    std::vector<AnimatedNode> nodes;
+    std::vector<std::size_t> joint_node_indices;
     std::vector<AnimationClip> clips;
+};
+
+struct AnimatedNodeSummary {
+    std::size_t animated_nodes = 0U;
+    std::size_t animated_non_joint_nodes = 0U;
 };
 
 struct AnimatedGltfLoadResult {
@@ -93,6 +110,7 @@ enum class ClipPlaybackMode {
 };
 
 [[nodiscard]] AnimatedGltfLoadResult load_from_file(std::string_view asset_path);
+[[nodiscard]] AnimatedNodeSummary summarize_animated_nodes(const AnimatedGltfAsset& asset);
 
 [[nodiscard]] bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index,
                                       float time_seconds, EvaluatedPose& out_pose,

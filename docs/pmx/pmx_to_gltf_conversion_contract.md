@@ -1,12 +1,12 @@
 # PMX to glTF Conversion Contract (Phase 1)
 
-Last updated: 2026-03-04
+Last updated: 2026-03-05
 
 ## Purpose
 
 This document defines the deterministic conversion contract for PMX assets that must be consumed by the current `isla` animated glTF runtime (`engine/src/render/animated_gltf.cpp`).
 
-The contract targets runtime compatibility as of 2026-03-02 (Phase 0 complete; Phases 2+ pending).
+The contract targets runtime compatibility as of 2026-03-05 (Phase 8 complete; Phases 9+ pending).
 
 ## Normative Terms
 
@@ -63,10 +63,11 @@ The converted glTF MUST satisfy all of the following:
   - `CUBICSPLINE` MUST NOT be emitted.
   - Sampler `input.count` MUST equal `output.count`.
 
-4. Hierarchy compatibility caveat
-- Static non-joint ancestors are currently baked at load.
-- Animated non-joint hierarchy segments are not fully supported yet.
-- Converter SHOULD bake or avoid animation on non-joint chains that affect skinned joints.
+4. Hierarchy compatibility
+- Runtime composes the full glTF node hierarchy before extracting joint globals/skin matrices.
+- Animated non-joint roots and intermediate nodes that affect skinned joints are supported.
+- Static matrix-authored non-joint ancestors remain supported.
+- Converter does not need to bake away non-joint animation chains for baseline runtime compatibility.
 
 5. Materials/textures
 - Materials and texture references SHOULD be preserved from conversion output.
@@ -202,10 +203,10 @@ A converted package passes Phase 1 validation when all required checks pass:
 
 ## Current Runtime Limits (Informative)
 
-These are known and expected as of 2026-03-02:
+These are known and expected as of 2026-03-05:
 - Matrix-authored joints are rejected.
 - `CUBICSPLINE` is rejected.
-- Animated non-joint hierarchy segments are not fully supported.
+- Matrix-authored animated nodes are not supported.
 - Primitive dedup in runtime is pointer-based (per-node primitive instance transforms are not represented yet).
 
 ## Acceptance for Phase 1

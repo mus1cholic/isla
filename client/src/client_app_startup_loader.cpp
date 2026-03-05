@@ -204,14 +204,23 @@ bool try_load_animated_asset(StartupLoaderContext& context, const std::string& p
     const float selected_clip_duration =
         clip_index_valid ? context.animated_asset->clips[playback_state.clip_index].duration_seconds
                          : -1.0F;
+    const animated_gltf::AnimatedNodeSummary node_summary =
+        animated_gltf::summarize_animated_nodes(*context.animated_asset);
     LOG(INFO) << "ClientApp: animated startup summary clip='" << std::string(selected_clip_name)
               << "' duration_seconds=" << selected_clip_duration << " gpu_skinning_authoritative="
               << (context.gpu_skinning_authoritative ? "true" : "false")
               << " physics_sidecar_loaded="
-              << (context.physics_sidecar.has_value() ? "true" : "false");
+              << (context.physics_sidecar.has_value() ? "true" : "false")
+              << " explicit_node_hierarchy="
+              << (!context.animated_asset->nodes.empty() ? "true" : "false")
+              << " node_count=" << context.animated_asset->nodes.size()
+              << " animated_non_joint_nodes=" << node_summary.animated_non_joint_nodes;
     VLOG(1) << "ClientApp: loaded animated glTF from " << source_label << "='" << path
             << "', clips=" << context.animated_asset->clips.size()
             << ", primitives=" << context.animated_asset->primitives.size()
+            << ", nodes=" << context.animated_asset->nodes.size()
+            << ", animated_nodes=" << node_summary.animated_nodes
+            << ", animated_non_joint_nodes=" << node_summary.animated_non_joint_nodes
             << ", playback_meshes=" << context.animated_mesh_bindings.size();
     if (context.animated_mesh_bindings.empty()) {
         LOG(WARNING) << "ClientApp: animated glTF loaded but produced zero playable meshes";

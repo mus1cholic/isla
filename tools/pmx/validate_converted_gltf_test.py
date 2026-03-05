@@ -1,4 +1,5 @@
 import unittest
+import tempfile
 from pathlib import Path
 
 from tools.pmx import validate_converted_gltf
@@ -22,6 +23,89 @@ class ValidateConvertedGltfTest(unittest.TestCase):
         asset = _runfile(asset_rel)
         sidecar = _runfile(sidecar_rel)
         return validate_converted_gltf.validate_package(asset, sidecar)
+
+    def test_allows_animated_non_joint_hierarchy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            asset = root / "animated_non_joint.gltf"
+            sidecar = root / "animated_non_joint.physics.json"
+            asset.write_text(
+                """
+{
+  "asset": {"version": "2.0"},
+  "accessors": [
+    {"count": 3},
+    {"count": 3},
+    {"count": 3},
+    {"count": 3},
+    {"count": 2},
+    {"count": 2},
+    {"count": 2},
+    {"count": 2},
+    {"count": 2}
+  ],
+  "meshes": [
+    {"primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}, "indices": 3}]}
+  ],
+  "nodes": [
+    {"name": "RigRoot"},
+    {"name": "Root", "translation": [1, 0, 0]},
+    {"mesh": 0, "skin": 0}
+  ],
+  "skins": [{"joints": [1]}],
+  "animations": [
+    {
+      "name": "idle",
+      "samplers": [{"input": 4, "output": 5, "interpolation": "LINEAR"}],
+      "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]
+    },
+    {
+      "name": "walk",
+      "samplers": [{"input": 6, "output": 7, "interpolation": "LINEAR"}],
+      "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]
+    },
+    {
+      "name": "action",
+      "samplers": [{"input": 6, "output": 8, "interpolation": "STEP"}],
+      "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]
+    }
+  ]
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            sidecar.write_text(
+                """
+{
+  "schema_version": "1.0.0",
+  "converter": {
+    "name": "conv",
+    "version": "1",
+    "command": "x",
+    "timestamp_utc": "2026-03-01T00:00:00Z"
+  },
+  "collision_layers": [{"index": 0, "name": "default"}],
+  "colliders": [
+    {
+      "id": "c0",
+      "bone_name": "Root",
+      "shape": "sphere",
+      "offset": [0, 0, 0],
+      "rotation_euler_deg": [0, 0, 0],
+      "is_trigger": false,
+      "layer": 1,
+      "mask": 1,
+      "radius": 0.2
+    }
+  ],
+  "constraints": []
+}
+""".strip(),
+                encoding="utf-8",
+            )
+
+            errors, warnings = validate_converted_gltf.validate_package(asset, sidecar)
+            self.assertFalse(errors, msg=f"errors: {errors}, warnings: {warnings}")
 
     def test_passes_valid_fixture(self):
         errors, warnings = self._run_validator(

@@ -827,7 +827,6 @@ animated_gltf::AnimatedGltfAsset make_test_asset_with_two_clips() {
     animated_gltf::AnimatedGltfAsset asset;
     asset.skeleton.joints.resize(1U);
     asset.bind_local_transforms.resize(1U);
-    asset.bind_prefix_matrices = { Mat4::identity() };
 
     animated_gltf::SkinnedPrimitive primitive;
     primitive.vertices = {
@@ -880,11 +879,78 @@ animated_gltf::AnimatedGltfAsset make_test_asset_with_two_clips() {
     return asset;
 }
 
+animated_gltf::AnimatedGltfAsset make_non_joint_hierarchy_test_asset() {
+    animated_gltf::AnimatedGltfAsset asset;
+    asset.skeleton.joints.resize(1U);
+    asset.skeleton.joints[0].name = "root";
+    asset.nodes.resize(2U);
+    asset.nodes[0].name = "rig_root";
+    asset.nodes[0].parent_index = -1;
+    asset.nodes[0].bind_local_matrix = Mat4::identity();
+    asset.nodes[1].name = "root";
+    asset.nodes[1].parent_index = 0;
+    asset.nodes[1].bind_local_transform.position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F };
+    asset.nodes[1].bind_local_matrix = Mat4::from_position_scale_quat(
+        asset.nodes[1].bind_local_transform.position, asset.nodes[1].bind_local_transform.scale,
+        asset.nodes[1].bind_local_transform.rotation);
+    asset.joint_node_indices = { 1U };
+    asset.bind_local_transforms = { asset.nodes[1].bind_local_transform };
+
+    animated_gltf::SkinnedPrimitive primitive;
+    primitive.vertices = {
+        animated_gltf::SkinnedVertex{
+            .position = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
+            .uv = Vec2{ .x = 0.0F, .y = 0.0F },
+            .joints = { 0U, 0U, 0U, 0U },
+            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
+        },
+        animated_gltf::SkinnedVertex{
+            .position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F },
+            .uv = Vec2{ .x = 1.0F, .y = 0.0F },
+            .joints = { 0U, 0U, 0U, 0U },
+            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
+        },
+        animated_gltf::SkinnedVertex{
+            .position = Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F },
+            .uv = Vec2{ .x = 0.0F, .y = 1.0F },
+            .joints = { 0U, 0U, 0U, 0U },
+            .weights = { 1.0F, 0.0F, 0.0F, 0.0F },
+        },
+    };
+    primitive.indices = { 0U, 1U, 2U };
+    asset.primitives.push_back(std::move(primitive));
+
+    animated_gltf::AnimationClip idle;
+    idle.name = "idle";
+    idle.duration_seconds = 1.0F;
+    idle.node_tracks.resize(2U);
+    idle.node_tracks[0].translations = {
+        animated_gltf::Vec3Keyframe{ .time_seconds = 0.0F,
+                                     .value = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } },
+        animated_gltf::Vec3Keyframe{ .time_seconds = 1.0F,
+                                     .value = Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F } },
+    };
+
+    animated_gltf::AnimationClip walk;
+    walk.name = "walk";
+    walk.duration_seconds = 1.0F;
+    walk.node_tracks.resize(2U);
+    walk.node_tracks[0].translations = {
+        animated_gltf::Vec3Keyframe{ .time_seconds = 0.0F,
+                                     .value = Vec3{ .x = 10.0F, .y = 0.0F, .z = 0.0F } },
+        animated_gltf::Vec3Keyframe{ .time_seconds = 1.0F,
+                                     .value = Vec3{ .x = 12.0F, .y = 0.0F, .z = 0.0F } },
+    };
+
+    asset.clips.push_back(std::move(idle));
+    asset.clips.push_back(std::move(walk));
+    return asset;
+}
+
 animated_gltf::AnimatedGltfAsset make_large_joint_test_asset() {
     animated_gltf::AnimatedGltfAsset asset;
     asset.skeleton.joints.resize(66U);
     asset.bind_local_transforms.resize(66U);
-    asset.bind_prefix_matrices.assign(66U, Mat4::identity());
 
     animated_gltf::SkinnedPrimitive primitive;
     primitive.vertices.reserve(66U);
@@ -1000,6 +1066,20 @@ TEST_F(ClientAppAnimationTestFixture, TickAdvancesAnimationAndMeshTriangles) {
     ASSERT_FALSE(world.meshes()[0].triangles().empty());
     EXPECT_NEAR(world.sim_time_seconds(), 0.5F, 1.0e-4F);
     EXPECT_NEAR(world.meshes()[0].triangles()[0].a.x, 1.0F, 1.0e-4F);
+}
+
+TEST_F(ClientAppAnimationTestFixture, TickAdvancesAnimationFromNonJointHierarchyAsset) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_non_joint_hierarchy_test_asset());
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
+    runtime_.now_ticks_ns = 500000000ULL;
+
+    internal::ClientAppTestHooks::tick(app_);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app_);
+    ASSERT_FALSE(world.meshes().empty());
+    ASSERT_FALSE(world.meshes()[0].triangles().empty());
+    EXPECT_NEAR(world.meshes()[0].triangles()[0].a.x, 2.0F, 1.0e-4F);
 }
 
 TEST_F(ClientAppAnimationTestFixture, AnimatedTickUpdatesMeshInPlaceWithoutTriangleReallocation) {
@@ -1182,6 +1262,45 @@ TEST_F(ClientAppAnimationTestFixture, PhysicsColliderProxyFollowsAnimatedJointPo
     ASSERT_FALSE(world_after_tick.meshes()[proxy_mesh_id].triangles().empty());
     const float proxy_x = world_after_tick.meshes()[proxy_mesh_id].triangles()[0].a.x;
     EXPECT_NEAR(proxy_x, 1.0F, 1.0e-4F);
+}
+
+TEST_F(ClientAppAnimationTestFixture, PhysicsColliderProxyFollowsNonJointHierarchyPose) {
+    internal::ClientAppTestHooks::set_animated_asset(app_, make_non_joint_hierarchy_test_asset());
+
+    pmx_physics_sidecar::SidecarData sidecar;
+    sidecar.colliders.push_back(pmx_physics_sidecar::Collider{
+        .id = "head_col",
+        .bone_name = "root",
+        .shape = pmx_physics_sidecar::ColliderShape::Sphere,
+        .offset = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
+        .rotation_euler_deg = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
+        .is_trigger = false,
+        .layer = 1U,
+        .mask = 1U,
+        .radius = 0.5F,
+    });
+    internal::ClientAppTestHooks::set_physics_sidecar(app_, std::move(sidecar));
+
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app_);
+    ASSERT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app_), 1U);
+
+    const RenderWorld& world_at_bind = internal::ClientAppTestHooks::world(app_);
+    ASSERT_GE(world_at_bind.meshes().size(), 2U);
+    const std::size_t proxy_mesh_id = world_at_bind.objects().back().mesh_id;
+    ASSERT_LT(proxy_mesh_id, world_at_bind.meshes().size());
+    ASSERT_FALSE(world_at_bind.meshes()[proxy_mesh_id].triangles().empty());
+    const float bind_x = world_at_bind.meshes()[proxy_mesh_id].triangles()[0].a.x;
+    EXPECT_NEAR(bind_x, 1.0F, 1.0e-4F);
+
+    internal::ClientAppTestHooks::set_last_tick_ns(app_, 0U);
+    runtime_.now_ticks_ns = 500000000ULL;
+    internal::ClientAppTestHooks::tick(app_);
+
+    const RenderWorld& world_after_tick = internal::ClientAppTestHooks::world(app_);
+    ASSERT_LT(proxy_mesh_id, world_after_tick.meshes().size());
+    ASSERT_FALSE(world_after_tick.meshes()[proxy_mesh_id].triangles().empty());
+    const float proxy_x = world_after_tick.meshes()[proxy_mesh_id].triangles()[0].a.x;
+    EXPECT_NEAR(proxy_x, 2.0F, 1.0e-4F);
 }
 
 TEST_F(ClientAppAnimationTestFixture, LoadStartupMeshAnimatedSidecarCreatesColliderProxyBindings) {

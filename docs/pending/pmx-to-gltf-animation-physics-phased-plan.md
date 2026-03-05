@@ -49,7 +49,10 @@ Operational interpretation:
 >   metadata/invalidation, fallback diagnostics, shell-less converter process execution
 >   (no `std::system`), robust converter-template token handling, and regression coverage via
 >   `//client/src:model_intake_test`).
-> - Phases 8-10 remain pending runtime/tooling expansion.
+> - Phase 8 is complete (full node-hierarchy animation evaluation for TRS-authored animated
+>   nodes, including non-joint roots/intermediate nodes, plus static matrix-authored non-joint
+>   ancestor support and regression coverage in `//engine/src/render:animated_gltf_tests`).
+> - Phases 9-10 remain pending runtime/tooling expansion.
 > - Phase 7.5 is complete (runtime material/primitive introspection + deterministic texture-remap
 >   override path for static load/fallback with sidecar-driven overrides, hardened integer parsing,
 >   structured diagnostics, and regression/CI coverage).
@@ -162,6 +165,12 @@ Operational interpretation:
 
 ### Changelog
 
+- 2026-03-05 (Phase 8): replaced the legacy non-joint ancestor `bind_prefix_matrices`
+  workaround with full node-hierarchy animation evaluation in `animated_gltf`, added explicit
+  node graph + joint-node mapping runtime data, preserved existing playback/controller and
+  downstream skinning/physics pose outputs, added regression coverage for animated non-joint
+  ancestors/intermediate nodes plus static matrix-authored non-joint ancestors, and updated the
+  PMX conversion contract to remove the prior non-joint animation caveat.
 - 2026-03-05 (client refactor follow-up): split `client/src/client_app.cpp` into focused modules
   (`client_app_startup_loader.*`, `client_app_texture_remap.*`, `client_app_geometry_utils.*`,
   `client_app_animation_world.*`, `client_app_physics_proxies.*`) plus shared
@@ -293,7 +302,8 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
 - Skin primitive association requirement:
   - skinned primitives must be referenced by nodes that use the target skin
 - Hierarchy caveat:
-  - static non-joint ancestors are baked; animated non-joint chains are not fully supported yet
+  - full node hierarchy evaluation now supports animated non-joint roots/intermediate nodes
+  - static matrix-authored non-joint ancestors remain supported
 - Current GPU skinning contract note (Phase 3.5 implementation):
   - per-draw GPU palette remains `[0, 63]` local joint index space
   - primitives referencing >64 global joints are supported through deterministic partition/remap preprocessing before draw submission
@@ -1157,9 +1167,28 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
   - revisit any conversion-side non-joint bake/avoid guidance
   - adjust validator expectations if non-joint animation channels become runtime-supported.
 
+### Implemented (2026-03-05)
+
+- Added full node-hierarchy runtime data/evaluation in:
+  - `engine/include/isla/engine/render/animated_gltf.hpp`
+  - `engine/src/render/animated_gltf.cpp`
+- Runtime now:
+  - records the full glTF node graph plus joint-to-node mapping
+  - evaluates animation channels on non-joint nodes
+  - composes node globals before extracting joint globals/skin matrices
+  - preserves static matrix-authored non-joint ancestor support
+  - retains current rejection of matrix-authored joints and `CUBICSPLINE`
+- Added regression coverage in:
+  - `engine/src/render/animated_gltf_test.cpp`
+  - `engine/src/render/animation_playback_controller_test.cpp`
+  - `client/src/client_app_animation_test.cpp`
+- Updated conversion/runtime contract caveats in:
+  - `docs/pmx/pmx_to_gltf_conversion_contract.md`
+
 ### Exit Criteria
 
 - Assets with animated non-joint hierarchy segments evaluate correctly without conversion-side workarounds.
+- Status: satisfied as of 2026-03-05 for TRS-authored animated nodes.
 
 ## Phase 9: Interpolation + Sampling Completeness
 
