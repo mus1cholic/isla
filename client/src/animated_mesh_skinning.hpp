@@ -3,8 +3,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "engine/src/render/include/animated_gltf.hpp"
 #include "isla/engine/math/mat4.hpp"
+#include "isla/engine/render/animated_gltf.hpp"
 #include "isla/engine/render/render_types.hpp"
 
 namespace isla::client::animated_mesh_skinning {

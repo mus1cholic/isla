@@ -1,6 +1,6 @@
-#include "engine/src/render/include/pmx_texture_remap_sidecar.hpp"
+#include "isla/engine/render/pmx_texture_remap_sidecar.hpp"
 
-#include "engine/src/render/include/mesh_asset_loader.hpp"
+#include "isla/engine/render/mesh_asset_loader.hpp"
 
 #include "absl/log/log.h"
 

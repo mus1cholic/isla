@@ -1,4 +1,4 @@
-#include "engine/src/render/include/mesh_asset_loader.hpp"
+#include "isla/engine/render/mesh_asset_loader.hpp"
 
 #include <algorithm>
 #include <array>

@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-#include "engine/src/render/include/animated_gltf.hpp"
+#include "isla/engine/render/animated_gltf.hpp"
 #include "shared/src/test_runfiles.hpp"
 
 namespace isla::client::animated_gltf {

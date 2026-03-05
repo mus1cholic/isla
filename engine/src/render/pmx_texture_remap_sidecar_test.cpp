@@ -1,4 +1,4 @@
-#include "engine/src/render/include/pmx_texture_remap_sidecar.hpp"
+#include "isla/engine/render/pmx_texture_remap_sidecar.hpp"
 
 #include <gtest/gtest.h>
 

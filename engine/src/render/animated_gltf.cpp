@@ -1,4 +1,4 @@
-#include "engine/src/render/include/animated_gltf.hpp"
+#include "isla/engine/render/animated_gltf.hpp"
 
 #include <algorithm>
 #include <array>

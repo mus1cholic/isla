@@ -8,8 +8,8 @@
 #include "engine/src/render/include/bgfx_mesh_manager.hpp"
 #include "engine/src/render/include/bgfx_shader_manager.hpp"
 #include "engine/src/render/include/bgfx_texture_manager.hpp"
-#include "engine/src/render/include/model_renderer_skinning_utils.hpp"
 #include "isla/engine/math/mat4.hpp"
+#include "isla/engine/render/model_renderer_skinning_utils.hpp"
 #include "isla/engine/render/overlay_transparency.hpp"
 #include "isla/engine/render/render_world.hpp"
 

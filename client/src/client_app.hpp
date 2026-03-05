@@ -1,10 +1,10 @@
 #pragma once
 
 #include "client_sdl_runtime.hpp"
-#include "engine/src/render/include/animated_gltf.hpp"
-#include "engine/src/render/include/animation_playback_controller.hpp"
-#include "engine/src/render/include/pmx_physics_sidecar.hpp"
+#include "isla/engine/render/animated_gltf.hpp"
+#include "isla/engine/render/animation_playback_controller.hpp"
 #include "isla/engine/render/model_renderer.hpp"
+#include "isla/engine/render/pmx_physics_sidecar.hpp"
 #include "isla/engine/render/render_world.hpp"
 
 #include <cstdint>

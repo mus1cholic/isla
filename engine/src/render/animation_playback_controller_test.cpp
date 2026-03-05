@@ -1,4 +1,4 @@
-#include "engine/src/render/include/animation_playback_controller.hpp"
+#include "isla/engine/render/animation_playback_controller.hpp"
 
 #include <gtest/gtest.h>
 
