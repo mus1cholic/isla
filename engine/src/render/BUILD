@@ -24,12 +24,14 @@ cc_library(
         "include/mesh_asset_loader.hpp",
         "include/model_renderer_skinning_utils.hpp",
         "include/pmx_physics_sidecar.hpp",
+        "include/pmx_texture_remap_sidecar.hpp",
         "include/shader_path_resolver.hpp",
         "include/texture_loader_limits.hpp",
         "mesh_asset_loader.cpp",
         "model_renderer.cpp",
         "model_renderer_skinning_utils.cpp",
         "pmx_physics_sidecar.cpp",
+        "pmx_texture_remap_sidecar.cpp",
         "render_world.cpp",
         "shader_path_resolver.cpp",
     ] + select({
@@ -218,6 +220,15 @@ cc_test(
 cc_test(
     name = "pmx_physics_sidecar_tests",
     srcs = ["pmx_physics_sidecar_test.cpp"],
+    deps = [
+        ":render",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "pmx_texture_remap_sidecar_tests",
+    srcs = ["pmx_texture_remap_sidecar_test.cpp"],
     deps = [
         ":render",
         "@googletest//:gtest_main",
