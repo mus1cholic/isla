@@ -41,7 +41,7 @@
           "format": "date-time"
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "retarget": {
       "type": "object",
@@ -61,7 +61,7 @@
           "minLength": 1
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "root_motion_policy": {
       "type": "string",
@@ -112,8 +112,8 @@
           "exclusiveMinimum": 0
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }
