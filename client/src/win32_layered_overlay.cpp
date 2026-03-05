@@ -5,6 +5,7 @@
 
 #if defined(_WIN32)
 #include <dwmapi.h>
+#include <cstring>
 #include <iomanip>
 #include <windows.h>
 #endif
@@ -14,6 +15,14 @@ namespace isla::client {
 #if defined(_WIN32)
 
 namespace {
+
+template <typename To, typename From>
+To bitwise_cast(const From& from) {
+    static_assert(sizeof(To) == sizeof(From));
+    To to{};
+    std::memcpy(&to, &from, sizeof(To));
+    return to;
+}
 
 WNDPROC g_overlay_original_wndproc = nullptr;
 
@@ -114,8 +123,9 @@ bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
     ShowWindow(hwnd, SW_SHOWNA);
 
     if (g_overlay_original_wndproc == nullptr) {
-        g_overlay_original_wndproc = reinterpret_cast<WNDPROC>(
-            SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&overlay_window_proc)));
+        const LONG_PTR previous_wndproc =
+            SetWindowLongPtr(hwnd, GWLP_WNDPROC, bitwise_cast<LONG_PTR>(&overlay_window_proc));
+        g_overlay_original_wndproc = bitwise_cast<WNDPROC>(previous_wndproc);
         if (g_overlay_original_wndproc == nullptr && GetLastError() != 0) {
             LOG(ERROR) << "Win32Overlay: failed to install overlay window procedure";
             return false;

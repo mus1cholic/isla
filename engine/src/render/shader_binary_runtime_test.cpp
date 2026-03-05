@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 #include "engine/src/render/include/shader_path_resolver.hpp"
 
@@ -14,7 +15,7 @@ using isla::client::find_existing_shader_path;
 using isla::client::ShaderPathLookup;
 
 #ifndef _WIN32
-constexpr char kLinuxDx11StubPrefix[] = "isla-dx11-shader-stub";
+constexpr std::string_view kLinuxDx11StubPrefix = "isla-dx11-shader-stub";
 #endif
 
 void expect_shader_binary_is_resolvable(const char* shader_file_name) {
@@ -43,9 +44,9 @@ void expect_shader_binary_is_resolvable(const char* shader_file_name) {
 #ifndef _WIN32
     std::ifstream shader_stream(shader_path, std::ios::binary);
     ASSERT_TRUE(shader_stream.is_open()) << resolved_path;
-    std::string prefix(sizeof(kLinuxDx11StubPrefix) - 1, '\0');
+    std::string prefix(kLinuxDx11StubPrefix.size(), '\0');
     shader_stream.read(prefix.data(), static_cast<std::streamsize>(prefix.size()));
-    EXPECT_EQ(prefix, kLinuxDx11StubPrefix)
+    EXPECT_EQ(prefix, std::string(kLinuxDx11StubPrefix))
         << "Expected Linux placeholder shader stub prefix in " << resolved_path;
 #endif
 }

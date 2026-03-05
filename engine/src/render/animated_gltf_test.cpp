@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -69,12 +70,14 @@ class AnimatedGltfTest : public ::testing::Test {
     }
 
     static void append_f32(std::vector<std::uint8_t>& buffer, float value) {
-        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+        std::uint8_t bytes[sizeof(value)]{};
+        std::memcpy(bytes, &value, sizeof(value));
         buffer.insert(buffer.end(), bytes, bytes + sizeof(value));
     }
 
     static void append_u16(std::vector<std::uint8_t>& buffer, std::uint16_t value) {
-        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+        std::uint8_t bytes[sizeof(value)]{};
+        std::memcpy(bytes, &value, sizeof(value));
         buffer.insert(buffer.end(), bytes, bytes + sizeof(value));
     }
 
@@ -84,7 +87,7 @@ class AnimatedGltfTest : public ::testing::Test {
         if (!bin_stream.is_open()) {
             return ::testing::AssertionFailure() << "failed to open binary file: " << path;
         }
-        bin_stream.write(reinterpret_cast<const char*>(buffer.data()),
+        bin_stream.write(static_cast<const char*>(static_cast<const void*>(buffer.data())),
                          static_cast<std::streamsize>(buffer.size()));
         if (!bin_stream.good()) {
             return ::testing::AssertionFailure() << "failed to write binary file: " << path;

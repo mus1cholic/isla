@@ -154,7 +154,7 @@ TEST(MeshAssetLoaderTests, LoadsAllTrianglePrimitivesAcrossMeshes) {
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "multi_mesh_two_triangles.gltf";
 
-    constexpr char kMultiMeshGltf[] =
+    const std::string kMultiMeshGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -201,7 +201,7 @@ TEST(MeshAssetLoaderTests, LoadsGltfNormalsAndMaterialInputs) {
         texture_stream << "not_a_real_png";
     }
 
-    constexpr char kTriangleNormalsMaterialGltf[] =
+    const std::string kTriangleNormalsMaterialGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -267,7 +267,7 @@ TEST(MeshAssetLoaderTests, LoadsGltfMaskAlphaCutoffMaterial) {
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "triangle_mask_material.gltf";
 
-    constexpr char kTriangleMaskMaterialGltf[] =
+    const std::string kTriangleMaskMaterialGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -298,7 +298,7 @@ TEST(MeshAssetLoaderTests, PreservesPerPrimitiveMaterialMappingForMultiPrimitive
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "multi_primitive_materials.gltf";
 
-    constexpr char kMultiPrimitiveMaterialGltf[] =
+    const std::string kMultiPrimitiveMaterialGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -383,7 +383,7 @@ TEST(MeshAssetLoaderTests, MultiPrimitiveMaterialMappingIsDeterministicAcrossLoa
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "multi_primitive_deterministic.gltf";
 
-    constexpr char kMultiPrimitiveMaterialGltf[] =
+    const std::string kMultiPrimitiveMaterialGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -442,7 +442,7 @@ TEST(MeshAssetLoaderTests, PreservesDefaultMaterialOnlyForPrimitiveWithoutMateri
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "mixed_material_presence.gltf";
 
-    constexpr char kMixedMaterialPresenceGltf[] =
+    const std::string kMixedMaterialPresenceGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -500,7 +500,7 @@ TEST(MeshAssetLoaderTests, RejectsAbsoluteImageUriPath) {
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "triangle_absolute_uri.gltf";
 
-    constexpr char kTriangleAbsoluteUriGltf[] =
+    const std::string kTriangleAbsoluteUriGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -534,7 +534,7 @@ TEST(MeshAssetLoaderTests, RejectsImageUriParentTraversalOutsideAssetDirectory) 
     ASSERT_TRUE(std::filesystem::create_directories(nested_dir));
     const std::filesystem::path gltf_path = nested_dir / "triangle_parent_traversal_uri.gltf";
 
-    constexpr char kTriangleParentTraversalUriGltf[] =
+    const std::string kTriangleParentTraversalUriGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -566,7 +566,7 @@ TEST(MeshAssetLoaderTests, RejectsImageUriParentTraversalForParentlessRelativeAs
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path gltf_path = temp_dir.path() / "model.gltf";
 
-    constexpr char kParentlessTraversalUriGltf[] =
+    const std::string kParentlessTraversalUriGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"

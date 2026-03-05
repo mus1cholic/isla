@@ -5,7 +5,9 @@
 #include <SDL3/SDL.h>
 
 #include <array>
+#include <bit>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -160,11 +162,12 @@ std::vector<std::uint8_t> make_minimal_triangle_glb() {
 
     std::vector<std::uint8_t> bin_chunk;
     bin_chunk.reserve(36U);
-    const float vertices[9] = {
+    const std::array<float, 9U> vertices = {
         0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
     };
     for (float value : vertices) {
-        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+        std::uint8_t bytes[sizeof(value)]{};
+        std::memcpy(bytes, &value, sizeof(value));
         bin_chunk.insert(bin_chunk.end(), bytes, bytes + sizeof(float));
     }
     while ((bin_chunk.size() % 4U) != 0U) {
@@ -218,7 +221,8 @@ void append_u16_le(std::vector<std::uint8_t>& out, std::uint16_t value) {
 }
 
 void append_f32_le(std::vector<std::uint8_t>& out, float value) {
-    const auto* bytes = reinterpret_cast<const std::uint8_t*>(&value);
+    std::uint8_t bytes[sizeof(value)]{};
+    std::memcpy(bytes, &value, sizeof(value));
     out.insert(out.end(), bytes, bytes + sizeof(float));
 }
 
@@ -230,7 +234,7 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
     std::vector<std::uint8_t> buffer;
     buffer.reserve(256U);
     const std::size_t positions_offset = buffer.size();
-    const float positions[9] = {
+    const std::array<float, 9U> positions = {
         0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
     };
     for (float value : positions) {
@@ -239,7 +243,7 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
     const std::size_t positions_length = buffer.size() - positions_offset;
 
     const std::size_t normals_offset = buffer.size();
-    const float normals[9] = {
+    const std::array<float, 9U> normals = {
         0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F,
     };
     for (float value : normals) {
@@ -275,7 +279,7 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
     }
 
     const std::size_t ibm_offset = buffer.size();
-    const float identity_mat4[16] = {
+    const std::array<float, 16U> identity_mat4 = {
         1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
         0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F,
     };
@@ -290,7 +294,7 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
             ADD_FAILURE() << "failed to open skinned fixture BIN output path: " << bin_path;
             return {};
         }
-        bin_out.write(reinterpret_cast<const char*>(buffer.data()),
+        bin_out.write(static_cast<const char*>(static_cast<const void*>(buffer.data())),
                       static_cast<std::streamsize>(buffer.size()));
     }
     {
@@ -375,7 +379,7 @@ std::filesystem::path write_skinned_with_animation_gltf_fixture(const std::files
     std::vector<std::uint8_t> buffer;
     buffer.reserve(320U);
     const std::size_t positions_offset = buffer.size();
-    const float positions[9] = {
+    const std::array<float, 9U> positions = {
         0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
     };
     for (float value : positions) {
@@ -384,7 +388,7 @@ std::filesystem::path write_skinned_with_animation_gltf_fixture(const std::files
     const std::size_t positions_length = buffer.size() - positions_offset;
 
     const std::size_t normals_offset = buffer.size();
-    const float normals[9] = {
+    const std::array<float, 9U> normals = {
         0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F,
     };
     for (float value : normals) {
@@ -420,7 +424,7 @@ std::filesystem::path write_skinned_with_animation_gltf_fixture(const std::files
     }
 
     const std::size_t ibm_offset = buffer.size();
-    const float identity_mat4[16] = {
+    const std::array<float, 16U> identity_mat4 = {
         1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
         0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F,
     };
@@ -449,7 +453,7 @@ std::filesystem::path write_skinned_with_animation_gltf_fixture(const std::files
             ADD_FAILURE() << "failed to open animated fixture BIN output path: " << bin_path;
             return {};
         }
-        bin_out.write(reinterpret_cast<const char*>(buffer.data()),
+        bin_out.write(static_cast<const char*>(static_cast<const void*>(buffer.data())),
                       static_cast<std::streamsize>(buffer.size()));
     }
 
@@ -545,7 +549,7 @@ std::filesystem::path write_multi_primitive_static_gltf_fixture(const std::files
         texture_b << "fake_png_b";
     }
 
-    constexpr char kMultiPrimitiveStaticGltf[] =
+    const std::string kMultiPrimitiveStaticGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -598,7 +602,7 @@ std::filesystem::path
 write_mixed_non_triangle_and_triangle_static_gltf_fixture(const std::filesystem::path& dir) {
     const std::filesystem::path gltf_path = dir / "mixed_line_and_triangle.gltf";
 
-    constexpr char kMixedLineAndTriangleGltf[] =
+    const std::string kMixedLineAndTriangleGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -657,7 +661,7 @@ std::filesystem::path write_texturemap_static_gltf_fixture(const std::filesystem
         head_texture << "fake_png_head";
     }
 
-    constexpr char kTexturemapStaticGltf[] =
+    const std::string kTexturemapStaticGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -700,7 +704,7 @@ std::filesystem::path write_texturemap_static_gltf_fixture(const std::filesystem
 std::filesystem::path
 write_texturemap_ambiguous_material_fixture(const std::filesystem::path& dir) {
     const std::filesystem::path gltf_path = dir / "texturemap_ambiguous.gltf";
-    constexpr char kTexturemapAmbiguousStaticGltf[] =
+    const std::string kTexturemapAmbiguousStaticGltf =
         "{"
         "\"asset\":{\"version\":\"2.0\"},"
         "\"buffers\":[{\"uri\":\"data:application/octet-stream;base64,"
@@ -762,7 +766,7 @@ class FakeSdlRuntime final : public ISdlRuntime {
         (void)width;
         (void)height;
         (void)flags;
-        return reinterpret_cast<SDL_Window*>(0x1);
+        return std::bit_cast<SDL_Window*>(static_cast<std::uintptr_t>(1U));
     }
     [[nodiscard]] SDL_Renderer* create_renderer(SDL_Window* window) const override {
         (void)window;
@@ -1373,7 +1377,7 @@ TEST_F(ClientAppAnimationTestFixture, LoadStartupMeshUsesWorkspaceDefaultModelPa
     {
         std::ofstream out(default_glb_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
-        out.write(reinterpret_cast<const char*>(glb.data()),
+        out.write(static_cast<const char*>(static_cast<const void*>(glb.data())),
                   static_cast<std::streamsize>(glb.size()));
     }
 
@@ -1499,8 +1503,8 @@ TEST_P(ClientAppTextureRemapParamFixture, StaticLoadTextureRemapCaseMatrix) {
     for (const auto& [filename, contents] : test_case.files_to_create) {
         ASSERT_TRUE(write_file(temp_dir.path() / filename, contents));
     }
-    ASSERT_TRUE(write_file(temp_dir.path() / test_case.texturemap_file_name,
-                           test_case.texturemap_json));
+    ASSERT_TRUE(
+        write_file(temp_dir.path() / test_case.texturemap_file_name, test_case.texturemap_json));
     load_startup_mesh_with_env("", gltf_path.string());
 
     const RenderWorld& loaded_world = world();
@@ -1862,7 +1866,7 @@ TEST_F(ClientAppAnimationTestFixture, StaticLoadMaterialBaselineMatchesEnvAndDef
     {
         std::ofstream out(model_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
-        out.write(reinterpret_cast<const char*>(glb.data()),
+        out.write(static_cast<const char*>(static_cast<const void*>(glb.data())),
                   static_cast<std::streamsize>(glb.size()));
     }
 

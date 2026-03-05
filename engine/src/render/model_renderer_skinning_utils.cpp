@@ -145,8 +145,11 @@ bool build_gpu_skinning_partitions(std::span<const SkinnedMeshVertex> vertices,
     mutable_partitions.reserve(4U);
 
     for (std::size_t base = 0U; base < indices.size(); base += 3U) {
-        const std::uint32_t source_indices[3] = { indices[base], indices[base + 1U],
-                                                  indices[base + 2U] };
+        const std::array<std::uint32_t, 3U> source_indices = {
+            indices[base],
+            indices[base + 1U],
+            indices[base + 2U],
+        };
         for (std::uint32_t source_index : source_indices) {
             if (static_cast<std::size_t>(source_index) >= vertices.size()) {
                 if (error_message != nullptr) {

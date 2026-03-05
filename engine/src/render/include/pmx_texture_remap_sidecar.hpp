@@ -8,8 +8,9 @@
 
 namespace isla::client::pmx_texture_remap_sidecar {
 
-inline constexpr char kExpectedSchemaVersion[] = "1.0.0";
-inline constexpr std::size_t kMaxSidecarFileSizeBytes = 2U * 1024U * 1024U;
+inline constexpr std::string_view kExpectedSchemaVersion = "1.0.0";
+inline constexpr std::size_t kMaxSidecarFileSizeBytes =
+    static_cast<const std::size_t>(2U * 1024U * 1024U);
 inline constexpr std::size_t kMaxMappings = 16384U;
 inline constexpr std::size_t kMaxStringLengthBytes = 512U;
 

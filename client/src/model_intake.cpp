@@ -1,6 +1,7 @@
 #include "model_intake.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -23,14 +24,15 @@
 namespace isla::client::model_intake {
 namespace {
 
-constexpr char kModelsDirectoryName[] = "models";
-constexpr char kWorkspaceDirEnvVar[] = "BUILD_WORKSPACE_DIRECTORY";
-constexpr char kConverterCommandEnvVar[] = "ISLA_PMX_CONVERTER_COMMAND";
-constexpr char kConverterVersionEnvVar[] = "ISLA_PMX_CONVERTER_VERSION";
-constexpr char kDefaultConverterCommandTemplate[] = "pmx2gltf --input {input} --output {output}";
-constexpr char kDefaultConverterVersion[] = "auto";
-constexpr char kConvertedSubdirName[] = ".isla_converted";
-constexpr char kCacheSchemaVersion[] = "1";
+constexpr std::string_view kModelsDirectoryName = "models";
+constexpr std::string_view kWorkspaceDirEnvVar = "BUILD_WORKSPACE_DIRECTORY";
+constexpr std::string_view kConverterCommandEnvVar = "ISLA_PMX_CONVERTER_COMMAND";
+constexpr std::string_view kConverterVersionEnvVar = "ISLA_PMX_CONVERTER_VERSION";
+constexpr std::string_view kDefaultConverterCommandTemplate =
+    "pmx2gltf --input {input} --output {output}";
+constexpr std::string_view kDefaultConverterVersion = "auto";
+constexpr std::string_view kConvertedSubdirName = ".isla_converted";
+constexpr std::string_view kCacheSchemaVersion = "1";
 
 enum class CandidateKind {
     Glb,
@@ -218,7 +220,7 @@ bool write_cache_metadata(const std::filesystem::path& path,
         }
         return false;
     }
-    const char* ordered_keys[] = {
+    const std::array<const char*, 7U> ordered_keys = {
         "schema",          "source_path",       "source_size",
         "source_mtime_ns", "converter_command", "converter_version",
         "output_path",
@@ -372,23 +374,23 @@ std::vector<std::filesystem::path> discover_models_directories() {
     std::error_code cwd_error;
     const std::filesystem::path cwd = std::filesystem::current_path(cwd_error);
     if (!cwd_error) {
-        try_add(cwd / kModelsDirectoryName);
+        try_add(cwd / std::string(kModelsDirectoryName));
     }
 
-    const char* workspace_dir = std::getenv(kWorkspaceDirEnvVar);
+    const char* workspace_dir = std::getenv(kWorkspaceDirEnvVar.data());
     if (workspace_dir != nullptr && workspace_dir[0] != '\0') {
-        try_add(std::filesystem::path(workspace_dir) / kModelsDirectoryName);
+        try_add(std::filesystem::path(workspace_dir) / std::string(kModelsDirectoryName));
     }
     return dirs;
 }
 
 std::vector<CandidateFile> list_candidates_for_directory(const std::filesystem::path& models_dir) {
     std::vector<CandidateFile> preferred;
-    const std::pair<const char*, CandidateKind> preferred_names[] = {
+    const std::array<std::pair<const char*, CandidateKind>, 3U> preferred_names = {{
         { "model.glb", CandidateKind::Glb },
         { "model.gltf", CandidateKind::Gltf },
         { "model.pmx", CandidateKind::Pmx },
-    };
+    }};
     for (const auto& [name, kind] : preferred_names) {
         const std::filesystem::path candidate = models_dir / name;
         std::error_code exists_error;
@@ -444,7 +446,8 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
                                            const ResolveStartupAssetOptions& options) {
     PmxConversionOutcome outcome;
     const std::filesystem::path source_path = candidate.path;
-    const std::filesystem::path converted_dir = source_path.parent_path() / kConvertedSubdirName;
+    const std::filesystem::path converted_dir =
+        source_path.parent_path() / std::string(kConvertedSubdirName);
     const std::filesystem::path output_path =
         converted_dir / (source_path.stem().string() + ".auto.glb");
     const std::filesystem::path cache_path =
@@ -468,7 +471,7 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
             .count();
 
     std::unordered_map<std::string, std::string> expected_cache = {
-        { "schema", kCacheSchemaVersion },
+        { "schema", std::string(kCacheSchemaVersion) },
         { "source_path", source_path.lexically_normal().string() },
         { "source_size", std::to_string(source_size) },
         { "source_mtime_ns", std::to_string(source_mtime_ns) },
@@ -547,22 +550,22 @@ PmxConversionOutcome convert_pmx_candidate(const CandidateFile& candidate,
 ResolveStartupAssetOptions make_effective_options(const ResolveStartupAssetOptions& options) {
     ResolveStartupAssetOptions effective = options;
     if (effective.pmx_converter_command_template.empty()) {
-        const char* env_value = std::getenv(kConverterCommandEnvVar);
+        const char* env_value = std::getenv(kConverterCommandEnvVar.data());
         if (env_value != nullptr && env_value[0] != '\0') {
             effective.pmx_converter_command_template = env_value;
         }
     }
     if (effective.pmx_converter_version.empty()) {
-        const char* env_value = std::getenv(kConverterVersionEnvVar);
+        const char* env_value = std::getenv(kConverterVersionEnvVar.data());
         if (env_value != nullptr && env_value[0] != '\0') {
             effective.pmx_converter_version = env_value;
         }
     }
     if (effective.pmx_converter_command_template.empty()) {
-        effective.pmx_converter_command_template = kDefaultConverterCommandTemplate;
+        effective.pmx_converter_command_template = std::string(kDefaultConverterCommandTemplate);
     }
     if (effective.pmx_converter_version.empty()) {
-        effective.pmx_converter_version = kDefaultConverterVersion;
+        effective.pmx_converter_version = std::string(kDefaultConverterVersion);
     }
     return effective;
 }

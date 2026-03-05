@@ -81,7 +81,7 @@ TEST(PmxPhysicsSidecarTest, LoadsValidSidecarAndFiltersUnknownBones) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_pmx_sidecar");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path sidecar_path = temp_dir.path() / "model.physics.json";
-    constexpr char kSidecarJson[] =
+    const std::string kSidecarJson =
         "{"
         "\"schema_version\":\"1.0.0\","
         "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\",\"timestamp_utc\":"
@@ -119,7 +119,7 @@ TEST(PmxPhysicsSidecarTest, FailsOnSchemaVersionMismatch) {
     ScopedTempDir temp_dir = ScopedTempDir::create("isla_pmx_sidecar");
     ASSERT_TRUE(temp_dir.is_valid());
     const std::filesystem::path sidecar_path = temp_dir.path() / "bad.physics.json";
-    constexpr char kSidecarJson[] =
+    const std::string kSidecarJson =
         "{"
         "\"schema_version\":\"1.0.1\","
         "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\",\"timestamp_utc\":"

@@ -77,7 +77,7 @@ bgfx::TextureHandle load_texture_from_file(std::string_view texture_path) {
 
     const std::size_t byte_count = static_cast<std::size_t>(length);
     std::vector<std::uint8_t> encoded_data(byte_count);
-    if (!stream.read(reinterpret_cast<char*>(encoded_data.data()),
+    if (!stream.read(static_cast<char*>(static_cast<void*>(encoded_data.data())),
                      static_cast<std::streamsize>(length))) {
         LOG(ERROR) << "BgfxRenderer: failed to read texture '" << texture_path_string << "'";
         return BGFX_INVALID_HANDLE;
