@@ -21,6 +21,8 @@ concurrency:
 jobs:
   format-check:
     runs-on: ubuntu-latest
+    env:
+      CLANG_FORMAT_VERSION: "21"
     permissions:
       contents: read
       pull-requests: write
@@ -31,7 +33,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify preinstalled clang-format
+      - name: Install pinned clang-format
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! apt-cache show "clang-format-${CLANG_FORMAT_VERSION}" >/dev/null 2>&1; then
+            curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+            chmod +x /tmp/llvm.sh
+            sudo /tmp/llvm.sh "${CLANG_FORMAT_VERSION}"
+          fi
+          sudo apt-get update
+          sudo apt-get install -y "clang-format-${CLANG_FORMAT_VERSION}"
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "/usr/bin/clang-format-${CLANG_FORMAT_VERSION}" "$HOME/.local/bin/clang-format"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify pinned clang-format
         shell: bash
         run: |
           set -euo pipefail
