@@ -158,9 +158,9 @@ void apply_single_texture_mapping(const pmx_texture_remap_sidecar::Mapping& mapp
     const bool texture_exists = std::filesystem::exists(texture_path, texture_exists_error);
     if (texture_exists_error) {
         result.warnings.push_back("texture remap mapping id='" + mapping.id +
-                                  "' failed checking texture file '" +
-                                  mapping.albedo_texture_path + "' key='" + mapping_key +
-                                  "' error='" + texture_exists_error.message() + "'");
+                                  "' failed checking texture file '" + mapping.albedo_texture_path +
+                                  "' key='" + mapping_key + "' error='" +
+                                  texture_exists_error.message() + "'");
         ++result.mappings_skipped_missing_texture;
         return;
     }
