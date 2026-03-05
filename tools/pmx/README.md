@@ -1,5 +1,57 @@
 # PMX Tools
 
+## Phase 7 Runtime Intake Notes
+
+At app startup, when both `ISLA_ANIMATED_GLTF_ASSET` and `ISLA_MESH_ASSET` are unset, runtime now
+scans `models/` and applies deterministic intake selection:
+
+- preferred names first: `model.glb`, `model.gltf`, `model.pmx`
+- then remaining candidates by extension priority (`.glb`, `.gltf`, `.pmx`) and filename order
+
+Behavior by selected candidate:
+
+- `.glb` / `.gltf`: loaded directly
+- `.pmx`: auto-converted to `models/.isla_converted/<stem>.auto.glb`, then loaded
+
+PMX conversion caching:
+
+- cache metadata: `models/.isla_converted/<stem>.auto.cache`
+- cache key inputs: PMX source size + mtime, converter command, converter version
+
+Converter command configuration:
+
+- default command template (used when env unset):
+  - `pmx2gltf --input {input} --output {output}`
+- optional override env vars:
+  - `ISLA_PMX_CONVERTER_COMMAND`
+  - `ISLA_PMX_CONVERTER_VERSION`
+
+Important dependency note:
+
+- Runtime orchestrates PMX conversion but does not include a native PMX converter implementation.
+- A compatible converter command (default `pmx2gltf` or custom override) must be available for
+  `.pmx` auto-convert to succeed.
+
+## Troubleshooting PMX Auto-Convert
+
+If `.pmx` startup conversion fails:
+
+- Verify converter command availability:
+  - `pmx2gltf --help`
+  - if this fails, install the converter or set `ISLA_PMX_CONVERTER_COMMAND` to a valid command.
+- Verify command template token usage:
+  - expected tokens are `{input}` and `{output}`
+  - example:
+    - `ISLA_PMX_CONVERTER_COMMAND=pmx2gltf --input {input} --output {output}`
+- Check conversion output/cache paths:
+  - output: `models/.isla_converted/<stem>.auto.glb`
+  - cache: `models/.isla_converted/<stem>.auto.cache`
+- Force a reconvert when debugging:
+  - delete `models/.isla_converted/<stem>.auto.glb`
+  - delete `models/.isla_converted/<stem>.auto.cache`
+- Confirm converter process exits successfully:
+  - runtime warnings include converter command exit code (non-zero indicates failure).
+
 ## Phase 1 Validator
 
 Run:

@@ -19,6 +19,7 @@
 #include "animated_mesh_skinning.hpp"
 #include "engine/src/render/include/mesh_asset_loader.hpp"
 #include "engine/src/render/include/model_renderer_skinning_utils.hpp"
+#include "model_intake.hpp"
 #include "win32_layered_overlay.hpp"
 
 namespace isla::client {
@@ -31,7 +32,6 @@ constexpr char kMeshAssetEnvVar[] = "ISLA_MESH_ASSET";
 constexpr char kAnimatedGltfAssetEnvVar[] = "ISLA_ANIMATED_GLTF_ASSET";
 constexpr char kAnimationClipEnvVar[] = "ISLA_ANIM_CLIP";
 constexpr char kAnimationPlaybackModeEnvVar[] = "ISLA_ANIM_PLAYBACK_MODE";
-constexpr char kDefaultStartupModelPath[] = "models/model.glb";
 constexpr float kPhysicsProxyMaterialAlpha = 0.25F;
 constexpr char kPhysicsProxyShaderName[] = "mesh";
 
@@ -135,30 +135,6 @@ Transform make_visible_object_transform_for_meshes(std::span<const MeshData> mes
                                .y = -aggregate_center.y * scale,
                                .z = -aggregate_center.z * scale };
     return transform;
-}
-
-std::string resolve_default_startup_model_path() {
-    const std::filesystem::path relative_path(kDefaultStartupModelPath);
-    std::vector<std::filesystem::path> candidates = { relative_path };
-    std::error_code cwd_error;
-    const std::filesystem::path current_dir = std::filesystem::current_path(cwd_error);
-    if (!cwd_error) {
-        candidates.insert(candidates.begin(), current_dir / relative_path);
-    }
-    const char* workspace_dir = std::getenv("BUILD_WORKSPACE_DIRECTORY");
-    if (workspace_dir != nullptr && workspace_dir[0] != '\0') {
-        candidates.push_back(std::filesystem::path(workspace_dir) / relative_path);
-    }
-    for (const std::filesystem::path& candidate : candidates) {
-        if (candidate.empty()) {
-            continue;
-        }
-        std::error_code ec;
-        if (std::filesystem::exists(candidate, ec) && !ec) {
-            return candidate.lexically_normal().string();
-        }
-    }
-    return {};
 }
 
 std::size_t find_clip_index_by_name(const animated_gltf::AnimatedGltfAsset& asset,
@@ -566,18 +542,35 @@ void ClientApp::load_startup_mesh() {
     std::string resolved_mesh_asset_path;
     const char* mesh_asset_path = std::getenv(kMeshAssetEnvVar);
     if (mesh_asset_path == nullptr || mesh_asset_path[0] == '\0') {
-        const std::string default_path = resolve_default_startup_model_path();
-        if (!default_path.empty()) {
-            VLOG(1) << "ClientApp: no " << kMeshAssetEnvVar << " set; using default model path '"
-                    << default_path << "'";
-            if (try_load_animated_asset(default_path, "default_model_path")) {
+        const model_intake::ResolveStartupAssetResult intake_result =
+            model_intake::resolve_startup_asset_from_models();
+        for (const std::string& info : intake_result.infos) {
+            VLOG(1) << "ClientApp: model intake info: " << info;
+        }
+        for (const std::string& warning : intake_result.warnings) {
+            LOG(WARNING) << "ClientApp: model intake warning: " << warning;
+        }
+        if (intake_result.has_asset) {
+            LOG(INFO) << "ClientApp: startup asset selected from models intake path='"
+                      << intake_result.runtime_asset_path << "' source_label='"
+                      << (intake_result.source_label.empty() ? "models_intake"
+                                                            : intake_result.source_label)
+                      << "' used_pmx_conversion="
+                      << (intake_result.used_pmx_conversion ? "true" : "false")
+                      << " pmx_conversion_cache_hit="
+                      << (intake_result.pmx_conversion_cache_hit ? "true" : "false");
+            const char* source_label =
+                intake_result.source_label.empty() ? "models_intake" : intake_result.source_label.c_str();
+            if (try_load_animated_asset(intake_result.runtime_asset_path, source_label)) {
+                LOG(INFO) << "ClientApp: startup asset loaded successfully via animated/static "
+                             "startup path from models intake";
                 return;
             }
-            resolved_mesh_asset_path = default_path;
+            resolved_mesh_asset_path = intake_result.runtime_asset_path;
             mesh_asset_path = resolved_mesh_asset_path.c_str();
         } else {
-            VLOG(1) << "ClientApp: no ISLA_MESH_ASSET set and default model path '"
-                    << kDefaultStartupModelPath << "' not found; leaving scene empty";
+            VLOG(1) << "ClientApp: no " << kMeshAssetEnvVar
+                    << " set and models intake did not resolve a startup asset; leaving scene empty";
             return;
         }
     }

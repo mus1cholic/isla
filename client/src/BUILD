@@ -56,6 +56,13 @@ cc_library(
 )
 
 cc_library(
+    name = "model_intake",
+    srcs = ["model_intake.cpp"],
+    hdrs = ["model_intake.hpp"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "client_app",
     srcs = ["client_app.cpp"],
     hdrs = ["client_app.hpp"],
@@ -64,6 +71,7 @@ cc_library(
         "@abseil-cpp//absl/log:log",
         ":animated_mesh_skinning",
         ":client_sdl_runtime",
+        ":model_intake",
         ":win32_layered_overlay",
         "//engine/src:engine",
         "//engine/src/render:render",
@@ -77,6 +85,15 @@ cc_test(
     srcs = ["animated_mesh_skinning_test.cpp"],
     deps = [
         ":animated_mesh_skinning",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "model_intake_test",
+    srcs = ["model_intake_test.cpp"],
+    deps = [
+        ":model_intake",
         "@googletest//:gtest_main",
     ],
 )

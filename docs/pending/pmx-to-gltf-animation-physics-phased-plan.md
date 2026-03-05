@@ -44,9 +44,13 @@ Operational interpretation:
 > - Phase 4.6 is complete (coordinate system mirroring documentation + Alpha Blend depth sorting assertions).
 > - Phase 5 is complete (basic PMX physics sidecar ingestion + skeleton-aligned collider proxy runtime path + parser hardening guardrails).
 > - Phase 6 is complete (motion contract/schema + validator + regression fixtures/tests + CLI smoke + effective root-motion policy precedence + CI wiring).
-> - Phases 7-10 remain pending runtime/tooling expansion.
+> - Phase 7 is in progress (runtime model-intake orchestration landed: deterministic `models/` scan
+>   policy, `.gltf/.glb` direct load, `.pmx` auto-convert trigger with cache metadata/invalidation,
+>   fallback diagnostics, and regression coverage via `//client/src:model_intake_test`).
+> - Phases 8-10 remain pending runtime/tooling expansion.
 > - Phase 7.5 (runtime material/primitive introspection + deterministic texture-remap override path) remains pending.
-> - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
+> - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is now partially implemented in Phase 7 and finalized in Phase 10.
+> - PMX conversion remains orchestration-driven (external converter command), not native PMX runtime parsing.
 >
 > Phase 3/3.5 design constraint (current):
 > - Shader-side per-draw GPU palette budget remains fixed at 64 joints (`u_joint_palette[64]`).
@@ -132,6 +136,7 @@ Operational interpretation:
 
 ### Changelog
 
+- 2026-03-05 (Phase 7 partial): added runtime `models/` intake orchestration with deterministic candidate selection (`model.glb`/`model.gltf`/`model.pmx` preference + stable extension/name ordering), direct `.gltf/.glb` startup load path, `.pmx` auto-convert trigger into `models/.isla_converted/`, cache metadata-based reconversion guard (source size/mtime + converter command/version), conversion failure diagnostics/fallback behavior, new model-intake regression suite (`//client/src:model_intake_test`), and Windows smoke CI inclusion for that test target.
 - 2026-03-05 (Phase 6 close-out): finalized motion contract/schema + validator implementation, added Phase 6 fixture/test matrix (including CLI smoke), wired PMX validation tests into CI, aligned default motion sidecar auto-discovery with contract naming (`<character>.motion.gltf/.glb` -> `<character>.motion.json`) with legacy fallback, and hardened root-motion policy evaluation to use effective per-clip precedence (`clip override` -> `sidecar default` -> `CLI fallback`) with actionable diagnostics.
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
