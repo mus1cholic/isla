@@ -1,6 +1,6 @@
 # PMX to glTF Conversion Contract (Phase 1)
 
-Last updated: 2026-03-02
+Last updated: 2026-03-04
 
 ## Purpose
 
@@ -33,6 +33,7 @@ For a converted character package rooted at `<package_dir>`:
 - `<character>.gltf` or `<character>.glb` (required)
 - Referenced texture/image files (required when referenced by materials)
 - `<character>.physics.json` (required; may contain empty arrays)
+- `<character>.texturemap.json` (optional; Phase 7.5 runtime texture remap sidecar)
 
 ## glTF Core Requirements
 
@@ -113,6 +114,29 @@ Each constraint entry MUST define:
 
 Unsupported fields MAY be included only under `extensions`.
 
+## Texture Remap Contract (Optional Sidecar, Phase 7.5 Draft)
+
+Optional runtime texture remap metadata MAY be provided in sidecar file
+`<character>.texturemap.json` using schema:
+- `docs/pmx/schemas/pmx_texture_remap.schema.json`
+
+Top-level required fields:
+- `schema_version`
+- `policy`
+- `mappings`
+
+Mapping keying modes:
+- Preferred: `target.material_name` (stable source material name).
+- Fallback: `target.mesh_index` + `target.primitive_index`.
+
+Policy fields:
+- `policy.override_mode` in `{ "if_missing", "always" }`
+- `policy.path_scope` must be `"asset_relative_only"`
+
+Path security contract:
+- Remap texture paths MUST follow the same runtime URI/path hardening constraints as glTF static
+  texture resolution (no absolute paths; no parent traversal escapes).
+
 ## Determinism Rules
 
 - Converter invocation and version metadata MUST be present.
@@ -156,3 +180,4 @@ Phase 1 is considered complete when:
 - Validation is automatable (see `tools/pmx/validate_converted_gltf.py`).
 
 Reference example sidecar: `docs/pmx/examples/sample.physics.json`
+Reference example texture remap sidecar (Phase 7.5 draft): `docs/pmx/examples/sample.texturemap.json`
