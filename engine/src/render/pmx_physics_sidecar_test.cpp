@@ -319,11 +319,11 @@ TEST(PmxPhysicsSidecarTest, FailsWhenCollisionLayersCountExceedsLimit) {
 
     std::ofstream out(sidecar_path, std::ios::binary);
     ASSERT_TRUE(out.is_open());
-    out << "{"
-        << R"("schema_version":"1.0.0",)"
-        << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
-           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-        << "\"collision_layers\":[";
+    out << "{";
+    out << R"("schema_version":"1.0.0",)";
+    out << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},";
+    out << "\"collision_layers\":[";
     for (std::size_t i = 0U; i < (kMaxCollisionLayers + 1U); ++i) {
         if (i > 0U) {
             out << ",";
@@ -349,12 +349,12 @@ TEST(PmxPhysicsSidecarTest, FailsWhenCollidersCountExceedsLimit) {
 
     std::ofstream out(sidecar_path, std::ios::binary);
     ASSERT_TRUE(out.is_open());
-    out << "{"
-        << R"("schema_version":"1.0.0",)"
-        << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
-           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-        << R"("collision_layers":[{"index":0,"name":"default"}],)"
-        << "\"colliders\":[";
+    out << "{";
+    out << R"("schema_version":"1.0.0",)";
+    out << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},";
+    out << R"("collision_layers":[{"index":0,"name":"default"}],)";
+    out << "\"colliders\":[";
     for (std::size_t i = 0U; i < (kMaxColliders + 1U); ++i) {
         if (i > 0U) {
             out << ",";
@@ -383,13 +383,13 @@ TEST(PmxPhysicsSidecarTest, FailsWhenConstraintsCountExceedsLimit) {
 
     std::ofstream out(sidecar_path, std::ios::binary);
     ASSERT_TRUE(out.is_open());
-    out << "{"
-        << R"("schema_version":"1.0.0",)"
-        << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
-           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-        << R"("collision_layers":[{"index":0,"name":"default"}],)"
-        << "\"colliders\":[],"
-        << "\"constraints\":[";
+    out << "{";
+    out << R"("schema_version":"1.0.0",)";
+    out << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+           "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},";
+    out << R"("collision_layers":[{"index":0,"name":"default"}],)";
+    out << "\"colliders\":[],";
+    out << "\"constraints\":[";
     for (std::size_t i = 0U; i < (kMaxConstraints + 1U); ++i) {
         if (i > 0U) {
             out << ",";
@@ -417,23 +417,23 @@ TEST(PmxPhysicsSidecarTest, OverlongStringFieldsAreRejectedPerEntry) {
     {
         std::ofstream out(sidecar_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
-        out << "{"
-            << R"("schema_version":"1.0.0",)"
-            << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
-               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},"
-            << R"("collision_layers":[{"index":0,"name":"default"}],)"
-            << "\"colliders\":["
-            << R"({"id":")" << long_id
-            << "\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
+        out << "{";
+        out << R"("schema_version":"1.0.0",)";
+        out << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},";
+        out << R"("collision_layers":[{"index":0,"name":"default"}],)";
+        out << "\"colliders\":[";
+        out << R"({"id":")" << long_id;
+        out << "\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
                "\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,\"layer\":1,\"mask\":1,"
-               "\"radius\":0.1},"
-            << R"({"id":")" << valid_id
-            << "\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
+               "\"radius\":0.1},";
+        out << R"({"id":")" << valid_id;
+        out << "\",\"bone_name\":\"Head\",\"shape\":\"sphere\",\"offset\":[0,0,0],"
                "\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,\"layer\":1,\"mask\":1,"
-               "\"radius\":0.1}"
-            << "],"
-            << "\"constraints\":[]"
-            << "}";
+               "\"radius\":0.1}";
+        out << "],";
+        out << "\"constraints\":[]";
+        out << "}";
     }
 
     const std::vector<std::string> known_joints{ "Head" };
