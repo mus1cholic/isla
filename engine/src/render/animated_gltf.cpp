@@ -149,14 +149,14 @@ Transform read_node_local_transform(const cgltf_node* node) {
     if (node == nullptr) {
         return local;
     }
-    if (node->has_translation) {
+    if (node->has_translation != 0) {
         local.position = Vec3{
             .x = node->translation[0],
             .y = node->translation[1],
             .z = node->translation[2],
         };
     }
-    if (node->has_rotation) {
+    if (node->has_rotation != 0) {
         local.rotation = Quat{
             .x = node->rotation[0],
             .y = node->rotation[1],
@@ -165,7 +165,7 @@ Transform read_node_local_transform(const cgltf_node* node) {
         };
         local.rotation.normalize();
     }
-    if (node->has_scale) {
+    if (node->has_scale != 0) {
         local.scale = Vec3{
             .x = node->scale[0],
             .y = node->scale[1],
@@ -299,41 +299,6 @@ bool has_track_animation(const JointAnimationTrack& track) {
     return !track.translations.empty() || !track.rotations.empty() || !track.scales.empty();
 }
 
-struct AnimatedNodeSummary {
-    std::size_t animated_nodes = 0U;
-    std::size_t animated_non_joint_nodes = 0U;
-};
-
-AnimatedNodeSummary summarize_animated_nodes(const AnimatedGltfAsset& asset) {
-    AnimatedNodeSummary summary{};
-    if (asset.nodes.empty()) {
-        return summary;
-    }
-
-    std::vector<bool> joint_node_flags(asset.nodes.size(), false);
-    for (const std::size_t joint_node_index : asset.joint_node_indices) {
-        if (joint_node_index < joint_node_flags.size()) {
-            joint_node_flags[joint_node_index] = true;
-        }
-    }
-
-    std::vector<bool> animated_flags(asset.nodes.size(), false);
-    for (const AnimationClip& clip : asset.clips) {
-        const std::size_t track_count = std::min(asset.nodes.size(), clip.node_tracks.size());
-        for (std::size_t node_index = 0U; node_index < track_count; ++node_index) {
-            if (animated_flags[node_index] || !has_track_animation(clip.node_tracks[node_index])) {
-                continue;
-            }
-            animated_flags[node_index] = true;
-            ++summary.animated_nodes;
-            if (!joint_node_flags[node_index]) {
-                ++summary.animated_non_joint_nodes;
-            }
-        }
-    }
-    return summary;
-}
-
 void sort_track_keyframes(JointAnimationTrack& track) {
     auto vec3_key_sorter = [](const Vec3Keyframe& a, const Vec3Keyframe& b) {
         return a.time_seconds < b.time_seconds;
@@ -347,7 +312,7 @@ void sort_track_keyframes(JointAnimationTrack& track) {
 }
 
 bool append_channel_samples(AnimationClip& clip, std::size_t anim_index, std::size_t track_index,
-                            const char* target_name, const cgltf_animation_channel& channel,
+                            const cgltf_animation_channel& channel,
                             JointAnimationTrack& primary_track,
                             JointAnimationTrack* secondary_track, std::string& error_message) {
     const cgltf_accessor* input = channel.sampler->input;
@@ -423,7 +388,7 @@ bool append_channel_samples(AnimationClip& clip, std::size_t anim_index, std::si
             const std::optional<Vec3> v = read_vec3(output, i);
             if (!t.has_value() || !v.has_value()) {
                 error_message =
-                    make_animation_keyframe_error(clip, anim_index, track_index, target_name, i);
+                    make_animation_keyframe_error(clip, anim_index, track_index, path_name, i);
                 return false;
             }
             clip.duration_seconds = std::max(clip.duration_seconds, *t);
@@ -448,7 +413,7 @@ bool append_channel_samples(AnimationClip& clip, std::size_t anim_index, std::si
             const std::optional<Quat> q = read_quat(output, i);
             if (!t.has_value() || !q.has_value()) {
                 error_message =
-                    make_animation_keyframe_error(clip, anim_index, track_index, target_name, i);
+                    make_animation_keyframe_error(clip, anim_index, track_index, path_name, i);
                 return false;
             }
             clip.duration_seconds = std::max(clip.duration_seconds, *t);
@@ -472,7 +437,7 @@ bool append_channel_samples(AnimationClip& clip, std::size_t anim_index, std::si
             const std::optional<Vec3> v = read_vec3(output, i);
             if (!t.has_value() || !v.has_value()) {
                 error_message =
-                    make_animation_keyframe_error(clip, anim_index, track_index, target_name, i);
+                    make_animation_keyframe_error(clip, anim_index, track_index, path_name, i);
                 return false;
             }
             clip.duration_seconds = std::max(clip.duration_seconds, *t);
@@ -489,6 +454,36 @@ bool append_channel_samples(AnimationClip& clip, std::size_t anim_index, std::si
 }
 
 } // namespace
+
+AnimatedNodeSummary summarize_animated_nodes(const AnimatedGltfAsset& asset) {
+    AnimatedNodeSummary summary{};
+    if (asset.nodes.empty()) {
+        return summary;
+    }
+
+    std::vector<bool> joint_node_flags(asset.nodes.size(), false);
+    for (const std::size_t joint_node_index : asset.joint_node_indices) {
+        if (joint_node_index < joint_node_flags.size()) {
+            joint_node_flags[joint_node_index] = true;
+        }
+    }
+
+    std::vector<bool> animated_flags(asset.nodes.size(), false);
+    for (const AnimationClip& clip : asset.clips) {
+        const std::size_t track_count = std::min(asset.nodes.size(), clip.node_tracks.size());
+        for (std::size_t node_index = 0U; node_index < track_count; ++node_index) {
+            if (animated_flags[node_index] || !has_track_animation(clip.node_tracks[node_index])) {
+                continue;
+            }
+            animated_flags[node_index] = true;
+            ++summary.animated_nodes;
+            if (!joint_node_flags[node_index]) {
+                ++summary.animated_non_joint_nodes;
+            }
+        }
+    }
+    return summary;
+}
 
 AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
     const std::filesystem::path path(asset_path);
@@ -569,7 +564,7 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
             }
             node.parent_index = static_cast<int>(parent_it->second);
         }
-        node.uses_trs = !source_node.has_matrix;
+        node.uses_trs = (source_node.has_matrix == 0);
         node.bind_local_matrix = read_node_local_matrix(&source_node);
         if (node.uses_trs) {
             node.bind_local_transform = read_node_local_transform(&source_node);
@@ -848,13 +843,8 @@ AnimatedGltfLoadResult load_from_file(std::string_view asset_path) {
                                                    ? &clip.joint_tracks[joint_it->second]
                                                    : nullptr;
             std::string channel_error;
-            if (!append_channel_samples(
-                    clip, static_cast<std::size_t>(anim_i), node_index,
-                    channel.target_path == cgltf_animation_path_type_translation
-                        ? "translation"
-                        : (channel.target_path == cgltf_animation_path_type_rotation ? "rotation"
-                                                                                     : "scale"),
-                    channel, clip.node_tracks[node_index], joint_track, channel_error)) {
+            if (!append_channel_samples(clip, static_cast<std::size_t>(anim_i), node_index, channel,
+                                        clip.node_tracks[node_index], joint_track, channel_error)) {
                 return AnimatedGltfLoadResult{
                     .ok = false,
                     .asset = {},

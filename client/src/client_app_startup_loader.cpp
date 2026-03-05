@@ -21,47 +21,6 @@ namespace {
 constexpr std::string_view kMeshAssetEnvVar = "ISLA_MESH_ASSET";
 constexpr std::string_view kAnimatedGltfAssetEnvVar = "ISLA_ANIMATED_GLTF_ASSET";
 
-struct AnimatedNodeSummary {
-    std::size_t animated_nodes = 0U;
-    std::size_t animated_non_joint_nodes = 0U;
-};
-
-AnimatedNodeSummary summarize_animated_nodes(const animated_gltf::AnimatedGltfAsset& asset) {
-    AnimatedNodeSummary summary{};
-    if (asset.nodes.empty()) {
-        return summary;
-    }
-
-    std::vector<bool> joint_node_flags(asset.nodes.size(), false);
-    for (const std::size_t joint_node_index : asset.joint_node_indices) {
-        if (joint_node_index < joint_node_flags.size()) {
-            joint_node_flags[joint_node_index] = true;
-        }
-    }
-
-    std::vector<bool> animated_flags(asset.nodes.size(), false);
-    for (const animated_gltf::AnimationClip& clip : asset.clips) {
-        const std::size_t track_count = clip.node_tracks.size() < asset.nodes.size()
-                                            ? clip.node_tracks.size()
-                                            : asset.nodes.size();
-        for (std::size_t node_index = 0U; node_index < track_count; ++node_index) {
-            const animated_gltf::JointAnimationTrack& track = clip.node_tracks[node_index];
-            const bool has_animation =
-                !track.translations.empty() || !track.rotations.empty() || !track.scales.empty();
-            if (animated_flags[node_index] || !has_animation) {
-                continue;
-            }
-            animated_flags[node_index] = true;
-            ++summary.animated_nodes;
-            if (!joint_node_flags[node_index]) {
-                ++summary.animated_non_joint_nodes;
-            }
-        }
-    }
-
-    return summary;
-}
-
 const char* material_blend_mode_name(MaterialBlendMode mode) {
     switch (mode) {
     case MaterialBlendMode::Opaque:
@@ -245,7 +204,8 @@ bool try_load_animated_asset(StartupLoaderContext& context, const std::string& p
     const float selected_clip_duration =
         clip_index_valid ? context.animated_asset->clips[playback_state.clip_index].duration_seconds
                          : -1.0F;
-    const AnimatedNodeSummary node_summary = summarize_animated_nodes(*context.animated_asset);
+    const animated_gltf::AnimatedNodeSummary node_summary =
+        animated_gltf::summarize_animated_nodes(*context.animated_asset);
     LOG(INFO) << "ClientApp: animated startup summary clip='" << std::string(selected_clip_name)
               << "' duration_seconds=" << selected_clip_duration << " gpu_skinning_authoritative="
               << (context.gpu_skinning_authoritative ? "true" : "false")

@@ -88,6 +88,11 @@ struct AnimatedGltfAsset {
     std::vector<AnimationClip> clips;
 };
 
+struct AnimatedNodeSummary {
+    std::size_t animated_nodes = 0U;
+    std::size_t animated_non_joint_nodes = 0U;
+};
+
 struct AnimatedGltfLoadResult {
     bool ok = false;
     AnimatedGltfAsset asset;
@@ -105,6 +110,7 @@ enum class ClipPlaybackMode {
 };
 
 [[nodiscard]] AnimatedGltfLoadResult load_from_file(std::string_view asset_path);
+[[nodiscard]] AnimatedNodeSummary summarize_animated_nodes(const AnimatedGltfAsset& asset);
 
 [[nodiscard]] bool evaluate_clip_pose(const AnimatedGltfAsset& asset, std::size_t clip_index,
                                       float time_seconds, EvaluatedPose& out_pose,
