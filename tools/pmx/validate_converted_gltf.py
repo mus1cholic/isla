@@ -355,8 +355,8 @@ def _validate_sidecar(sidecar: Any, joint_names: set[str], errors: list[str], wa
             errors.append(f"collider[{idx}] rotation_euler_deg must be vec3")
         if not isinstance(is_trigger, bool):
             errors.append(f"collider[{idx}] is_trigger must be bool")
-        if not _is_uint32(layer):
-            errors.append(f"collider[{idx}] layer must be uint32")
+        if not isinstance(layer, int) or not (0 <= layer <= 31):
+            errors.append(f"collider[{idx}] layer must be int in [0, 31]")
         if not _is_uint32(mask):
             errors.append(f"collider[{idx}] mask must be uint32")
 

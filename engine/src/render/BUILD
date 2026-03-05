@@ -23,11 +23,13 @@ cc_library(
         "include/animated_gltf.hpp",
         "include/mesh_asset_loader.hpp",
         "include/model_renderer_skinning_utils.hpp",
+        "include/pmx_physics_sidecar.hpp",
         "include/shader_path_resolver.hpp",
         "include/texture_loader_limits.hpp",
         "mesh_asset_loader.cpp",
         "model_renderer.cpp",
         "model_renderer_skinning_utils.cpp",
+        "pmx_physics_sidecar.cpp",
         "render_world.cpp",
         "shader_path_resolver.cpp",
     ] + select({
@@ -68,6 +70,7 @@ cc_library(
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/strings",
         "@cgltf_upstream//:cgltf",
+        "@nlohmann_json_upstream//:nlohmann_json",
         "//engine/include/isla/engine/math",
         "//engine/include/isla/engine/render",
         "//third_party/sdl3:sdl3",
@@ -208,6 +211,15 @@ cc_test(
     deps = [
         ":render",
         "//shared/src:test_runfiles",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "pmx_physics_sidecar_tests",
+    srcs = ["pmx_physics_sidecar_test.cpp"],
+    deps = [
+        ":render",
         "@googletest//:gtest_main",
     ],
 )

@@ -367,6 +367,160 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
     return gltf_path;
 }
 
+std::filesystem::path write_skinned_with_animation_gltf_fixture(const std::filesystem::path& dir) {
+    const std::filesystem::path gltf_path = dir / "skinned_with_clip.gltf";
+    const std::filesystem::path bin_path = dir / "skinned_with_clip.bin";
+
+    std::vector<std::uint8_t> buffer;
+    buffer.reserve(320U);
+    const std::size_t positions_offset = buffer.size();
+    const float positions[9] = {
+        0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
+    };
+    for (float value : positions) {
+        append_f32_le(buffer, value);
+    }
+    const std::size_t positions_length = buffer.size() - positions_offset;
+
+    const std::size_t normals_offset = buffer.size();
+    const float normals[9] = {
+        0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F,
+    };
+    for (float value : normals) {
+        append_f32_le(buffer, value);
+    }
+    const std::size_t normals_length = buffer.size() - normals_offset;
+
+    const std::size_t joints_offset = buffer.size();
+    for (int i = 0; i < 3; ++i) {
+        append_u16_le(buffer, 0U);
+        append_u16_le(buffer, 0U);
+        append_u16_le(buffer, 0U);
+        append_u16_le(buffer, 0U);
+    }
+    const std::size_t joints_length = buffer.size() - joints_offset;
+
+    const std::size_t weights_offset = buffer.size();
+    for (int i = 0; i < 3; ++i) {
+        append_f32_le(buffer, 1.0F);
+        append_f32_le(buffer, 0.0F);
+        append_f32_le(buffer, 0.0F);
+        append_f32_le(buffer, 0.0F);
+    }
+    const std::size_t weights_length = buffer.size() - weights_offset;
+
+    const std::size_t indices_offset = buffer.size();
+    append_u16_le(buffer, 0U);
+    append_u16_le(buffer, 1U);
+    append_u16_le(buffer, 2U);
+    const std::size_t indices_length = buffer.size() - indices_offset;
+    while ((buffer.size() % 4U) != 0U) {
+        buffer.push_back(0U);
+    }
+
+    const std::size_t ibm_offset = buffer.size();
+    const float identity_mat4[16] = {
+        1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+        0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F,
+    };
+    for (float value : identity_mat4) {
+        append_f32_le(buffer, value);
+    }
+    const std::size_t ibm_length = buffer.size() - ibm_offset;
+
+    const std::size_t times_offset = buffer.size();
+    append_f32_le(buffer, 0.0F);
+    append_f32_le(buffer, 1.0F);
+    const std::size_t times_length = buffer.size() - times_offset;
+
+    const std::size_t translations_offset = buffer.size();
+    append_f32_le(buffer, 0.0F);
+    append_f32_le(buffer, 0.0F);
+    append_f32_le(buffer, 0.0F);
+    append_f32_le(buffer, 2.0F);
+    append_f32_le(buffer, 0.0F);
+    append_f32_le(buffer, 0.0F);
+    const std::size_t translations_length = buffer.size() - translations_offset;
+
+    {
+        std::ofstream bin_out(bin_path, std::ios::binary);
+        if (!bin_out.is_open()) {
+            ADD_FAILURE() << "failed to open animated fixture BIN output path: " << bin_path;
+            return {};
+        }
+        bin_out.write(reinterpret_cast<const char*>(buffer.data()),
+                      static_cast<std::streamsize>(buffer.size()));
+    }
+
+    std::ofstream gltf_out(gltf_path, std::ios::binary);
+    if (!gltf_out.is_open()) {
+        ADD_FAILURE() << "failed to open animated fixture glTF output path: " << gltf_path;
+        return {};
+    }
+    gltf_out << "{\n"
+             << "  \"asset\": {\"version\": \"2.0\"},\n"
+             << R"(  "buffers": [{"uri": ")" << bin_path.filename().string()
+             << R"(", "byteLength": )" << buffer.size() << "}],\n"
+             << "  \"bufferViews\": [\n"
+             << R"(    {"buffer": 0, "byteOffset": )" << positions_offset
+             << ", \"byteLength\": " << positions_length << ", \"target\": 34962},\n"
+             << R"(    {"buffer": 0, "byteOffset": )" << normals_offset
+             << ", \"byteLength\": " << normals_length << ", \"target\": 34962},\n"
+             << R"(    {"buffer": 0, "byteOffset": )" << joints_offset
+             << ", \"byteLength\": " << joints_length << ", \"target\": 34962},\n"
+             << R"(    {"buffer": 0, "byteOffset": )" << weights_offset
+             << ", \"byteLength\": " << weights_length << ", \"target\": 34962},\n"
+             << R"(    {"buffer": 0, "byteOffset": )" << indices_offset
+             << ", \"byteLength\": " << indices_length << ", \"target\": 34963},\n"
+             << R"(    {"buffer": 0, "byteOffset": )" << ibm_offset
+             << ", \"byteLength\": " << ibm_length << "},\n"
+             << R"(    {"buffer": 0, "byteOffset": )" << times_offset
+             << ", \"byteLength\": " << times_length << "},\n"
+             << R"(    {"buffer": 0, "byteOffset": )" << translations_offset
+             << ", \"byteLength\": " << translations_length << "}\n"
+             << "  ],\n"
+             << "  \"accessors\": [\n"
+             << "    {\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": "
+                "\"VEC3\"},\n"
+             << "    {\"bufferView\": 1, \"componentType\": 5126, \"count\": 3, \"type\": "
+                "\"VEC3\"},\n"
+             << "    {\"bufferView\": 2, \"componentType\": 5123, \"count\": 3, \"type\": "
+                "\"VEC4\"},\n"
+             << "    {\"bufferView\": 3, \"componentType\": 5126, \"count\": 3, \"type\": "
+                "\"VEC4\"},\n"
+             << "    {\"bufferView\": 4, \"componentType\": 5123, \"count\": 3, \"type\": "
+                "\"SCALAR\"},\n"
+             << "    {\"bufferView\": 5, \"componentType\": 5126, \"count\": 1, \"type\": "
+                "\"MAT4\"},\n"
+             << "    {\"bufferView\": 6, \"componentType\": 5126, \"count\": 2, \"type\": "
+                "\"SCALAR\"},\n"
+             << "    {\"bufferView\": 7, \"componentType\": 5126, \"count\": 2, \"type\": "
+                "\"VEC3\"}\n"
+             << "  ],\n"
+             << "  \"meshes\": [{\"primitives\": [{\n"
+             << "    \"attributes\": {\"POSITION\": 0, \"NORMAL\": 1, \"JOINTS_0\": 2, "
+                "\"WEIGHTS_0\": 3},\n"
+             << "    \"indices\": 4\n"
+             << "  }]}],\n"
+             << "  \"nodes\": [{\"name\": \"joint0\"}, {\"mesh\": 0, \"skin\": 0}],\n"
+             << "  \"skins\": [{\"joints\": [0], \"inverseBindMatrices\": 5}],\n"
+             << "  \"animations\": [{\n"
+             << "    \"name\": \"idle\",\n"
+             << "    \"samplers\": [{\"input\": 6, \"output\": 7, \"interpolation\": "
+                "\"LINEAR\"}],\n"
+             << "    \"channels\": [{\"sampler\": 0, \"target\": {\"node\": 0, \"path\": "
+                "\"translation\"}}]\n"
+             << "  }],\n"
+             << "  \"scenes\": [{\"nodes\": [1]}],\n"
+             << "  \"scene\": 0\n"
+             << "}\n";
+    if (!gltf_out.good()) {
+        ADD_FAILURE() << "failed to write animated fixture glTF output path: " << gltf_path;
+        return {};
+    }
+    return gltf_path;
+}
+
 std::filesystem::path write_multi_primitive_static_gltf_fixture(const std::filesystem::path& dir) {
     const std::filesystem::path gltf_path = dir / "multi_primitive_static.gltf";
     const std::filesystem::path texture_a_path = dir / "albedo_a.png";
@@ -832,6 +986,220 @@ TEST(ClientAppAnimationTest, GpuAuthoritativePartitioningIsStableAcrossRepeatedP
     for (std::size_t i = 0U; i < second_world.meshes().size(); ++i) {
         EXPECT_EQ(second_world.meshes()[i].skin_palette().size(), first_palette_sizes[i]);
     }
+}
+
+TEST(ClientAppAnimationTest, PhysicsColliderProxyFollowsAnimatedJointPose) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    animated_gltf::AnimatedGltfAsset asset = make_test_asset_with_two_clips();
+    asset.skeleton.joints[0].name = "root";
+    internal::ClientAppTestHooks::set_animated_asset(app, std::move(asset));
+
+    pmx_physics_sidecar::SidecarData sidecar;
+    sidecar.colliders.push_back(pmx_physics_sidecar::Collider{
+        .id = "head_col",
+        .bone_name = "root",
+        .shape = pmx_physics_sidecar::ColliderShape::Sphere,
+        .offset = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
+        .rotation_euler_deg = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F },
+        .is_trigger = false,
+        .layer = 1U,
+        .mask = 1U,
+        .radius = 0.5F,
+    });
+    internal::ClientAppTestHooks::set_physics_sidecar(app, std::move(sidecar));
+
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    ASSERT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app), 1U);
+
+    const RenderWorld& world_at_bind = internal::ClientAppTestHooks::world(app);
+    ASSERT_GE(world_at_bind.meshes().size(), 2U);
+    ASSERT_GE(world_at_bind.objects().size(), 2U);
+    ASSERT_GE(world_at_bind.materials().size(), 1U);
+    const std::size_t proxy_mesh_id = world_at_bind.objects().back().mesh_id;
+    ASSERT_LT(proxy_mesh_id, world_at_bind.meshes().size());
+    ASSERT_FALSE(world_at_bind.meshes()[proxy_mesh_id].triangles().empty());
+    const float bind_x = world_at_bind.meshes()[proxy_mesh_id].triangles()[0].a.x;
+    EXPECT_NEAR(bind_x, 0.0F, 1.0e-4F);
+
+    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+    runtime.now_ticks_ns = 500000000ULL;
+    internal::ClientAppTestHooks::tick(app);
+
+    const RenderWorld& world_after_tick = internal::ClientAppTestHooks::world(app);
+    ASSERT_LT(proxy_mesh_id, world_after_tick.meshes().size());
+    ASSERT_FALSE(world_after_tick.meshes()[proxy_mesh_id].triangles().empty());
+    const float proxy_x = world_after_tick.meshes()[proxy_mesh_id].triangles()[0].a.x;
+    EXPECT_NEAR(proxy_x, 1.0F, 1.0e-4F);
+}
+
+TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedSidecarCreatesColliderProxyBindings) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_anim_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_skinned_with_animation_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    const std::filesystem::path sidecar_path =
+        gltf_path.parent_path() / "skinned_with_clip.physics.json";
+    {
+        std::ofstream out(sidecar_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{";
+        out << R"("schema_version":"1.0.0",)";
+        out << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},";
+        out << R"("collision_layers":[{"index":0,"name":"default"}],)";
+        out << "\"colliders\":[{\"id\":\"c0\",\"bone_name\":\"joint0\",\"shape\":\"sphere\","
+               "\"offset\":[0,0,0],\"rotation_euler_deg\":[0,0,0],\"is_trigger\":false,"
+               "\"layer\":1,\"mask\":1,\"radius\":0.2}],";
+        out << "\"constraints\":[]";
+        out << "}";
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app));
+    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app), 1U);
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    EXPECT_GE(world.meshes().size(), 2U);
+    EXPECT_GE(world.objects().size(), 2U);
+}
+
+TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedMissingSidecarKeepsPlaybackWithoutPhysics) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_anim_no_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_skinned_with_animation_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app));
+    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app), 0U);
+}
+
+TEST(ClientAppAnimationTest, LoadStartupMeshAnimatedInvalidSidecarDoesNotBlockAnimationLoad) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_client_app_test_anim_bad_sidecar");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path gltf_path =
+        write_skinned_with_animation_gltf_fixture(temp_dir.path());
+    ASSERT_FALSE(gltf_path.empty());
+    const std::filesystem::path sidecar_path =
+        gltf_path.parent_path() / "skinned_with_clip.physics.json";
+    {
+        std::ofstream out(sidecar_path, std::ios::binary);
+        ASSERT_TRUE(out.is_open());
+        out << "{";
+        out << R"("schema_version":"1.0.1",)";
+        out << "\"converter\":{\"name\":\"conv\",\"version\":\"1\",\"command\":\"x\","
+               "\"timestamp_utc\":\"2026-03-01T00:00:00Z\"},";
+        out << R"("collision_layers":[],"colliders":[],"constraints":[])";
+        out << "}";
+    }
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ScopedEnvVar animated_env("ISLA_ANIMATED_GLTF_ASSET", gltf_path.string().c_str());
+    ScopedEnvVar mesh_env("ISLA_MESH_ASSET", "");
+    internal::ClientAppTestHooks::load_startup_mesh(app);
+
+    EXPECT_TRUE(internal::ClientAppTestHooks::has_animated_asset(app));
+    EXPECT_EQ(internal::ClientAppTestHooks::physics_collider_binding_count(app), 0U);
+}
+
+TEST(ClientAppAnimationTest, PhysicsProxyTriangleStorageStaysStableAcrossManyTicks) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    animated_gltf::AnimatedGltfAsset asset = make_test_asset_with_two_clips();
+    asset.skeleton.joints[0].name = "root";
+    internal::ClientAppTestHooks::set_animated_asset(app, std::move(asset));
+
+    pmx_physics_sidecar::SidecarData sidecar;
+    sidecar.colliders.push_back(pmx_physics_sidecar::Collider{
+        .id = "proxy",
+        .bone_name = "root",
+        .shape = pmx_physics_sidecar::ColliderShape::Sphere,
+        .offset = Vec3{},
+        .rotation_euler_deg = Vec3{},
+        .is_trigger = false,
+        .layer = 1U,
+        .mask = 1U,
+        .radius = 0.5F,
+    });
+    internal::ClientAppTestHooks::set_physics_sidecar(app, std::move(sidecar));
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+
+    const RenderWorld& world = internal::ClientAppTestHooks::world(app);
+    ASSERT_GE(world.objects().size(), 2U);
+    const std::size_t proxy_mesh_id = world.objects().back().mesh_id;
+    ASSERT_LT(proxy_mesh_id, world.meshes().size());
+    const Triangle* stable_ptr = world.meshes()[proxy_mesh_id].triangles().data();
+    const std::size_t stable_capacity = world.meshes()[proxy_mesh_id].triangles().capacity();
+
+    for (int frame = 0; frame < 120; ++frame) {
+        runtime.now_ticks_ns += 16666666ULL;
+        internal::ClientAppTestHooks::tick(app);
+        const RenderWorld& tick_world = internal::ClientAppTestHooks::world(app);
+        ASSERT_LT(proxy_mesh_id, tick_world.meshes().size());
+        EXPECT_EQ(tick_world.meshes()[proxy_mesh_id].triangles().data(), stable_ptr);
+        EXPECT_EQ(tick_world.meshes()[proxy_mesh_id].triangles().capacity(), stable_capacity);
+    }
+}
+
+TEST(ClientAppAnimationTest, GpuAuthoritativeTickUpdatesSkinPaletteAndPhysicsProxyTogether) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    animated_gltf::AnimatedGltfAsset asset = make_test_asset_with_two_clips();
+    asset.skeleton.joints[0].name = "root";
+    internal::ClientAppTestHooks::set_animated_asset(app, std::move(asset));
+    internal::ClientAppTestHooks::set_gpu_skinning_authoritative(app, true);
+
+    pmx_physics_sidecar::SidecarData sidecar;
+    sidecar.colliders.push_back(pmx_physics_sidecar::Collider{
+        .id = "proxy",
+        .bone_name = "root",
+        .shape = pmx_physics_sidecar::ColliderShape::Sphere,
+        .offset = Vec3{},
+        .rotation_euler_deg = Vec3{},
+        .is_trigger = false,
+        .layer = 1U,
+        .mask = 1U,
+        .radius = 0.5F,
+    });
+    internal::ClientAppTestHooks::set_physics_sidecar(app, std::move(sidecar));
+    internal::ClientAppTestHooks::populate_world_from_animated_asset(app);
+    internal::ClientAppTestHooks::set_last_tick_ns(app, 0U);
+
+    const RenderWorld& bind_world = internal::ClientAppTestHooks::world(app);
+    ASSERT_GE(bind_world.objects().size(), 2U);
+    const std::size_t skinned_mesh_id = bind_world.objects().front().mesh_id;
+    const std::size_t proxy_mesh_id = bind_world.objects().back().mesh_id;
+    ASSERT_LT(skinned_mesh_id, bind_world.meshes().size());
+    ASSERT_LT(proxy_mesh_id, bind_world.meshes().size());
+    const std::uint64_t stable_geometry_revision =
+        bind_world.meshes()[skinned_mesh_id].geometry_revision();
+    const float bind_proxy_x = bind_world.meshes()[proxy_mesh_id].triangles()[0].a.x;
+    EXPECT_NEAR(bind_proxy_x, 0.0F, 1.0e-4F);
+
+    runtime.now_ticks_ns = 500000000ULL;
+    internal::ClientAppTestHooks::tick(app);
+
+    const RenderWorld& tick_world = internal::ClientAppTestHooks::world(app);
+    ASSERT_LT(skinned_mesh_id, tick_world.meshes().size());
+    ASSERT_LT(proxy_mesh_id, tick_world.meshes().size());
+    ASSERT_FALSE(tick_world.meshes()[skinned_mesh_id].skin_palette().empty());
+    EXPECT_NEAR(tick_world.meshes()[skinned_mesh_id].skin_palette()[0].elements[12], 1.0F, 1.0e-4F);
+    EXPECT_EQ(tick_world.meshes()[skinned_mesh_id].geometry_revision(), stable_geometry_revision);
+    EXPECT_NEAR(tick_world.meshes()[proxy_mesh_id].triangles()[0].a.x, 1.0F, 1.0e-4F);
 }
 
 TEST(ClientAppAnimationTest, LoadStartupMeshResetsGpuAuthoritativeFlagWhenRendererUnsupported) {

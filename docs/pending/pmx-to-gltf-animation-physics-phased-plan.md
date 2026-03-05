@@ -31,7 +31,7 @@ Operational interpretation:
 - PMX support is provided through conversion orchestration workflows, not native PMX render/runtime parsing.
 
 > [!NOTE]
-> **Current status (2026-03-04):**
+> **Current status (2026-03-05):**
 > - Phase 0 is complete and substantially hardened.
 > - Phase 1 is complete (contract + schema + validator + validator tests).
 > - Phase 2 is complete (runtime clip playback + controller + temporary CPU skinning path).
@@ -42,7 +42,8 @@ Operational interpretation:
 > - Phase 4.1 is complete (static glTF per-primitive material preservation + deterministic aggregate transform + fallback parity + additional loader hardening and contract test refactors).
 > - Phase 4.5 is complete (Windows DirectComposition-backed transparent overlay path with visible 3D rendering).
 > - Phase 4.6 is complete (coordinate system mirroring documentation + Alpha Blend depth sorting assertions).
-> - Phases 5-10 remain pending runtime/tooling expansion.
+> - Phase 5 is complete (basic PMX physics sidecar ingestion + skeleton-aligned collider proxy runtime path + parser hardening guardrails).
+> - Phases 6-10 remain pending runtime/tooling expansion.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
 > Phase 3/3.5 design constraint (current):
@@ -208,6 +209,7 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
   - strict top-level sidecar type handling (structured errors instead of crash)
   - stricter RFC3339 timestamp validation (timezone required)
   - improved JOINTS_0 metadata diagnostics for malformed `min`/`max`
+  - collider `layer` now validated as collision-layer index in `[0,31]` (mask remains uint32 bitmask)
 
 ### Contract Notes Updated From Phase 0
 
@@ -229,6 +231,9 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
 - Static-fidelity and security compatibility note (Phase 4 implementation):
   - runtime static fallback now consumes `alphaMode: MASK` cutoff semantics and treats surviving cutout fragments as opaque
   - absolute/traversal image URI paths are rejected in static glTF texture path resolution; conversion outputs should keep texture URIs package-local
+- Physics-layer semantics note (Phase 5 hardening):
+  - collider `layer` is treated as collision-layer index space (`0..31`)
+  - collider `mask` remains uint32 bitmask semantics
 
 ### Known Limits (Phase 1, Intentional)
 
@@ -744,9 +749,50 @@ Preserve basic PMX physics intent through glTF metadata ingestion.
 - Integrate against established Phase 2/3/3.5 playback + skeleton runtime state (avoid introducing a parallel animation/deformation state path).
 - Preserve Phase 4.5 Windows presentation baseline while adding physics debug overlays/proxies (no reintroduction of layered/color-key-only transparency behavior).
 
+### Implemented (2026-03-04)
+
+- Added runtime Phase 5 sidecar ingestion module:
+  - `engine/src/render/include/pmx_physics_sidecar.hpp`
+  - `engine/src/render/pmx_physics_sidecar.cpp`
+- Added runtime/client integration for sidecar-backed collider proxy population and per-tick updates:
+  - `client/src/client_app.hpp` / `client/src/client_app.cpp`
+  - loads sibling `.<asset>.physics.json` at animated-asset load time when present
+  - maps sidecar collider `bone_name` to skeleton joints and creates parented proxy meshes
+  - updates proxy transforms from authoritative animated joint pose state each tick
+  - uses in-place triangle edits without per-frame bounds recompute, with periodic deferred bounds refresh aligned to existing animation tick cadence
+- Added diagnostics/observability for Phase 5 runtime behavior:
+  - sidecar load success/failure summaries
+  - parse/validation warning surfacing
+  - collider proxy creation/skip summaries
+  - periodic proxy tick update summaries + invalid-binding throttled warnings
+- Added parser hardening guardrails:
+  - migrated sidecar parsing to `nlohmann::json` (replacing custom parser)
+  - explicit sidecar file-size cap guard (`kMaxSidecarFileSizeBytes = 10MB`) with both metadata precheck (`file_size`) and bounded stream-read enforcement
+  - explicit array-count caps (`collision_layers`, `colliders`, `constraints`)
+  - explicit required-string length cap (`kMaxStringLengthBytes`)
+  - specific top-level failure-reason propagation (distinguishes missing/invalid arrays vs exceeds-max failures)
+  - improved warning diagnostics for unsupported constraint/collider types and unknown collider bone names (offending values included)
+- Aligned physics contract/schema/validator/runtime semantics:
+  - collider `layer` constrained to collision-layer index `[0,31]`
+  - collider `mask` preserved as uint32 bitmask
+  - updated:
+    - `docs/pmx/schemas/pmx_physics_metadata.schema.json`
+    - `docs/pmx/pmx_to_gltf_conversion_contract.md`
+    - `tools/pmx/validate_converted_gltf.py` + fixtures/tests
+- Added/updated regression tests:
+  - `engine/src/render/pmx_physics_sidecar_test.cpp` (schema/version/shape/range/size/array-count/string-length/error handling + specific-failure-reason coverage)
+  - `client/src/client_app_animation_test.cpp` (startup sidecar integration, missing/invalid sidecar resilience, proxy follow behavior, tick-storage stability, GPU-authoritative coexistence)
+- Kept Phase 4.5 compositor behavior unchanged while adding physics proxies.
+
+### Known Limits (Phase 5, Post-Implementation)
+
+- Current `Capsule` visual proxy shape is intentionally approximated with a scaled box for lightweight debug rendering.
+- Follow-up is tracked inline in `client/src/client_app.cpp` as a TODO to replace this with a low-poly capsule mesh (cylinder + hemispherical caps) when proxy-shape fidelity refinement is scheduled.
+
 ### Exit Criteria
 
 - Imported character gets basic collider/physics proxies aligned with skeleton.
+- Status: satisfied as of 2026-03-04 for baseline Phase 5 scope.
 
 ## Phase 6: PMX Motion Pipeline (VMD to glTF Clip Workflow)
 
@@ -800,7 +846,7 @@ Make the pipeline maintainable and testable.
   - playback mode behavior (`Loop`/`Clamp`)
   - shader contract for skinning path
   - GPU skinning guard/fallback behavior and large-skeleton partition/remap correctness around palette/index limits
-  - physics metadata parsing fallbacks
+  - physics metadata parsing fallbacks + parser/resource hardening limits (file-size cap, array-count caps, string-length caps, layer-index bounds)
   - model intake orchestration (`models/` scan, PMX auto-convert trigger, converted-output cache hit path)
 - Add CI target(s) for animation/physics pipeline tests.
 - Add CI wiring for `//tools/pmx:validate_converted_gltf_test`.

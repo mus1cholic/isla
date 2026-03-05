@@ -9,8 +9,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <numbers>
 #include <span>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "animated_mesh_skinning.hpp"
@@ -29,6 +32,8 @@ constexpr char kAnimatedGltfAssetEnvVar[] = "ISLA_ANIMATED_GLTF_ASSET";
 constexpr char kAnimationClipEnvVar[] = "ISLA_ANIM_CLIP";
 constexpr char kAnimationPlaybackModeEnvVar[] = "ISLA_ANIM_PLAYBACK_MODE";
 constexpr char kDefaultStartupModelPath[] = "models/model.glb";
+constexpr float kPhysicsProxyMaterialAlpha = 0.25F;
+constexpr char kPhysicsProxyShaderName[] = "mesh";
 
 const char* material_blend_mode_name(MaterialBlendMode mode) {
     switch (mode) {
@@ -231,6 +236,107 @@ std::vector<Mat4> make_remapped_skin_palette(std::span<const Mat4> global_skin_m
     return palette;
 }
 
+std::vector<Triangle> make_unit_cube_triangles() {
+    const Vec3 p000{ .x = -0.5F, .y = -0.5F, .z = -0.5F };
+    const Vec3 p001{ .x = -0.5F, .y = -0.5F, .z = 0.5F };
+    const Vec3 p010{ .x = -0.5F, .y = 0.5F, .z = -0.5F };
+    const Vec3 p011{ .x = -0.5F, .y = 0.5F, .z = 0.5F };
+    const Vec3 p100{ .x = 0.5F, .y = -0.5F, .z = -0.5F };
+    const Vec3 p101{ .x = 0.5F, .y = -0.5F, .z = 0.5F };
+    const Vec3 p110{ .x = 0.5F, .y = 0.5F, .z = -0.5F };
+    const Vec3 p111{ .x = 0.5F, .y = 0.5F, .z = 0.5F };
+    return {
+        Triangle{ .a = p001, .b = p101, .c = p111 }, Triangle{ .a = p001, .b = p111, .c = p011 },
+        Triangle{ .a = p100, .b = p000, .c = p010 }, Triangle{ .a = p100, .b = p010, .c = p110 },
+        Triangle{ .a = p000, .b = p001, .c = p011 }, Triangle{ .a = p000, .b = p011, .c = p010 },
+        Triangle{ .a = p101, .b = p100, .c = p110 }, Triangle{ .a = p101, .b = p110, .c = p111 },
+        Triangle{ .a = p010, .b = p011, .c = p111 }, Triangle{ .a = p010, .b = p111, .c = p110 },
+        Triangle{ .a = p000, .b = p100, .c = p101 }, Triangle{ .a = p000, .b = p101, .c = p001 },
+    };
+}
+
+std::vector<Triangle> make_unit_octahedron_triangles() {
+    const Vec3 px{ .x = 1.0F, .y = 0.0F, .z = 0.0F };
+    const Vec3 nx{ .x = -1.0F, .y = 0.0F, .z = 0.0F };
+    const Vec3 py{ .x = 0.0F, .y = 1.0F, .z = 0.0F };
+    const Vec3 ny{ .x = 0.0F, .y = -1.0F, .z = 0.0F };
+    const Vec3 pz{ .x = 0.0F, .y = 0.0F, .z = 1.0F };
+    const Vec3 nz{ .x = 0.0F, .y = 0.0F, .z = -1.0F };
+    return {
+        Triangle{ .a = py, .b = px, .c = pz }, Triangle{ .a = py, .b = pz, .c = nx },
+        Triangle{ .a = py, .b = nx, .c = nz }, Triangle{ .a = py, .b = nz, .c = px },
+        Triangle{ .a = ny, .b = pz, .c = px }, Triangle{ .a = ny, .b = nx, .c = pz },
+        Triangle{ .a = ny, .b = nz, .c = nx }, Triangle{ .a = ny, .b = px, .c = nz },
+    };
+}
+
+Vec3 scaled_vec3(const Vec3& value, const Vec3& scale) {
+    return Vec3{
+        .x = value.x * scale.x,
+        .y = value.y * scale.y,
+        .z = value.z * scale.z,
+    };
+}
+
+std::vector<Triangle> scale_triangles(std::span<const Triangle> triangles, const Vec3& scale) {
+    std::vector<Triangle> out;
+    out.reserve(triangles.size());
+    for (const Triangle& tri : triangles) {
+        out.push_back(Triangle{
+            .a = scaled_vec3(tri.a, scale),
+            .b = scaled_vec3(tri.b, scale),
+            .c = scaled_vec3(tri.c, scale),
+        });
+    }
+    return out;
+}
+
+Mat4 make_collider_local_matrix(const pmx_physics_sidecar::Collider& collider) {
+    const float kDegToRad = std::numbers::pi_v<float> / 180.0F;
+    const Mat4 rotation =
+        multiply(multiply(Mat4::rotation_z(collider.rotation_euler_deg.z * kDegToRad),
+                          Mat4::rotation_y(collider.rotation_euler_deg.y * kDegToRad)),
+                 Mat4::rotation_x(collider.rotation_euler_deg.x * kDegToRad));
+    return multiply(Mat4::translation(collider.offset), rotation);
+}
+
+std::vector<Triangle> make_triangles_for_collider(const pmx_physics_sidecar::Collider& collider) {
+    if (collider.shape == pmx_physics_sidecar::ColliderShape::Sphere) {
+        const Vec3 scale{ .x = collider.radius, .y = collider.radius, .z = collider.radius };
+        return scale_triangles(make_unit_octahedron_triangles(), scale);
+    }
+    if (collider.shape == pmx_physics_sidecar::ColliderShape::Capsule) {
+        const Vec3 scale{
+            .x = collider.radius * 2.0F,
+            .y = collider.height + (collider.radius * 2.0F),
+            .z = collider.radius * 2.0F,
+        };
+        // TODO(isla): Replace this box proxy with a low-poly capsule mesh (cylinder + hemispheres)
+        // for better visual fidelity once Phase 5 proxy-shape refinement is scheduled.
+        return scale_triangles(make_unit_cube_triangles(), scale);
+    }
+    return scale_triangles(make_unit_cube_triangles(), collider.size);
+}
+
+void apply_matrix_to_triangles_in_place(std::span<const Triangle> source, const Mat4& matrix,
+                                        std::vector<Triangle>& destination) {
+    destination.resize(source.size());
+    for (std::size_t i = 0U; i < source.size(); ++i) {
+        destination[i].a = transform_point(matrix, source[i].a);
+        destination[i].b = transform_point(matrix, source[i].b);
+        destination[i].c = transform_point(matrix, source[i].c);
+    }
+}
+
+std::vector<std::string> collect_joint_names(const animated_gltf::AnimatedGltfAsset& asset) {
+    std::vector<std::string> names;
+    names.reserve(asset.skeleton.joints.size());
+    for (const animated_gltf::SkeletonJoint& joint : asset.skeleton.joints) {
+        names.push_back(joint.name);
+    }
+    return names;
+}
+
 } // namespace
 
 ClientApp::ClientApp() : ClientApp(default_sdl_runtime()) {}
@@ -296,8 +402,11 @@ void ClientApp::load_startup_mesh() {
     world_.meshes().clear();
     world_.objects().clear();
     animated_asset_.reset();
+    physics_sidecar_.reset();
     animation_playback_.clear_asset();
     animated_mesh_bindings_.clear();
+    physics_collider_bindings_.clear();
+    physics_proxy_material_id_.reset();
     animation_tick_count_ = 0U;
     gpu_skinning_authoritative_ = model_renderer_.supports_gpu_skinning();
     VLOG(1) << "ClientApp: GPU skinning authoritative mode "
@@ -420,6 +529,7 @@ void ClientApp::load_startup_mesh() {
             return try_load_static_asset(path, source_label);
         }
         configure_animation_playback_from_environment();
+        load_physics_sidecar_for_asset(path);
         populate_world_from_animated_asset();
 
         VLOG(1) << "ClientApp: loaded animated glTF from " << source_label << "='" << path
@@ -504,6 +614,48 @@ void ClientApp::configure_animation_playback_from_environment() {
         LOG(WARNING) << "ClientApp: unknown " << kAnimationPlaybackModeEnvVar << " value='"
                      << mode_value << "'; expected 'loop' or 'clamp'";
     }
+}
+
+void ClientApp::load_physics_sidecar_for_asset(std::string_view asset_path) {
+    physics_sidecar_.reset();
+    physics_collider_bindings_.clear();
+    physics_proxy_material_id_.reset();
+    if (!animated_asset_.has_value()) {
+        return;
+    }
+
+    std::filesystem::path sidecar_path = std::filesystem::path(asset_path);
+    sidecar_path.replace_extension(".physics.json");
+    std::error_code exists_error;
+    const bool sidecar_exists = std::filesystem::exists(sidecar_path, exists_error);
+    if (exists_error) {
+        LOG(WARNING) << "ClientApp: failed checking physics sidecar path '" << sidecar_path.string()
+                     << "': " << exists_error.message()
+                     << "; skipping Phase 5 collider proxy import";
+        return;
+    }
+    if (!sidecar_exists) {
+        VLOG(1) << "ClientApp: no physics sidecar found at '" << sidecar_path.string()
+                << "'; skipping Phase 5 collider proxy import";
+        return;
+    }
+
+    const std::vector<std::string> joint_names = collect_joint_names(*animated_asset_);
+    const pmx_physics_sidecar::SidecarLoadResult loaded =
+        pmx_physics_sidecar::load_from_file(sidecar_path.string(), joint_names);
+    for (const std::string& warning : loaded.warnings) {
+        LOG(WARNING) << "ClientApp: physics sidecar warning: " << warning;
+    }
+    if (!loaded.ok) {
+        LOG(WARNING) << "ClientApp: failed to load physics sidecar '" << sidecar_path.string()
+                     << "': " << loaded.error_message;
+        return;
+    }
+    physics_sidecar_ = loaded.sidecar;
+    VLOG(1) << "ClientApp: loaded physics sidecar '" << sidecar_path.string()
+            << "' colliders=" << physics_sidecar_->colliders.size()
+            << " constraints=" << physics_sidecar_->constraints.size()
+            << " layers=" << physics_sidecar_->collision_layers.size();
 }
 
 void ClientApp::populate_world_from_animated_asset() {
@@ -611,9 +763,130 @@ void ClientApp::populate_world_from_animated_asset() {
         });
         animated_mesh_bindings_.push_back(std::move(binding));
     }
+    append_physics_proxy_meshes();
     VLOG(1) << "ClientApp: animated mesh population complete, bindings="
             << animated_mesh_bindings_.size()
+            << ", physics_colliders=" << physics_collider_bindings_.size()
             << ", gpu_skinning_authoritative=" << (gpu_skinning_authoritative_ ? "true" : "false");
+}
+
+void ClientApp::append_physics_proxy_meshes() {
+    physics_collider_bindings_.clear();
+    if (!animated_asset_.has_value() || !physics_sidecar_.has_value() ||
+        physics_sidecar_->colliders.empty()) {
+        return;
+    }
+
+    if (!physics_proxy_material_id_.has_value() ||
+        *physics_proxy_material_id_ >= world_.materials().size()) {
+        Material physics_material{};
+        physics_material.shader_name = kPhysicsProxyShaderName;
+        physics_material.base_color = Color3{ .r = 0.2F, .g = 0.95F, .b = 0.35F };
+        physics_material.base_alpha = kPhysicsProxyMaterialAlpha;
+        physics_material.blend_mode = MaterialBlendMode::AlphaBlend;
+        physics_material.cull_mode = MaterialCullMode::Disabled;
+        world_.materials().push_back(std::move(physics_material));
+        physics_proxy_material_id_ = world_.materials().size() - 1U;
+    }
+
+    std::unordered_map<std::string, std::size_t> joint_index_by_name;
+    joint_index_by_name.reserve(animated_asset_->skeleton.joints.size());
+    for (std::size_t joint_index = 0U; joint_index < animated_asset_->skeleton.joints.size();
+         ++joint_index) {
+        const std::string& name = animated_asset_->skeleton.joints[joint_index].name;
+        if (!name.empty()) {
+            joint_index_by_name.emplace(name, joint_index);
+        }
+    }
+
+    const std::vector<Mat4>* joint_matrices = nullptr;
+    if (animation_playback_.has_cached_pose()) {
+        joint_matrices = &animation_playback_.cached_pose().global_joint_matrices;
+    }
+
+    std::size_t created = 0U;
+    std::size_t skipped_missing_bone = 0U;
+    std::size_t skipped_invalid_geometry = 0U;
+    for (const pmx_physics_sidecar::Collider& collider : physics_sidecar_->colliders) {
+        const auto joint_it = joint_index_by_name.find(collider.bone_name);
+        if (joint_it == joint_index_by_name.end()) {
+            LOG(WARNING) << "ClientApp: skipping collider '" << collider.id
+                         << "' due to missing skeleton bone '" << collider.bone_name << "'";
+            ++skipped_missing_bone;
+            continue;
+        }
+
+        PhysicsColliderBinding binding{};
+        binding.bone_index = joint_it->second;
+        binding.bone_local_collider_matrix = make_collider_local_matrix(collider);
+        binding.bind_local_triangles = make_triangles_for_collider(collider);
+        if (binding.bind_local_triangles.empty()) {
+            ++skipped_invalid_geometry;
+            continue;
+        }
+
+        std::vector<Triangle> initial_triangles;
+        Mat4 world_matrix = binding.bone_local_collider_matrix;
+        if (joint_matrices != nullptr && binding.bone_index < joint_matrices->size()) {
+            world_matrix = multiply(joint_matrices->at(binding.bone_index), world_matrix);
+        }
+        apply_matrix_to_triangles_in_place(binding.bind_local_triangles, world_matrix,
+                                           initial_triangles);
+
+        MeshData mesh;
+        mesh.set_triangles(std::move(initial_triangles));
+        world_.meshes().push_back(std::move(mesh));
+        binding.mesh_id = world_.meshes().size() - 1U;
+        world_.objects().push_back(RenderObject{
+            .mesh_id = binding.mesh_id,
+            .material_id = *physics_proxy_material_id_,
+            .visible = true,
+        });
+        physics_collider_bindings_.push_back(std::move(binding));
+        ++created;
+    }
+    VLOG(1) << "ClientApp: physics collider proxy build summary created=" << created
+            << " skipped_missing_bone=" << skipped_missing_bone
+            << " skipped_invalid_geometry=" << skipped_invalid_geometry
+            << " source_colliders=" << physics_sidecar_->colliders.size();
+}
+
+void ClientApp::tick_physics_proxies(bool recompute_bounds) {
+    if (!animation_playback_.has_cached_pose() || physics_collider_bindings_.empty()) {
+        return;
+    }
+    const std::vector<Mat4>& global_joint_matrices =
+        animation_playback_.cached_pose().global_joint_matrices;
+    std::size_t updated = 0U;
+    std::size_t skipped_invalid_binding = 0U;
+    for (const PhysicsColliderBinding& binding : physics_collider_bindings_) {
+        if (binding.bone_index >= global_joint_matrices.size() ||
+            binding.mesh_id >= world_.meshes().size()) {
+            ++skipped_invalid_binding;
+            continue;
+        }
+        MeshData& mesh = world_.meshes()[binding.mesh_id];
+        const Mat4 world_matrix =
+            multiply(global_joint_matrices[binding.bone_index], binding.bone_local_collider_matrix);
+        mesh.edit_triangles_without_recompute_bounds([&](MeshData::TriangleList& triangles) {
+            apply_matrix_to_triangles_in_place(binding.bind_local_triangles, world_matrix,
+                                               triangles);
+        });
+        if (recompute_bounds) {
+            mesh.recompute_bounds();
+        }
+        ++updated;
+    }
+    if (skipped_invalid_binding > 0U) {
+        LOG_EVERY_N_SEC(WARNING, 2.0)
+            << "ClientApp: physics proxy tick skipped invalid bindings count="
+            << skipped_invalid_binding << " total_bindings=" << physics_collider_bindings_.size()
+            << " global_joint_matrices=" << global_joint_matrices.size()
+            << " world_meshes=" << world_.meshes().size();
+    }
+    VLOG_EVERY_N_SEC(1, 2.0) << "ClientApp: physics proxy tick updated=" << updated
+                             << " skipped_invalid_binding=" << skipped_invalid_binding
+                             << " total_bindings=" << physics_collider_bindings_.size();
 }
 
 void ClientApp::tick() {
@@ -699,6 +972,7 @@ void ClientApp::tick_animation(float dt_seconds) {
             mesh.set_skin_palette(
                 make_remapped_skin_palette(skin_matrices, binding.gpu_palette_global_joints));
         }
+        tick_physics_proxies(should_recompute_bounds);
         return;
     }
     for (AnimatedMeshBinding& binding : animated_mesh_bindings_) {
@@ -723,6 +997,7 @@ void ClientApp::tick_animation(float dt_seconds) {
                 << recomputed_bounds_mesh_count
                 << " mesh(es) at animation_tick_count=" << animation_tick_count_;
     }
+    tick_physics_proxies(should_recompute_bounds);
 }
 
 void ClientApp::render() const {
