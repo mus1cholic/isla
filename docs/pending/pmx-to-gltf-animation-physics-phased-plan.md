@@ -50,7 +50,9 @@ Operational interpretation:
 >   (no `std::system`), robust converter-template token handling, and regression coverage via
 >   `//client/src:model_intake_test`).
 > - Phases 8-10 remain pending runtime/tooling expansion.
-> - Phase 7.5 is complete (runtime material/primitive introspection + deterministic texture-remap override path for static load/fallback with sidecar-driven overrides and diagnostics).
+> - Phase 7.5 is complete (runtime material/primitive introspection + deterministic texture-remap
+>   override path for static load/fallback with sidecar-driven overrides, hardened integer parsing,
+>   structured diagnostics, and regression/CI coverage).
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is now partially implemented in Phase 7 and finalized in Phase 10.
 > - PMX conversion remains orchestration-driven (external converter command), not native PMX runtime parsing.
 >
@@ -149,10 +151,17 @@ Operational interpretation:
 > - `engine/src/render/include/mesh_asset_loader.hpp` / `engine/src/render/mesh_asset_loader.cpp` (primitive source identity metadata + reusable hardened asset-relative texture-path resolver)
 > - `engine/src/render/include/pmx_texture_remap_sidecar.hpp` / `engine/src/render/pmx_texture_remap_sidecar.cpp` (texture remap sidecar parser/policy ingestion)
 > - `client/src/client_app.cpp` (static startup texturemap ingestion/application + deterministic inventory diagnostics)
-> - `engine/src/render/mesh_asset_loader_test.cpp` / `client/src/client_app_animation_test.cpp` (Phase 7.5 regression coverage)
+> - `engine/src/render/pmx_texture_remap_sidecar_test.cpp` / `engine/src/render/mesh_asset_loader_test.cpp` / `client/src/client_app_animation_test.cpp` (Phase 7.5 regression coverage)
+> - `.github/workflows/ci.yml` (Windows smoke includes `//engine/src/render:pmx_texture_remap_sidecar_tests`)
 
 ### Changelog
 
+- 2026-03-05 (Phase 7.5 follow-up hardening): refactored runtime texture-remap application into
+  focused helper functions for maintainability, expanded diagnostics with mapping-keyed skip
+  reasons and per-run summary counters, promoted invalid sidecar startup abort to explicit error
+  logging, tightened sidecar index parsing to strict integer semantics (no float coercion) to avoid
+  >2^53 precision loss, added large-integer/float-rejection parser tests, and wired
+  `//engine/src/render:pmx_texture_remap_sidecar_tests` into Windows smoke CI.
 - 2026-03-05 (Phase 7.5): added static runtime primitive/material source-identity introspection
   (source mesh/primitive/material name), startup structured material inventory diagnostics, and
   deterministic `<asset>.texturemap.json` override ingestion with policy support (`if_missing`,
@@ -283,6 +292,10 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
 - Physics-layer semantics note (Phase 5 hardening):
   - collider `layer` is treated as collision-layer index space (`0..31`)
   - collider `mask` remains uint32 bitmask semantics
+- Runtime texture-remap note (Phase 7.5 implementation):
+  - optional `<asset>.texturemap.json` sidecar is runtime-supported on static load/fallback paths
+  - `target.mesh_index` / `target.primitive_index` are parsed as strict integers (no float coercion)
+    with explicit range checks before `size_t` conversion
 
 ### Known Limits (Phase 1, Intentional)
 
@@ -601,6 +614,8 @@ Ensure static `.gltf/.glb` rendering preserves authored visual fidelity so loade
 
 - Static fallback multi-primitive/multi-material collapse limit is resolved in Phase 4.1.
 - Static texture hookup currently depends on standards-compliant glTF `images/textures` references; converter outputs omitting those fields cannot be recovered runtime-side.
+- Follow-on mitigation now exists in Phase 7.5 for static load/fallback paths via optional
+  `<asset>.texturemap.json` runtime override mapping.
 
 ### Exit Criteria
 
@@ -950,6 +965,7 @@ Make the pipeline maintainable and testable.
   - `[done]` `//engine/src/render:model_renderer_skinning_utils_tests`
   - `[done]` `//engine/src/render:shader_binary_runtime_tests`
   - `[done]` `//client/src:model_intake_test`
+  - `[done]` `//engine/src/render:pmx_texture_remap_sidecar_tests`
 
 ### Implemented (2026-03-05, In Progress)
 
@@ -972,6 +988,7 @@ Make the pipeline maintainable and testable.
 - Added/updated tests and CI wiring:
   - `//client/src:model_intake_test` (selection/auto-convert/cache/failure/security parser behavior)
   - Windows smoke includes `//client/src:model_intake_test`
+  - Windows smoke includes `//engine/src/render:pmx_texture_remap_sidecar_tests`
 
 ### Known Limits (Phase 7, Current)
 
@@ -1011,13 +1028,39 @@ Enable deterministic texture assignment for converted/static runtime assets when
 - Reuse existing static-loader URI hardening constraints for override texture paths (no absolute/traversal escapes outside approved asset/package boundaries).
 - Keep the initial runtime-remap scope to static fallback/direct static load path; do not block Phase 8+ animation internals on first rollout.
 
-### Proposed Sidecar Contract (Draft)
+### Implemented (2026-03-05)
+
+- Added runtime primitive/material introspection metadata for static `.gltf/.glb` ingestion:
+  - source mesh index
+  - source primitive index
+  - source material name (when present)
+  - deterministic runtime material slot inventory logging
+- Added runtime texture-remap sidecar ingestion (`<asset>.texturemap.json`) on static load/fallback:
+  - policy support: `override_mode: if_missing|always`, `path_scope: asset_relative_only`
+  - keying support: preferred `target.material_name`, fallback `target.mesh_index + target.primitive_index`
+  - sidecar invalid-structure/schema hard-fails static startup path with explicit diagnostics
+- Added path/security and parser hardening:
+  - override texture paths reuse static-loader asset-relative URI/path hardening checks
+  - strict integer parsing for `mesh_index`/`primitive_index` (reject float coercion)
+  - explicit range checks before runtime index conversion
+- Added startup observability:
+  - structured per-slot inventory logs with resolved texture source (`gltf`, `texturemap`, `none`)
+  - mapping-level skip diagnostics (duplicate, ambiguous, unmatched, rejected path, missing file,
+    policy-skipped)
+  - aggregate texture-remap apply summary counters
+- Added/updated tests:
+  - `engine/src/render/pmx_texture_remap_sidecar_test.cpp`
+  - `engine/src/render/mesh_asset_loader_test.cpp`
+  - `client/src/client_app_animation_test.cpp`
+  - Windows smoke CI includes `//engine/src/render:pmx_texture_remap_sidecar_tests`
+
+### Sidecar Contract
 
 Suggested sibling file naming:
 
 - `<asset_stem>.texturemap.json` (example: `model.texturemap.json`)
 
-Draft payload:
+Reference payload:
 
 ```json
 {
@@ -1047,20 +1090,20 @@ Draft payload:
 }
 ```
 
-Target resolution rules (draft):
+Target resolution rules:
 
 - Resolve `target.material_name` first when present.
 - If no `material_name` match is found, allow explicit `mesh_index + primitive_index` lookup.
 - Reject ambiguous matches (more than one primitive hit for a single mapping key) unless explicitly allowed by future policy extension.
 
-Override policy semantics (draft):
+Override policy semantics:
 
 - `override_mode: "if_missing"`:
   - apply sidecar texture only when source material has no resolvable albedo texture path.
 - `override_mode: "always"`:
   - sidecar texture replaces source albedo texture path unconditionally.
 
-Validation and diagnostics expectations:
+Validation and diagnostics behavior:
 
 - Hard-fail sidecar load on invalid schema version or malformed `mappings` structure.
 - Per-entry warning+skip for:
@@ -1077,6 +1120,7 @@ Validation and diagnostics expectations:
 
 - Users can list primitive/material targets deterministically from runtime logs and map external texture files without index trial-and-error.
 - Static runtime path can apply named/indexed texture overrides deterministically with clear diagnostics and test coverage.
+- Status: satisfied as of 2026-03-05.
 
 ## Phase 8: Full Node-Hierarchy Animation Support
 
@@ -1096,6 +1140,8 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
 - Keep compatibility with Phase 4.5 Windows composition presentation contracts while hierarchy evaluation internals evolve.
 - Keep compatibility with Phase 7 startup model-intake orchestration and converter-security behavior
   while hierarchy evaluation internals evolve.
+- Keep compatibility with Phase 7.5 static texture-remap sidecar behavior and primitive/material
+  introspection diagnostics while hierarchy internals evolve.
 - Update Phase 6 motion contract/validator caveats after landing:
   - revisit any conversion-side non-joint bake/avoid guidance
   - adjust validator expectations if non-joint animation channels become runtime-supported.
@@ -1122,6 +1168,8 @@ Close remaining runtime animation fidelity/performance gaps.
 - Maintain Phase 4.5 compositor-facing alpha/presentation guarantees while interpolation/sampling internals evolve.
 - Maintain Phase 7 intake/launch guarantees and converter-orchestration contracts while sampling
   internals evolve.
+- Maintain Phase 7.5 static texture-remap determinism/diagnostics contracts while sampling internals
+  evolve.
 - Update Phase 6 motion validator contract checks when interpolation support expands:
   - once `CUBICSPLINE` is runtime-supported, remove/replace current hard-fail behavior in motion validation.
 
@@ -1182,6 +1230,6 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5 (achieved 2026-03-04).
 8. First basic PMX parity point (animation + basic physics): after Phase 5/6.
 9. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7 (in progress; orchestration path landed 2026-03-05, external converter dependency remains).
-10. First deterministic runtime material/texture targeting point (primitive/material introspection + explicit texture remap overrides): after Phase 7.5.
+10. First deterministic runtime material/texture targeting point (primitive/material introspection + explicit texture remap overrides): after Phase 7.5 (achieved 2026-03-05).
 11. First hierarchy-fidelity point for complex rigs: after Phase 8.
 12. First interpolation-complete point: after Phase 9.

@@ -61,19 +61,25 @@ std::optional<double> read_number(const json& object, std::string_view key) {
 }
 
 std::optional<std::size_t> parse_non_negative_integer(const json& value) {
-    if (!value.is_number()) {
-        return std::nullopt;
+    if (value.is_number_unsigned()) {
+        const std::uint64_t number = value.get<std::uint64_t>();
+        if (number > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(number);
     }
-    const double number = value.get<double>();
-    if (!std::isfinite(number) || number < 0.0 ||
-        number > static_cast<double>(std::numeric_limits<std::size_t>::max())) {
-        return std::nullopt;
+    if (value.is_number_integer()) {
+        const std::int64_t number = value.get<std::int64_t>();
+        if (number < 0) {
+            return std::nullopt;
+        }
+        const std::uint64_t as_u64 = static_cast<std::uint64_t>(number);
+        if (as_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(as_u64);
     }
-    const double rounded = std::round(number);
-    if (std::abs(rounded - number) > 1.0e-6) {
-        return std::nullopt;
-    }
-    return static_cast<std::size_t>(rounded);
+    return std::nullopt;
 }
 
 } // namespace

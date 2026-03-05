@@ -63,6 +63,8 @@ const char* material_cull_mode_name(MaterialCullMode mode) {
 
 Transform make_visible_object_transform(const MeshData& mesh) {
     Transform transform{};
+    // Model initially loads facing away from the camera, so rotate 180 degrees around the Y axis to
+    // make it face forward.
     transform.rotation =
         Quat::from_axis_angle(Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F }, std::numbers::pi_v<float>);
     const BoundingSphere bounds = mesh.local_bounds();
@@ -136,6 +138,8 @@ Transform make_visible_object_transform_for_meshes(std::span<const MeshData> mes
     constexpr float kTargetRadius = 1.0F;
     const float scale = kTargetRadius / std::max(aggregate_radius, 1.0e-4F);
     Transform transform{};
+    // Model initially loads facing away from the camera, so rotate 180 degrees around the Y axis to
+    // make it face forward.
     transform.rotation =
         Quat::from_axis_angle(Vec3{ .x = 0.0F, .y = 1.0F, .z = 0.0F }, std::numbers::pi_v<float>);
     transform.scale = Vec3{ .x = scale, .y = scale, .z = scale };

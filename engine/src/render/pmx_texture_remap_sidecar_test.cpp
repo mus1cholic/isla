@@ -204,5 +204,53 @@ TEST(PmxTextureRemapSidecarTest, WarnsWhenTexturePathRejectedByHardening) {
     EXPECT_FALSE(loaded.warnings.empty());
 }
 
+TEST(PmxTextureRemapSidecarTest, FailsWhenTargetIndexUsesFloatingPointNumber) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_texturemap_sidecar_test");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path asset_path = temp_dir.path() / "model.gltf";
+    const std::filesystem::path sidecar_path = temp_dir.path() / "model.texturemap.json";
+    write_text_file(asset_path, "{}");
+    write_text_file(
+        sidecar_path,
+        "{"
+        "\"schema_version\":\"1.0.0\","
+        "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+        "\"mappings\":[{"
+        "\"id\":\"float_index\","
+        "\"target\":{\"mesh_index\":0.0,\"primitive_index\":1},"
+        "\"albedo_texture\":\"head.png\""
+        "}]"
+        "}");
+
+    const SidecarLoadResult loaded = load_from_file(sidecar_path.string(), asset_path.string());
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_NE(loaded.error_message.find("mesh_index is invalid"), std::string::npos);
+}
+
+TEST(PmxTextureRemapSidecarTest, AcceptsLargeExactIntegerTargetIndices) {
+    ScopedTempDir temp_dir = ScopedTempDir::create("isla_texturemap_sidecar_test");
+    ASSERT_TRUE(temp_dir.is_valid());
+    const std::filesystem::path asset_path = temp_dir.path() / "model.gltf";
+    const std::filesystem::path sidecar_path = temp_dir.path() / "model.texturemap.json";
+    write_text_file(asset_path, "{}");
+    write_text_file(
+        sidecar_path,
+        "{"
+        "\"schema_version\":\"1.0.0\","
+        "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+        "\"mappings\":[{"
+        "\"id\":\"large_index\","
+        "\"target\":{\"mesh_index\":9007199254740993,\"primitive_index\":1},"
+        "\"albedo_texture\":\"head.png\""
+        "}]"
+        "}");
+
+    const SidecarLoadResult loaded = load_from_file(sidecar_path.string(), asset_path.string());
+    ASSERT_TRUE(loaded.ok) << loaded.error_message;
+    ASSERT_EQ(loaded.sidecar.mappings.size(), 1U);
+    ASSERT_TRUE(loaded.sidecar.mappings[0].target.mesh_index.has_value());
+    EXPECT_EQ(*loaded.sidecar.mappings[0].target.mesh_index, 9007199254740993ULL);
+}
+
 } // namespace
 } // namespace isla::client::pmx_texture_remap_sidecar

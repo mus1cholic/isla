@@ -308,20 +308,20 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
     }
     gltf_out << "{\n"
              << "  \"asset\": {\"version\": \"2.0\"},\n"
-             << "  \"buffers\": [{\"uri\": \"" << bin_path.filename().string()
-             << "\", \"byteLength\": " << buffer.size() << "}],\n"
+             << R"(  "buffers": [{"uri": ")" << bin_path.filename().string()
+             << R"(", "byteLength": )" << buffer.size() << "}],\n"
              << "  \"bufferViews\": [\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << positions_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << positions_offset
              << ", \"byteLength\": " << positions_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << normals_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << normals_offset
              << ", \"byteLength\": " << normals_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << joints_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << joints_offset
              << ", \"byteLength\": " << joints_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << weights_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << weights_offset
              << ", \"byteLength\": " << weights_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << indices_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << indices_offset
              << ", \"byteLength\": " << indices_length << ", \"target\": 34963},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << ibm_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << ibm_offset
              << ", \"byteLength\": " << ibm_length << "}\n"
              << "  ],\n"
              << "  \"accessors\": [\n"
@@ -338,7 +338,7 @@ std::filesystem::path write_skinned_no_animation_gltf_fixture(const std::filesys
              << "    {\"bufferView\": 5, \"componentType\": 5126, \"count\": 1, \"type\": "
                 "\"MAT4\"}\n"
              << "  ],\n"
-             << "  \"images\": [{\"uri\": \"" << texture_path.filename().string() << "\"}],\n"
+             << R"(  "images": [{"uri": ")" << texture_path.filename().string() << "\"}],\n"
              << "  \"textures\": [{\"source\": 0}],\n"
              << "  \"materials\": [{\n"
              << "    \"pbrMetallicRoughness\": {\n"
@@ -1472,14 +1472,14 @@ TEST(ClientAppAnimationTest, StaticLoadAppliesTextureRemapByMaterialNameWhenMiss
         std::ofstream out(texturemap_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
         out << "{"
-            << "\"schema_version\":\"1.0.0\","
+            << R"("schema_version":"1.0.0",)"
             << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
                "only\"},"
             << "\"mappings\":["
             << "{"
-            << "\"id\":\"head_by_name\","
-            << "\"target\":{\"material_name\":\"Head\"},"
-            << "\"albedo_texture\":\"head_override.png\","
+            << R"("id":"head_by_name",)"
+            << R"("target":{"material_name":"Head"},)"
+            << R"("albedo_texture":"head_override.png",)"
             << "\"alpha_cutoff\":0.5"
             << "}"
             << "]"
@@ -1555,12 +1555,12 @@ TEST(ClientAppAnimationTest, StaticLoadTextureRemapAlwaysOverridesExistingGltfTe
         std::ofstream out(texturemap_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
         out << "{"
-            << "\"schema_version\":\"1.0.0\","
-            << "\"policy\":{\"override_mode\":\"always\",\"path_scope\":\"asset_relative_only\"},"
+            << R"("schema_version":"1.0.0",)"
+            << R"("policy":{"override_mode":"always","path_scope":"asset_relative_only"},)"
             << "\"mappings\":[{"
-            << "\"id\":\"body_override\","
-            << "\"target\":{\"material_name\":\"Body\"},"
-            << "\"albedo_texture\":\"body_override.png\""
+            << R"("id":"body_override",)"
+            << R"("target":{"material_name":"Body"},)"
+            << R"("albedo_texture":"body_override.png")"
             << "}]"
             << "}";
         ASSERT_TRUE(out.good());
@@ -1642,19 +1642,19 @@ TEST(ClientAppAnimationTest, StaticLoadTextureRemapDuplicateKeyCollisionKeepsFir
         std::ofstream out(texturemap_path, std::ios::binary);
         ASSERT_TRUE(out.is_open());
         out << "{"
-            << "\"schema_version\":\"1.0.0\","
+            << R"("schema_version":"1.0.0",)"
             << "\"policy\":{\"override_mode\":\"if_missing\",\"path_scope\":\"asset_relative_"
                "only\"},"
             << "\"mappings\":["
             << "{"
-            << "\"id\":\"head_first\","
-            << "\"target\":{\"material_name\":\"Head\"},"
-            << "\"albedo_texture\":\"head_first.png\""
+            << R"("id":"head_first",)"
+            << R"("target":{"material_name":"Head"},)"
+            << R"("albedo_texture":"head_first.png")"
             << "},"
             << "{"
-            << "\"id\":\"head_second_duplicate\","
-            << "\"target\":{\"material_name\":\"Head\"},"
-            << "\"albedo_texture\":\"head_second.png\""
+            << R"("id":"head_second_duplicate",)"
+            << R"("target":{"material_name":"Head"},)"
+            << R"("albedo_texture":"head_second.png")"
             << "}"
             << "]"
             << "}";
