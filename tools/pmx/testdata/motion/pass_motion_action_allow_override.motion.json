@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0.0",
+  "converter": {
+    "name": "example-vmd-converter",
+    "version": "0.2.0",
+    "command": "vmd2gltf --model model.pmx --vmd motions.vmd --out motion.gltf",
+    "timestamp_utc": "2026-03-05T10:00:00Z"
+  },
+  "retarget": {
+    "mode": "exact_joint_name"
+  },
+  "root_motion_policy": "in_place",
+  "clips": [
+    {
+      "clip_name": "idle",
+      "source_vmd": "motions/idle.vmd",
+      "output_asset": "motion.gltf",
+      "root_motion_mode": "in_place",
+      "expected_duration_seconds": 1.0
+    },
+    {
+      "clip_name": "walk",
+      "source_vmd": "motions/walk.vmd",
+      "output_asset": "motion.gltf",
+      "root_motion_mode": "in_place",
+      "expected_duration_seconds": 1.0
+    },
+    {
+      "clip_name": "action",
+      "source_vmd": "motions/action.vmd",
+      "output_asset": "motion.gltf",
+      "root_motion_mode": "allow",
+      "expected_duration_seconds": 1.0
+    }
+  ]
+}

@@ -29,6 +29,8 @@ py_test(
     data = [
         "testdata/motion/pass_motion.gltf",
         "testdata/motion/pass_motion.motion.json",
+        "testdata/motion/pass_contract_named.motion.gltf",
+        "testdata/motion/pass_contract_named.motion.json",
         "testdata/motion/fail_motion_cubicspline.gltf",
         "testdata/motion/fail_motion_root_translation.gltf",
         "testdata/motion/fail_motion_missing_action.gltf",
@@ -39,6 +41,8 @@ py_test(
         "testdata/motion/fail_motion_sidecar_unknown_clip.motion.json",
         "testdata/motion/fail_motion_duplicate_clip_names.gltf",
         "testdata/motion/fail_motion_empty_clip_name.gltf",
+        "testdata/motion/fail_motion_action_root_translation.gltf",
+        "testdata/motion/pass_motion_action_allow_override.motion.json",
         "testdata/motion/warn_motion_root_no_minmax.gltf",
     ],
 )

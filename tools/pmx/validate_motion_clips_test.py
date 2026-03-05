@@ -78,6 +78,14 @@ class ValidateMotionClipsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("OK: Phase 6 motion validation passed", result.stdout)
 
+    def test_cli_uses_contract_named_default_sidecar_path(self):
+        asset = _runfile("tools/pmx/testdata/motion/pass_contract_named.motion.gltf")
+        result = self._run_cli(str(asset))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("using motion sidecar", result.stdout)
+        self.assertIn("pass_contract_named.motion.json", result.stdout)
+        self.assertIn("OK: Phase 6 motion validation passed", result.stdout)
+
     def test_cli_allow_missing_action_flag(self):
         asset = _runfile("tools/pmx/testdata/motion/fail_motion_missing_action.gltf")
         result = self._run_cli(str(asset), "--allow-missing-action")
@@ -148,6 +156,23 @@ class ValidateMotionClipsTest(unittest.TestCase):
         )
         self.assertTrue(errors)
         self.assertIn("missing non-empty name", "\n".join(errors))
+
+    def test_fails_action_root_motion_without_sidecar_override(self):
+        errors, _warnings = self._run_validator(
+            "tools/pmx/testdata/motion/fail_motion_action_root_translation.gltf",
+        )
+        self.assertTrue(errors)
+        all_errors = "\n".join(errors)
+        self.assertIn("('action')", all_errors)
+        self.assertIn("violates in_place policy", all_errors)
+        self.assertIn("source=cli_default", all_errors)
+
+    def test_passes_action_root_motion_with_sidecar_clip_allow_override(self):
+        errors, warnings = self._run_validator(
+            "tools/pmx/testdata/motion/fail_motion_action_root_translation.gltf",
+            "tools/pmx/testdata/motion/pass_motion_action_allow_override.motion.json",
+        )
+        self.assertFalse(errors, msg=f"errors: {errors}, warnings: {warnings}")
 
 
 if __name__ == "__main__":

@@ -139,7 +139,9 @@ def _validate_motion_sidecar(sidecar: Any, clip_names: set[str], errors: list[st
             errors.append(f"motion sidecar missing required field: {key}")
 
     schema_version = sidecar.get("schema_version")
-    if schema_version != EXPECTED_SCHEMA_VERSION:
+    if not isinstance(schema_version, str):
+        errors.append("motion sidecar schema_version must be a string")
+    elif schema_version != EXPECTED_SCHEMA_VERSION:
         errors.append(
             f"motion sidecar schema_version '{schema_version}' is unsupported; "
             f"expected '{EXPECTED_SCHEMA_VERSION}'"
@@ -208,6 +210,39 @@ def _validate_motion_sidecar(sidecar: Any, clip_names: set[str], errors: list[st
             )
 
 
+def _extract_effective_root_motion_policies(
+    sidecar: Any, cli_root_motion_policy: str
+) -> tuple[str, str, dict[str, str]]:
+    default_policy = cli_root_motion_policy
+    default_policy_source = "cli_default"
+    per_clip_policy: dict[str, str] = {}
+
+    if not isinstance(sidecar, dict):
+        return default_policy, default_policy_source, per_clip_policy
+
+    sidecar_default = sidecar.get("root_motion_policy")
+    if sidecar_default in ("in_place", "allow"):
+        default_policy = sidecar_default
+        default_policy_source = "sidecar_default"
+
+    clips = sidecar.get("clips")
+    if not isinstance(clips, list):
+        return default_policy, default_policy_source, per_clip_policy
+
+    for clip in clips:
+        if not isinstance(clip, dict):
+            continue
+        clip_name = clip.get("clip_name")
+        root_motion_mode = clip.get("root_motion_mode")
+        if not _is_non_empty_string(clip_name):
+            continue
+        if root_motion_mode not in ("in_place", "allow"):
+            continue
+        per_clip_policy[clip_name.strip()] = root_motion_mode
+
+    return default_policy, default_policy_source, per_clip_policy
+
+
 def validate_motion_package(
     asset_path: Path,
     sidecar_path: Path | None,
@@ -218,6 +253,12 @@ def validate_motion_package(
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+    sidecar: Any = None
+    if sidecar_path is not None:
+        try:
+            sidecar = _read_json(sidecar_path)
+        except json.JSONDecodeError as exc:
+            errors.append(f"motion sidecar JSON parse failure: {exc}")
 
     try:
         doc = _load_gltf_or_glb(asset_path)
@@ -242,6 +283,11 @@ def validate_motion_package(
     root_node_index = _resolve_root_node_index(doc, root_joint_name)
     if root_joint_name is not None and root_node_index is None:
         errors.append(f"requested root joint '{root_joint_name}' was not found in glTF nodes")
+    (
+        default_root_motion_policy,
+        default_root_motion_policy_source,
+        per_clip_root_motion_policy,
+    ) = _extract_effective_root_motion_policies(sidecar, root_motion_policy)
 
     clip_names: set[str] = set()
     for anim_idx, animation in enumerate(animations):
@@ -305,8 +351,15 @@ def validate_motion_package(
                 )
                 continue
             if in_count != out_count:
+                clip_label = (
+                    clip_name.strip()
+                    if _is_non_empty_string(clip_name)
+                    else "<unnamed>"
+                )
                 errors.append(
-                    f"mismatched animation key counts: input={in_count}, output={out_count}"
+                    f"animation[{anim_idx}] ('{clip_label}') "
+                    f"samplers[{sampler_idx}] mismatched animation key counts: "
+                    f"input={in_count}, output={out_count}"
                 )
 
         for channel_idx, channel in enumerate(channels):
@@ -338,15 +391,23 @@ def validate_motion_package(
                 continue
 
             if (
-                root_motion_policy == "in_place"
-                and root_node_index is not None
-                and target_node == root_node_index
+                root_node_index is not None and target_node == root_node_index
                 and target_path == "translation"
             ):
+                clip_name_key = clip_name.strip() if _is_non_empty_string(clip_name) else ""
+                effective_policy = default_root_motion_policy
+                effective_policy_source = default_root_motion_policy_source
+                if clip_name_key and clip_name_key in per_clip_root_motion_policy:
+                    effective_policy = per_clip_root_motion_policy[clip_name_key]
+                    effective_policy_source = "clip_override"
+                if effective_policy != "in_place":
+                    continue
+
                 output_accessor_index = samplers[sampler_index].get("output")
                 if not isinstance(output_accessor_index, int):
                     errors.append(
-                        f"animation[{anim_idx}].channels[{channel_idx}] root translation output accessor is invalid"
+                        f"animation[{anim_idx}].channels[{channel_idx}] root translation output accessor is invalid "
+                        f"(effective_policy={effective_policy}, source={effective_policy_source})"
                     )
                     continue
                 extents = _sample_translation_extents(accessors, output_accessor_index)
@@ -354,7 +415,8 @@ def validate_motion_package(
                     warnings.append(
                         f"animation[{anim_idx}] ('{clip_name if _is_non_empty_string(clip_name) else '<unnamed>'}') "
                         f"channels[{channel_idx}] sampler[{sampler_index}] root translation lacks min/max metadata; "
-                        "cannot statically verify in-place policy"
+                        "cannot statically verify in-place policy "
+                        f"(effective_policy={effective_policy}, source={effective_policy_source})"
                     )
                     continue
                 x_extent, z_extent = extents
@@ -362,7 +424,8 @@ def validate_motion_package(
                     errors.append(
                         f"animation[{anim_idx}] ('{clip_name if _is_non_empty_string(clip_name) else '<unnamed>'}') "
                         f"channels[{channel_idx}] sampler[{sampler_index}] root translation violates in_place policy: "
-                        f"|x|={x_extent:.6f}, |z|={z_extent:.6f}, epsilon={root_motion_epsilon:.6f}"
+                        f"|x|={x_extent:.6f}, |z|={z_extent:.6f}, epsilon={root_motion_epsilon:.6f} "
+                        f"(effective_policy={effective_policy}, source={effective_policy_source})"
                     )
 
     required_clips = {"idle", "walk"}
@@ -370,19 +433,16 @@ def validate_motion_package(
         required_clips.add("action")
 
     if not clip_names:
-        errors.append("Missing required animation clips: idle, walk, and action")
+        required_clip_list = ", ".join(sorted(required_clips))
+        errors.append(f"Missing required animation clips: {required_clip_list}")
     else:
         for name in sorted(required_clips - clip_names):
             errors.append(f"Missing required baseline clip: {name}")
         if len(clip_names) < 3:
             errors.append("Missing required third clip: expected idle, walk, plus one additional clip")
 
-    if sidecar_path is not None:
-        try:
-            sidecar = _read_json(sidecar_path)
-            _validate_motion_sidecar(sidecar, clip_names, errors)
-        except json.JSONDecodeError as exc:
-            errors.append(f"motion sidecar JSON parse failure: {exc}")
+    if sidecar_path is not None and sidecar is not None:
+        _validate_motion_sidecar(sidecar, clip_names, errors)
 
     return errors, warnings
 
@@ -417,6 +477,27 @@ def _collect_validation_summary(
     except ValidationError:
         pass
     return clip_names, resolved_root
+
+
+def _discover_default_motion_sidecar(asset_path: Path) -> tuple[Path | None, str]:
+    candidates: list[tuple[Path, str]] = []
+    if asset_path.stem.endswith(".motion"):
+        candidates.append((asset_path.with_suffix(".json"), "auto-discovered (.json)"))
+        candidates.append((asset_path.with_suffix(".motion.json"), "auto-discovered (legacy .motion.json)"))
+    else:
+        candidates.append((asset_path.with_suffix(".motion.json"), "auto-discovered (.motion.json)"))
+        candidates.append((asset_path.with_suffix(".json"), "auto-discovered (.json)"))
+
+    seen: set[Path] = set()
+    for candidate, label in candidates:
+        normalized = candidate.resolve(strict=False)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if candidate.exists():
+            return candidate, label
+
+    return None, "none"
 
 
 def main() -> int:
@@ -460,9 +541,7 @@ def main() -> int:
     sidecar = args.sidecar
     sidecar_resolution = "explicit"
     if sidecar is None:
-        candidate = args.asset.with_suffix(".motion.json")
-        sidecar = candidate if candidate.exists() else None
-        sidecar_resolution = "auto-discovered" if sidecar is not None else "none"
+        sidecar, sidecar_resolution = _discover_default_motion_sidecar(args.asset)
 
     if sidecar is not None:
         print(f"INFO: using motion sidecar '{sidecar}' ({sidecar_resolution})")
@@ -490,7 +569,7 @@ def main() -> int:
     clip_names, resolved_root = _collect_validation_summary(args.asset, args.root_joint)
     print(
         "INFO: motion validation summary "
-        f"root_joint={resolved_root}, policy={args.root_motion_policy}, "
+        f"root_joint={resolved_root}, cli_policy={args.root_motion_policy}, "
         f"clip_count={len(clip_names)}, clips={clip_names}"
     )
     print(f"OK: Phase 6 motion validation passed with {len(warnings)} warning(s)")
