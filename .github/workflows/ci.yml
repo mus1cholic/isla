@@ -85,6 +85,12 @@ jobs:
           $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
           & bazel test --config=linux @bazelFlags $targets
 
+      - name: Run PMX tooling validation tests
+        shell: pwsh
+        run: |
+          $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
+          & bazel test --config=linux @bazelFlags //tools/pmx:validate_converted_gltf_test //tools/pmx:validate_motion_clips_test //tools/pmx:validate_motion_clips_smoke_test
+
   windows-smoke:
     name: Windows Smoke (MSVC)
     runs-on: windows-latest

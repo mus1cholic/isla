@@ -33,6 +33,8 @@ For a converted character package rooted at `<package_dir>`:
 - `<character>.gltf` or `<character>.glb` (required)
 - Referenced texture/image files (required when referenced by materials)
 - `<character>.physics.json` (required; may contain empty arrays)
+- `<character>.motion.gltf` or `<character>.motion.glb` (optional; Phase 6 motion clip package)
+- `<character>.motion.json` (optional; Phase 6 motion metadata sidecar)
 - `<character>.texturemap.json` (optional; Phase 7.5 runtime texture remap sidecar)
 
 ## glTF Core Requirements
@@ -114,6 +116,35 @@ Each constraint entry MUST define:
 
 Unsupported fields MAY be included only under `extensions`.
 
+## Motion Metadata Contract (Optional Sidecar, Phase 6)
+
+Optional PMX motion metadata MAY be provided in sidecar file
+`<character>.motion.json` using schema:
+- `docs/pmx/schemas/pmx_motion_metadata.schema.json`
+
+Top-level required fields:
+- `schema_version`
+- `converter`
+- `retarget`
+- `root_motion_policy`
+- `clips`
+
+Motion clip baseline requirements (Phase 6):
+- Clip set MUST include `idle`, `walk`, and `action`.
+- Runtime-compatible interpolation rules remain unchanged:
+  - `LINEAR` and `STEP` only.
+  - `CUBICSPLINE` MUST NOT be emitted.
+- Runtime-compatible key count rule remains unchanged:
+  - sampler `input.count` MUST equal `output.count`.
+
+Retarget policy fields:
+- `retarget.mode` in `{ "exact_joint_name", "map_file" }`
+- `retarget.map_path` SHOULD be set when `retarget.mode == "map_file"`.
+
+Root motion policy fields:
+- `root_motion_policy` in `{ "in_place", "allow" }`
+- Per-clip `root_motion_mode` in `{ "in_place", "allow" }`
+
 ## Texture Remap Contract (Optional Sidecar, Phase 7.5 Draft)
 
 Optional runtime texture remap metadata MAY be provided in sidecar file
@@ -164,6 +195,11 @@ A converted package passes Phase 1 validation when all required checks pass:
 - Material/image references resolve to files for `.gltf` packages.
 - Collider/constraint bone names resolve to skin joint names.
 
+4. Phase 6 motion checks (when `<character>.motion.gltf/.glb` is present)
+- Clip name set includes: `idle`, `walk`, `action`.
+- Motion sidecar schema-valid (`<character>.motion.json`) when present.
+- Root motion policy validation is applied per conversion policy (`in_place` or `allow`).
+
 ## Current Runtime Limits (Informative)
 
 These are known and expected as of 2026-03-02:
@@ -180,4 +216,5 @@ Phase 1 is considered complete when:
 - Validation is automatable (see `tools/pmx/validate_converted_gltf.py`).
 
 Reference example sidecar: `docs/pmx/examples/sample.physics.json`
+Reference example motion sidecar (Phase 6): `docs/pmx/examples/sample.motion.json`
 Reference example texture remap sidecar (Phase 7.5 draft): `docs/pmx/examples/sample.texturemap.json`

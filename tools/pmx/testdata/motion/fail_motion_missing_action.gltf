@@ -1,0 +1,42 @@
+{
+  "asset": { "version": "2.0" },
+  "accessors": [
+    { "count": 2 },
+    { "count": 2, "min": [0.0, 0.0, 0.0], "max": [0.0, 0.0, 0.0] }
+  ],
+  "nodes": [
+    { "name": "Root" }
+  ],
+  "skins": [
+    { "joints": [0] }
+  ],
+  "animations": [
+    {
+      "name": "idle",
+      "samplers": [
+        { "input": 0, "output": 1, "interpolation": "LINEAR" }
+      ],
+      "channels": [
+        { "sampler": 0, "target": { "node": 0, "path": "translation" } }
+      ]
+    },
+    {
+      "name": "walk",
+      "samplers": [
+        { "input": 0, "output": 1, "interpolation": "LINEAR" }
+      ],
+      "channels": [
+        { "sampler": 0, "target": { "node": 0, "path": "translation" } }
+      ]
+    },
+    {
+      "name": "test",
+      "samplers": [
+        { "input": 0, "output": 1, "interpolation": "LINEAR" }
+      ],
+      "channels": [
+        { "sampler": 0, "target": { "node": 0, "path": "translation" } }
+      ]
+    }
+  ]
+}

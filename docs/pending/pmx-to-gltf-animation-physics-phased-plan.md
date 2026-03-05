@@ -43,7 +43,8 @@ Operational interpretation:
 > - Phase 4.5 is complete (Windows DirectComposition-backed transparent overlay path with visible 3D rendering).
 > - Phase 4.6 is complete (coordinate system mirroring documentation + Alpha Blend depth sorting assertions).
 > - Phase 5 is complete (basic PMX physics sidecar ingestion + skeleton-aligned collider proxy runtime path + parser hardening guardrails).
-> - Phases 6-10 remain pending runtime/tooling expansion.
+> - Phase 6 is complete (motion contract/schema + validator + regression fixtures/tests + CLI smoke + effective root-motion policy precedence + CI wiring).
+> - Phases 7-10 remain pending runtime/tooling expansion.
 > - Phase 7.5 (runtime material/primitive introspection + deterministic texture-remap override path) remains pending.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
@@ -120,6 +121,18 @@ Operational interpretation:
 > Phase 4.6 artifacts:
 > - `engine/include/isla/engine/render/render_world.hpp` / `engine/src/render/include/mesh_asset_loader.hpp` (documented Left-Handed vs Right-Handed mirroring + CCW cull requirement)
 > - `engine/src/render/model_renderer.cpp` (documented Right-Handed camera `-Z` mirroring + static assertion preventing Alpha Blend intra-mesh depth sorting regressions)
+>
+> Phase 6 artifacts:
+> - `tools/pmx/validate_motion_clips.py` (Phase 6 motion validator + per-clip effective root-motion policy resolution)
+> - `tools/pmx/validate_motion_clips_test.py` / `tools/pmx/validate_motion_clips_smoke_test.py` (unit + CLI smoke coverage)
+> - `tools/pmx/testdata/motion/*` (idle/walk/action baseline + sidecar-policy + failure/diagnostic fixtures)
+> - `docs/pmx/schemas/pmx_motion_metadata.schema.json` / `docs/pmx/examples/sample.motion.json`
+> - `docs/pmx/pmx_to_gltf_conversion_contract.md` / `tools/pmx/README.md` (Phase 6 contract + usage updates)
+> - `tools/pmx/BUILD` / `.github/workflows/ci.yml` (Bazel + CI wiring for motion validator tests and smoke)
+
+### Changelog
+
+- 2026-03-05 (Phase 6 close-out): finalized motion contract/schema + validator implementation, added Phase 6 fixture/test matrix (including CLI smoke), wired PMX validation tests into CI, aligned default motion sidecar auto-discovery with contract naming (`<character>.motion.gltf/.glb` -> `<character>.motion.json`) with legacy fallback, and hardened root-motion policy evaluation to use effective per-clip precedence (`clip override` -> `sidecar default` -> `CLI fallback`) with actionable diagnostics.
 
 ## Phase 0: Animated glTF Runtime Foundation (Completed)
 
@@ -170,6 +183,7 @@ Add robust runtime structures and pose evaluation needed before full playback/re
 - Runtime can load skinned glTF animation data and evaluate joint/skin matrices deterministically with explicit failure behavior for unsupported/invalid content.
 - Phase 1 now codifies these runtime constraints in conversion contract + validation tooling.
 - Phase 2 now consumes this runtime evaluator through a system-level playback controller.
+- Phase 6 now extends this contract enforcement to motion clip packages (`tools/pmx/validate_motion_clips.py`) while retaining current runtime limits.
 
 ## Phase 1: PMX to glTF Conversion Contract (Completed)
 
@@ -242,6 +256,7 @@ Define a deterministic PMX conversion contract so runtime requirements are expli
 - Validator enforces conversion contract constraints, but does not execute rendering/runtime playback paths.
 - Validator does not currently execute/validate runtime partition-remap behavior for large-skeleton GPU skinning.
 - Validator does not currently enforce static-loader URI hardening behavior (absolute/traversal image URI rejection is runtime-side).
+- Motion-specific validation now lives in the Phase 6 validator (`tools/pmx/validate_motion_clips.py`) and is intentionally separate from this baseline Phase 1 package gate.
 
 ### Exit Criteria
 
@@ -302,6 +317,7 @@ Play animation clips in runtime using the Phase 0 pose evaluator.
     - `//engine/src/render:animation_playback_controller_tests`
     - `//client/src:animated_mesh_skinning_test`
     - `//client/src:client_app_animation_test`
+- Runtime startup observability was later expanded (Phase 6 follow-up) to log selected clip name/duration plus GPU-authoritative and physics-sidecar state in `client/src/client_app.cpp`.
 
 ### Known Limits (Phase 2, Intentional / Deferred)
 
@@ -813,9 +829,45 @@ Make PMX motion assets usable by converting motion data into glTF clips.
 - Validate converted clips against the Phase 3/3.5 GPU skinning runtime path (not CPU fallback-only behavior).
 - Validate representative clip playback on the Phase 4.5 Windows composition path so animation bring-up does not regress transparent overlay behavior.
 
+### Implemented (2026-03-05)
+
+- Added Phase 6 motion validation tooling:
+  - `tools/pmx/validate_motion_clips.py`
+  - `tools/pmx/validate_motion_clips_test.py`
+  - `tools/pmx/validate_motion_clips_smoke_test.py`
+  - `tools/pmx/testdata/motion/*`
+  - Bazel targets:
+    - `//tools/pmx:validate_motion_clips_test`
+    - `//tools/pmx:validate_motion_clips_smoke_test`
+- Added motion metadata schema + example sidecar:
+  - `docs/pmx/schemas/pmx_motion_metadata.schema.json`
+  - `docs/pmx/examples/sample.motion.json`
+- Updated conversion contract and tool docs with Phase 6 motion workflow/requirements:
+  - `docs/pmx/pmx_to_gltf_conversion_contract.md`
+  - `tools/pmx/README.md`
+- Hardened Phase 6 validator semantics for real converter/package workflows:
+  - sidecar schema_version type-first validation (clear non-string diagnostics)
+  - actionable animation/sampler context in key-count mismatch errors
+  - sidecar-aware effective root-motion policy precedence:
+    - per-clip `root_motion_mode` override
+    - sidecar-level `root_motion_policy`
+    - CLI `--root-motion-policy` fallback
+  - policy-aware root-motion diagnostics include effective policy + policy source (`clip_override`, `sidecar_default`, `cli_default`)
+  - contract-aligned default sidecar discovery for `<character>.motion.gltf/.glb` -> `<character>.motion.json`
+    with legacy compatibility fallback
+  - expanded CLI observability logs:
+    - explicit vs auto-discovered sidecar selection
+    - validation summary (`root_joint`, `cli_policy`, clip inventory)
+- Added CI wiring for PMX tooling gates:
+  - `.github/workflows/ci.yml` runs
+    - `//tools/pmx:validate_converted_gltf_test`
+    - `//tools/pmx:validate_motion_clips_test`
+    - `//tools/pmx:validate_motion_clips_smoke_test`
+
 ### Exit Criteria
 
 - PMX model + converted motion clips play reliably in runtime through the same clip system.
+- Status: satisfied for Phase 6 contract/tooling scope as of 2026-03-05.
 
 ## Phase 7: Tooling, Validation, and CI
 
@@ -850,7 +902,10 @@ Make the pipeline maintainable and testable.
   - physics metadata parsing fallbacks + parser/resource hardening limits (file-size cap, array-count caps, string-length caps, layer-index bounds)
   - model intake orchestration (`models/` scan, PMX auto-convert trigger, converted-output cache hit path)
 - Add CI target(s) for animation/physics pipeline tests.
-- Add CI wiring for `//tools/pmx:validate_converted_gltf_test`.
+- Add CI wiring for PMX conversion/motion validator tests:
+  - `//tools/pmx:validate_converted_gltf_test`
+  - `//tools/pmx:validate_motion_clips_test`
+  - `//tools/pmx:validate_motion_clips_smoke_test`
 - Extend CI/smoke wiring from current baseline that already includes:
   - `//engine/src/render:animation_playback_controller_tests`
   - `//engine/src/render:render_world_tests`
@@ -972,6 +1027,9 @@ Remove current hierarchy caveats by evaluating full glTF node graph semantics.
 - Preserve Phase 2 controller semantics for clip/state APIs while changing evaluation internals.
 - Keep compatibility with Phase 3/3.5 GPU skinning data flow while evaluation internals evolve.
 - Keep compatibility with Phase 4.5 Windows composition presentation contracts while hierarchy evaluation internals evolve.
+- Update Phase 6 motion contract/validator caveats after landing:
+  - revisit any conversion-side non-joint bake/avoid guidance
+  - adjust validator expectations if non-joint animation channels become runtime-supported.
 
 ### Exit Criteria
 
@@ -993,6 +1051,8 @@ Close remaining runtime animation fidelity/performance gaps.
 - Maintain Phase 3/3.5 deformation consistency guarantees (GPU-skinned output remains aligned with evaluated pose semantics).
 - Maintain Phase 4/4.1 static-fidelity guarantees while sampling internals evolve (including unchanged `MASK` cutout semantics and per-primitive static fallback material behavior).
 - Maintain Phase 4.5 compositor-facing alpha/presentation guarantees while interpolation/sampling internals evolve.
+- Update Phase 6 motion validator contract checks when interpolation support expands:
+  - once `CUBICSPLINE` is runtime-supported, remove/replace current hard-fail behavior in motion validation.
 
 ### Exit Criteria
 
