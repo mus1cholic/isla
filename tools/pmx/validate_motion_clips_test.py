@@ -1,6 +1,7 @@
 import unittest
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from tools.pmx import validate_motion_clips
@@ -35,6 +36,58 @@ class ValidateMotionClipsTest(unittest.TestCase):
         script = _runfile("tools/pmx/validate_motion_clips.py")
         command = [sys.executable, str(script), *args]
         return subprocess.run(command, check=False, capture_output=True, text=True)
+
+    def test_allows_animated_non_joint_hierarchy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            asset = Path(tmpdir) / "motion_non_joint.gltf"
+            asset.write_text(
+                """
+{
+  "asset": {"version": "2.0"},
+  "accessors": [
+    {"count": 2},
+    {"count": 2},
+    {"count": 2},
+    {"count": 2},
+    {"count": 2},
+    {"count": 2}
+  ],
+  "nodes": [
+    {"name": "RigRoot"},
+    {"name": "Root", "translation": [0, 0, 0]}
+  ],
+  "skins": [{"joints": [1]}],
+  "animations": [
+    {
+      "name": "idle",
+      "samplers": [{"input": 0, "output": 1, "interpolation": "LINEAR"}],
+      "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]
+    },
+    {
+      "name": "walk",
+      "samplers": [{"input": 0, "output": 2, "interpolation": "LINEAR"}],
+      "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]
+    },
+    {
+      "name": "action",
+      "samplers": [{"input": 0, "output": 3, "interpolation": "STEP"}],
+      "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]
+    }
+  ]
+}
+""".strip(),
+                encoding="utf-8",
+            )
+
+            errors, warnings = validate_motion_clips.validate_motion_package(
+                asset,
+                sidecar_path=None,
+                root_joint_name="Root",
+                root_motion_policy="in_place",
+                root_motion_epsilon=1.0e-4,
+                require_action_clip=True,
+            )
+            self.assertFalse(errors, msg=f"errors: {errors}, warnings: {warnings}")
 
     def test_passes_valid_motion_fixture(self):
         errors, warnings = self._run_validator(

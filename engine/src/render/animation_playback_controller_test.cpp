@@ -13,7 +13,6 @@ AnimatedGltfAsset make_single_joint_asset() {
     asset.skeleton.joints.resize(1U);
     asset.skeleton.joints[0].parent_index = -1;
     asset.bind_local_transforms.resize(1U);
-    asset.bind_prefix_matrices = { Mat4::identity() };
 
     AnimationClip clip;
     clip.name = "idle";
@@ -24,6 +23,33 @@ AnimatedGltfAsset make_single_joint_asset() {
         Vec3Keyframe{ .time_seconds = 1.0F, .value = Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F } },
     };
 
+    asset.clips.push_back(std::move(clip));
+    return asset;
+}
+
+AnimatedGltfAsset make_non_joint_hierarchy_asset() {
+    AnimatedGltfAsset asset;
+    asset.skeleton.joints.resize(1U);
+    asset.skeleton.joints[0].parent_index = -1;
+    asset.nodes.resize(2U);
+    asset.nodes[0].parent_index = -1;
+    asset.nodes[0].bind_local_matrix = Mat4::identity();
+    asset.nodes[1].parent_index = 0;
+    asset.nodes[1].bind_local_transform.position = Vec3{ .x = 1.0F, .y = 0.0F, .z = 0.0F };
+    asset.nodes[1].bind_local_matrix = Mat4::from_position_scale_quat(
+        asset.nodes[1].bind_local_transform.position, asset.nodes[1].bind_local_transform.scale,
+        asset.nodes[1].bind_local_transform.rotation);
+    asset.joint_node_indices = { 1U };
+    asset.bind_local_transforms = { asset.nodes[1].bind_local_transform };
+
+    AnimationClip clip;
+    clip.name = "idle";
+    clip.duration_seconds = 1.0F;
+    clip.node_tracks.resize(2U);
+    clip.node_tracks[0].translations = {
+        Vec3Keyframe{ .time_seconds = 0.0F, .value = Vec3{ .x = 0.0F, .y = 0.0F, .z = 0.0F } },
+        Vec3Keyframe{ .time_seconds = 1.0F, .value = Vec3{ .x = 2.0F, .y = 0.0F, .z = 0.0F } },
+    };
     asset.clips.push_back(std::move(clip));
     return asset;
 }
@@ -50,6 +76,18 @@ TEST(AnimationPlaybackControllerTest, EvaluatesInitialPoseOnSetAsset) {
     ASSERT_TRUE(controller.set_asset(&asset, nullptr));
     ASSERT_TRUE(controller.has_cached_pose());
     EXPECT_NEAR(skin_tx(controller.cached_pose()), 0.0F, 1.0e-4F);
+}
+
+TEST(AnimationPlaybackControllerTest, EvaluatesNonJointHierarchyAssetOnSetAndTick) {
+    AnimatedGltfAsset asset = make_non_joint_hierarchy_asset();
+    AnimationPlaybackController controller;
+    ASSERT_TRUE(controller.set_asset(&asset, nullptr));
+    ASSERT_TRUE(controller.has_cached_pose());
+    EXPECT_NEAR(skin_tx(controller.cached_pose()), 1.0F, 1.0e-4F);
+
+    ASSERT_TRUE(controller.tick(0.5F, nullptr));
+    EXPECT_NEAR(controller.state().local_time_seconds, 0.5F, 1.0e-4F);
+    EXPECT_NEAR(skin_tx(controller.cached_pose()), 2.0F, 1.0e-4F);
 }
 
 TEST(AnimationPlaybackControllerTest, TickAdvancesBySpeedWhenPlaying) {
