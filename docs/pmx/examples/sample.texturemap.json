@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "policy": {
+    "override_mode": "if_missing",
+    "path_scope": "asset_relative_only"
+  },
+  "mappings": [
+    {
+      "id": "head_by_name",
+      "target": {
+        "material_name": "Head"
+      },
+      "albedo_texture": "textures/head.png"
+    },
+    {
+      "id": "hair_fallback_by_index",
+      "target": {
+        "mesh_index": 0,
+        "primitive_index": 12
+      },
+      "albedo_texture": "textures/hair_basecoloralpha.png",
+      "alpha_cutoff": 0.5
+    }
+  ]
+}

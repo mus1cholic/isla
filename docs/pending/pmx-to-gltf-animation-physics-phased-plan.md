@@ -44,6 +44,7 @@ Operational interpretation:
 > - Phase 4.6 is complete (coordinate system mirroring documentation + Alpha Blend depth sorting assertions).
 > - Phase 5 is complete (basic PMX physics sidecar ingestion + skeleton-aligned collider proxy runtime path + parser hardening guardrails).
 > - Phases 6-10 remain pending runtime/tooling expansion.
+> - Phase 7.5 (runtime material/primitive introspection + deterministic texture-remap override path) remains pending.
 > - Model intake automation (`models/` directory + PMX auto-convert-on-launch) is planned for Phase 7 and finalized in Phase 10.
 >
 > Phase 3/3.5 design constraint (current):
@@ -864,6 +865,97 @@ Make the pipeline maintainable and testable.
 - Pipeline regressions are detected automatically in CI.
 - App/tooling flow supports `models/` intake where `.pmx` inputs are auto-converted to runtime glTF/GLB and then loaded for display, while `.gltf/.glb` inputs load directly.
 
+## Phase 7.5: Runtime Material Introspection + Texture Remap Overrides
+
+### Goal
+
+Enable deterministic texture assignment for converted/static runtime assets when source glTF/GLB texture references are missing or incomplete, without relying on ad-hoc trial-and-error primitive index guessing.
+
+### Scope
+
+- Expose runtime-inspectable primitive/material identity metadata for static glTF/GLB ingestion:
+  - source mesh index
+  - source primitive index
+  - source material name (when present in asset)
+  - resolved runtime material slot/index
+- Add startup/runtime observability for texture targeting:
+  - structured inventory logs for primitive/material slots
+  - explicit texture-path presence/absence reporting per slot
+- Add an optional deterministic runtime texture-remap sidecar/config path:
+  - preferred keying by stable source material name
+  - fallback keying by explicit source mesh/primitive index tuple
+  - explicit precedence policy between embedded glTF texture refs and override mappings
+  - clear diagnostics for unmapped keys, duplicate keys, and missing texture files
+- Reuse existing static-loader URI hardening constraints for override texture paths (no absolute/traversal escapes outside approved asset/package boundaries).
+- Keep the initial runtime-remap scope to static fallback/direct static load path; do not block Phase 8+ animation internals on first rollout.
+
+### Proposed Sidecar Contract (Draft)
+
+Suggested sibling file naming:
+
+- `<asset_stem>.texturemap.json` (example: `model.texturemap.json`)
+
+Draft payload:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "policy": {
+    "override_mode": "if_missing",
+    "path_scope": "asset_relative_only"
+  },
+  "mappings": [
+    {
+      "id": "head_by_name",
+      "target": {
+        "material_name": "Head"
+      },
+      "albedo_texture": "textures/head.png"
+    },
+    {
+      "id": "hair_fallback_by_index",
+      "target": {
+        "mesh_index": 0,
+        "primitive_index": 12
+      },
+      "albedo_texture": "textures/hair_basecoloralpha.png",
+      "alpha_cutoff": 0.5
+    }
+  ]
+}
+```
+
+Target resolution rules (draft):
+
+- Resolve `target.material_name` first when present.
+- If no `material_name` match is found, allow explicit `mesh_index + primitive_index` lookup.
+- Reject ambiguous matches (more than one primitive hit for a single mapping key) unless explicitly allowed by future policy extension.
+
+Override policy semantics (draft):
+
+- `override_mode: "if_missing"`:
+  - apply sidecar texture only when source material has no resolvable albedo texture path.
+- `override_mode: "always"`:
+  - sidecar texture replaces source albedo texture path unconditionally.
+
+Validation and diagnostics expectations:
+
+- Hard-fail sidecar load on invalid schema version or malformed `mappings` structure.
+- Per-entry warning+skip for:
+  - unknown target key
+  - missing texture file
+  - rejected texture path (absolute/traversal escape)
+  - duplicate mapping key collisions
+- Emit startup inventory log with:
+  - source mesh/primitive index
+  - source material name
+  - resolved texture source (`gltf`, `texturemap`, or `none`)
+
+### Exit Criteria
+
+- Users can list primitive/material targets deterministically from runtime logs and map external texture files without index trial-and-error.
+- Static runtime path can apply named/indexed texture overrides deterministically with clear diagnostics and test coverage.
+
 ## Phase 8: Full Node-Hierarchy Animation Support
 
 ### Goal
@@ -959,5 +1051,6 @@ Finalize end-to-end PMX-to-runtime readiness with explicit support matrix.
 7. First stable transparent-overlay + visible-3D Windows composition point: after Phase 4.5 (achieved 2026-03-04).
 8. First basic PMX parity point (animation + basic physics): after Phase 5/6.
 9. First integrated model-intake UX point (`models/` directory + PMX auto-convert + load/display): after Phase 7.
-10. First hierarchy-fidelity point for complex rigs: after Phase 8.
-11. First interpolation-complete point: after Phase 9.
+10. First deterministic runtime material/texture targeting point (primitive/material introspection + explicit texture remap overrides): after Phase 7.5.
+11. First hierarchy-fidelity point for complex rigs: after Phase 8.
+12. First interpolation-complete point: after Phase 9.

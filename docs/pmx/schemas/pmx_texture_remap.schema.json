@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://isla.local/schemas/pmx_texture_remap.schema.json",
+  "title": "PMX Runtime Texture Remap Sidecar",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "policy",
+    "mappings"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "override_mode",
+        "path_scope"
+      ],
+      "properties": {
+        "override_mode": {
+          "type": "string",
+          "enum": [
+            "if_missing",
+            "always"
+          ]
+        },
+        "path_scope": {
+          "type": "string",
+          "const": "asset_relative_only"
+        }
+      },
+      "additionalProperties": true
+    },
+    "mappings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mapping"
+      }
+    }
+  },
+  "$defs": {
+    "target": {
+      "type": "object",
+      "properties": {
+        "material_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mesh_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "primitive_index": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "material_name"
+          ]
+        },
+        {
+          "required": [
+            "mesh_index",
+            "primitive_index"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "mapping": {
+      "type": "object",
+      "required": [
+        "id",
+        "target",
+        "albedo_texture"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "albedo_texture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "alpha_cutoff": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
