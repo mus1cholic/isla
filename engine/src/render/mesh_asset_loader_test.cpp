@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-#include "engine/src/render/include/mesh_asset_loader.hpp"
+#include "isla/engine/render/mesh_asset_loader.hpp"
 #include "shared/src/test_runfiles.hpp"
 
 namespace isla::client::mesh_asset_loader {

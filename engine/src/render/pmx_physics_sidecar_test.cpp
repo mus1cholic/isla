@@ -1,4 +1,4 @@
-#include "engine/src/render/include/pmx_physics_sidecar.hpp"
+#include "isla/engine/render/pmx_physics_sidecar.hpp"
 
 #include <gtest/gtest.h>
 

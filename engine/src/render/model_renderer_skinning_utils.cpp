@@ -1,4 +1,4 @@
-#include "engine/src/render/include/model_renderer_skinning_utils.hpp"
+#include "isla/engine/render/model_renderer_skinning_utils.hpp"
 
 #include <algorithm>
 #include <array>

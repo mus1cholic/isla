@@ -49,9 +49,10 @@ cc_library(
     hdrs = ["animated_mesh_skinning.hpp"],
     visibility = ["//visibility:public"],
     deps = [
-        "//engine/src/render:render",
+        "@abseil-cpp//absl/log:log",
         "//engine/include/isla/engine/math",
         "//engine/include/isla/engine/render",
+        "//engine/src/math",
     ],
 )
 
@@ -73,8 +74,7 @@ cc_library(
         ":client_sdl_runtime",
         ":model_intake",
         ":win32_layered_overlay",
-        "//engine/src:engine",
-        "//engine/src/render:render",
+        "//engine/include/isla/engine/render:render_runtime",
         "//engine/include/isla/engine/render",
         "//third_party/sdl3:sdl3",
     ],
@@ -106,7 +106,6 @@ cc_test(
     ],
     deps = [
         ":client_app",
-        "//engine/src/render:render",
         "@googletest//:gtest_main",
     ],
 )
@@ -127,6 +126,7 @@ cc_binary(
 cc_test(
     name = "win32_layered_overlay_test",
     srcs = ["win32_layered_overlay_test.cpp"],
+    data = ["win32_layered_overlay.cpp"],
     linkopts = select({
         ":windows_gnu": [
             "-luser32",
@@ -142,6 +142,7 @@ cc_test(
     }),
     deps = [
         ":win32_layered_overlay",
+        "@abseil-cpp//absl/strings",
         "@googletest//:gtest_main",
     ],
 )

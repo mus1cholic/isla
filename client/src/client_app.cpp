@@ -20,9 +20,9 @@
 #include <vector>
 
 #include "animated_mesh_skinning.hpp"
-#include "engine/src/render/include/mesh_asset_loader.hpp"
-#include "engine/src/render/include/model_renderer_skinning_utils.hpp"
-#include "engine/src/render/include/pmx_texture_remap_sidecar.hpp"
+#include "isla/engine/render/mesh_asset_loader.hpp"
+#include "isla/engine/render/model_renderer_skinning_utils.hpp"
+#include "isla/engine/render/pmx_texture_remap_sidecar.hpp"
 #include "model_intake.hpp"
 #include "win32_layered_overlay.hpp"
 

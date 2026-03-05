@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <string>
 
-#include "engine/src/render/include/animated_gltf.hpp"
+#include "isla/engine/render/animated_gltf.hpp"
 
 namespace isla::client::animated_gltf {
 

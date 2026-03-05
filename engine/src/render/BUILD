@@ -19,12 +19,6 @@ cc_library(
         "include/bgfx_mesh_manager.hpp",
         "include/bgfx_shader_manager.hpp",
         "include/bgfx_texture_manager.hpp",
-        "include/animation_playback_controller.hpp",
-        "include/animated_gltf.hpp",
-        "include/mesh_asset_loader.hpp",
-        "include/model_renderer_skinning_utils.hpp",
-        "include/pmx_physics_sidecar.hpp",
-        "include/pmx_texture_remap_sidecar.hpp",
         "include/shader_path_resolver.hpp",
         "include/texture_loader_limits.hpp",
         "mesh_asset_loader.cpp",
@@ -65,7 +59,10 @@ cc_library(
         ],
         "//conditions:default": [],
     }),
-    visibility = ["//visibility:public"],
+    visibility = [
+        "//engine/include/isla/engine/render:__pkg__",
+        "//engine/src/render:__pkg__",
+    ],
     deps = [
         "@abseil-cpp//absl/log:check",
         "//engine/src/math",
@@ -114,7 +111,6 @@ cc_test(
     srcs = ["windows_composition_contract_test.cpp"],
     data = [
         "model_renderer.cpp",
-        "//client/src:win32_layered_overlay.cpp",
     ],
     deps = [
         "@abseil-cpp//absl/strings",
