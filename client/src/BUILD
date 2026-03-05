@@ -64,15 +64,102 @@ cc_library(
 )
 
 cc_library(
+    name = "client_app_internal_types",
+    srcs = ["client_app_internal_types.cpp"],
+    hdrs = ["client_app_internal_types.hpp"],
+    visibility = ["//visibility:private"],
+    deps = [
+        ":animated_mesh_skinning",
+        "//engine/include/isla/engine/math",
+        "//engine/include/isla/engine/render",
+    ],
+)
+
+cc_library(
+    name = "client_app_geometry_utils",
+    srcs = ["client_app_geometry_utils.cpp"],
+    hdrs = ["client_app_geometry_utils.hpp"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "@abseil-cpp//absl/log:log",
+        "//engine/include/isla/engine/math",
+        "//engine/include/isla/engine/render",
+        "//engine/include/isla/engine/render:render_runtime",
+        "//engine/src/math",
+    ],
+)
+
+cc_library(
+    name = "client_app_texture_remap",
+    srcs = ["client_app_texture_remap.cpp"],
+    hdrs = ["client_app_texture_remap.hpp"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "@abseil-cpp//absl/strings",
+        "//engine/include/isla/engine/math",
+        "//engine/include/isla/engine/render",
+        "//engine/include/isla/engine/render:render_runtime",
+    ],
+)
+
+cc_library(
+    name = "client_app_animation_world",
+    srcs = ["client_app_animation_world.cpp"],
+    hdrs = ["client_app_animation_world.hpp"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "@abseil-cpp//absl/log:log",
+        ":animated_mesh_skinning",
+        ":client_app_geometry_utils",
+        ":client_app_internal_types",
+        "//engine/include/isla/engine/render",
+        "//engine/include/isla/engine/render:render_runtime",
+    ],
+)
+
+cc_library(
+    name = "client_app_physics_proxies",
+    srcs = ["client_app_physics_proxies.cpp"],
+    hdrs = ["client_app_physics_proxies.hpp"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "@abseil-cpp//absl/log:log",
+        ":client_app_geometry_utils",
+        ":client_app_internal_types",
+        "//engine/include/isla/engine/render",
+        "//engine/include/isla/engine/render:render_runtime",
+    ],
+)
+
+cc_library(
+    name = "client_app_startup_loader",
+    srcs = ["client_app_startup_loader.cpp"],
+    hdrs = ["client_app_startup_loader.hpp"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "@abseil-cpp//absl/log:log",
+        ":client_app_geometry_utils",
+        ":client_app_internal_types",
+        ":client_app_texture_remap",
+        ":model_intake",
+        "//engine/include/isla/engine/render",
+        "//engine/include/isla/engine/render:render_runtime",
+    ],
+)
+
+cc_library(
     name = "client_app",
     srcs = ["client_app.cpp"],
     hdrs = ["client_app.hpp"],
     visibility = ["//visibility:public"],
     deps = [
         "@abseil-cpp//absl/log:log",
-        ":animated_mesh_skinning",
+        ":client_app_animation_world",
+        ":client_app_geometry_utils",
+        ":client_app_internal_types",
+        ":client_app_physics_proxies",
+        ":client_app_startup_loader",
         ":client_sdl_runtime",
-        ":model_intake",
         ":win32_layered_overlay",
         "//engine/include/isla/engine/render:render_runtime",
         "//engine/include/isla/engine/render",
