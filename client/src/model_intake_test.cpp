@@ -201,12 +201,18 @@ std::vector<std::uint8_t> make_minimal_triangle_glb() {
     return glb;
 }
 
-void write_binary_file(const std::filesystem::path& path, std::span<const std::uint8_t> bytes) {
+::testing::AssertionResult write_binary_file(const std::filesystem::path& path,
+                                             std::span<const std::uint8_t> bytes) {
     std::ofstream stream(path, std::ios::binary);
-    ASSERT_TRUE(stream.is_open());
+    if (!stream.is_open()) {
+        return ::testing::AssertionFailure() << "failed to open binary file: " << path;
+    }
     stream.write(reinterpret_cast<const char*>(bytes.data()),
                  static_cast<std::streamsize>(bytes.size()));
-    ASSERT_TRUE(stream.good());
+    if (!stream.good()) {
+        return ::testing::AssertionFailure() << "failed to write binary file: " << path;
+    }
+    return ::testing::AssertionSuccess();
 }
 
 class ModelIntakeFixture : public ::testing::Test {
@@ -236,16 +242,24 @@ class ModelIntakeFixture : public ::testing::Test {
         return models_dir() / ".isla_converted" / (std::string(stem) + ".auto.glb");
     }
 
-    void write_glb(std::string_view filename) const {
+    ::testing::AssertionResult write_glb(std::string_view filename) const {
         const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-        write_binary_file(model_path(filename), glb);
+        return write_binary_file(model_path(filename), glb);
     }
 
-    void write_text(std::string_view filename, std::string_view contents) const {
+    ::testing::AssertionResult write_text(std::string_view filename,
+                                          std::string_view contents) const {
         std::ofstream out(model_path(filename));
-        ASSERT_TRUE(out.is_open());
+        if (!out.is_open()) {
+            return ::testing::AssertionFailure() << "failed to open text file: "
+                                                 << model_path(filename);
+        }
         out << contents;
-        ASSERT_TRUE(out.good());
+        if (!out.good()) {
+            return ::testing::AssertionFailure() << "failed to write text file: "
+                                                 << model_path(filename);
+        }
+        return ::testing::AssertionSuccess();
     }
 
     ScopedTempDir sandbox_;
@@ -255,8 +269,8 @@ class ModelIntakeFixture : public ::testing::Test {
 };
 
 TEST_F(ModelIntakeFixture, ResolvesPreferredNamedDefaultModelFirst) {
-    write_glb("model.glb");
-    write_glb("aaa.glb");
+    ASSERT_TRUE(write_glb("model.glb"));
+    ASSERT_TRUE(write_glb("aaa.glb"));
 
     const ResolveStartupAssetResult result = resolve_startup_asset_from_models();
     ASSERT_TRUE(result.has_asset);
@@ -265,10 +279,10 @@ TEST_F(ModelIntakeFixture, ResolvesPreferredNamedDefaultModelFirst) {
 }
 
 TEST_F(ModelIntakeFixture, ResolvesDeterministicallyByExtensionThenFilenameWhenNoPreferredName) {
-    write_glb("zeta.glb");
-    write_glb("alpha.glb");
-    write_text("beta.gltf", "{}");
-    write_text("char.pmx", "pmx");
+    ASSERT_TRUE(write_glb("zeta.glb"));
+    ASSERT_TRUE(write_glb("alpha.glb"));
+    ASSERT_TRUE(write_text("beta.gltf", "{}"));
+    ASSERT_TRUE(write_text("char.pmx", "pmx"));
 
     const ResolveStartupAssetResult result = resolve_startup_asset_from_models();
     ASSERT_TRUE(result.has_asset);
@@ -277,7 +291,7 @@ TEST_F(ModelIntakeFixture, ResolvesDeterministicallyByExtensionThenFilenameWhenN
 
 TEST_F(ModelIntakeFixture, AutoConvertsPmxWhenOnlyPmxCandidateExists) {
     const std::filesystem::path pmx_path = model_path("model.pmx");
-    write_text("model.pmx", "pmx");
+    ASSERT_TRUE(write_text("model.pmx", "pmx"));
     const std::filesystem::path expected_output = converted_output_for("model");
 
     int run_count = 0;
@@ -293,7 +307,11 @@ TEST_F(ModelIntakeFixture, AutoConvertsPmxWhenOnlyPmxCandidateExists) {
             return 1;
         }
         const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-        write_binary_file(expected_output, glb);
+        const ::testing::AssertionResult write_result = write_binary_file(expected_output, glb);
+        if (!write_result) {
+            ADD_FAILURE() << write_result.message();
+            return 1;
+        }
         return 0;
     };
 
@@ -306,7 +324,7 @@ TEST_F(ModelIntakeFixture, AutoConvertsPmxWhenOnlyPmxCandidateExists) {
 }
 
 TEST_F(ModelIntakeFixture, UsesDefaultConverterTemplateWhenNoCommandConfigured) {
-    write_text("model.pmx", "pmx");
+    ASSERT_TRUE(write_text("model.pmx", "pmx"));
     const std::filesystem::path expected_output = converted_output_for("model");
     ScopedEnvVar converter_cmd_env("ISLA_PMX_CONVERTER_COMMAND", "");
     ScopedEnvVar converter_ver_env("ISLA_PMX_CONVERTER_VERSION", "");
@@ -329,7 +347,11 @@ TEST_F(ModelIntakeFixture, UsesDefaultConverterTemplateWhenNoCommandConfigured) 
             return 1;
         }
         const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-        write_binary_file(expected_output, glb);
+        const ::testing::AssertionResult write_result = write_binary_file(expected_output, glb);
+        if (!write_result) {
+            ADD_FAILURE() << write_result.message();
+            return 1;
+        }
         return 0;
     };
 
@@ -343,7 +365,7 @@ TEST_F(ModelIntakeFixture, UsesDefaultConverterTemplateWhenNoCommandConfigured) 
 }
 
 TEST_F(ModelIntakeFixture, UsesPmxConversionCacheWhenSourceAndConverterUnchanged) {
-    write_text("model.pmx", "pmx");
+    ASSERT_TRUE(write_text("model.pmx", "pmx"));
     const std::filesystem::path expected_output = converted_output_for("model");
 
     int run_count = 0;
@@ -359,7 +381,11 @@ TEST_F(ModelIntakeFixture, UsesPmxConversionCacheWhenSourceAndConverterUnchanged
             return 1;
         }
         const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-        write_binary_file(expected_output, glb);
+        const ::testing::AssertionResult write_result = write_binary_file(expected_output, glb);
+        if (!write_result) {
+            ADD_FAILURE() << write_result.message();
+            return 1;
+        }
         return 0;
     };
 
@@ -377,9 +403,9 @@ TEST_F(ModelIntakeFixture, UsesPmxConversionCacheWhenSourceAndConverterUnchanged
 }
 
 TEST_F(ModelIntakeFixture, FallsBackToDirectGltfOrGlbWhenPmxConversionFails) {
-    write_text("model.pmx", "pmx");
+    ASSERT_TRUE(write_text("model.pmx", "pmx"));
     const std::filesystem::path fallback_glb = model_path("z_fallback.glb");
-    write_glb("z_fallback.glb");
+    ASSERT_TRUE(write_glb("z_fallback.glb"));
 
     ResolveStartupAssetOptions options;
     options.pmx_converter_command_template = "fake-converter --in {input} --out {output}";
@@ -397,7 +423,7 @@ TEST_F(ModelIntakeFixture, FallsBackToDirectGltfOrGlbWhenPmxConversionFails) {
 }
 
 TEST_F(ModelIntakeFixture, ReturnsNoAssetWhenOnlyPmxExistsAndConverterInvocationFails) {
-    write_text("model.pmx", "pmx");
+    ASSERT_TRUE(write_text("model.pmx", "pmx"));
 
     ResolveStartupAssetOptions options;
     options.pmx_converter_command_template = "missing_converter --input {input} --output {output}";
@@ -422,7 +448,7 @@ TEST_F(ModelIntakeFixture, ReturnsNoAssetWhenOnlyPmxExistsAndConverterInvocation
 
 TEST_F(ModelIntakeFixture, PassesDangerousFilenameAsSingleArgWithoutShellEvaluation) {
     const std::filesystem::path pmx_path = model_path("$(id).pmx");
-    write_text("$(id).pmx", "pmx");
+    ASSERT_TRUE(write_text("$(id).pmx", "pmx"));
     const std::filesystem::path expected_output = converted_output_for("$(id)");
 
     int run_count = 0;
@@ -439,7 +465,11 @@ TEST_F(ModelIntakeFixture, PassesDangerousFilenameAsSingleArgWithoutShellEvaluat
             return 1;
         }
         const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-        write_binary_file(expected_output, glb);
+        const ::testing::AssertionResult write_result = write_binary_file(expected_output, glb);
+        if (!write_result) {
+            ADD_FAILURE() << write_result.message();
+            return 1;
+        }
         return 0;
     };
 
@@ -455,7 +485,7 @@ TEST_F(ModelIntakeFixture, PassesDangerousFilenameAsSingleArgWithoutShellEvaluat
 }
 
 TEST_F(ModelIntakeFixture, TemplateShellMetacharactersRemainInArgvAndAreNotInterpreted) {
-    write_text("model.pmx", "pmx");
+    ASSERT_TRUE(write_text("model.pmx", "pmx"));
 
     bool observed_semicolon_arg = false;
     ResolveStartupAssetOptions options;
@@ -478,7 +508,7 @@ TEST_F(ModelIntakeFixture, TemplateShellMetacharactersRemainInArgvAndAreNotInter
 
 TEST_F(ModelIntakeFixture, PreservesWindowsStyleExecutablePathBackslashesInTemplate) {
     const std::filesystem::path pmx_path = model_path("model.pmx");
-    write_text("model.pmx", "pmx");
+    ASSERT_TRUE(write_text("model.pmx", "pmx"));
     const std::filesystem::path expected_output = converted_output_for("model");
 
     std::vector<std::string> captured_argv;
@@ -494,7 +524,11 @@ TEST_F(ModelIntakeFixture, PreservesWindowsStyleExecutablePathBackslashesInTempl
             return 1;
         }
         const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-        write_binary_file(expected_output, glb);
+        const ::testing::AssertionResult write_result = write_binary_file(expected_output, glb);
+        if (!write_result) {
+            ADD_FAILURE() << write_result.message();
+            return 1;
+        }
         return 0;
     };
 
@@ -510,7 +544,7 @@ TEST_F(ModelIntakeFixture, PreservesWindowsStyleExecutablePathBackslashesInTempl
 
 TEST_F(ModelIntakeFixture, AppendsMissingOutputArgWhenOnlyInputTokenProvided) {
     const std::filesystem::path pmx_path = model_path("model.pmx");
-    write_text("model.pmx", "pmx");
+    ASSERT_TRUE(write_text("model.pmx", "pmx"));
     const std::filesystem::path expected_output = converted_output_for("model");
 
     std::vector<std::string> captured_argv;
@@ -525,7 +559,11 @@ TEST_F(ModelIntakeFixture, AppendsMissingOutputArgWhenOnlyInputTokenProvided) {
             return 1;
         }
         const std::vector<std::uint8_t> glb = make_minimal_triangle_glb();
-        write_binary_file(expected_output, glb);
+        const ::testing::AssertionResult write_result = write_binary_file(expected_output, glb);
+        if (!write_result) {
+            ADD_FAILURE() << write_result.message();
+            return 1;
+        }
         return 0;
     };
 

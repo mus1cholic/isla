@@ -960,11 +960,17 @@ class ClientAppTextureRemapParamFixture : public ClientAppAnimationTestFixture,
                                                : write_texturemap_static_gltf_fixture(dir);
     }
 
-    void write_file(const std::filesystem::path& path, std::string_view contents) {
+    ::testing::AssertionResult write_file(const std::filesystem::path& path,
+                                          std::string_view contents) {
         std::ofstream out(path, std::ios::binary);
-        ASSERT_TRUE(out.is_open());
+        if (!out.is_open()) {
+            return ::testing::AssertionFailure() << "failed to open file: " << path;
+        }
         out << contents;
-        ASSERT_TRUE(out.good());
+        if (!out.good()) {
+            return ::testing::AssertionFailure() << "failed to write file: " << path;
+        }
+        return ::testing::AssertionSuccess();
     }
 };
 
@@ -1491,9 +1497,10 @@ TEST_P(ClientAppTextureRemapParamFixture, StaticLoadTextureRemapCaseMatrix) {
     ASSERT_TRUE(std::filesystem::exists(gltf_path));
 
     for (const auto& [filename, contents] : test_case.files_to_create) {
-        write_file(temp_dir.path() / filename, contents);
+        ASSERT_TRUE(write_file(temp_dir.path() / filename, contents));
     }
-    write_file(temp_dir.path() / test_case.texturemap_file_name, test_case.texturemap_json);
+    ASSERT_TRUE(write_file(temp_dir.path() / test_case.texturemap_file_name,
+                           test_case.texturemap_json));
     load_startup_mesh_with_env("", gltf_path.string());
 
     const RenderWorld& loaded_world = world();

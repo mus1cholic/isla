@@ -78,34 +78,49 @@ class AnimatedGltfTest : public ::testing::Test {
         buffer.insert(buffer.end(), bytes, bytes + sizeof(value));
     }
 
-    static void write_binary_file(const std::filesystem::path& path,
-                                  const std::vector<std::uint8_t>& buffer) {
+    static ::testing::AssertionResult write_binary_file(
+        const std::filesystem::path& path, const std::vector<std::uint8_t>& buffer) {
         std::ofstream bin_stream(path, std::ios::binary);
-        ASSERT_TRUE(bin_stream.is_open());
+        if (!bin_stream.is_open()) {
+            return ::testing::AssertionFailure() << "failed to open binary file: " << path;
+        }
         bin_stream.write(reinterpret_cast<const char*>(buffer.data()),
                          static_cast<std::streamsize>(buffer.size()));
-        ASSERT_TRUE(bin_stream.good());
+        if (!bin_stream.good()) {
+            return ::testing::AssertionFailure() << "failed to write binary file: " << path;
+        }
+        return ::testing::AssertionSuccess();
     }
 
-    static void write_text_file(const std::filesystem::path& path, const std::string& text) {
+    static ::testing::AssertionResult write_text_file(const std::filesystem::path& path,
+                                                      const std::string& text) {
         std::ofstream stream(path, std::ios::binary);
-        ASSERT_TRUE(stream.is_open());
+        if (!stream.is_open()) {
+            return ::testing::AssertionFailure() << "failed to open text file: " << path;
+        }
         stream << text;
-        ASSERT_TRUE(stream.good());
+        if (!stream.good()) {
+            return ::testing::AssertionFailure() << "failed to write text file: " << path;
+        }
+        return ::testing::AssertionSuccess();
     }
 
-    static void assert_evaluate_clip_pose_ok(const AnimatedGltfAsset& asset,
-                                             float sample_time_seconds, EvaluatedPose& pose,
-                                             std::string* error) {
-        ASSERT_TRUE(evaluate_clip_pose(asset, 0U, sample_time_seconds, pose, error))
-            << (error != nullptr ? *error : "");
+    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(
+        const AnimatedGltfAsset& asset, float sample_time_seconds, EvaluatedPose& pose,
+        std::string* error) {
+        if (!evaluate_clip_pose(asset, 0U, sample_time_seconds, pose, error)) {
+            return ::testing::AssertionFailure() << (error != nullptr ? *error : "");
+        }
+        return ::testing::AssertionSuccess();
     }
 
-    static void assert_evaluate_clip_pose_ok(const AnimatedGltfAsset& asset,
-                                             float sample_time_seconds, EvaluatedPose& pose,
-                                             std::string* error, ClipPlaybackMode playback_mode) {
-        ASSERT_TRUE(evaluate_clip_pose(asset, 0U, sample_time_seconds, pose, error, playback_mode))
-            << (error != nullptr ? *error : "");
+    static ::testing::AssertionResult assert_evaluate_clip_pose_ok(
+        const AnimatedGltfAsset& asset, float sample_time_seconds, EvaluatedPose& pose,
+        std::string* error, ClipPlaybackMode playback_mode) {
+        if (!evaluate_clip_pose(asset, 0U, sample_time_seconds, pose, error, playback_mode)) {
+            return ::testing::AssertionFailure() << (error != nullptr ? *error : "");
+        }
+        return ::testing::AssertionSuccess();
     }
 
     void TearDown() override {
@@ -184,7 +199,7 @@ TEST_F(AnimatedGltfTest, LoadsOnlyPrimitivesAttachedToSelectedSkin) {
     }
     const std::size_t ibm_length = buffer.size() - ibm_offset;
 
-    write_binary_file(bin_path, buffer);
+    ASSERT_TRUE(write_binary_file(bin_path, buffer));
 
     {
         std::ostringstream gltf;
@@ -238,7 +253,7 @@ TEST_F(AnimatedGltfTest, LoadsOnlyPrimitivesAttachedToSelectedSkin) {
              << "  \"scenes\": [{\"nodes\": [1, 2]}],\n"
              << "  \"scene\": 0\n"
              << "}\n";
-        write_text_file(gltf_path, gltf.str());
+        ASSERT_TRUE(write_text_file(gltf_path, gltf.str()));
     }
 
     const AnimatedGltfLoadResult loaded = load_from_file(gltf_path.string());
@@ -306,28 +321,27 @@ TEST_F(AnimatedGltfTest, RejectsCubicSplineInterpolation) {
     }
     const std::size_t anim_translation_length = buffer.size() - anim_translation_offset;
 
-    write_binary_file(bin_path, buffer);
+    ASSERT_TRUE(write_binary_file(bin_path, buffer));
 
     {
         std::ostringstream gltf;
         gltf << "{\n"
              << "  \"asset\": {\"version\": \"2.0\"},\n"
-             << "  \"buffers\": [{\"uri\": \"asset.bin\", \"byteLength\": " << buffer.size()
-             << "}],\n"
+             << R"(  "buffers": [{"uri": "asset.bin", "byteLength": )" << buffer.size() << "}],\n"
              << "  \"bufferViews\": [\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << skinned_pos_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << skinned_pos_offset
              << ", \"byteLength\": " << skinned_pos_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << skinned_joints_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << skinned_joints_offset
              << ", \"byteLength\": " << skinned_joints_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << skinned_weights_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << skinned_weights_offset
              << ", \"byteLength\": " << skinned_weights_length << ", \"target\": 34962},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << skinned_idx_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << skinned_idx_offset
              << ", \"byteLength\": " << skinned_idx_length << ", \"target\": 34963},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << ibm_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << ibm_offset
              << ", \"byteLength\": " << ibm_length << "},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << anim_times_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << anim_times_offset
              << ", \"byteLength\": " << anim_times_length << "},\n"
-             << "    {\"buffer\": 0, \"byteOffset\": " << anim_translation_offset
+             << R"(    {"buffer": 0, "byteOffset": )" << anim_translation_offset
              << ", \"byteLength\": " << anim_translation_length << "}\n"
              << "  ],\n"
              << "  \"accessors\": [\n"
@@ -364,7 +378,7 @@ TEST_F(AnimatedGltfTest, RejectsCubicSplineInterpolation) {
              << "  \"scenes\": [{\"nodes\": [1]}],\n"
              << "  \"scene\": 0\n"
              << "}\n";
-        write_text_file(gltf_path, gltf.str());
+        ASSERT_TRUE(write_text_file(gltf_path, gltf.str()));
     }
 
     const AnimatedGltfLoadResult loaded = load_from_file(gltf_path.string());
@@ -385,7 +399,7 @@ TEST_F(AnimatedGltfTest, InterpolatesSingleJointTranslation) {
 
     EvaluatedPose pose;
     std::string error;
-    assert_evaluate_clip_pose_ok(asset, 0.5F, pose, &error);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.5F, pose, &error));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 1.0F, 1.0e-4F);
 }
@@ -401,11 +415,11 @@ TEST_F(AnimatedGltfTest, SamplesExactClipEndByPlaybackMode) {
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
-    assert_evaluate_clip_pose_ok(asset, 1.0F, pose, nullptr, ClipPlaybackMode::Loop);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 1.0F, pose, nullptr, ClipPlaybackMode::Loop));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 0.0F, 1.0e-4F);
 
-    assert_evaluate_clip_pose_ok(asset, 1.0F, pose, nullptr, ClipPlaybackMode::Clamp);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 1.0F, pose, nullptr, ClipPlaybackMode::Clamp));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 2.0F, 1.0e-4F);
 }
@@ -425,11 +439,11 @@ TEST_F(AnimatedGltfTest, SamplesStepInterpolation) {
 
     EvaluatedPose pose;
     std::string error;
-    assert_evaluate_clip_pose_ok(asset, 0.25F, pose, &error);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.25F, pose, &error));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 0.0F, 1.0e-4F);
 
-    assert_evaluate_clip_pose_ok(asset, 0.5F, pose, &error);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.5F, pose, &error));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 1.0F, 1.0e-4F);
 }
@@ -446,7 +460,7 @@ TEST_F(AnimatedGltfTest, InterpolatesRotationLinearly) {
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
-    assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
 
     // Midway between identity and 180deg Z should be ~90deg Z.
@@ -475,14 +489,14 @@ TEST_F(AnimatedGltfTest, SamplesRotationStepInterpolationIncludingExactKeyTime) 
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
-    assert_evaluate_clip_pose_ok(asset, 0.25F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.25F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 1.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[1], 0.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[4], 0.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 1.0F, 1.0e-4F);
 
-    assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 0.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[1], 1.0F, 1.0e-4F);
@@ -501,7 +515,7 @@ TEST_F(AnimatedGltfTest, InterpolatesScaleLinearly) {
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
-    assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 2.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 1.5F, 1.0e-4F);
@@ -522,13 +536,13 @@ TEST_F(AnimatedGltfTest, SamplesScaleStepInterpolationIncludingExactKeyTime) {
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
-    assert_evaluate_clip_pose_ok(asset, 0.25F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.25F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 1.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 1.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[10], 1.0F, 1.0e-4F);
 
-    assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 1U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[0], 2.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[5], 3.0F, 1.0e-4F);
@@ -552,7 +566,7 @@ TEST_F(AnimatedGltfTest, EvaluatesHierarchyAndSkinMatrices) {
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
-    assert_evaluate_clip_pose_ok(asset, 1.0F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 1.0F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 2U);
     ASSERT_EQ(pose.skin_matrices.size(), 2U);
 
@@ -586,7 +600,7 @@ TEST_F(AnimatedGltfTest, HandlesNonTopologicalJointOrder) {
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
-    assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.5F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 2U);
     EXPECT_NEAR(pose.global_joint_matrices[1].elements[12], 2.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 3.0F, 1.0e-4F);
@@ -609,7 +623,7 @@ TEST_F(AnimatedGltfTest, AppliesBindPrefixMatricesForNonJointAncestors) {
     asset.clips.push_back(std::move(clip));
 
     EvaluatedPose pose;
-    assert_evaluate_clip_pose_ok(asset, 0.25F, pose, nullptr);
+    ASSERT_TRUE(assert_evaluate_clip_pose_ok(asset, 0.25F, pose, nullptr));
     ASSERT_EQ(pose.global_joint_matrices.size(), 2U);
     EXPECT_NEAR(pose.global_joint_matrices[0].elements[12], 0.0F, 1.0e-4F);
     EXPECT_NEAR(pose.global_joint_matrices[1].elements[12], 3.0F, 1.0e-4F);
