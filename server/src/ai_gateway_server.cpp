@@ -294,7 +294,6 @@ class LiveGatewaySession final : public GatewayLiveSession,
         }
 
         session_id_ = adapter_->session_id();
-        websocket_.read_message_max(kMaxInboundWebSocketMessageBytes);
         registry_.RegisterSession(shared_from_this());
         VLOG(1) << "AI gateway accepted websocket transport remote=" << remote_endpoint_
                 << " session=" << session_id_;

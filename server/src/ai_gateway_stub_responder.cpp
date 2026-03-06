@@ -40,16 +40,18 @@ std::string build_stub_reply(std::string_view prefix, std::string_view text) {
 } // namespace
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
-    : config_(std::move(config)), worker_([this] {
-          try {
-              WorkerLoop();
-          } catch (const std::exception& error) {
-              LOG(ERROR) << "AI gateway stub worker terminated with exception detail='"
-                         << SanitizeForLog(error.what()) << "'";
-          } catch (...) {
-              LOG(ERROR) << "AI gateway stub worker terminated with unknown exception";
-          }
-      }) {}
+    : config_(std::move(config)) {
+    worker_ = std::thread([this] {
+        try {
+            WorkerLoop();
+        } catch (const std::exception& error) {
+            LOG(ERROR) << "AI gateway stub worker terminated with exception detail='"
+                       << SanitizeForLog(error.what()) << "'";
+        } catch (...) {
+            LOG(ERROR) << "AI gateway stub worker terminated with unknown exception";
+        }
+    });
+}
 
 GatewayStubResponder::~GatewayStubResponder() {
     StopWorker();
@@ -72,13 +74,15 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             VLOG(1) << "AI gateway stub queued turn session=" << event.session_id
                     << " turn_id=" << SanitizeForLog(event.turn_id)
                     << " delay_ms=" << config_.response_delay.count();
-            pending_turns_[event.session_id] = PendingTurn{
-                .session_id = event.session_id,
-                .turn_id = event.turn_id,
-                .text = event.text,
-                .ready_at = Clock::now() + config_.response_delay,
-                .cancel_requested = false,
-            };
+            pending_turns_.insert_or_assign(
+                event.session_id,
+                PendingTurn{
+                    .session_id = event.session_id,
+                    .turn_id = event.turn_id,
+                    .text = event.text,
+                    .ready_at = Clock::now() + config_.response_delay,
+                    .cancel_requested = false,
+                });
         }
     }
 
@@ -177,7 +181,7 @@ void GatewayStubResponder::WorkerLoop() {
                         next_turn = turn;
                         VLOG(1) << "AI gateway stub dequeued cancellation session=" << it->first
                                 << " turn_id=" << SanitizeForLog(turn.turn_id);
-                        in_progress_turns_[it->first] = turn;
+                        in_progress_turns_.insert_or_assign(it->first, turn);
                         pending_turns_.erase(it);
                         break;
                     }
@@ -185,7 +189,7 @@ void GatewayStubResponder::WorkerLoop() {
                         next_turn = turn;
                         VLOG(1) << "AI gateway stub dequeued ready turn session=" << it->first
                                 << " turn_id=" << SanitizeForLog(turn.turn_id);
-                        in_progress_turns_[it->first] = turn;
+                        in_progress_turns_.insert_or_assign(it->first, turn);
                         pending_turns_.erase(it);
                         break;
                     }
