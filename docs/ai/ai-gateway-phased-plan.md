@@ -6,7 +6,7 @@
 
 - A C++ desktop client/runtime codebase built around Bazel
 - No runnable backend/server process yet
-- No actual WebSocket transport adapter yet
+- No runnable WebSocket endpoint/server process yet
 - No existing OpenAI integration
 - No existing text-to-speech integration
 
@@ -71,6 +71,7 @@ Operational interpretation:
 >   - `shared/include/isla/shared/ai_gateway_session.hpp`
 >   - `server/src/ai_gateway_session_handler.hpp`
 >   - `server/src/ai_gateway_websocket_session.hpp`
+>   - `server/src/ai_gateway_logging_utils.hpp`
 > - The implemented Phase-1 slice currently covers:
 >   - typed JSON protocol messages and JSON parse/serialize coverage
 >   - session/turn lifecycle state enforcement for one in-flight turn per session
@@ -79,7 +80,8 @@ Operational interpretation:
 >   - a WebSocket-facing session adapter that converts text frames to/from the session handler
 >   - per-connection session ID generation and factory wiring
 >   - transport-boundary connection close/error sequencing for active turns and session teardown
->   - dedicated protocol/session handler tests under Bazel
+>   - adapter-boundary logging with control-character sanitization for untrusted fields
+>   - dedicated protocol/session handler/session-adapter/logging tests under Bazel
 > - No runnable gateway server process has been implemented yet.
 > - The chosen v1 transport split is:
 >   - client/server: WebSocket
@@ -112,6 +114,9 @@ Operational interpretation:
 - 2026-03-06: completed the remaining Phase-1 transport wiring in `server/src` with a
   WebSocket-facing session adapter, sequential per-connection session ID generation, connection
   factory wiring, and transport close/error sequencing tests.
+- 2026-03-06: tightened the completed Phase-1 boundary with adapter-level logging, log-sanitization
+  utilities for untrusted fields, safer `StatusOr`-based test helpers, and refreshed editor
+  compile-command coverage for `server/src`.
 
 ## Architecture Snapshot
 
@@ -203,7 +208,8 @@ Freeze the first server-side architecture and protocol boundaries before impleme
 >   - `GatewayWebSocketSessionAdapter` for WebSocket text-frame/session lifecycle wiring
 >   - per-connection session ID generation and `GatewayWebSocketSessionFactory`
 >   - transport-boundary close/error sequencing for active turns and session termination
->   - protocol/session/session-handler regression tests
+>   - adapter-boundary logging with `SanitizeForLog(...)` for untrusted transport fields
+>   - protocol/session/session-handler/session-adapter/logging regression tests
 
 ### Goal
 
@@ -327,8 +333,10 @@ optional audio output.
 > **Carry-forward from Phase 1 (2026-03-06):**
 > - Shared protocol types, session state enforcement, and a transport-facing session handler now
 >   exist.
-> - Phase 2 should build on those boundaries rather than redefining client/gateway message parsing
->   or turn lifecycle rules inside executor code.
+> - A WebSocket-facing session adapter, session factory, and log-sanitization utility now exist in
+>   `server/src`.
+> - Phase 2 should build on those boundaries rather than redefining client/gateway message
+>   parsing, turn lifecycle rules, or transport logging rules inside executor code.
 
 ### Goal
 
@@ -343,6 +351,8 @@ Route gateway text requests to OpenAI through a stable first upstream boundary.
   receives final output in v1.
 - Prefer a single final output to the client in the initial product behavior.
 - Keep transport abstraction separate from model-selection/prompting logic.
+- Keep provider-originated error/details routed through the existing transport boundary so later
+  logging remains sanitized and centralized.
 
 ### Intended Behavior
 
@@ -363,6 +373,13 @@ Route gateway text requests to OpenAI through a stable first upstream boundary.
 - The design preserves future streaming support without requiring v1 to expose deltas.
 
 ## Phase 3: Planner/Executor Single-Step Orchestration
+
+> [!NOTE]
+> **Carry-forward from Phase 1 (2026-03-06):**
+> - `GatewaySessionHandler` and `GatewayWebSocketSessionAdapter` already separate transport state
+>   from application turn execution.
+> - Planner/executor work should consume accepted-turn/cancel events from that boundary rather than
+>   reinterpreting raw client JSON.
 
 ### Goal
 
@@ -431,6 +448,12 @@ struct TurnResult {
 
 ## Phase 4: Fish Audio Hosted TTS Integration
 
+> [!NOTE]
+> **Carry-forward from Phase 1 (2026-03-06):**
+> - The existing WebSocket/session layer already owns final frame emission ordering.
+> - Fish integration should produce normalized audio results for that layer rather than writing
+>   websocket frames or logs directly.
+
 ### Goal
 
 Add a first text-to-speech stage without taking on self-hosted GPU infrastructure yet.
@@ -488,6 +511,8 @@ gateway text result
 > - Phase-1 protocol code already reserves `text.delta` and `audio.output_chunk` event names.
 > - Later streaming work should extend the existing shared protocol/session-handler boundary rather
 >   than introducing a second parallel client contract.
+> - The current adapter already centralizes frame writes, close sequencing, and log sanitization;
+>   streaming extensions should preserve that single transport boundary.
 
 ### Goal
 
@@ -532,10 +557,10 @@ immediately.
 > [!NOTE]
 > **Carry-forward from Phases 0/1 (2026-03-06):**
 > - The architecture baseline is documented.
-> - The shared protocol/session boundary and transport-facing session handler skeleton already
->   exist.
-> - This phase still has to add the runnable server process and the actual WebSocket-facing adapter
->   before planner/executor/provider work can be wired end-to-end.
+> - The shared protocol/session boundary, transport-facing session handler, WebSocket-facing
+>   session adapter, session factory, and log-sanitization utility already exist.
+> - This phase still has to add the runnable server process and bind a real WebSocket endpoint to
+>   the existing adapter before planner/executor/provider work can be wired end-to-end.
 
 ### Goal
 
@@ -603,10 +628,12 @@ Revisit the deferred voice/streaming/infrastructure options after the first gate
 ## Cross-Phase Testing Strategy
 
 1. Keep websocket protocol parsing/validation testable outside full provider integration.
-2. Keep planner and executor testable as independent modules.
-3. Keep provider adapters behind interfaces so they can be faked in tests.
-4. Prefer structural assertions over brittle transport timing assumptions.
-5. Add end-to-end smoke coverage only after module boundaries are stable.
+2. Keep websocket/session adapter behavior and log-sanitization testable without a real socket
+   server.
+3. Keep planner and executor testable as independent modules.
+4. Keep provider adapters behind interfaces so they can be faked in tests.
+5. Prefer structural assertions over brittle transport timing assumptions.
+6. Add end-to-end smoke coverage only after module boundaries are stable.
 
 ## Suggested Delivery Milestones
 

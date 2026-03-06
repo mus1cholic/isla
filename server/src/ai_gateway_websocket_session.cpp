@@ -137,7 +137,7 @@ void GatewayWebSocketSessionAdapter::HandleTransportClosed() {
                  << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
                                                   : std::string("<none>"))
                  << "'";
-    CloseSession(SessionCloseReason::TransportClosed, "", active_turn_id(), false);
+    CloseSession(SessionCloseReason::TransportClosed, "", inflight_turn_id, false);
 }
 
 absl::Status GatewayWebSocketSessionAdapter::SendFrames(const std::vector<std::string>& frames) {

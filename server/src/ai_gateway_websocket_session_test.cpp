@@ -16,10 +16,8 @@ namespace {
 
 namespace protocol = isla::shared::ai_gateway;
 
-protocol::GatewayMessage parse_frame_or_die(const std::string& frame) {
-    const absl::StatusOr<protocol::GatewayMessage> parsed = protocol::parse_json_message(frame);
-    EXPECT_TRUE(parsed.ok()) << parsed.status().ToString();
-    return *parsed;
+absl::StatusOr<protocol::GatewayMessage> parse_frame(const std::string& frame) {
+    return protocol::parse_json_message(frame);
 }
 
 class FakeWebSocketConnection final : public GatewayWebSocketConnection {
@@ -83,9 +81,11 @@ TEST(AiGatewayWebSocketSessionTest, SessionStartWritesSessionStartedFrame) {
     ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
     ASSERT_EQ(connection.sent_frames.size(), 1U);
 
-    const protocol::GatewayMessage frame = parse_frame_or_die(connection.sent_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(frame));
-    EXPECT_EQ(std::get<protocol::SessionStartedMessage>(frame).session_id, "srv_test");
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(connection.sent_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*frame));
+    EXPECT_EQ(std::get<protocol::SessionStartedMessage>(*frame).session_id, "srv_test");
 }
 
 TEST(AiGatewayWebSocketSessionTest, AcceptedTurnIsForwardedToEventSink) {
@@ -119,9 +119,11 @@ TEST(AiGatewayWebSocketSessionTest, RejectedClientFrameSendsErrorAndKeepsSession
     ASSERT_EQ(connection.sent_frames.size(), 1U);
     EXPECT_TRUE(sink.closed_sessions.empty());
 
-    const protocol::GatewayMessage frame = parse_frame_or_die(connection.sent_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
-    const auto& error = std::get<protocol::ErrorMessage>(frame);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(connection.sent_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
     EXPECT_EQ(error.code, "bad_request");
     ASSERT_TRUE(error.turn_id.has_value());
     EXPECT_EQ(*error.turn_id, "turn_1");
@@ -168,9 +170,11 @@ TEST(AiGatewayWebSocketSessionTest, SessionEndClosesTransportAfterReply) {
     EXPECT_EQ(sink.closed_sessions.front().detail, "session ended");
     EXPECT_FALSE(sink.closed_sessions.front().inflight_turn_id.has_value());
 
-    const protocol::GatewayMessage frame = parse_frame_or_die(connection.sent_frames.back());
-    ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(frame));
-    EXPECT_EQ(std::get<protocol::SessionEndedMessage>(frame).session_id, "srv_test");
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(connection.sent_frames.back());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*frame));
+    EXPECT_EQ(std::get<protocol::SessionEndedMessage>(*frame).session_id, "srv_test");
 }
 
 TEST(AiGatewayWebSocketSessionTest, TransportErrorTerminatesActiveTurnBeforeClose) {
@@ -195,12 +199,16 @@ TEST(AiGatewayWebSocketSessionTest, TransportErrorTerminatesActiveTurnBeforeClos
     ASSERT_TRUE(sink.closed_sessions.front().inflight_turn_id.has_value());
     EXPECT_EQ(*sink.closed_sessions.front().inflight_turn_id, "turn_1");
 
-    const protocol::GatewayMessage error_frame = parse_frame_or_die(connection.sent_frames[1]);
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(error_frame));
-    EXPECT_EQ(std::get<protocol::ErrorMessage>(error_frame).code, "transport_error");
+    const absl::StatusOr<protocol::GatewayMessage> error_frame =
+        parse_frame(connection.sent_frames[1]);
+    ASSERT_TRUE(error_frame.ok()) << error_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*error_frame));
+    EXPECT_EQ(std::get<protocol::ErrorMessage>(*error_frame).code, "transport_error");
 
-    const protocol::GatewayMessage completed_frame = parse_frame_or_die(connection.sent_frames[2]);
-    EXPECT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(completed_frame));
+    const absl::StatusOr<protocol::GatewayMessage> completed_frame =
+        parse_frame(connection.sent_frames[2]);
+    ASSERT_TRUE(completed_frame.ok()) << completed_frame.status().ToString();
+    EXPECT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*completed_frame));
 }
 
 TEST(AiGatewayWebSocketSessionTest, TransportCloseNotifiesInflightTurnWithoutSendingFrames) {
