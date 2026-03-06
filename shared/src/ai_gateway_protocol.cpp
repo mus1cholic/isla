@@ -1,0 +1,363 @@
+#include "isla/shared/ai_gateway_protocol.hpp"
+
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include <nlohmann/json.hpp>
+
+namespace isla::shared::ai_gateway {
+namespace {
+
+using json = nlohmann::json;
+
+template <typename... Ts>
+struct Overloaded : Ts... {
+    using Ts::operator()...;
+};
+
+template <typename... Ts>
+Overloaded(Ts...) -> Overloaded<Ts...>;
+
+std::string make_parse_error(std::string_view detail) {
+    return "AI gateway message parse failed: " + std::string(detail);
+}
+
+const json* find_key(const json& object, std::string_view key) {
+    if (!object.is_object()) {
+        return nullptr;
+    }
+    const auto it = object.find(std::string(key));
+    if (it == object.end()) {
+        return nullptr;
+    }
+    return &(*it);
+}
+
+std::optional<std::string> read_required_string(const json& object, std::string_view key) {
+    const json* value = find_key(object, key);
+    if (value == nullptr || !value->is_string()) {
+        return std::nullopt;
+    }
+    const std::string parsed = value->get<std::string>();
+    if (parsed.empty()) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+std::optional<std::string> read_optional_string(const json& object, std::string_view key) {
+    const json* value = find_key(object, key);
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    if (!value->is_string()) {
+        return std::nullopt;
+    }
+    const std::string parsed = value->get<std::string>();
+    if (parsed.empty()) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+json serialize_message(const GatewayMessage& message) {
+    return std::visit(
+        Overloaded{
+            [](const SessionStartMessage& value) {
+                json object = {{"type", message_type_name(MessageType::SessionStart)}};
+                if (value.client_session_id.has_value()) {
+                    object["client_session_id"] = *value.client_session_id;
+                }
+                return object;
+            },
+            [](const SessionStartedMessage& value) {
+                return json{{"type", message_type_name(MessageType::SessionStarted)},
+                            {"session_id", value.session_id}};
+            },
+            [](const SessionEndMessage& value) {
+                return json{{"type", message_type_name(MessageType::SessionEnd)},
+                            {"session_id", value.session_id}};
+            },
+            [](const SessionEndedMessage& value) {
+                return json{{"type", message_type_name(MessageType::SessionEnded)},
+                            {"session_id", value.session_id}};
+            },
+            [](const TextInputMessage& value) {
+                return json{{"type", message_type_name(MessageType::TextInput)},
+                            {"turn_id", value.turn_id},
+                            {"text", value.text}};
+            },
+            [](const TextOutputMessage& value) {
+                return json{{"type", message_type_name(MessageType::TextOutput)},
+                            {"turn_id", value.turn_id},
+                            {"text", value.text}};
+            },
+            [](const AudioOutputMessage& value) {
+                return json{{"type", message_type_name(MessageType::AudioOutput)},
+                            {"turn_id", value.turn_id},
+                            {"mime_type", value.mime_type},
+                            {"audio_base64", value.audio_base64}};
+            },
+            [](const TurnCompletedMessage& value) {
+                return json{{"type", message_type_name(MessageType::TurnCompleted)},
+                            {"turn_id", value.turn_id}};
+            },
+            [](const TurnCancelMessage& value) {
+                return json{{"type", message_type_name(MessageType::TurnCancel)},
+                            {"turn_id", value.turn_id}};
+            },
+            [](const TurnCancelledMessage& value) {
+                return json{{"type", message_type_name(MessageType::TurnCancelled)},
+                            {"turn_id", value.turn_id}};
+            },
+            [](const ErrorMessage& value) {
+                json object = {{"type", message_type_name(MessageType::Error)},
+                               {"code", value.code},
+                               {"message", value.message}};
+                if (value.session_id.has_value()) {
+                    object["session_id"] = *value.session_id;
+                }
+                if (value.turn_id.has_value()) {
+                    object["turn_id"] = *value.turn_id;
+                }
+                return object;
+            },
+        },
+        message);
+}
+
+GatewayMessage parse_message_object(const json& root, MessageType type, std::string* error_message) {
+    switch (type) {
+        case MessageType::SessionStart:
+            return SessionStartMessage{read_optional_string(root, "client_session_id")};
+        case MessageType::SessionStarted: {
+            const auto session_id = read_required_string(root, "session_id");
+            if (!session_id.has_value()) {
+                *error_message = make_parse_error("session.started requires non-empty session_id");
+                return SessionStartMessage{};
+            }
+            return SessionStartedMessage{std::move(*session_id)};
+        }
+        case MessageType::SessionEnd: {
+            const auto session_id = read_required_string(root, "session_id");
+            if (!session_id.has_value()) {
+                *error_message = make_parse_error("session.end requires non-empty session_id");
+                return SessionStartMessage{};
+            }
+            return SessionEndMessage{std::move(*session_id)};
+        }
+        case MessageType::SessionEnded: {
+            const auto session_id = read_required_string(root, "session_id");
+            if (!session_id.has_value()) {
+                *error_message = make_parse_error("session.ended requires non-empty session_id");
+                return SessionStartMessage{};
+            }
+            return SessionEndedMessage{std::move(*session_id)};
+        }
+        case MessageType::TextInput: {
+            const auto turn_id = read_required_string(root, "turn_id");
+            const auto text = read_required_string(root, "text");
+            if (!turn_id.has_value() || !text.has_value()) {
+                *error_message = make_parse_error("text.input requires non-empty turn_id and text");
+                return SessionStartMessage{};
+            }
+            return TextInputMessage{std::move(*turn_id), std::move(*text)};
+        }
+        case MessageType::TextOutput: {
+            const auto turn_id = read_required_string(root, "turn_id");
+            const auto text = read_required_string(root, "text");
+            if (!turn_id.has_value() || !text.has_value()) {
+                *error_message =
+                    make_parse_error("text.output requires non-empty turn_id and text");
+                return SessionStartMessage{};
+            }
+            return TextOutputMessage{std::move(*turn_id), std::move(*text)};
+        }
+        case MessageType::AudioOutput: {
+            const auto turn_id = read_required_string(root, "turn_id");
+            const auto mime_type = read_required_string(root, "mime_type");
+            const auto audio_base64 = read_required_string(root, "audio_base64");
+            if (!turn_id.has_value() || !mime_type.has_value() || !audio_base64.has_value()) {
+                *error_message = make_parse_error(
+                    "audio.output requires non-empty turn_id, mime_type, and audio_base64");
+                return SessionStartMessage{};
+            }
+            return AudioOutputMessage{
+                std::move(*turn_id),
+                std::move(*mime_type),
+                std::move(*audio_base64),
+            };
+        }
+        case MessageType::TurnCompleted: {
+            const auto turn_id = read_required_string(root, "turn_id");
+            if (!turn_id.has_value()) {
+                *error_message = make_parse_error("turn.completed requires non-empty turn_id");
+                return SessionStartMessage{};
+            }
+            return TurnCompletedMessage{std::move(*turn_id)};
+        }
+        case MessageType::TurnCancel: {
+            const auto turn_id = read_required_string(root, "turn_id");
+            if (!turn_id.has_value()) {
+                *error_message = make_parse_error("turn.cancel requires non-empty turn_id");
+                return SessionStartMessage{};
+            }
+            return TurnCancelMessage{std::move(*turn_id)};
+        }
+        case MessageType::TurnCancelled: {
+            const auto turn_id = read_required_string(root, "turn_id");
+            if (!turn_id.has_value()) {
+                *error_message = make_parse_error("turn.cancelled requires non-empty turn_id");
+                return SessionStartMessage{};
+            }
+            return TurnCancelledMessage{std::move(*turn_id)};
+        }
+        case MessageType::Error: {
+            const auto code = read_required_string(root, "code");
+            const auto message = read_required_string(root, "message");
+            if (!code.has_value() || !message.has_value()) {
+                *error_message = make_parse_error("error requires non-empty code and message");
+                return SessionStartMessage{};
+            }
+            return ErrorMessage{read_optional_string(root, "session_id"),
+                                read_optional_string(root, "turn_id"),
+                                std::move(*code),
+                                std::move(*message)};
+        }
+    }
+
+    *error_message = make_parse_error("message type is unsupported");
+    return SessionStartMessage{};
+}
+
+} // namespace
+
+const char* message_type_name(MessageType type) {
+    switch (type) {
+        case MessageType::SessionStart:
+            return "session.start";
+        case MessageType::SessionStarted:
+            return "session.started";
+        case MessageType::SessionEnd:
+            return "session.end";
+        case MessageType::SessionEnded:
+            return "session.ended";
+        case MessageType::TextInput:
+            return "text.input";
+        case MessageType::TextOutput:
+            return "text.output";
+        case MessageType::AudioOutput:
+            return "audio.output";
+        case MessageType::TurnCompleted:
+            return "turn.completed";
+        case MessageType::TurnCancel:
+            return "turn.cancel";
+        case MessageType::TurnCancelled:
+            return "turn.cancelled";
+        case MessageType::Error:
+            return "error";
+    }
+    return "unknown";
+}
+
+std::optional<MessageType> parse_message_type(std::string_view type_name) {
+    if (type_name == "session.start") {
+        return MessageType::SessionStart;
+    }
+    if (type_name == "session.started") {
+        return MessageType::SessionStarted;
+    }
+    if (type_name == "session.end") {
+        return MessageType::SessionEnd;
+    }
+    if (type_name == "session.ended") {
+        return MessageType::SessionEnded;
+    }
+    if (type_name == "text.input") {
+        return MessageType::TextInput;
+    }
+    if (type_name == "text.output") {
+        return MessageType::TextOutput;
+    }
+    if (type_name == "audio.output") {
+        return MessageType::AudioOutput;
+    }
+    if (type_name == "turn.completed") {
+        return MessageType::TurnCompleted;
+    }
+    if (type_name == "turn.cancel") {
+        return MessageType::TurnCancel;
+    }
+    if (type_name == "turn.cancelled") {
+        return MessageType::TurnCancelled;
+    }
+    if (type_name == "error") {
+        return MessageType::Error;
+    }
+    return std::nullopt;
+}
+
+MessageType message_type(const GatewayMessage& message) {
+    return std::visit(
+        Overloaded{
+            [](const SessionStartMessage&) { return MessageType::SessionStart; },
+            [](const SessionStartedMessage&) { return MessageType::SessionStarted; },
+            [](const SessionEndMessage&) { return MessageType::SessionEnd; },
+            [](const SessionEndedMessage&) { return MessageType::SessionEnded; },
+            [](const TextInputMessage&) { return MessageType::TextInput; },
+            [](const TextOutputMessage&) { return MessageType::TextOutput; },
+            [](const AudioOutputMessage&) { return MessageType::AudioOutput; },
+            [](const TurnCompletedMessage&) { return MessageType::TurnCompleted; },
+            [](const TurnCancelMessage&) { return MessageType::TurnCancel; },
+            [](const TurnCancelledMessage&) { return MessageType::TurnCancelled; },
+            [](const ErrorMessage&) { return MessageType::Error; },
+        },
+        message);
+}
+
+std::string to_json_string(const GatewayMessage& message) {
+    return serialize_message(message).dump();
+}
+
+MessageParseResult parse_json_message(std::string_view json_text) {
+    MessageParseResult result{};
+
+    json root;
+    try {
+        root = json::parse(json_text);
+    } catch (const json::parse_error& e) {
+        result.error_message = make_parse_error("invalid JSON (" + std::string(e.what()) + ")");
+        return result;
+    }
+
+    if (!root.is_object()) {
+        result.error_message = make_parse_error("top-level JSON value must be an object");
+        return result;
+    }
+
+    const auto type_name = read_required_string(root, "type");
+    if (!type_name.has_value()) {
+        result.error_message = make_parse_error("missing non-empty type");
+        return result;
+    }
+
+    const auto parsed_type = parse_message_type(*type_name);
+    if (!parsed_type.has_value()) {
+        result.error_message = make_parse_error("unknown type '" + *type_name + "'");
+        return result;
+    }
+
+    std::string validation_error;
+    GatewayMessage message = parse_message_object(root, *parsed_type, &validation_error);
+    if (!validation_error.empty()) {
+        result.error_message = std::move(validation_error);
+        return result;
+    }
+
+    result.ok = true;
+    result.message = std::move(message);
+    return result;
+}
+
+} // namespace isla::shared::ai_gateway
