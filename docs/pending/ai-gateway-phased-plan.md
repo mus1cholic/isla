@@ -14,14 +14,16 @@ Target outcome:
 
 - Add a C++ server that acts as the application-owned AI gateway
 - Connect the desktop client to that server over WebSocket
-- Route text/image model requests from the server to OpenAI
+- Route text model requests from the server to OpenAI
 - Keep the server transport and orchestration shape ready for chunk-style streaming later
 - Add a text-to-speech stage backed by Fish Audio hosted APIs
+- Return final text output and optional synthesized audio output over the same gateway protocol
 - Preserve a clean planner/executor boundary even though v1 only performs one upstream model request
 
 Non-goals for this plan:
 
 - Audio input/transcription in the initial implementation slice
+- Image input/attachments in the initial implementation slice
 - OpenAI Realtime API as the first upstream transport
 - Self-hosted Fish-Speech GPU workers in the first implementation slice
 - Multi-step planner execution in the first implementation slice
@@ -61,7 +63,8 @@ Operational interpretation:
 
 > [!NOTE]
 > **Current status (2026-03-06):**
-> - Architecture decisions are discussed and sufficiently stable to document.
+> - Phase 0 is implemented.
+> - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
 > - No server code has been implemented yet.
 > - The chosen v1 transport split is:
 >   - client/server: WebSocket
@@ -71,7 +74,8 @@ Operational interpretation:
 >   - one client turn in
 >   - one planner output
 >   - one executor request to OpenAI
->   - one final result out
+>   - one final text result out
+>   - zero or one final audio result out
 > - Chunk-style streaming is intentionally deferred at the client protocol level, but the internal
 >   server abstraction should remain stream-capable from day one.
 > - Audio input and transcription are intentionally deferred from the first server slice.
@@ -83,6 +87,9 @@ Operational interpretation:
 - 2026-03-06: added initial AI gateway phased plan covering C++ server choice, client/server
   websocket protocol direction, OpenAI Responses API over HTTP/SSE, Fish Audio hosted API
   integration, single-step planner/executor boundary, and deferred streaming/self-hosted expansion.
+- 2026-03-06: completed Phase 0 with a dedicated v1 gateway architecture baseline in
+  `docs/ai/ai_gateway_v1_design.md`, including the initial WebSocket protocol contract,
+  planner/executor boundary, upstream transport decisions, and deferred-alternative inventory.
 
 ## Architecture Snapshot
 
@@ -105,6 +112,7 @@ client text.input
 -> optional TTS stage
 -> gateway response composer
 -> client text.output
+-> optional client audio.output
 -> client turn.completed
 ```
 
@@ -118,6 +126,18 @@ Future-compatible transport evolution intentionally preserved by this design:
 
 ## Phase 0: Gateway Boundary + Protocol Contract
 
+> [!NOTE]
+> **Status (2026-03-06): Implemented.**
+> - `docs/ai/ai_gateway_v1_design.md` is the canonical Phase 0 architecture baseline.
+> - The baseline now freezes:
+>   - client/gateway WebSocket ownership and message types
+>   - text-input, text-output, optional-audio-output v1 turn semantics
+>   - OpenAI Responses API over HTTP/SSE as the first upstream transport
+>   - Fish hosted HTTP as the first TTS transport
+>   - the single-step planner/executor boundary
+>   - the deferred-alternative list for later phases
+> - No gateway server code is implemented yet; later phases remain implementation work.
+
 ### Goal
 
 Freeze the first server-side architecture and protocol boundaries before implementation begins.
@@ -128,7 +148,7 @@ Freeze the first server-side architecture and protocol boundaries before impleme
 - Define the first stable client/server transport decision:
   - WebSocket between client and gateway
   - JSON control/event messages
-  - text-only turns in the first implementation slice
+  - text-input turns with optional audio output in the first implementation slice
 - Define the first stable upstream transport decision:
   - OpenAI via Responses API over HTTP/SSE
   - Fish via hosted HTTP API in the first implementation slice
@@ -153,7 +173,8 @@ Freeze the first server-side architecture and protocol boundaries before impleme
 
 ### Goal
 
-Define the first stable client/gateway message contract for text-only turns.
+Define the first stable client/gateway message contract for text-input turns with text-first and
+optional audio output.
 
 ### Scope
 
@@ -163,16 +184,24 @@ Define the first stable client/gateway message contract for text-only turns.
 - Start with a minimal turn-based contract:
   - `session.start`
   - `session.started`
+  - `session.end`
+  - `session.ended`
   - `text.input`
   - `text.output`
+  - `audio.output`
   - `turn.completed`
+  - `turn.cancel`
+  - `turn.cancelled`
   - `error`
 - Require explicit IDs where useful for debugging and future streaming:
   - `session_id`
   - `turn_id`
+- Keep at most one in-flight turn per session in v1 so final text/audio delivery order stays
+  deterministic.
 - Keep the protocol turn-based first instead of chunk-based first.
 - Preserve future upgrade room by reserving the ability to add:
   - `text.delta`
+  - `audio.output_chunk`
   - `text.input_chunk`
   - `text.input_end`
   - future audio-related event types
@@ -196,12 +225,38 @@ Define the first stable client/gateway message contract for text-only turns.
 ```
 
 ```json
+{
+  "type": "audio.output",
+  "turn_id": "turn_1",
+  "mime_type": "audio/wav",
+  "audio_base64": "UklGRlYAAABXQVZF..."
+}
+```
+
+```json
 { "type": "turn.completed", "turn_id": "turn_1" }
+```
+
+```json
+{ "type": "turn.cancel", "turn_id": "turn_1" }
+```
+
+```json
+{ "type": "turn.cancelled", "turn_id": "turn_1" }
+```
+
+```json
+{ "type": "session.end", "session_id": "srv_123" }
+```
+
+```json
+{ "type": "session.ended", "session_id": "srv_123" }
 ```
 
 ```json
 {
   "type": "error",
+  "session_id": "srv_123",
   "turn_id": "turn_1",
   "code": "bad_request",
   "message": "Missing text"
@@ -212,8 +267,15 @@ Define the first stable client/gateway message contract for text-only turns.
 
 - The server is the authority for runtime session state.
 - The server generates `session_id`.
+- At most one turn is in flight per session in v1.
 - Exactly one `text.output` is produced for each successful `text.input` in v1.
+- A successful synthesized turn may additionally produce exactly one `audio.output` before
+  `turn.completed`.
+- `audio.output` is JSON-carried in v1 using base64 payload data so the initial protocol can remain
+  JSON-only.
 - `turn.completed` terminates every turn, including error cases.
+- `turn.cancelled` also terminates a turn when the server accepts cancellation.
+- Errors may omit `turn_id` only when the failure occurs before the server accepts a turn.
 - The websocket layer is transport/orchestration plumbing only; it does not build prompts or call
   vendors directly.
 
@@ -226,7 +288,7 @@ Define the first stable client/gateway message contract for text-only turns.
 
 ### Goal
 
-Route gateway text/image requests to OpenAI through a stable first upstream boundary.
+Route gateway text requests to OpenAI through a stable first upstream boundary.
 
 ### Scope
 
@@ -296,11 +358,16 @@ struct ExecutorResult {
   std::string output_text;
 };
 
+struct SynthesizedAudio {
+  std::string mime_type;
+  std::vector<uint8_t> bytes;
+};
+
 struct TurnResult {
   std::string session_id;
   std::string turn_id;
   std::string output_text;
-  bool synthesized;
+  std::optional<SynthesizedAudio> audio;
 };
 ```
 
@@ -334,6 +401,8 @@ Add a first text-to-speech stage without taking on self-hosted GPU infrastructur
 - Keep the adapter stream-capable internally even if the first implementation only returns a final
   audio result.
 - Keep Fish integration downstream of executor text output.
+- Deliver synthesized audio to the client as one final `audio.output` event with metadata and
+  inline base64 payload in v1.
 
 ### Recommended Gateway/Fish Shape
 
@@ -343,6 +412,7 @@ gateway text result
 -> Fish hosted HTTP API
 -> final audio result
 -> gateway response composer
+-> client audio.output
 ```
 
 ### Why Hosted First
@@ -355,6 +425,8 @@ gateway text result
 ### Deferred Alternatives
 
 - Fish Audio hosted websocket streaming in the first implementation
+- websocket binary frames for v1 audio delivery
+- out-of-band signed audio URLs for v1 delivery
 - self-hosted Fish-Speech workers
 - AWS Spot GPU worker pools
 - load balancer- or fleet-based worker routing
@@ -390,6 +462,8 @@ immediately.
   protocol.
 - Preserve the ability to later expose chunked websocket events without changing the transport
   choice.
+- Preserve the ability to later replace inline `audio.output` payloads with chunked or binary audio
+  events without changing turn/session ownership.
 
 ### Design Interpretation
 
@@ -412,10 +486,11 @@ Ship the first usable server path with minimal moving parts.
 ### Scope
 
 - Build the C++ gateway server skeleton.
-- Implement the websocket endpoint and first text-only protocol.
+- Implement the websocket endpoint and first text-input protocol with optional audio output.
 - Implement the planner/executor single-step flow.
 - Integrate OpenAI via Responses API.
 - Return final text output to the client.
+- Return optional final audio output to the client when synthesis is requested.
 - Keep TTS integration behind a feature flag or a clearly separable stage if needed.
 
 ### Recommended Delivery Order
@@ -431,6 +506,8 @@ Ship the first usable server path with minimal moving parts.
 
 - A client can connect to the gateway over WebSocket, send a text query, and receive a final model
   response.
+- A client can receive final text and optional synthesized audio for the same turn without a
+  protocol extension.
 - The server structure is ready for later TTS and chunked-output expansion.
 
 ## Phase 7: Voice Expansion + Deferred Infrastructure Revisit
