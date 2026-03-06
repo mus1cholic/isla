@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -57,6 +58,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
     }
 
     void Start() {
+        // TODO(ai-gateway): Replace the per-session thread model with shared async I/O execution.
         thread_ = std::thread([self = shared_from_this()] { self->Run(); });
     }
 
@@ -168,6 +170,8 @@ class LiveGatewaySession final : public GatewayLiveSession,
             boost::system::error_code error;
 
             {
+                // TODO(ai-gateway): Move session I/O to async read/write so reads do not block
+                // writes. Critical issue.
                 std::lock_guard<std::mutex> lock(websocket_mutex_);
                 const std::size_t bytes_read = websocket_.read(buffer, error);
                 static_cast<void>(bytes_read);
@@ -376,13 +380,14 @@ class GatewayServer::Impl {
         }
         bound_port_ = local_endpoint.port();
         accept_thread_ = std::thread([this] { AcceptLoop(); });
+        reap_thread_ = std::thread([this] { ReapLoop(); });
         LOG(INFO) << "AI gateway server listening bind_host=" << config_.bind_host
                   << " port=" << bound_port_;
         return absl::OkStatus();
     }
 
     void Stop() {
-        std::vector<std::shared_ptr<LiveGatewaySession>> sessions;
+        std::vector<std::shared_ptr<LiveGatewaySession>> sessions_to_stop;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!running_) {
@@ -395,25 +400,35 @@ class GatewayServer::Impl {
             static_cast<void>(cancel_result);
             const auto close_result = acceptor_.close(error);
             static_cast<void>(close_result);
-            sessions = sessions_;
+            sessions_to_stop = sessions_;
         }
+        reap_cv_.notify_all();
 
-        for (const auto& session : sessions) {
+        for (const auto& session : sessions_to_stop) {
             if (session != nullptr) {
                 session->RequestStop();
-            }
-        }
-        for (const auto& session : sessions) {
-            if (session != nullptr) {
-                session->Join();
             }
         }
         if (accept_thread_.joinable()) {
             accept_thread_.join();
         }
+        if (reap_thread_.joinable()) {
+            reap_thread_.join();
+        }
+
+        std::vector<std::shared_ptr<LiveGatewaySession>> remaining_sessions;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            remaining_sessions.swap(sessions_);
+        }
+        for (const auto& session : remaining_sessions) {
+            if (session != nullptr) {
+                session->RequestStop();
+                session->Join();
+            }
+        }
 
         std::lock_guard<std::mutex> lock(mutex_);
-        sessions_.clear();
         bound_port_ = 0;
         running_ = false;
         LOG(INFO) << "AI gateway server stopped";
@@ -473,13 +488,54 @@ class GatewayServer::Impl {
         VLOG(1) << "AI gateway accept loop stopped";
     }
 
+    void ReapLoop() {
+        VLOG(1) << "AI gateway session reaper started";
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!stop_requested_.load()) {
+            reap_cv_.wait_for(lock, std::chrono::milliseconds(250));
+            lock.unlock();
+            ReapClosedSessions();
+            lock.lock();
+        }
+        lock.unlock();
+        ReapClosedSessions();
+        VLOG(1) << "AI gateway session reaper stopped";
+    }
+
+    void ReapClosedSessions() {
+        std::vector<std::shared_ptr<LiveGatewaySession>> closed_sessions;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto next = sessions_.begin();
+            for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
+                if (*it != nullptr && (*it)->is_closed()) {
+                    closed_sessions.push_back(std::move(*it));
+                    continue;
+                }
+                if (next != it) {
+                    *next = std::move(*it);
+                }
+                ++next;
+            }
+            sessions_.erase(next, sessions_.end());
+        }
+
+        for (const auto& session : closed_sessions) {
+            if (session != nullptr) {
+                session->Join();
+            }
+        }
+    }
+
     GatewayServerConfig config_;
     asio::io_context io_context_;
     GatewaySessionRegistry session_registry_;
     GatewayWebSocketSessionFactory session_factory_;
     tcp::acceptor acceptor_;
     mutable std::mutex mutex_;
+    std::condition_variable reap_cv_;
     std::thread accept_thread_;
+    std::thread reap_thread_;
     std::vector<std::shared_ptr<LiveGatewaySession>> sessions_;
     std::atomic<bool> stop_requested_{ false };
     bool running_ = false;

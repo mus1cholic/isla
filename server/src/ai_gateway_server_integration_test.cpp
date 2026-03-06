@@ -391,6 +391,85 @@ TEST_F(GatewayServerTest, DisconnectBeforeSessionStartDoesNotLeaveStaleRegistryS
     ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
 }
 
+TEST_F(GatewayServerTest, ReapsSessionAfterProtocolEndedClose) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    const std::string end_message =
+        std::string("{\"type\":\"session.end\",\"session_id\":\"") + session_id + "\"}";
+    ASSERT_TRUE(client.SendJson(end_message).ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> ended_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*ended_frame));
+
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
+    EXPECT_EQ(sink_.closed_sessions.front().reason, SessionCloseReason::ProtocolEnded);
+    ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
+}
+
+TEST_F(GatewayServerTest, ReapsSessionAfterTransportClose) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+
+    client.CloseTransport();
+
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
+    EXPECT_EQ(sink_.closed_sessions.front().reason, SessionCloseReason::TransportClosed);
+    ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
+}
+
+TEST_F(GatewayServerTest, ReapsManyShortLivedSessionsWithoutAccumulatingState) {
+    constexpr int kSessionCount = 12;
+
+    for (int i = 0; i < kSessionCount; ++i) {
+        RealWebSocketClient client;
+        ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+        ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+        const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+        ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+        ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+        const std::string session_id =
+            std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+        if ((i % 2) == 0) {
+            const std::string end_message =
+                std::string("{\"type\":\"session.end\",\"session_id\":\"") + session_id + "\"}";
+            ASSERT_TRUE(client.SendJson(end_message).ok());
+            const absl::StatusOr<protocol::GatewayMessage> ended_frame = client.ReadJsonFrame();
+            ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
+            ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*ended_frame));
+        } else {
+            client.CloseTransport();
+        }
+
+        ASSERT_TRUE(sink_.WaitFor([&] {
+            return sink_.closed_sessions.size() == static_cast<std::size_t>(i + 1);
+        }));
+        ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
+    }
+
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+}
+
 TEST(AiGatewayServerLifecycleTest, RejectsInvalidBindHost) {
     GatewayServer server(
         GatewayServerConfig{ .bind_host = "not-an-ip", .port = 0, .listen_backlog = 4 });
