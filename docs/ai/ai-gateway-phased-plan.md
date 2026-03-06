@@ -61,6 +61,11 @@ Operational interpretation:
 - The executor performs exactly one OpenAI request in v1.
 - Fish is downstream of executor output, not a peer of the planner.
 
+Sequencing rule for the remaining work:
+
+- Whole-number phases establish local server boundaries, contracts, or stubbed slices.
+- `.5` phases add live external integrations only after the preceding boundary is in place.
+
 > [!NOTE]
 > **Current status (2026-03-06):**
 > - Phase 0 is implemented.
@@ -101,6 +106,10 @@ Operational interpretation:
 
 ### Changelog
 
+- 2026-03-06: narrowed the remaining plan to smaller boundary-first slices by splitting live
+  integration work into `.5` phases; Phase 2 now stops at runnable gateway ingress/session handoff,
+  Phase 2.5 adds a local stubbed return path, Phase 3.5 owns live OpenAI hookup, and Phase 5.5
+  owns live Fish hookup.
 - 2026-03-06: added initial AI gateway phased plan covering C++ server choice, client/server
   websocket protocol direction, OpenAI Responses API over HTTP/SSE, Fish Audio hosted API
   integration, single-step planner/executor boundary, and deferred streaming/self-hosted expansion.
@@ -329,50 +338,139 @@ optional audio output.
   of reimplementing the contract ad hoc.
 - The protocol can later grow chunked input/output events without requiring a transport redesign.
 
-## Phase 2: First End-to-End Gateway Slice
+## Phase 2: Runnable Gateway Ingress + Session Handoff
 
 > [!NOTE]
 > **Carry-forward from Phases 0/1 (2026-03-06):**
 > - The architecture baseline is documented.
 > - The shared protocol/session boundary, transport-facing session handler, WebSocket-facing
 >   session adapter, session factory, and log-sanitization utility already exist.
-> - This phase still has to add the runnable server process and bind a real WebSocket endpoint to
->   the existing adapter before planner/executor/provider work can be wired end-to-end.
+> - This phase intentionally stops at the runnable server/process and application handoff boundary;
+>   planner/executor/provider work moves to later phases.
 
 ### Goal
 
-Ship the first usable server path with minimal moving parts.
+Ship the first runnable server slice that accepts real client connections and hands accepted turns
+to application-owned code.
 
-### Scope
+### In Scope
 
 - Build the C++ gateway server skeleton.
-- Implement the websocket endpoint and first text-input protocol with optional audio output.
+- Implement the websocket endpoint and first text-input protocol ingress path.
 - Reuse the existing shared protocol/session-handler scaffolding instead of re-encoding protocol
   rules directly in the endpoint implementation.
-- Implement the planner/executor single-step flow.
-- Integrate OpenAI via Responses API.
-- Return final text output to the client.
-- Return optional final audio output to the client when synthesis is requested.
-- Keep TTS integration behind a feature flag or a clearly separable stage if needed.
+- Add an application-owned handoff boundary for accepted turns and cancel requests.
+- Make the server/session lifecycle runnable over a real WebSocket connection.
+- Add whatever minimal session registry/controller surface is needed to keep live sessions
+  addressable by application-owned code later.
+
+### Out of Scope
+
+- Any application-facing API that emits `text.output`, `audio.output`, `turn.completed`,
+  `turn.cancelled`, or `error` back to the client.
+- Any local stub/echo responder for accepted turns.
+- Planner or executor contracts.
+- OpenAI config, provider wiring, or network traffic.
+- Fish/TTS config, provider wiring, or network traffic.
+- Any threading/background-work design that is not required by the concrete websocket server
+  runtime itself.
+
+### Required Artifacts
+
+- A runnable gateway server process with a real websocket listener.
+- A live websocket/session integration that creates `GatewayWebSocketSessionAdapter`-backed
+  sessions for real connections.
+- An application-owned accepted-turn/cancel handoff seam that receives typed events rather than raw
+  client JSON.
+- A session ownership model that makes later server-owned emission possible without moving protocol
+  parsing or frame ordering out of the transport boundary.
 
 ### Recommended Delivery Order
 
 1. Gateway server process and config surface
 2. WebSocket endpoint and session lifecycle
-3. `text.input` -> planner -> executor -> `text.output`
-4. Internal stream-capable executor abstraction
-5. Fish adapter skeleton
-6. Hosted Fish integration
+3. Session registry/controller around live adapters
+4. `text.input`/`turn.cancel` handoff into application-owned code
+
+### Demo
+
+- A real websocket client can connect, complete `session.start`, send `text.input`, and cause the
+  server to record or forward a typed accepted-turn event.
+- The same client can send `turn.cancel` for an accepted turn and cause the server to record or
+  forward a typed cancel-request event.
+
+### Tests
+
+- Keep protocol/session validation covered at the existing unit-test boundary.
+- Add at least one integration-style test that uses a real websocket connection to a runnable
+  server process while substituting a fake application sink.
+- Verify that no application layer outside the transport boundary needs to parse raw client JSON to
+  observe accepted turns or cancel requests.
 
 ### Exit Criteria
 
-- A client can connect to the gateway over WebSocket, send a text query, and receive a final model
-  response.
-- A client can receive final text and optional synthesized audio for the same turn without a
-  protocol extension.
-- The server structure is ready for later TTS and chunked-output expansion.
+- A client can connect to the gateway over WebSocket and complete `session.start`/`session.end`
+  against a runnable server process.
+- A client `text.input` can reach an application-owned accepted-turn handoff over a real socket
+  without re-parsing raw client JSON outside the transport boundary.
+- Turn-cancel requests can reach the same application-owned handoff boundary.
+- The server structure is ready for later outbound turn completion work without changing transport
+  ownership.
 
-## Phase 3: OpenAI Execution Path
+## Phase 2.5: Local Stub Turn Completion Path
+
+### Goal
+
+Close the loop through the same session boundary without introducing provider dependencies yet.
+
+### In Scope
+
+- Add an application-facing path for server-owned code to emit `text.output`, `turn.completed`,
+  `turn.cancelled`, and `error` back through live sessions.
+- Implement a deterministic local stub or echo responder for accepted text turns.
+- Exercise final frame ordering through the existing session/adapter boundary rather than writing
+  frames directly in new code.
+- Prove that accepted-turn ingress and outbound turn completion can both flow through the same live
+  session ownership model.
+
+### Out of Scope
+
+- Audio output.
+- Planner or executor contracts.
+- OpenAI config, provider wiring, or network traffic.
+- Fish/TTS config, provider wiring, or network traffic.
+- Any provider-specific retry, fallback, or streaming policy.
+
+### Required Artifacts
+
+- An application-facing emission API or handle that can target a live accepted turn without
+  exposing raw websocket frame construction to the caller.
+- A deterministic stubbed turn responder that returns final text through that emission path.
+- Explicit turn-finalization behavior for both successful stubbed turns and accepted cancellations.
+
+### Demo
+
+- A real websocket client can connect to the runnable gateway, send a text query, and receive a
+  final deterministic non-provider `text.output` followed by `turn.completed`.
+- A real websocket client can cancel an accepted turn and observe the turn terminate through the
+  same server-owned boundary.
+
+### Tests
+
+- Add integration-style coverage that exercises the live server/socket path with the stubbed
+  responder enabled.
+- Verify final frame ordering for successful stubbed turns.
+- Verify cancellation termination behavior through the same application-facing emission seam.
+
+### Exit Criteria
+
+- A client can connect to the runnable gateway, send a text query, and receive a final non-provider
+  text response plus `turn.completed`.
+- A cancelled accepted turn can terminate through the same server-owned session boundary.
+- The server now has explicit application-facing ingress and egress seams for later planner,
+  executor, and provider work.
+
+## Phase 3: OpenAI Executor Boundary
 
 > [!NOTE]
 > **Carry-forward from Phase 1 (2026-03-06):**
@@ -382,32 +480,33 @@ Ship the first usable server path with minimal moving parts.
 >   `server/src`.
 > - Phase 3 should build on those boundaries rather than redefining client/gateway message
 >   parsing, turn lifecycle rules, or transport logging rules inside executor code.
+> - Live OpenAI network integration is intentionally deferred to Phase 3.5.
 
 ### Goal
 
-Route gateway text requests to OpenAI through a stable first upstream boundary.
+Define the stable executor-side boundary for one OpenAI-backed request without yet depending on
+live provider I/O.
 
 ### Scope
 
-- Integrate OpenAI through the Responses API first, not Realtime API.
-- Treat the OpenAI leg as streamed HTTP/SSE rather than WebSocket in the first implementation.
-- Normalize upstream provider responses behind a gateway-owned executor interface.
-- Keep the executor able to consume a stream of upstream events internally even if the client only
-  receives final output in v1.
-- Prefer a single final output to the client in the initial product behavior.
-- Keep transport abstraction separate from model-selection/prompting logic.
-- Keep provider-originated error/details routed through the existing transport boundary so later
-  logging remains sanitized and centralized.
+- Define normalized executor request/result/error shapes for exactly one upstream text request in
+  v1.
+- Keep the executor boundary stream-capable internally even if the first product behavior remains
+  final-output-oriented.
+- Separate provider I/O concerns from websocket/session ownership and planner policy.
+- Define the config/error surface that a later OpenAI adapter must satisfy.
+- Defer actual OpenAI Responses API HTTP/SSE traffic to Phase 3.5.
 
 ### Intended Behavior
 
-- The executor sends one request to OpenAI per turn in v1.
-- The executor may internally consume streamed upstream events.
-- The gateway may buffer streamed upstream chunks and emit only the final text to the client in v1.
+- The executor contract still models one OpenAI request per turn in v1.
+- The executor boundary may internally model streamed upstream events.
+- The gateway may buffer upstream chunks and emit only the final text to the client in v1.
 - Future partial output can be added later without changing planner or client transport ownership.
 
 ### Deferred Alternatives
 
+- live OpenAI provider traffic in this phase
 - OpenAI Realtime API
 - OpenAI upstream websocket transport
 - exposing partial output deltas to the client in the first milestone
@@ -416,19 +515,43 @@ Route gateway text requests to OpenAI through a stable first upstream boundary.
 
 - The server has a clear OpenAI executor boundary independent of websocket handling.
 - The design preserves future streaming support without requiring v1 to expose deltas.
+- The executor contract is explicit enough to wire to a fake or stub provider before live OpenAI
+  integration exists.
+
+## Phase 3.5: OpenAI Responses Integration
+
+### Goal
+
+Route gateway text requests to OpenAI through the executor boundary established in Phase 3.
+
+### Scope
+
+- Integrate OpenAI through the Responses API first, not Realtime API.
+- Treat the OpenAI leg as streamed HTTP/SSE rather than WebSocket in the first implementation.
+- Map provider responses and provider-originated errors into the gateway-owned executor interface.
+- Buffer streamed upstream text into one final client-visible `text.output` in v1.
+- Keep provider-originated details routed through the existing transport boundary so later logging
+  remains sanitized and centralized.
+
+### Exit Criteria
+
+- The gateway can produce a final OpenAI-backed text response through the executor boundary.
+- Live OpenAI integration does not leak provider transport details into websocket/session code.
 
 ## Phase 4: Planner/Executor Single-Step Orchestration
 
 > [!NOTE]
-> **Carry-forward from Phase 1 (2026-03-06):**
-> - `GatewaySessionHandler` and `GatewayWebSocketSessionAdapter` already separate transport state
->   from application turn execution.
+> **Carry-forward from Phases 2/2.5/3.5 (2026-03-06):**
+> - The runnable gateway/server ingress path and application-owned session handoff boundary should
+>   already exist.
 > - Planner/executor work should consume accepted-turn/cancel events from that boundary rather than
 >   reinterpreting raw client JSON.
+> - The live OpenAI path should already sit behind the executor boundary rather than being called
+>   directly from websocket code.
 
 ### Goal
 
-Lock down the first orchestration boundary while keeping it extensible for future multi-step plans.
+Lock down the first planner/executor orchestration contract around the working single-step path.
 
 ### Scope
 
@@ -491,7 +614,7 @@ struct TurnResult {
   websocket layer.
 - The design preserves room for future multi-request planning without forcing it into v1.
 
-## Phase 5: Fish Audio Hosted TTS Integration
+## Phase 5: TTS Adapter Boundary
 
 > [!NOTE]
 > **Carry-forward from Phase 1 (2026-03-06):**
@@ -501,20 +624,18 @@ struct TurnResult {
 
 ### Goal
 
-Add a first text-to-speech stage without taking on self-hosted GPU infrastructure yet.
+Define the server-owned TTS boundary without taking on live vendor integration yet.
 
 ### Scope
 
-- Use Fish Audio hosted APIs rather than self-hosted Fish-Speech workers in the first
-  implementation slice.
-- Treat the gateway-to-Fish boundary as a narrow TTS adapter rather than a platform-wide
-  dependency.
-- Start with simple request/response HTTP integration.
+- Treat the gateway-to-TTS boundary as a narrow adapter rather than a platform-wide dependency.
 - Keep the adapter stream-capable internally even if the first implementation only returns a final
   audio result.
-- Keep Fish integration downstream of executor text output.
-- Deliver synthesized audio to the client as one final `audio.output` event with metadata and
-  inline base64 payload in v1.
+- Keep TTS downstream of executor text output.
+- Define the normalized audio result shape expected by the gateway response composer.
+- Preserve the v1 client behavior of one final `audio.output` event with metadata and inline base64
+  payload.
+- Defer actual Fish hosted integration to Phase 5.5.
 
 ### Recommended Gateway/Fish Shape
 
@@ -536,6 +657,7 @@ gateway text result
 
 ### Deferred Alternatives
 
+- live Fish integration in this phase
 - Fish Audio hosted websocket streaming in the first implementation
 - websocket binary frames for v1 audio delivery
 - out-of-band signed audio URLs for v1 delivery
@@ -547,7 +669,29 @@ gateway text result
 
 - The design contains a clear TTS adapter boundary that does not leak vendor transport details into
   planner, executor, or websocket code.
-- Hosted Fish is the documented v1 TTS backend.
+- Hosted Fish remains the intended v1 TTS backend, but no live Fish dependency is required yet.
+
+## Phase 5.5: Fish Audio Hosted TTS Integration
+
+### Goal
+
+Add the first live text-to-speech stage through the TTS adapter boundary without taking on
+self-hosted GPU infrastructure.
+
+### Scope
+
+- Use Fish Audio hosted APIs rather than self-hosted Fish-Speech workers in the first
+  implementation slice.
+- Start with simple request/response HTTP integration.
+- Keep Fish integration downstream of executor text output.
+- Deliver synthesized audio to the client as one final `audio.output` event with metadata and
+  inline base64 payload in v1.
+
+### Exit Criteria
+
+- The gateway can optionally emit final synthesized audio through the established TTS boundary.
+- Live Fish integration does not leak vendor transport details into planner, executor, or websocket
+  code.
 
 ## Phase 6: Streaming-Ready Internal Event Model
 
@@ -641,8 +785,11 @@ Revisit the deferred voice/streaming/infrastructure options after the first gate
 
 1. First documented architecture baseline: after Phase 0.
 2. First stable websocket text-turn protocol: after Phase 1.
-3. First usable AI gateway milestone: after Phase 2.
-4. First OpenAI-backed text response through the gateway: after Phase 3/4.
-5. First hosted TTS-backed end-to-end response path: after Phase 5.
-6. First streaming-ready internal event model without client-visible deltas: after Phase 6.
-7. First evidence-based revisit of streaming/self-hosted alternatives: after Phase 7.
+3. First runnable gateway ingress/session-handoff milestone: after Phase 2.
+4. First local stubbed turn-completion path through the gateway: after Phase 2.5.
+5. First explicit OpenAI executor boundary: after Phase 3.
+6. First OpenAI-backed text response through the gateway: after Phase 3.5.
+7. First explicit TTS adapter boundary: after Phase 5.
+8. First hosted TTS-backed end-to-end response path: after Phase 5.5.
+9. First streaming-ready internal event model without client-visible deltas: after Phase 6.
+10. First evidence-based revisit of streaming/self-hosted alternatives: after Phase 7.
