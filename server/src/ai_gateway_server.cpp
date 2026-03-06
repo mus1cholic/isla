@@ -156,9 +156,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
         if (closed_.load()) {
             return failed_precondition("websocket session is closed");
         }
-        return InvokeOnTransport([this, frame = std::string(frame)]() mutable {
-            return EnqueueWrite(std::move(frame));
-        });
+        return EnqueueWrite(std::string(frame));
     }
 
     void Close() override {
@@ -175,9 +173,29 @@ class LiveGatewaySession final : public GatewayLiveSession,
         auto self = shared_from_this();
         auto promise = std::make_shared<std::promise<absl::Status>>();
         std::future<absl::Status> future = promise->get_future();
+        // TODO(ai-gateway): Replace this blocking bridge with an async application-facing egress
+        // API on GatewayLiveSession. Current drawbacks:
+        // - Emit* callers block a thread waiting for transport-thread execution.
+        // - The implementation relies on `dispatch` re-entrancy to make same-executor calls safe.
+        // - Promise/future plumbing exists only to preserve a synchronous surface.
+        // Suggested follow-up:
+        // 1. Introduce async Emit* methods with an explicit completion callback or future result.
+        // 2. Marshal directly onto the session executor and complete after validation/enqueue.
+        // 3. Update callers/tests to await async completion instead of blocking here.
+        // `dispatch` preserves re-entrant calls from the transport executor by running inline
+        // when we're already on the correct thread, while still marshaling cross-thread calls
+        // back onto the session executor.
         asio::dispatch(
-            websocket_.get_executor(),
-            [self, promise, fn = std::forward<Fn>(fn)]() mutable { promise->set_value(fn()); });
+            websocket_.get_executor(), [self, promise, fn = std::forward<Fn>(fn)]() mutable {
+                try {
+                    promise->set_value(fn());
+                } catch (const std::exception& error) {
+                    promise->set_value(absl::InternalError(error.what()));
+                } catch (...) {
+                    promise->set_value(
+                        absl::InternalError("unknown exception during transport invocation"));
+                }
+            });
         return future.get();
     }
 
@@ -551,11 +569,7 @@ class GatewayServer::Impl {
         boost::system::error_code error;
         const asio::ip::address address = asio::ip::make_address(config_.bind_host, error);
         if (error) {
-            work_guard_.reset();
-            io_context_.stop();
-            if (io_thread_.joinable()) {
-                io_thread_.join();
-            }
+            StopIoThread();
             return absl::InvalidArgumentError(format_error("invalid bind_host", error));
         }
 
@@ -564,11 +578,7 @@ class GatewayServer::Impl {
         const auto open_result = acceptor_.open(protocol, error);
         static_cast<void>(open_result);
         if (error) {
-            work_guard_.reset();
-            io_context_.stop();
-            if (io_thread_.joinable()) {
-                io_thread_.join();
-            }
+            StopIoThread();
             return absl::UnavailableError(format_error("acceptor open failed", error));
         }
 
@@ -579,11 +589,7 @@ class GatewayServer::Impl {
         const auto set_option_result = acceptor_.set_option(reuse_address, error);
         static_cast<void>(set_option_result);
         if (error) {
-            work_guard_.reset();
-            io_context_.stop();
-            if (io_thread_.joinable()) {
-                io_thread_.join();
-            }
+            StopIoThread();
             return absl::UnavailableError(format_error("acceptor reuse_address failed", error));
         }
 #endif
@@ -591,33 +597,21 @@ class GatewayServer::Impl {
         const auto bind_result = acceptor_.bind(endpoint, error);
         static_cast<void>(bind_result);
         if (error) {
-            work_guard_.reset();
-            io_context_.stop();
-            if (io_thread_.joinable()) {
-                io_thread_.join();
-            }
+            StopIoThread();
             return absl::UnavailableError(format_error("acceptor bind failed", error));
         }
 
         const auto listen_result = acceptor_.listen(config_.listen_backlog, error);
         static_cast<void>(listen_result);
         if (error) {
-            work_guard_.reset();
-            io_context_.stop();
-            if (io_thread_.joinable()) {
-                io_thread_.join();
-            }
+            StopIoThread();
             return absl::UnavailableError(format_error("acceptor listen failed", error));
         }
 
         const auto non_blocking_result = acceptor_.non_blocking(true, error);
         static_cast<void>(non_blocking_result);
         if (error) {
-            work_guard_.reset();
-            io_context_.stop();
-            if (io_thread_.joinable()) {
-                io_thread_.join();
-            }
+            StopIoThread();
             return absl::UnavailableError(format_error("acceptor non_blocking failed", error));
         }
 
@@ -629,11 +623,7 @@ class GatewayServer::Impl {
             const auto close_result = acceptor_.close(close_error);
             static_cast<void>(close_result);
             running_ = false;
-            work_guard_.reset();
-            io_context_.stop();
-            if (io_thread_.joinable()) {
-                io_thread_.join();
-            }
+            StopIoThread();
             return absl::UnavailableError(format_error("acceptor local_endpoint failed", error));
         }
         bound_port_ = local_endpoint.port();
@@ -686,11 +676,7 @@ class GatewayServer::Impl {
             }
         }
 
-        work_guard_.reset();
-        io_context_.stop();
-        if (io_thread_.joinable()) {
-            io_thread_.join();
-        }
+        StopIoThread();
 
         std::lock_guard<std::mutex> lock(mutex_);
         bound_port_ = 0;
@@ -717,6 +703,14 @@ class GatewayServer::Impl {
     }
 
   private:
+    void StopIoThread() {
+        work_guard_.reset();
+        io_context_.stop();
+        if (io_thread_.joinable()) {
+            io_thread_.join();
+        }
+    }
+
     void AcceptLoop() {
         VLOG(1) << "AI gateway accept loop started";
         while (!stop_requested_.load()) {
