@@ -64,22 +64,22 @@ Operational interpretation:
 > [!NOTE]
 > **Current status (2026-03-06):**
 > - Phase 0 is implemented.
-> - Phase 1 is partially implemented.
+> - Phase 1 is implemented.
 > - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
 > - Shared protocol/session scaffolding now exists in:
 >   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
 >   - `shared/include/isla/shared/ai_gateway_session.hpp`
 >   - `server/src/ai_gateway_session_handler.hpp`
+>   - `server/src/ai_gateway_websocket_session.hpp`
 > - The implemented Phase-1 slice currently covers:
 >   - typed JSON protocol messages and JSON parse/serialize coverage
 >   - session/turn lifecycle state enforcement for one in-flight turn per session
 >   - a transport-facing session handler that accepts incoming JSON frames and emits protocol
 >     frames/events for later WebSocket integration
+>   - a WebSocket-facing session adapter that converts text frames to/from the session handler
+>   - per-connection session ID generation and factory wiring
+>   - transport-boundary connection close/error sequencing for active turns and session teardown
 >   - dedicated protocol/session handler tests under Bazel
-> - Phase 1 is not complete yet because the repo still lacks:
->   - the actual WebSocket text-frame adapter around the session handler
->   - per-connection session ID generation/wiring from a real connection/session factory
->   - transport-boundary integration for connection close/error sequencing
 > - No runnable gateway server process has been implemented yet.
 > - The chosen v1 transport split is:
 >   - client/server: WebSocket
@@ -109,6 +109,9 @@ Operational interpretation:
   `server/src`, including typed JSON message parsing/serialization, session lifecycle state
   enforcement, a transport-facing session handler, and dedicated tests; actual WebSocket adapter
   wiring remains pending.
+- 2026-03-06: completed the remaining Phase-1 transport wiring in `server/src` with a
+  WebSocket-facing session adapter, sequential per-connection session ID generation, connection
+  factory wiring, and transport close/error sequencing tests.
 
 ## Architecture Snapshot
 
@@ -191,17 +194,16 @@ Freeze the first server-side architecture and protocol boundaries before impleme
 ## Phase 1: Client/Gateway WebSocket Protocol
 
 > [!NOTE]
-> **Status (2026-03-06): Partially implemented.**
+> **Status (2026-03-06): Implemented.**
 > - Implemented so far:
 >   - shared protocol types for `session.*`, `text.*`, `audio.output`, `turn.*`, and `error`
 >   - JSON parse/serialize support behind the shared protocol boundary
 >   - `SessionState` lifecycle enforcement for one active turn per session
 >   - `GatewaySessionHandler` for transport-facing frame handling and immediate protocol replies
+>   - `GatewayWebSocketSessionAdapter` for WebSocket text-frame/session lifecycle wiring
+>   - per-connection session ID generation and `GatewayWebSocketSessionFactory`
+>   - transport-boundary close/error sequencing for active turns and session termination
 >   - protocol/session/session-handler regression tests
-> - Still required before Phase 1 is fully complete:
->   - a real WebSocket-facing adapter that converts text frames to/from `GatewaySessionHandler`
->   - per-connection session ID generation and wiring
->   - final transport-boundary handling for connection close and terminal turn error sequencing
 
 ### Goal
 

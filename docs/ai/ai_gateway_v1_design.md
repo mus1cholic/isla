@@ -27,14 +27,16 @@ As of 2026-03-06:
   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
   - `shared/include/isla/shared/ai_gateway_session.hpp`
   - `server/src/ai_gateway_session_handler.hpp`
+  - `server/src/ai_gateway_websocket_session.hpp`
 - the repo now has:
   - typed protocol message definitions
   - JSON parse/serialize support for the v1 message contract
   - session/turn lifecycle enforcement for one in-flight turn per session
   - a transport-facing session handler that consumes incoming JSON frames and emits outgoing
     protocol frames/events
+  - a WebSocket-facing session adapter and session factory that wire per-connection session IDs,
+    text-frame handling, and transport close/error sequencing
 - no runnable AI gateway server process exists yet
-- no actual client/gateway WebSocket adapter exists yet
 - no OpenAI integration exists yet
 - no Fish Audio integration exists yet
 
@@ -145,7 +147,8 @@ Current implementation note (2026-03-06):
 - message structs and JSON parse/serialize support are implemented
 - session state enforcement is implemented
 - a transport-facing session handler is implemented
-- the actual WebSocket text-frame adapter that owns a live connection is still pending
+- a WebSocket-facing session adapter/factory is implemented for text-frame handling and
+  connection-lifecycle wiring
 
 ### Message Shapes
 
@@ -362,9 +365,6 @@ As of 2026-03-06, the following Phase-1-aligned implementation exists:
   - outgoing protocol frames
   - accepted-turn events
   - cancel-request events
-
-The following Phase-1 work remains before the client/gateway transport boundary is fully wired:
-
-- a WebSocket-facing adapter that turns text frames into handler calls and writes returned frames
-- per-connection session ID generation/wiring
-- transport-boundary close/error sequencing tied to a real connection lifecycle
+- a WebSocket-facing session adapter that turns text frames into handler calls, writes returned
+  frames, and owns connection close/error sequencing
+- per-connection session ID generation via `GatewayWebSocketSessionFactory`
