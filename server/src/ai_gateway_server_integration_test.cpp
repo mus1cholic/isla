@@ -344,6 +344,75 @@ TEST_F(GatewayServerTest, ProtocolErrorsOverRealSocketSendErrorAndKeepSessionOpe
     EXPECT_TRUE(sink_.closed_sessions.empty());
 }
 
+TEST_F(GatewayServerTest, ServerOwnedWritesReachIdleClientWhileAsyncReadIsPending) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    ASSERT_TRUE(
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+            .ok());
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.accepted_turns.size() == 1U; }));
+
+    const std::shared_ptr<GatewayLiveSession> live_session =
+        server_.session_registry().FindSession(session_id);
+    ASSERT_NE(live_session, nullptr);
+    ASSERT_TRUE(live_session->EmitTextOutput("turn_1", "stub reply").ok());
+    ASSERT_TRUE(live_session->EmitTurnCompleted("turn_1").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> text_output = client.ReadJsonFrame();
+    ASSERT_TRUE(text_output.ok()) << text_output.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(*text_output));
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_output).turn_id, "turn_1");
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_output).text, "stub reply");
+
+    const absl::StatusOr<protocol::GatewayMessage> turn_completed = client.ReadJsonFrame();
+    ASSERT_TRUE(turn_completed.ok()) << turn_completed.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*turn_completed));
+    EXPECT_EQ(std::get<protocol::TurnCompletedMessage>(*turn_completed).turn_id, "turn_1");
+
+    client.CloseTransport();
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
+}
+
+TEST_F(GatewayServerTest, ServerOwnedEmitFailsCleanlyAfterTransportClose) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    ASSERT_TRUE(
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+            .ok());
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.accepted_turns.size() == 1U; }));
+
+    const std::shared_ptr<GatewayLiveSession> live_session =
+        server_.session_registry().FindSession(session_id);
+    ASSERT_NE(live_session, nullptr);
+
+    client.CloseTransport();
+
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
+    ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
+
+    const absl::Status status = live_session->EmitTextOutput("turn_1", "late reply");
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(std::string(status.message()).find("closed"), std::string::npos);
+}
+
 TEST_F(GatewayServerTest, StopClosesStartedSessionAndClearsRegistry) {
     {
         RealWebSocketClient client;

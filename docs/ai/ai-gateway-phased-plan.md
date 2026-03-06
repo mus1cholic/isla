@@ -6,7 +6,7 @@
 
 - A C++ desktop client/runtime codebase built around Bazel
 - A runnable Phase-2 AI gateway ingress server and WebSocket endpoint in `server/src`
-- No application-facing outbound turn-completion path yet
+- A narrow application-facing live-session egress API, but no stubbed responder/orchestration path yet
 - No existing OpenAI integration
 - No existing text-to-speech integration
 
@@ -112,11 +112,12 @@ Sequencing rule for the remaining work:
 >   - zero or one final audio result out
 > - Chunk-style streaming is intentionally deferred at the client protocol level, but the internal
 >   server abstraction should remain stream-capable from day one.
-> - No application-facing outbound emission API exists yet for `text.output`, `audio.output`,
->   `turn.completed`, `turn.cancelled`, or post-acceptance `error`.
-> - The current live transport is intentionally a synchronous Beast implementation with one thread
->   per session and a blocking read/write mutex; shared async execution remains deferred follow-up
->   work rather than a completed Phase-2 objective.
+> - A narrow application-facing live-session emission API now exists for `text.output`,
+>   `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`, but no
+>   responder/planner/executor path drives it yet.
+> - The live session transport now uses async Beast accept/read/write on the shared server
+>   `io_context`, with queued outbound writes so reads no longer block writes; the top-level
+>   accept loop remains a separate blocking server thread.
 > - Shutdown semantics for accepted in-flight turns still need to be finalized when Phase 2.5 adds
 >   server-owned turn completion and cancellation egress.
 > - Audio input and transcription are intentionally deferred from the first server slice.
@@ -125,6 +126,10 @@ Sequencing rule for the remaining work:
 
 ### Changelog
 
+- 2026-03-06: replaced the per-session blocking read/write mutex model with async per-session Beast
+  I/O on the shared server `io_context`, added a narrow `GatewayLiveSession` egress API for
+  server-owned protocol emission, and expanded unit/integration coverage for live-session egress,
+  send-failure handling, and idle-client outbound delivery.
 - 2026-03-06: completed Phase 2 with a runnable Boost.Beast-backed gateway server, application
   event sink/session registry boundary, entrypoint binary, shutdown/reaping hardening, and
   real-socket integration coverage; documented the remaining sync-transport limitations and
@@ -378,17 +383,21 @@ optional audio output.
 >   - `GatewayApplicationEventSink` callbacks for `TurnAcceptedEvent`,
 >     `TurnCancelRequestedEvent`, and `SessionClosedEvent`
 >   - `GatewaySessionRegistry` lookup/count surfaces for live sessions by `session_id`
+>   - a narrow `GatewayLiveSession` emission API for `text.output`, `audio.output`,
+>     `turn.completed`, `turn.cancelled`, and `error`
+>   - async per-session Beast accept/read/write on the shared server `io_context`, with queued
+>     writes so outbound frames are not blocked behind idle reads
 >   - server-owned logging for start/stop, accepted TCP/WebSocket connections, handshake
 >     rejection, and shutdown-triggered transport close
 >   - a closed-session reaper that joins finished session threads and prevents unbounded session
 >     retention
 >   - real-socket integration coverage for ingress, handshake/protocol failures, binary frames,
->     stop behavior, bind/startup failures, and session reaping
+>     stop behavior, bind/startup failures, session reaping, and server-owned idle-client egress
 > - Known implementation follow-ups:
->   - outbound turn-completion/cancellation emission remains deferred to Phase 2.5
->   - the current transport is synchronous Beast with one thread per session
->   - reads currently hold the socket mutex during blocking `websocket_.read(...)`, so later
->     concurrent server-owned writes should either stay carefully serialized or move to async I/O
+>   - deterministic stubbed turn-completion/cancellation behavior remains deferred to Phase 2.5
+>   - the server still uses a blocking accept loop thread above the async per-session transport
+>   - the current `GatewayLiveSession` egress API is synchronous to callers via a blocking bridge
+>     onto the transport executor; a future async application-facing emit surface is still desirable
 >   - accepted in-flight turn shutdown semantics remain intentionally incomplete until server-owned
 >     egress exists
 
@@ -471,12 +480,16 @@ to application-owned code.
 >   reparsing raw client JSON outside the transport boundary.
 > - Live sessions are addressable by `session_id` and are reaped after close, so this phase can
 >   target application-facing turn egress rather than connection ownership.
+> - A narrow `GatewayLiveSession` emit API already exists for server-owned outbound protocol frames,
+>   so this phase can focus on responder/orchestration behavior instead of inventing the first
+>   transport-facing egress surface.
 > - This phase should define the first explicit terminal policy for accepted in-flight turns during
 >   `server.Stop()`, because Phase 2 currently guarantees transport/session teardown but not a
 >   client-visible final turn event.
-> - The current sync Beast transport is good enough for final-response stub work, but any design
->   that expects concurrent server-owned writes or later chunk streaming should plan for a future
->   async transport refactor rather than expanding the blocking mutex model.
+> - The per-session transport is now async/queued and good enough for final-response stub work, but
+>   the current application-facing emit API is still synchronous to callers via a blocking bridge
+>   onto the transport executor. If later phases add heavier orchestration or streaming, prefer a
+>   fully async caller-facing emit contract rather than expanding that bridge.
 
 ### Goal
 
@@ -765,9 +778,10 @@ self-hosted GPU infrastructure.
 >   than introducing a second parallel client contract.
 > - The current adapter already centralizes frame writes, close sequencing, and log sanitization;
 >   streaming extensions should preserve that single transport boundary.
-> - The current Phase-2 live transport is synchronous and intentionally optimized for final-output
->   delivery, so exposing real concurrent outbound streaming will likely require an async session
->   transport model before this phase is considered complete.
+> - The current Phase-2 live transport now supports async queued per-session writes, which removes
+>   the earlier read-blocks-write limitation for final-output delivery.
+> - Client-visible chunk streaming and a non-blocking application-facing emit contract still remain
+>   future work beyond the current final-output-oriented egress seam.
 
 ### Goal
 

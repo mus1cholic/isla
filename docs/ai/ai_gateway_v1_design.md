@@ -49,11 +49,13 @@ As of 2026-03-06:
   - `GatewaySessionRegistry` lookup/count support for live sessions by `session_id`
   - server start/stop logging, startup validation, shutdown handling, and closed-session reaping
   - real-socket integration coverage for ingress, handshake/protocol failures, binary frames,
-    shutdown behavior, and session cleanup
-- no application-facing outbound turn-emission path exists yet for `text.output`, `audio.output`,
-  `turn.completed`, `turn.cancelled`, or post-acceptance `error`
-- the live transport is currently a synchronous Beast implementation with one thread per session;
-  async shared-executor transport remains deferred follow-up work
+    shutdown behavior, session cleanup, and server-owned egress while a client is idle
+- a narrow application-facing live-session emission API now exists for `text.output`,
+  `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`, but no stub
+  responder or planner/executor path drives it yet
+- live session transport now uses async Beast accept/read/write on the shared server `io_context`,
+  with queued outbound writes so reads no longer block writes; the top-level accept loop remains a
+  separate blocking server thread
 - no OpenAI integration exists yet
 - no Fish Audio integration exists yet
 
@@ -170,8 +172,10 @@ Current implementation note (2026-03-06):
 - adapter-boundary logging now sanitizes untrusted fields before writing logs
 - a runnable Beast-backed gateway server and `isla_ai_gateway` binary now exist for real-socket
   ingress testing and application-owned typed event handoff
-- server-owned outbound turn completion remains unimplemented; later phases still need the first
-  application-facing egress path
+- a narrow server-owned live-session egress API now exists for outbound protocol emission through
+  the existing adapter/session-handler boundary
+- deterministic application-owned turn completion/cancellation orchestration remains unimplemented;
+  later phases still need the first real responder path
 
 ### Message Shapes
 
@@ -405,11 +409,16 @@ As of 2026-03-06, the following Phase-2-aligned implementation exists:
   - `TurnCancelRequestedEvent`
   - `SessionClosedEvent`
 - a `GatewaySessionRegistry` that tracks live sessions and supports `session_id` lookup/count
+- a `GatewayLiveSession` API that can now emit server-owned `text.output`, `audio.output`,
+  `turn.completed`, `turn.cancelled`, and `error` frames through the existing session adapter
+- async per-session Beast accept/read/write on the shared server `io_context`, with queued writes
+  so outbound frames are no longer blocked behind an idle read
 - a closed-session reaper that joins finished session threads and prevents indefinite retention of
   closed `LiveGatewaySession` objects
 - integration tests that cover:
   - `session.start` / `session.end` over a real socket
   - typed accepted-turn and cancel handoff
+  - server-owned egress while the client is idle
   - invalid handshake rejection
   - protocol error handling without tearing down the session
   - binary-frame rejection
@@ -419,9 +428,10 @@ As of 2026-03-06, the following Phase-2-aligned implementation exists:
 
 Known carry-forward constraints from the current implementation:
 
-- application-facing outbound turn emission is still missing and belongs to Phase 2.5
+- deterministic application-owned outbound turn handling is still missing and belongs to Phase 2.5
 - accepted in-flight turns do not yet have a fully defined shutdown terminal policy during
   `server.Stop()`
-- the current transport holds a blocking read under a socket mutex, so future concurrent outbound
-  writes or real chunk streaming should plan for an async transport refactor instead of growing the
-  current sync model
+- the server still uses a blocking accept loop thread above the async per-session transport
+- the current `GatewayLiveSession` egress API is synchronous to callers via a blocking bridge onto
+  the transport executor; a future async application-facing emit surface is still desirable before
+  growing heavy server-owned streaming or orchestration work
