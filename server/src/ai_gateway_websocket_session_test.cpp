@@ -222,6 +222,206 @@ TEST(AiGatewayWebSocketSessionTest, EmitTextOutputSendFailureClosesSession) {
     EXPECT_TRUE(session.is_closed());
 }
 
+TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendsFrameAfterTextOutput) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+    ASSERT_TRUE(session.EmitTextOutput("turn_1", "stub reply").ok());
+
+    ASSERT_TRUE(session.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==").ok());
+
+    ASSERT_EQ(connection.sent_frames.size(), 3U);
+    const absl::StatusOr<protocol::GatewayMessage> audio_frame =
+        parse_frame(connection.sent_frames[2]);
+    ASSERT_TRUE(audio_frame.ok()) << audio_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::AudioOutputMessage>(*audio_frame));
+    EXPECT_EQ(std::get<protocol::AudioOutputMessage>(*audio_frame).turn_id, "turn_1");
+    EXPECT_EQ(std::get<protocol::AudioOutputMessage>(*audio_frame).mime_type, "audio/wav");
+    EXPECT_EQ(std::get<protocol::AudioOutputMessage>(*audio_frame).audio_base64, "UklGRg==");
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputRejectsWithoutMatchingTurnState) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+
+    const absl::Status status = session.EmitAudioOutput("turn_2", "audio/wav", "UklGRg==");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.message(), "turn_id does not match the active turn");
+    EXPECT_FALSE(session.is_closed());
+    EXPECT_EQ(connection.close_calls, 0);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    EXPECT_TRUE(sink.closed_sessions.empty());
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendFailureClosesSession) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+    ASSERT_TRUE(session.EmitTextOutput("turn_1", "stub reply").ok());
+    connection.fail_next_send_ = true;
+
+    const absl::Status status = session.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.sent_frames.size(), 2U);
+    ASSERT_EQ(sink.closed_sessions.size(), 1U);
+    EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
+    ASSERT_TRUE(sink.closed_sessions.front().inflight_turn_id.has_value());
+    EXPECT_EQ(*sink.closed_sessions.front().inflight_turn_id, "turn_1");
+    EXPECT_TRUE(session.is_closed());
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendsFrameAfterCancelRequest) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+    ASSERT_TRUE(
+        session.HandleIncomingTextFrame(R"json({"type":"turn.cancel","turn_id":"turn_1"})json")
+            .ok());
+
+    ASSERT_TRUE(session.EmitTurnCancelled("turn_1").ok());
+
+    ASSERT_EQ(connection.sent_frames.size(), 2U);
+    const absl::StatusOr<protocol::GatewayMessage> cancelled_frame =
+        parse_frame(connection.sent_frames[1]);
+    ASSERT_TRUE(cancelled_frame.ok()) << cancelled_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TurnCancelledMessage>(*cancelled_frame));
+    EXPECT_EQ(std::get<protocol::TurnCancelledMessage>(*cancelled_frame).turn_id, "turn_1");
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledRejectsWithoutCancelRequest) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+
+    const absl::Status status = session.EmitTurnCancelled("turn_1");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.message(), "turn cancellation was not requested");
+    EXPECT_FALSE(session.is_closed());
+    EXPECT_EQ(connection.close_calls, 0);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    EXPECT_TRUE(sink.closed_sessions.empty());
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendFailureClosesSession) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+    ASSERT_TRUE(
+        session.HandleIncomingTextFrame(R"json({"type":"turn.cancel","turn_id":"turn_1"})json")
+            .ok());
+    connection.fail_next_send_ = true;
+
+    const absl::Status status = session.EmitTurnCancelled("turn_1");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    ASSERT_EQ(sink.closed_sessions.size(), 1U);
+    EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
+    EXPECT_FALSE(sink.closed_sessions.front().inflight_turn_id.has_value());
+    EXPECT_TRUE(session.is_closed());
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitErrorSendsFrameWithTurnId) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+
+    ASSERT_TRUE(session.EmitError("turn_1", "transport_error", "socket failed").ok());
+
+    ASSERT_EQ(connection.sent_frames.size(), 2U);
+    const absl::StatusOr<protocol::GatewayMessage> error_frame =
+        parse_frame(connection.sent_frames[1]);
+    ASSERT_TRUE(error_frame.ok()) << error_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*error_frame));
+    EXPECT_EQ(std::get<protocol::ErrorMessage>(*error_frame).code, "transport_error");
+    ASSERT_TRUE(std::get<protocol::ErrorMessage>(*error_frame).turn_id.has_value());
+    EXPECT_EQ(*std::get<protocol::ErrorMessage>(*error_frame).turn_id, "turn_1");
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitErrorRejectsEmptyCode) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+
+    const absl::Status status = session.EmitError(std::nullopt, "", "socket failed");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.message(), "error emission requires non-empty code and message");
+    EXPECT_FALSE(session.is_closed());
+    EXPECT_EQ(connection.close_calls, 0);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    EXPECT_TRUE(sink.closed_sessions.empty());
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitErrorSendFailureClosesSession) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    connection.fail_next_send_ = true;
+
+    const absl::Status status = session.EmitError(std::nullopt, "transport_error", "socket failed");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    ASSERT_EQ(sink.closed_sessions.size(), 1U);
+    EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
+    EXPECT_FALSE(sink.closed_sessions.front().inflight_turn_id.has_value());
+    EXPECT_TRUE(session.is_closed());
+}
+
 TEST(AiGatewayWebSocketSessionTest, SessionEndClosesTransportAfterReply) {
     FakeWebSocketConnection connection;
     RecordingEventSink sink;
@@ -434,6 +634,29 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureDuringTransportErrorStopsFurtherF
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
     ASSERT_TRUE(sink.closed_sessions.front().inflight_turn_id.has_value());
     EXPECT_EQ(*sink.closed_sessions.front().inflight_turn_id, "turn_1");
+}
+
+TEST(AiGatewayWebSocketSessionTest, HandleSendFailureClosesSessionWithoutClosingTransport) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+
+    session.HandleSendFailure("send failed");
+
+    EXPECT_EQ(connection.close_calls, 0);
+    ASSERT_EQ(sink.closed_sessions.size(), 1U);
+    EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
+    EXPECT_TRUE(sink.closed_sessions.front().session_started);
+    EXPECT_EQ(sink.closed_sessions.front().detail, "send failed");
+    ASSERT_TRUE(sink.closed_sessions.front().inflight_turn_id.has_value());
+    EXPECT_EQ(*sink.closed_sessions.front().inflight_turn_id, "turn_1");
+    EXPECT_TRUE(session.is_closed());
 }
 
 TEST(AiGatewayWebSocketSessionTest, ServerShutdownClosesSessionWithoutTransportWarningPath) {
