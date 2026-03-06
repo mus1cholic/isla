@@ -39,7 +39,16 @@ std::string build_stub_reply(std::string_view prefix, std::string_view text) {
 } // namespace
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
-    : config_(std::move(config)), worker_([this] { WorkerLoop(); }) {}
+    : config_(std::move(config)), worker_([this] {
+          try {
+              WorkerLoop();
+          } catch (const std::exception& error) {
+              LOG(ERROR) << "AI gateway stub worker terminated with exception detail='"
+                         << SanitizeForLog(error.what()) << "'";
+          } catch (...) {
+              LOG(ERROR) << "AI gateway stub worker terminated with unknown exception";
+          }
+      }) {}
 
 GatewayStubResponder::~GatewayStubResponder() {
     StopWorker();
@@ -68,25 +77,18 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
                 .text = event.text,
                 .ready_at = Clock::now() + config_.response_delay,
                 .cancel_requested = false,
-                .finalizing = false,
             };
         }
     }
 
     if (stopping) {
-        GatewaySessionRegistry* registry = session_registry();
-        if (registry != nullptr) {
-            FinishServerStoppingTurn(
-                *registry,
-                PendingTurn{
-                    .session_id = event.session_id,
-                    .turn_id = event.turn_id,
-                    .text = event.text,
-                    .ready_at = Clock::now(),
-                    .cancel_requested = false,
-                    .finalizing = true,
-                });
-        }
+        AsyncFinishServerStoppingTurn(PendingTurn{
+            .session_id = event.session_id,
+            .turn_id = event.turn_id,
+            .text = event.text,
+            .ready_at = Clock::now(),
+            .cancel_requested = false,
+        });
         return;
     }
 
@@ -97,35 +99,11 @@ void GatewayStubResponder::OnTurnCancelRequested(const TurnCancelRequestedEvent&
     LOG(INFO) << "AI gateway stub received cancel session=" << event.session_id
               << " turn_id=" << SanitizeForLog(event.turn_id);
 
-    bool stopping = false;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        stopping = stopping_;
-        auto& pending = pending_turns_[event.session_id];
-        pending.session_id = event.session_id;
-        pending.turn_id = event.turn_id;
-        pending.ready_at = Clock::now();
-        pending.cancel_requested = true;
-        VLOG(1) << "AI gateway stub queued cancellation session=" << event.session_id
-                << " turn_id=" << SanitizeForLog(event.turn_id);
-    }
-
-    if (stopping) {
-        GatewaySessionRegistry* registry = session_registry();
-        if (registry == nullptr) {
-            return;
-        }
-        FinishCancelledTurn(PendingTurn{
-            .session_id = event.session_id,
-            .turn_id = event.turn_id,
-            .ready_at = Clock::now(),
-            .cancel_requested = true,
-            .finalizing = true,
-        });
+    if (!TryMarkTrackedTurnCancelled(event.session_id, event.turn_id)) {
+        LOG(WARNING) << "AI gateway stub ignored cancel for untracked turn session="
+                     << event.session_id << " turn_id=" << SanitizeForLog(event.turn_id);
         return;
     }
-
-    cv_.notify_all();
 }
 
 void GatewayStubResponder::OnSessionClosed(const SessionClosedEvent& event) {
@@ -133,8 +111,9 @@ void GatewayStubResponder::OnSessionClosed(const SessionClosedEvent& event) {
               << " detail='" << SanitizeForLog(event.detail) << "'";
 
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto erased = pending_turns_.erase(event.session_id);
-    if (erased > 0U) {
+    const auto pending_erased = pending_turns_.erase(event.session_id);
+    const auto in_progress_erased = in_progress_turns_.erase(event.session_id);
+    if (pending_erased > 0U || in_progress_erased > 0U) {
         VLOG(1) << "AI gateway stub dropped pending turn for closed session session="
                 << event.session_id;
     }
@@ -148,11 +127,15 @@ void GatewayStubResponder::OnServerStopping(GatewaySessionRegistry& session_regi
         std::lock_guard<std::mutex> lock(mutex_);
         stopping_ = true;
         for (const auto& [session_id, turn] : pending_turns_) {
-            if (!turn.finalizing) {
-                turns_to_finalize.push_back(turn);
-            }
+            static_cast<void>(session_id);
+            turns_to_finalize.push_back(turn);
+        }
+        for (const auto& [session_id, turn] : in_progress_turns_) {
+            static_cast<void>(session_id);
+            turns_to_finalize.push_back(turn);
         }
         pending_turns_.clear();
+        in_progress_turns_.clear();
     }
 
     VLOG(1) << "AI gateway stub stopping pending_turns=" << turns_to_finalize.size();
@@ -188,19 +171,22 @@ void GatewayStubResponder::WorkerLoop() {
                 }
 
                 const Clock::time_point now = Clock::now();
-                for (auto& [session_id, turn] : pending_turns_) {
-                    static_cast<void>(session_id);
-                    if (turn.finalizing) {
-                        continue;
-                    }
+                for (auto it = pending_turns_.begin(); it != pending_turns_.end(); ++it) {
+                    PendingTurn& turn = it->second;
                     if (turn.cancel_requested) {
-                        turn.finalizing = true;
                         next_turn = turn;
+                        VLOG(1) << "AI gateway stub dequeued cancellation session=" << it->first
+                                << " turn_id=" << SanitizeForLog(turn.turn_id);
+                        in_progress_turns_[it->first] = turn;
+                        pending_turns_.erase(it);
                         break;
                     }
                     if (turn.ready_at <= now) {
-                        turn.finalizing = true;
                         next_turn = turn;
+                        VLOG(1) << "AI gateway stub dequeued ready turn session=" << it->first
+                                << " turn_id=" << SanitizeForLog(turn.turn_id);
+                        in_progress_turns_[it->first] = turn;
+                        pending_turns_.erase(it);
                         break;
                     }
                     if (!next_deadline.has_value() || turn.ready_at < *next_deadline) {
@@ -225,16 +211,198 @@ void GatewayStubResponder::WorkerLoop() {
             continue;
         }
 
-        if (next_turn->cancel_requested) {
-            FinishCancelledTurn(*next_turn);
-        } else {
-            FinishSuccessfulTurn(*next_turn);
+        try {
+            if (next_turn->cancel_requested) {
+                FinishCancelledTurn(*next_turn);
+            } else {
+                FinishSuccessfulTurn(*next_turn);
+            }
+        } catch (const std::exception& error) {
+            LOG(ERROR) << "AI gateway stub turn processing threw session=" << next_turn->session_id
+                       << " turn_id=" << SanitizeForLog(next_turn->turn_id) << " detail='"
+                       << SanitizeForLog(error.what()) << "'";
+            FinishProcessingExceptionTurn(*next_turn, error.what());
+        } catch (...) {
+            LOG(ERROR) << "AI gateway stub turn processing threw session=" << next_turn->session_id
+                       << " turn_id=" << SanitizeForLog(next_turn->turn_id)
+                       << " detail='unknown exception'";
+            FinishProcessingExceptionTurn(*next_turn, "unknown exception");
         }
-        ForgetTurn(next_turn->session_id, next_turn->turn_id);
+        ForgetInProgressTurn(next_turn->session_id, next_turn->turn_id);
+    }
+}
+
+bool GatewayStubResponder::TryMarkTrackedTurnCancelled(std::string_view session_id,
+                                                       std::string_view turn_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (auto pending = pending_turns_.find(std::string(session_id));
+        pending != pending_turns_.end()) {
+        if (pending->second.turn_id != turn_id) {
+            return false;
+        }
+        pending->second.ready_at = Clock::now();
+        pending->second.cancel_requested = true;
+        VLOG(1) << "AI gateway stub queued cancellation session=" << session_id
+                << " turn_id=" << SanitizeForLog(turn_id);
+        cv_.notify_all();
+        return true;
+    }
+
+    if (auto in_progress = in_progress_turns_.find(std::string(session_id));
+        in_progress != in_progress_turns_.end()) {
+        if (in_progress->second.turn_id != turn_id) {
+            return false;
+        }
+        in_progress->second.cancel_requested = true;
+        VLOG(1) << "AI gateway stub marked in-progress cancellation session=" << session_id
+                << " turn_id=" << SanitizeForLog(turn_id);
+        return true;
+    }
+
+    return false;
+}
+
+bool GatewayStubResponder::IsTrackedTurnCancelled(std::string_view session_id,
+                                                  std::string_view turn_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto in_progress = in_progress_turns_.find(std::string(session_id));
+    return in_progress != in_progress_turns_.end() && in_progress->second.turn_id == turn_id &&
+           in_progress->second.cancel_requested;
+}
+
+bool GatewayStubResponder::ShouldAbortTrackedTurn(std::string_view session_id,
+                                                  std::string_view turn_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!stopping_) {
+        return false;
+    }
+    const auto in_progress = in_progress_turns_.find(std::string(session_id));
+    return in_progress == in_progress_turns_.end() || in_progress->second.turn_id != turn_id;
+}
+
+void GatewayStubResponder::ForgetInProgressTurn(std::string_view session_id,
+                                                std::string_view turn_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = in_progress_turns_.find(std::string(session_id));
+    if (it != in_progress_turns_.end() && it->second.turn_id == turn_id) {
+        in_progress_turns_.erase(it);
+    }
+}
+
+void GatewayStubResponder::AsyncFinishServerStoppingTurn(const PendingTurn& turn) {
+    const std::shared_ptr<GatewayLiveSession> live_session =
+        session_registry() == nullptr ? nullptr : session_registry()->FindSession(turn.session_id);
+    if (live_session == nullptr) {
+        LOG(WARNING) << "AI gateway stub lost live session during async shutdown session="
+                     << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
+        return;
+    }
+
+    if (turn.cancel_requested) {
+        VLOG(1) << "AI gateway stub asynchronously emitting shutdown cancellation session="
+                << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
+        live_session->AsyncEmitTurnCancelled(
+            turn.turn_id,
+            [session_id = turn.session_id, turn_id = turn.turn_id](absl::Status status) {
+                if (!status.ok()) {
+                    LOG(WARNING) << "AI gateway stub failed async shutdown cancellation session="
+                                 << session_id << " turn_id=" << SanitizeForLog(turn_id)
+                                 << " detail='" << SanitizeForLog(status.message()) << "'";
+                }
+            });
+        return;
+    }
+
+    VLOG(1) << "AI gateway stub asynchronously emitting shutdown terminal error session="
+            << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
+    live_session->AsyncEmitError(
+        turn.turn_id, "server_stopping", "server stopping",
+        [live_session, session_id = turn.session_id, turn_id = turn.turn_id](absl::Status status) {
+            if (!status.ok()) {
+                LOG(WARNING) << "AI gateway stub failed async shutdown error session=" << session_id
+                             << " turn_id=" << SanitizeForLog(turn_id) << " detail='"
+                             << SanitizeForLog(status.message()) << "'";
+                return;
+            }
+            live_session->AsyncEmitTurnCompleted(
+                turn_id, [session_id, turn_id](absl::Status completion_status) {
+                    if (!completion_status.ok()) {
+                        LOG(WARNING)
+                            << "AI gateway stub failed async shutdown completion session="
+                            << session_id << " turn_id=" << SanitizeForLog(turn_id) << " detail='"
+                            << SanitizeForLog(completion_status.message()) << "'";
+                    }
+                });
+        });
+}
+
+void GatewayStubResponder::FinishProcessingExceptionTurn(const PendingTurn& turn,
+                                                         std::string_view detail) noexcept {
+    try {
+        GatewaySessionRegistry* registry = session_registry();
+        if (registry == nullptr) {
+            LOG(WARNING) << "AI gateway stub missing session registry after processing failure"
+                         << " session=" << turn.session_id
+                         << " turn_id=" << SanitizeForLog(turn.turn_id);
+            return;
+        }
+
+        const std::shared_ptr<GatewayLiveSession> live_session =
+            registry->FindSession(turn.session_id);
+        if (live_session == nullptr) {
+            LOG(WARNING) << "AI gateway stub lost live session after processing failure"
+                         << " session=" << turn.session_id
+                         << " turn_id=" << SanitizeForLog(turn.turn_id);
+            return;
+        }
+
+        absl::Status status = await_emit([&](GatewayEmitCallback on_complete) {
+            live_session->AsyncEmitError(turn.turn_id, "internal_error",
+                                         "stub responder processing failed",
+                                         std::move(on_complete));
+        });
+        if (!status.ok()) {
+            LOG(WARNING) << "AI gateway stub failed to emit processing error session="
+                         << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
+                         << " detail='" << SanitizeForLog(status.message()) << "'";
+            return;
+        }
+
+        status = await_emit([&](GatewayEmitCallback on_complete) {
+            live_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
+        });
+        if (!status.ok()) {
+            LOG(WARNING) << "AI gateway stub failed to emit processing completion session="
+                         << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
+                         << " detail='" << SanitizeForLog(status.message()) << "'";
+            return;
+        }
+
+        VLOG(1) << "AI gateway stub terminalized failed turn session=" << turn.session_id
+                << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                << SanitizeForLog(detail) << "'";
+    } catch (const std::exception& error) {
+        LOG(ERROR) << "AI gateway stub exception fallback failed session=" << turn.session_id
+                   << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                   << SanitizeForLog(error.what()) << "'";
+    } catch (...) {
+        LOG(ERROR) << "AI gateway stub exception fallback failed session=" << turn.session_id
+                   << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='unknown exception'";
     }
 }
 
 void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
+    if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
+        VLOG(1) << "AI gateway stub aborted successful turn during shutdown session="
+                << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
+        return;
+    }
+    if (IsTrackedTurnCancelled(turn.session_id, turn.turn_id)) {
+        FinishCancelledTurn(turn);
+        return;
+    }
+
     GatewaySessionRegistry* registry = session_registry();
     if (registry == nullptr) {
         LOG(WARNING) << "AI gateway stub missing session registry for session=" << turn.session_id;
@@ -248,7 +416,45 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
-    const std::string reply = build_stub_reply(config_.response_prefix, turn.text);
+    if (turn.text.size() > kMaxTextInputBytes) {
+        LOG(ERROR) << "AI gateway stub rejected oversized accepted turn session=" << turn.session_id
+                   << " turn_id=" << SanitizeForLog(turn.turn_id)
+                   << " text_bytes=" << turn.text.size();
+        absl::Status status = await_emit([&](GatewayEmitCallback on_complete) {
+            live_session->AsyncEmitError(turn.turn_id, "bad_request",
+                                         "text.input text exceeds maximum length",
+                                         std::move(on_complete));
+        });
+        if (!status.ok()) {
+            LOG(WARNING) << "AI gateway stub failed to emit oversized-turn error session="
+                         << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
+                         << " detail='" << SanitizeForLog(status.message()) << "'";
+            return;
+        }
+
+        status = await_emit([&](GatewayEmitCallback on_complete) {
+            live_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
+        });
+        if (!status.ok()) {
+            LOG(WARNING) << "AI gateway stub failed to emit oversized-turn completion session="
+                         << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
+                         << " detail='" << SanitizeForLog(status.message()) << "'";
+        }
+        return;
+    }
+
+    const std::string reply = config_.reply_builder
+                                  ? config_.reply_builder(config_.response_prefix, turn.text)
+                                  : build_stub_reply(config_.response_prefix, turn.text);
+    if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
+        VLOG(1) << "AI gateway stub aborted reply emission during shutdown session="
+                << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
+        return;
+    }
+    if (IsTrackedTurnCancelled(turn.session_id, turn.turn_id)) {
+        FinishCancelledTurn(turn);
+        return;
+    }
     VLOG(1) << "AI gateway stub emitting successful reply session=" << turn.session_id
             << " turn_id=" << SanitizeForLog(turn.turn_id);
     absl::Status status = await_emit([&](GatewayEmitCallback on_complete) {
@@ -261,17 +467,33 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
+    if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
+        VLOG(1) << "AI gateway stub aborted completion during shutdown session=" << turn.session_id
+                << " turn_id=" << SanitizeForLog(turn.turn_id);
+        return;
+    }
+    if (IsTrackedTurnCancelled(turn.session_id, turn.turn_id)) {
+        FinishCancelledTurn(turn);
+        return;
+    }
+
     status = await_emit([&](GatewayEmitCallback on_complete) {
         live_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
     });
     if (!status.ok()) {
-        LOG(WARNING) << "AI gateway stub failed to emit turn completion session="
-                     << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
-                     << " detail='" << SanitizeForLog(status.message()) << "'";
+        LOG(WARNING) << "AI gateway stub failed to emit turn completion session=" << turn.session_id
+                     << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
     }
 }
 
 void GatewayStubResponder::FinishCancelledTurn(const PendingTurn& turn) {
+    if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
+        VLOG(1) << "AI gateway stub aborted cancellation during shutdown session="
+                << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
+        return;
+    }
+
     GatewaySessionRegistry* registry = session_registry();
     if (registry == nullptr) {
         LOG(WARNING) << "AI gateway stub missing session registry for cancel session="
@@ -281,8 +503,8 @@ void GatewayStubResponder::FinishCancelledTurn(const PendingTurn& turn) {
 
     const std::shared_ptr<GatewayLiveSession> live_session = registry->FindSession(turn.session_id);
     if (live_session == nullptr) {
-        LOG(WARNING) << "AI gateway stub lost live session before cancel session=" << turn.session_id
-                     << " turn_id=" << SanitizeForLog(turn.turn_id);
+        LOG(WARNING) << "AI gateway stub lost live session before cancel session="
+                     << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
         return;
     }
 
@@ -292,15 +514,16 @@ void GatewayStubResponder::FinishCancelledTurn(const PendingTurn& turn) {
         live_session->AsyncEmitTurnCancelled(turn.turn_id, std::move(on_complete));
     });
     if (!status.ok()) {
-        LOG(WARNING) << "AI gateway stub failed to emit turn cancelled session="
-                     << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
-                     << " detail='" << SanitizeForLog(status.message()) << "'";
+        LOG(WARNING) << "AI gateway stub failed to emit turn cancelled session=" << turn.session_id
+                     << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
     }
 }
 
 void GatewayStubResponder::FinishServerStoppingTurn(GatewaySessionRegistry& session_registry,
                                                     const PendingTurn& turn) {
-    const std::shared_ptr<GatewayLiveSession> live_session = session_registry.FindSession(turn.session_id);
+    const std::shared_ptr<GatewayLiveSession> live_session =
+        session_registry.FindSession(turn.session_id);
     if (live_session == nullptr) {
         LOG(WARNING) << "AI gateway stub lost live session during shutdown session="
                      << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
@@ -328,9 +551,9 @@ void GatewayStubResponder::FinishServerStoppingTurn(GatewaySessionRegistry& sess
                                      std::move(on_complete));
     });
     if (!status.ok()) {
-        LOG(WARNING) << "AI gateway stub failed to emit shutdown error session="
-                     << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
-                     << " detail='" << SanitizeForLog(status.message()) << "'";
+        LOG(WARNING) << "AI gateway stub failed to emit shutdown error session=" << turn.session_id
+                     << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
         return;
     }
 
@@ -341,19 +564,6 @@ void GatewayStubResponder::FinishServerStoppingTurn(GatewaySessionRegistry& sess
         LOG(WARNING) << "AI gateway stub failed to emit shutdown completion session="
                      << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
                      << " detail='" << SanitizeForLog(status.message()) << "'";
-    }
-}
-
-void GatewayStubResponder::ForgetTurn(std::string_view session_id, std::string_view turn_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = pending_turns_.find(std::string(session_id));
-    if (it == pending_turns_.end()) {
-        return;
-    }
-    if (it->second.turn_id == turn_id) {
-        VLOG(1) << "AI gateway stub forgetting pending turn session=" << session_id
-                << " turn_id=" << SanitizeForLog(turn_id);
-        pending_turns_.erase(it);
     }
 }
 

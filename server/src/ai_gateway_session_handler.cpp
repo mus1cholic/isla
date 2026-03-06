@@ -65,6 +65,10 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
     }
     case protocol::MessageType::TextInput: {
         const auto& text_input = std::get<protocol::TextInputMessage>(message);
+        if (text_input.text.size() > kMaxTextInputBytes) {
+            return RejectIncoming(text_input.turn_id, "bad_request",
+                                  "text.input text exceeds maximum length");
+        }
         const absl::Status status = session_state_.begin_turn(text_input.turn_id);
         if (!status.ok()) {
             return RejectIncoming(text_input.turn_id, "bad_request", status.message());

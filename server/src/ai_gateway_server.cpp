@@ -260,6 +260,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
 
         accept_in_progress_ = true;
         websocket_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
+        websocket_.read_message_max(kMaxInboundWebSocketMessageBytes);
         auto self = shared_from_this();
         websocket_.async_accept(
             [self](const boost::system::error_code& error) { self->OnAccept(error); });
@@ -289,6 +290,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
         }
 
         session_id_ = adapter_->session_id();
+        websocket_.read_message_max(kMaxInboundWebSocketMessageBytes);
         registry_.RegisterSession(shared_from_this());
         VLOG(1) << "AI gateway accepted websocket transport remote=" << remote_endpoint_
                 << " session=" << session_id_;
@@ -323,6 +325,15 @@ class LiveGatewaySession final : public GatewayLiveSession,
                 } else if (error == websocket::error::closed) {
                     adapter_->HandleTransportClosed();
                     transport_closed_ = true;
+                } else if (error == websocket::error::message_too_big ||
+                           error == websocket::error::buffer_overflow) {
+                    const absl::Status status =
+                        adapter_->HandleTransportError("websocket message too large");
+                    if (!status.ok() && !adapter_->is_closed()) {
+                        LOG(WARNING) << "AI gateway session=" << session_id_
+                                     << " failed handling oversized message detail='"
+                                     << SanitizeForLog(status.message()) << "'";
+                    }
                 } else {
                     const absl::Status status = adapter_->HandleTransportError(error.message());
                     if (!status.ok() && !adapter_->is_closed()) {
@@ -343,6 +354,21 @@ class LiveGatewaySession final : public GatewayLiveSession,
                 if (!status.ok() && !adapter_->is_closed()) {
                     LOG(WARNING) << "AI gateway session=" << session_id_
                                  << " failed handling invalid opcode detail='"
+                                 << SanitizeForLog(status.message()) << "'";
+                }
+            }
+            MaybeFinish();
+            return;
+        }
+
+        if (read_buffer_.size() > kMaxInboundWebSocketMessageBytes) {
+            read_buffer_.consume(read_buffer_.size());
+            if (adapter_ != nullptr) {
+                const absl::Status status =
+                    adapter_->HandleTransportError("websocket message too large");
+                if (!status.ok() && !adapter_->is_closed()) {
+                    LOG(WARNING) << "AI gateway session=" << session_id_
+                                 << " failed handling oversized payload detail='"
                                  << SanitizeForLog(status.message()) << "'";
                 }
             }
@@ -479,7 +505,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
     std::mutex state_mutex_;
     std::condition_variable finished_cv_;
     websocket::stream<tcp::socket> websocket_;
-    beast::flat_buffer read_buffer_;
+    beast::flat_buffer read_buffer_{ kMaxInboundWebSocketMessageBytes };
     GatewaySessionRegistry& registry_;
     GatewayWebSocketSessionFactory& factory_;
     std::unique_ptr<GatewayWebSocketSessionAdapter> adapter_;

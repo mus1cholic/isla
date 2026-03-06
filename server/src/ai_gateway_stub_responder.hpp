@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -14,6 +15,7 @@ namespace isla::server::ai_gateway {
 struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::string response_prefix = "stub echo: ";
+    std::function<std::string(std::string_view, std::string_view)> reply_builder;
 };
 
 class GatewayStubResponder final : public GatewayApplicationEventSink {
@@ -40,15 +42,23 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
         std::string text;
         Clock::time_point ready_at = Clock::time_point::min();
         bool cancel_requested = false;
-        bool finalizing = false;
     };
 
     void StopWorker();
     void WorkerLoop();
+    [[nodiscard]] bool TryMarkTrackedTurnCancelled(std::string_view session_id,
+                                                   std::string_view turn_id);
+    [[nodiscard]] bool IsTrackedTurnCancelled(std::string_view session_id,
+                                              std::string_view turn_id) const;
+    [[nodiscard]] bool ShouldAbortTrackedTurn(std::string_view session_id,
+                                              std::string_view turn_id) const;
+    void ForgetInProgressTurn(std::string_view session_id, std::string_view turn_id);
+    void AsyncFinishServerStoppingTurn(const PendingTurn& turn);
+    void FinishProcessingExceptionTurn(const PendingTurn& turn, std::string_view detail) noexcept;
     void FinishSuccessfulTurn(const PendingTurn& turn);
     void FinishCancelledTurn(const PendingTurn& turn);
-    void FinishServerStoppingTurn(GatewaySessionRegistry& session_registry, const PendingTurn& turn);
-    void ForgetTurn(std::string_view session_id, std::string_view turn_id);
+    void FinishServerStoppingTurn(GatewaySessionRegistry& session_registry,
+                                  const PendingTurn& turn);
     [[nodiscard]] GatewaySessionRegistry* session_registry() const;
 
     GatewayStubResponderConfig config_;
@@ -57,6 +67,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     std::thread worker_;
     GatewaySessionRegistry* session_registry_ = nullptr;
     absl::flat_hash_map<std::string, PendingTurn> pending_turns_;
+    absl::flat_hash_map<std::string, PendingTurn> in_progress_turns_;
     bool stopping_ = false;
     bool worker_stop_requested_ = false;
 };

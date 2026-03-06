@@ -107,6 +107,32 @@ TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
     EXPECT_EQ(*error.turn_id, "turn_2");
 }
 
+TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextInputBeforeTurnAcceptance) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const std::string oversized_text(kMaxTextInputBytes + 1U, 'x');
+    const std::string json =
+        std::string("{\"type\":\"text.input\",\"turn_id\":\"turn_1\",\"text\":\"") +
+        oversized_text + "\"}";
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(json);
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.accepted_turn.has_value());
+    EXPECT_FALSE(handler.snapshot().active_turn.has_value());
+    ASSERT_EQ(result.outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_EQ(error.code, "bad_request");
+    ASSERT_TRUE(error.turn_id.has_value());
+    EXPECT_EQ(*error.turn_id, "turn_1");
+    EXPECT_EQ(error.message, "text.input text exceeds maximum length");
+}
+
 TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);

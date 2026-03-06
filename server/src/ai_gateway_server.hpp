@@ -14,6 +14,7 @@
 namespace isla::server::ai_gateway {
 
 class GatewaySessionRegistry;
+inline constexpr std::size_t kMaxInboundWebSocketMessageBytes = 64U * 1024U;
 
 struct GatewayServerConfig {
     std::string bind_host = "127.0.0.1";

@@ -25,8 +25,8 @@
 
 #include <gtest/gtest.h>
 
-#include "isla/shared/ai_gateway_protocol.hpp"
 #include "ai_gateway_stub_responder.hpp"
+#include "isla/shared/ai_gateway_protocol.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -383,6 +383,63 @@ TEST_F(GatewayServerTest, ProtocolErrorsOverRealSocketSendErrorAndKeepSessionOpe
     EXPECT_TRUE(sink_.closed_sessions.empty());
 }
 
+TEST_F(GatewayServerTest, OversizedTextInputReturnsProtocolErrorAndKeepsSessionOpen) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    const std::string oversized_text(kMaxTextInputBytes + 1U, 'x');
+    const std::string oversized_message =
+        std::string("{\"type\":\"text.input\",\"turn_id\":\"turn_1\",\"text\":\"") +
+        oversized_text + "\"}";
+    ASSERT_TRUE(client.SendJson(oversized_message).ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> error_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(error_frame.ok()) << error_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*error_frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*error_frame);
+    EXPECT_EQ(error.code, "bad_request");
+    ASSERT_TRUE(error.turn_id.has_value());
+    EXPECT_EQ(*error.turn_id, "turn_1");
+    EXPECT_EQ(error.message, "text.input text exceeds maximum length");
+    EXPECT_TRUE(sink_.accepted_turns.empty());
+    EXPECT_TRUE(sink_.closed_sessions.empty());
+
+    const std::string end_message =
+        std::string("{\"type\":\"session.end\",\"session_id\":\"") + session_id + "\"}";
+    ASSERT_TRUE(client.SendJson(end_message).ok());
+    const absl::StatusOr<protocol::GatewayMessage> ended_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*ended_frame));
+}
+
+TEST_F(GatewayServerTest, OversizedWebSocketMessageClosesSessionAsTransportError) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    const std::string oversized_payload(kMaxInboundWebSocketMessageBytes + 1U, 'x');
+    ASSERT_TRUE(client.SendJson(oversized_payload).ok());
+
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
+    EXPECT_EQ(sink_.closed_sessions.front().session_id, session_id);
+    EXPECT_EQ(sink_.closed_sessions.front().reason, SessionCloseReason::TransportError);
+    EXPECT_EQ(sink_.closed_sessions.front().detail, "websocket message too large");
+    ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
+}
+
 TEST_F(GatewayServerTest, ServerOwnedWritesReachIdleClientWhileAsyncReadIsPending) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
@@ -528,15 +585,15 @@ TEST_F(GatewayStubResponderServerTest, StubResponderReturnsFinalTextAndCompletio
     ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
 
     ASSERT_TRUE(
-        client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
             .ok());
 
     const absl::StatusOr<protocol::GatewayMessage> text_output = client.ReadJsonFrame();
     ASSERT_TRUE(text_output.ok()) << text_output.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(*text_output));
     EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_output).turn_id, "turn_1");
-    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_output).text,
-              "stub echo: hello gateway");
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_output).text, "stub echo: hello gateway");
 
     const absl::StatusOr<protocol::GatewayMessage> turn_completed = client.ReadJsonFrame();
     ASSERT_TRUE(turn_completed.ok()) << turn_completed.status().ToString();
@@ -554,7 +611,8 @@ TEST_F(GatewayStubResponderServerTest, StubResponderTerminatesAcceptedCancellati
     ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
 
     ASSERT_TRUE(
-        client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
             .ok());
     ASSERT_TRUE(client.SendJson(R"json({"type":"turn.cancel","turn_id":"turn_1"})json").ok());
 
@@ -574,8 +632,7 @@ TEST_F(GatewayStubResponderServerTest, StubResponderSupportsSequentialTurnsOnOne
     ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
 
     ASSERT_TRUE(
-        client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"first"})json")
-            .ok());
+        client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"first"})json").ok());
 
     const absl::StatusOr<protocol::GatewayMessage> first_text = client.ReadJsonFrame();
     ASSERT_TRUE(first_text.ok()) << first_text.status().ToString();
@@ -614,7 +671,8 @@ TEST_F(GatewayStubResponderServerTest, SessionEndSucceedsAfterStubTurnCompletes)
         std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
 
     ASSERT_TRUE(
-        client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
             .ok());
 
     const absl::StatusOr<protocol::GatewayMessage> text_output = client.ReadJsonFrame();
@@ -625,10 +683,10 @@ TEST_F(GatewayStubResponderServerTest, SessionEndSucceedsAfterStubTurnCompletes)
     ASSERT_TRUE(completed_frame.ok()) << completed_frame.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*completed_frame));
 
-    ASSERT_TRUE(
-        client.SendJson(std::string("{\"type\":\"session.end\",\"session_id\":\"") + session_id +
-                        "\"}")
-            .ok());
+    ASSERT_TRUE(client
+                    .SendJson(std::string("{\"type\":\"session.end\",\"session_id\":\"") +
+                              session_id + "\"}")
+                    .ok());
 
     const absl::StatusOr<protocol::GatewayMessage> ended_frame = client.ReadJsonFrame();
     ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
@@ -646,7 +704,8 @@ TEST_F(GatewayStubResponderServerTest, StopEmitsServerStoppingErrorAndCompletion
     ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
 
     ASSERT_TRUE(
-        client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
             .ok());
 
     std::thread stop_thread([this] { server_.Stop(); });
