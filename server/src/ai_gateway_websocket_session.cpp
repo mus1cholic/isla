@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "absl/log/log.h"
+#include "ai_gateway_logging_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -50,11 +51,11 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
 
     if (result.accepted_turn.has_value()) {
         VLOG(1) << "AI gateway session=" << session_id_
-                << " accepted text turn turn_id=" << result.accepted_turn->turn_id;
+                << " accepted text turn turn_id=" << SanitizeForLog(result.accepted_turn->turn_id);
     }
     if (result.cancel_requested.has_value()) {
-        VLOG(1) << "AI gateway session=" << session_id_
-                << " accepted turn cancellation turn_id=" << result.cancel_requested->turn_id;
+        VLOG(1) << "AI gateway session=" << session_id_ << " accepted turn cancellation turn_id="
+                << SanitizeForLog(result.cancel_requested->turn_id);
     }
     if (result.should_close) {
         VLOG(1) << "AI gateway session=" << session_id_ << " ended by protocol";
@@ -67,7 +68,7 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
                                     ? "active"
                                     : "inactive";
         VLOG(1) << "AI gateway session=" << session_id_ << " rejected inbound frame while "
-                << log_level << " reason='" << result.error_message << "'";
+                << log_level << " reason='" << SanitizeForLog(result.error_message) << "'";
         return failed_precondition(result.error_message);
     }
 
@@ -86,28 +87,33 @@ absl::Status GatewayWebSocketSessionAdapter::HandleTransportError(std::string_vi
     const bool session_started =
         handler_.snapshot().status == isla::shared::ai_gateway::SessionStatus::Active;
     const std::optional<std::string> inflight_turn_id = active_turn_id();
-    LOG(WARNING) << "AI gateway session=" << session_id_ << " transport error detail='" << message
+    LOG(WARNING) << "AI gateway session=" << session_id_ << " transport error detail='"
+                 << SanitizeForLog(message)
                  << "' session_started=" << (session_started ? "true" : "false")
                  << " inflight_turn_id='"
-                 << (inflight_turn_id.has_value() ? *inflight_turn_id : std::string("<none>"))
+                 << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
+                                                  : std::string("<none>"))
                  << "'";
 
     if (session_started && inflight_turn_id.has_value()) {
-        const absl::StatusOr<EmitResult> error =
-            handler_.EmitError(*inflight_turn_id, "transport_error", message);
-        if (error.ok()) {
-            const absl::Status status = SendFrames(error->outgoing_frames);
-            if (!status.ok()) {
-                return status;
+        const auto emit_and_send =
+            [this](const absl::StatusOr<EmitResult>& emit_result) -> absl::Status {
+            if (!emit_result.ok()) {
+                return absl::OkStatus();
             }
+            return SendFrames(emit_result->outgoing_frames);
+        };
+
+        const absl::Status error_status =
+            emit_and_send(handler_.EmitError(*inflight_turn_id, "transport_error", message));
+        if (!error_status.ok()) {
+            return error_status;
         }
 
-        const absl::StatusOr<EmitResult> completed = handler_.EmitTurnCompleted(*inflight_turn_id);
-        if (completed.ok()) {
-            const absl::Status status = SendFrames(completed->outgoing_frames);
-            if (!status.ok()) {
-                return status;
-            }
+        const absl::Status completed_status =
+            emit_and_send(handler_.EmitTurnCompleted(*inflight_turn_id));
+        if (!completed_status.ok()) {
+            return completed_status;
         }
     }
 
@@ -128,7 +134,8 @@ void GatewayWebSocketSessionAdapter::HandleTransportClosed() {
                          ? "true"
                          : "false")
                  << " inflight_turn_id='"
-                 << (inflight_turn_id.has_value() ? *inflight_turn_id : std::string("<none>"))
+                 << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
+                                                  : std::string("<none>"))
                  << "'";
     CloseSession(SessionCloseReason::TransportClosed, "", active_turn_id(), false);
 }
@@ -164,8 +171,9 @@ void GatewayWebSocketSessionAdapter::CloseSession(SessionCloseReason reason,
                     ? "true"
                     : "false")
             << " inflight_turn_id='"
-            << (inflight_turn_id.has_value() ? *inflight_turn_id : std::string("<none>"))
-            << "' detail='" << detail << "'";
+            << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
+                                             : std::string("<none>"))
+            << "' detail='" << SanitizeForLog(detail) << "'";
     if (event_sink_ != nullptr) {
         event_sink_->OnSessionClosed(SessionClosedEvent{
             .session_id = session_id_,
