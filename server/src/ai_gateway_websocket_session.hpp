@@ -19,6 +19,7 @@ enum class SessionCloseReason {
     TransportClosed,
     TransportError,
     SendFailed,
+    ServerStopping,
 };
 
 struct SessionClosedEvent {
@@ -71,6 +72,7 @@ class GatewayWebSocketSessionAdapter {
     [[nodiscard]] absl::Status HandleIncomingTextFrame(std::string_view frame);
     [[nodiscard]] absl::Status HandleTransportError(std::string_view message);
     void HandleTransportClosed();
+    void HandleServerShutdown();
 
     [[nodiscard]] const std::string& session_id() const {
         return session_id_;

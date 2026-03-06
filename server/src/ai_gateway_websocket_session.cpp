@@ -16,6 +16,22 @@ absl::Status failed_precondition(std::string_view message) {
     return absl::FailedPreconditionError(std::string(message));
 }
 
+const char* close_reason_name(SessionCloseReason reason) {
+    switch (reason) {
+    case SessionCloseReason::ProtocolEnded:
+        return "protocol_ended";
+    case SessionCloseReason::TransportClosed:
+        return "transport_closed";
+    case SessionCloseReason::TransportError:
+        return "transport_error";
+    case SessionCloseReason::SendFailed:
+        return "send_failed";
+    case SessionCloseReason::ServerStopping:
+        return "server_stopping";
+    }
+    return "unknown";
+}
+
 } // namespace
 
 SequentialSessionIdGenerator::SequentialSessionIdGenerator(std::string prefix)
@@ -140,6 +156,24 @@ void GatewayWebSocketSessionAdapter::HandleTransportClosed() {
     CloseSession(SessionCloseReason::TransportClosed, "", inflight_turn_id, false);
 }
 
+void GatewayWebSocketSessionAdapter::HandleServerShutdown() {
+    if (closed_) {
+        return;
+    }
+
+    const std::optional<std::string> inflight_turn_id = active_turn_id();
+    VLOG(1) << "AI gateway session=" << session_id_ << " closed for server shutdown"
+            << " session_started="
+            << (handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted
+                    ? "true"
+                    : "false")
+            << " inflight_turn_id='"
+            << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
+                                             : std::string("<none>"))
+            << "'";
+    CloseSession(SessionCloseReason::ServerStopping, "server stopping", inflight_turn_id, false);
+}
+
 absl::Status GatewayWebSocketSessionAdapter::SendFrames(const std::vector<std::string>& frames) {
     for (const std::string& frame : frames) {
         const absl::Status status = connection_.SendTextFrame(frame);
@@ -165,8 +199,8 @@ void GatewayWebSocketSessionAdapter::CloseSession(SessionCloseReason reason,
     if (close_transport) {
         connection_.Close();
     }
-    VLOG(1) << "AI gateway session=" << session_id_ << " closed reason=" << static_cast<int>(reason)
-            << " session_started="
+    VLOG(1) << "AI gateway session=" << session_id_
+            << " closed reason=" << close_reason_name(reason) << " session_started="
             << (handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted
                     ? "true"
                     : "false")

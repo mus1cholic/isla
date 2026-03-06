@@ -365,5 +365,26 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureDuringTransportErrorStopsFurtherF
     EXPECT_EQ(*sink.closed_sessions.front().inflight_turn_id, "turn_1");
 }
 
+TEST(AiGatewayWebSocketSessionTest, ServerShutdownClosesSessionWithoutTransportWarningPath) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+
+    session.HandleServerShutdown();
+
+    EXPECT_EQ(connection.close_calls, 0);
+    ASSERT_EQ(sink.closed_sessions.size(), 1U);
+    EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::ServerStopping);
+    EXPECT_EQ(sink.closed_sessions.front().detail, "server stopping");
+    ASSERT_TRUE(sink.closed_sessions.front().inflight_turn_id.has_value());
+    EXPECT_EQ(*sink.closed_sessions.front().inflight_turn_id, "turn_1");
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway
