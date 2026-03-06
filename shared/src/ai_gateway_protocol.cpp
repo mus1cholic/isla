@@ -19,17 +19,17 @@ struct MessageTypeEntry {
 };
 
 constexpr std::array<MessageTypeEntry, 11> kMessageTypeEntries = { {
-    { "session.start", MessageType::SessionStart },
-    { "session.started", MessageType::SessionStarted },
-    { "session.end", MessageType::SessionEnd },
-    { "session.ended", MessageType::SessionEnded },
-    { "text.input", MessageType::TextInput },
-    { "text.output", MessageType::TextOutput },
-    { "audio.output", MessageType::AudioOutput },
-    { "turn.completed", MessageType::TurnCompleted },
-    { "turn.cancel", MessageType::TurnCancel },
-    { "turn.cancelled", MessageType::TurnCancelled },
-    { "error", MessageType::Error },
+    { .name = "session.start", .type = MessageType::SessionStart },
+    { .name = "session.started", .type = MessageType::SessionStarted },
+    { .name = "session.end", .type = MessageType::SessionEnd },
+    { .name = "session.ended", .type = MessageType::SessionEnded },
+    { .name = "text.input", .type = MessageType::TextInput },
+    { .name = "text.output", .type = MessageType::TextOutput },
+    { .name = "audio.output", .type = MessageType::AudioOutput },
+    { .name = "turn.completed", .type = MessageType::TurnCompleted },
+    { .name = "turn.cancel", .type = MessageType::TurnCancel },
+    { .name = "turn.cancelled", .type = MessageType::TurnCancelled },
+    { .name = "error", .type = MessageType::Error },
 } };
 
 template <typename... Ts> struct Overloaded : Ts... {
@@ -46,7 +46,7 @@ const json* find_key(const json& object, std::string_view key) {
     if (!object.is_object()) {
         return nullptr;
     }
-    const auto it = object.find(std::string(key));
+    const auto it = object.find(key);
     if (it == object.end()) {
         return nullptr;
     }
@@ -58,7 +58,7 @@ std::optional<std::string> read_required_string(const json& object, std::string_
     if (value == nullptr || !value->is_string()) {
         return std::nullopt;
     }
-    const std::string parsed = value->get<std::string>();
+    auto parsed = value->get<std::string>();
     if (parsed.empty()) {
         return std::nullopt;
     }
@@ -136,86 +136,87 @@ absl::StatusOr<GatewayMessage> parse_message_object(const json& root, MessageTyp
     case MessageType::SessionStart:
         return SessionStartMessage{ read_required_string(root, "client_session_id") };
     case MessageType::SessionStarted: {
-        const auto session_id = read_required_string(root, "session_id");
+        auto session_id = read_required_string(root, "session_id");
         if (!session_id.has_value()) {
             return make_parse_error("session.started requires non-empty session_id");
         }
         return SessionStartedMessage{ std::move(*session_id) };
     }
     case MessageType::SessionEnd: {
-        const auto session_id = read_required_string(root, "session_id");
+        auto session_id = read_required_string(root, "session_id");
         if (!session_id.has_value()) {
             return make_parse_error("session.end requires non-empty session_id");
         }
         return SessionEndMessage{ std::move(*session_id) };
     }
     case MessageType::SessionEnded: {
-        const auto session_id = read_required_string(root, "session_id");
+        auto session_id = read_required_string(root, "session_id");
         if (!session_id.has_value()) {
             return make_parse_error("session.ended requires non-empty session_id");
         }
         return SessionEndedMessage{ std::move(*session_id) };
     }
     case MessageType::TextInput: {
-        const auto turn_id = read_required_string(root, "turn_id");
-        const auto text = read_required_string(root, "text");
+        auto turn_id = read_required_string(root, "turn_id");
+        auto text = read_required_string(root, "text");
         if (!turn_id.has_value() || !text.has_value()) {
             return make_parse_error("text.input requires non-empty turn_id and text");
         }
-        return TextInputMessage{ std::move(*turn_id), std::move(*text) };
+        return TextInputMessage{ .turn_id = std::move(*turn_id), .text = std::move(*text) };
     }
     case MessageType::TextOutput: {
-        const auto turn_id = read_required_string(root, "turn_id");
-        const auto text = read_required_string(root, "text");
+        auto turn_id = read_required_string(root, "turn_id");
+        auto text = read_required_string(root, "text");
         if (!turn_id.has_value() || !text.has_value()) {
             return make_parse_error("text.output requires non-empty turn_id and text");
         }
-        return TextOutputMessage{ std::move(*turn_id), std::move(*text) };
+        return TextOutputMessage{ .turn_id = std::move(*turn_id), .text = std::move(*text) };
     }
     case MessageType::AudioOutput: {
-        const auto turn_id = read_required_string(root, "turn_id");
-        const auto mime_type = read_required_string(root, "mime_type");
-        const auto audio_base64 = read_required_string(root, "audio_base64");
+        auto turn_id = read_required_string(root, "turn_id");
+        auto mime_type = read_required_string(root, "mime_type");
+        auto audio_base64 = read_required_string(root, "audio_base64");
         if (!turn_id.has_value() || !mime_type.has_value() || !audio_base64.has_value()) {
             return make_parse_error(
                 "audio.output requires non-empty turn_id, mime_type, and audio_base64");
         }
         return AudioOutputMessage{
-            std::move(*turn_id),
-            std::move(*mime_type),
-            std::move(*audio_base64),
+            .turn_id = std::move(*turn_id),
+            .mime_type = std::move(*mime_type),
+            .audio_base64 = std::move(*audio_base64),
         };
     }
     case MessageType::TurnCompleted: {
-        const auto turn_id = read_required_string(root, "turn_id");
+        auto turn_id = read_required_string(root, "turn_id");
         if (!turn_id.has_value()) {
             return make_parse_error("turn.completed requires non-empty turn_id");
         }
         return TurnCompletedMessage{ std::move(*turn_id) };
     }
     case MessageType::TurnCancel: {
-        const auto turn_id = read_required_string(root, "turn_id");
+        auto turn_id = read_required_string(root, "turn_id");
         if (!turn_id.has_value()) {
             return make_parse_error("turn.cancel requires non-empty turn_id");
         }
         return TurnCancelMessage{ std::move(*turn_id) };
     }
     case MessageType::TurnCancelled: {
-        const auto turn_id = read_required_string(root, "turn_id");
+        auto turn_id = read_required_string(root, "turn_id");
         if (!turn_id.has_value()) {
             return make_parse_error("turn.cancelled requires non-empty turn_id");
         }
         return TurnCancelledMessage{ std::move(*turn_id) };
     }
     case MessageType::Error: {
-        const auto code = read_required_string(root, "code");
-        const auto message = read_required_string(root, "message");
+        auto code = read_required_string(root, "code");
+        auto message = read_required_string(root, "message");
         if (!code.has_value() || !message.has_value()) {
             return make_parse_error("error requires non-empty code and message");
         }
-        return ErrorMessage{ read_required_string(root, "session_id"),
-                             read_required_string(root, "turn_id"), std::move(*code),
-                             std::move(*message) };
+        return ErrorMessage{ .session_id = read_required_string(root, "session_id"),
+                             .turn_id = read_required_string(root, "turn_id"),
+                             .code = std::move(*code),
+                             .message = std::move(*message) };
     }
     }
 
@@ -225,29 +226,10 @@ absl::StatusOr<GatewayMessage> parse_message_object(const json& root, MessageTyp
 } // namespace
 
 const char* message_type_name(MessageType type) {
-    switch (type) {
-    case MessageType::SessionStart:
-        return "session.start";
-    case MessageType::SessionStarted:
-        return "session.started";
-    case MessageType::SessionEnd:
-        return "session.end";
-    case MessageType::SessionEnded:
-        return "session.ended";
-    case MessageType::TextInput:
-        return "text.input";
-    case MessageType::TextOutput:
-        return "text.output";
-    case MessageType::AudioOutput:
-        return "audio.output";
-    case MessageType::TurnCompleted:
-        return "turn.completed";
-    case MessageType::TurnCancel:
-        return "turn.cancel";
-    case MessageType::TurnCancelled:
-        return "turn.cancelled";
-    case MessageType::Error:
-        return "error";
+    for (const MessageTypeEntry& entry : kMessageTypeEntries) {
+        if (entry.type == type) {
+            return entry.name.data();
+        }
     }
     return "unknown";
 }
