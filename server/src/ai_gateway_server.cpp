@@ -1,5 +1,6 @@
 #include "ai_gateway_server.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -20,6 +21,7 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/system/error_code.hpp>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
 #include "ai_gateway_logging_utils.hpp"
 
@@ -248,7 +250,7 @@ class GatewaySessionRegistry::Impl {
     [[nodiscard]] std::shared_ptr<GatewayLiveSession>
     FindSession(std::string_view session_id) const {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto it = sessions_.find(std::string(session_id));
+        const auto it = sessions_.find(session_id);
         if (it == sessions_.end()) {
             return nullptr;
         }
@@ -285,7 +287,7 @@ class GatewaySessionRegistry::Impl {
   private:
     GatewayApplicationEventSink* application_sink_ = nullptr;
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, std::weak_ptr<GatewayLiveSession>> sessions_;
+    absl::flat_hash_map<std::string, std::weak_ptr<GatewayLiveSession>> sessions_;
 };
 
 GatewaySessionRegistry::GatewaySessionRegistry(GatewayApplicationEventSink* application_sink)
@@ -349,12 +351,16 @@ class GatewayServer::Impl {
             return absl::UnavailableError(format_error("acceptor open failed", error));
         }
 
+#if !defined(_WIN32)
+        // Windows SO_REUSEADDR permits multiple binders on the same port, so keep the
+        // listener exclusive there to avoid local port hijacking.
         const asio::socket_base::reuse_address reuse_address(true);
         const auto set_option_result = acceptor_.set_option(reuse_address, error);
         static_cast<void>(set_option_result);
         if (error) {
             return absl::UnavailableError(format_error("acceptor reuse_address failed", error));
         }
+#endif
 
         const auto bind_result = acceptor_.bind(endpoint, error);
         static_cast<void>(bind_result);
@@ -366,6 +372,12 @@ class GatewayServer::Impl {
         static_cast<void>(listen_result);
         if (error) {
             return absl::UnavailableError(format_error("acceptor listen failed", error));
+        }
+
+        const auto non_blocking_result = acceptor_.non_blocking(true, error);
+        static_cast<void>(non_blocking_result);
+        if (error) {
+            return absl::UnavailableError(format_error("acceptor non_blocking failed", error));
         }
 
         stop_requested_.store(false);
@@ -461,6 +473,10 @@ class GatewayServer::Impl {
             const auto accept_result = acceptor_.accept(socket, error);
             static_cast<void>(accept_result);
             if (error) {
+                if (error == asio::error::would_block || error == asio::error::try_again) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                    continue;
+                }
                 if (stop_requested_.load()) {
                     VLOG(1) << "AI gateway accept loop exiting for server stop";
                     break;
@@ -506,17 +522,12 @@ class GatewayServer::Impl {
         std::vector<std::shared_ptr<LiveGatewaySession>> closed_sessions;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            auto next = sessions_.begin();
-            for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
-                if (*it != nullptr && (*it)->is_closed()) {
-                    closed_sessions.push_back(std::move(*it));
-                    continue;
-                }
-                if (next != it) {
-                    *next = std::move(*it);
-                }
-                ++next;
-            }
+            const auto next =
+                std::remove_if(sessions_.begin(), sessions_.end(),
+                               [](const std::shared_ptr<LiveGatewaySession>& session) {
+                                   return session != nullptr && session->is_closed();
+                               });
+            std::move(next, sessions_.end(), std::back_inserter(closed_sessions));
             sessions_.erase(next, sessions_.end());
         }
 

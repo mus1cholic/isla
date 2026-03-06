@@ -43,6 +43,7 @@ cc_library(
         ":ai_gateway_logging_utils",
         ":ai_gateway_websocket_session",
         "@boost.beast//:boost.beast",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
     ],
