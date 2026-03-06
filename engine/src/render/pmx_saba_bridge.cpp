@@ -18,8 +18,11 @@ bool is_absolute_texture_path(std::string_view texture_path) {
     if (texture_path.empty()) {
         return false;
     }
-    if (texture_path.size() >= 3 && is_ascii_alpha(texture_path[0]) && texture_path[1] == ':' &&
-        (texture_path[2] == '/' || texture_path[2] == '\\')) {
+    const std::filesystem::path path(texture_path);
+    if (path.has_root_name() || path.has_root_directory()) {
+        return true;
+    }
+    if (texture_path.size() >= 2 && is_ascii_alpha(texture_path[0]) && texture_path[1] == ':') {
         return true;
     }
     if (texture_path[0] == '/' || texture_path[0] == '\\') {
@@ -29,11 +32,18 @@ bool is_absolute_texture_path(std::string_view texture_path) {
 }
 
 bool has_parent_traversal(std::string_view texture_path) {
-    const std::filesystem::path path(texture_path);
-    for (const std::filesystem::path& component : path) {
-        if (component == "..") {
+    std::size_t segment_start = 0U;
+    while (segment_start <= texture_path.size()) {
+        const std::size_t separator = texture_path.find_first_of("/\\", segment_start);
+        const std::string_view segment =
+            texture_path.substr(segment_start, separator - segment_start);
+        if (segment == "..") {
             return true;
         }
+        if (separator == std::string_view::npos) {
+            break;
+        }
+        segment_start = separator + 1U;
     }
     return false;
 }

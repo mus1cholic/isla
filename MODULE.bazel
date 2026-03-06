@@ -259,11 +259,7 @@ cc_library(
 )
 """,
     commit = "29b8efa8b31c8e746f9a88020fb0ad9dcdcf3332",
-    patch_cmds = [
-        "python -c \"from pathlib import Path; Path('src/Saba/Base/Log.h').write_text('//\\n// Copyright(c) 2016-2017 benikabocha.\\n// Distributed under the MIT License (http://opensource.org/licenses/MIT)\\n//\\n\\n#pragma once\\n\\n#define SABA_INFO(message, ...) ((void)0)\\n#define SABA_WARN(message, ...) ((void)0)\\n#define SABA_ERROR(message, ...) ((void)0)\\n#define SABA_ASSERT(expr) ((void)0)\\n', encoding='utf-8')\"",
-    ],
-    patch_cmds_win = [
-        "python -c \"from pathlib import Path; Path(r'src/Saba/Base/Log.h').write_text('//\\n// Copyright(c) 2016-2017 benikabocha.\\n// Distributed under the MIT License (http://opensource.org/licenses/MIT)\\n//\\n\\n#pragma once\\n\\n#define SABA_INFO(message, ...) ((void)0)\\n#define SABA_WARN(message, ...) ((void)0)\\n#define SABA_ERROR(message, ...) ((void)0)\\n#define SABA_ASSERT(expr) ((void)0)\\n', encoding='utf-8')\"",
-    ],
+    patch_args = ["-p1"],
+    patches = ["//third_party/saba:disable_log_header.patch"],
     remote = "https://github.com/benikabocha/saba.git",
 )

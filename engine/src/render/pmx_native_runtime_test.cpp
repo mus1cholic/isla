@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <string_view>
 
@@ -20,26 +21,68 @@ bool contains_message_with_substring(const std::vector<std::string>& messages,
     });
 }
 
+class ScopedTempDir {
+  public:
+    static ScopedTempDir create(std::string_view prefix) {
+        std::error_code ec;
+        const auto base = std::filesystem::temp_directory_path(ec);
+        if (ec) {
+            return {};
+        }
+
+        std::mt19937_64 rng(std::random_device{}());
+        std::uniform_int_distribution<std::uint64_t> distribution;
+        for (int i = 0; i < 100; ++i) {
+            const auto candidate =
+                base / (std::string(prefix) + "_" + std::to_string(distribution(rng)));
+            if (std::filesystem::create_directories(candidate, ec) && !ec) {
+                return ScopedTempDir(candidate);
+            }
+            ec.clear();
+        }
+        return {};
+    }
+
+    ScopedTempDir() = default;
+    ScopedTempDir(const ScopedTempDir&) = delete;
+    ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+    ScopedTempDir(ScopedTempDir&&) = default;
+    ScopedTempDir& operator=(ScopedTempDir&&) = default;
+
+    ~ScopedTempDir() {
+        if (path_.empty()) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    [[nodiscard]] bool is_valid() const {
+        return !path_.empty();
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const {
+        return path_;
+    }
+
+  private:
+    explicit ScopedTempDir(std::filesystem::path path) : path_(std::move(path)) {}
+
+    std::filesystem::path path_{};
+};
+
 class PmxNativeRuntimeTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        temp_dir_ = std::filesystem::temp_directory_path() /
-                    std::filesystem::path("isla_pmx_native_runtime_test");
-        std::error_code ec;
-        std::filesystem::remove_all(temp_dir_, ec);
-        std::filesystem::create_directories(temp_dir_, ec);
-    }
-
-    void TearDown() override {
-        std::error_code ec;
-        std::filesystem::remove_all(temp_dir_, ec);
+        temp_dir_ = ScopedTempDir::create("isla_pmx_native_runtime_test");
+        ASSERT_TRUE(temp_dir_.is_valid());
     }
 
     std::filesystem::path temp_path(const char* filename) const {
-        return temp_dir_ / filename;
+        return temp_dir_.path() / filename;
     }
 
-    std::filesystem::path temp_dir_;
+    ScopedTempDir temp_dir_;
 };
 
 TEST_F(PmxNativeRuntimeTest, SupportMatrixDocumentsPhaseZeroBoundary) {
@@ -166,7 +209,8 @@ TEST_F(PmxNativeRuntimeTest, ProbeSurfacesDeferredAndFallbackWarningsFromFixture
     EXPECT_TRUE(contains_message_with_substring(result.warnings, "sphere_materials=1"));
     EXPECT_TRUE(contains_message_with_substring(result.warnings, "absolute_texture_refs=1"));
     EXPECT_TRUE(contains_message_with_substring(result.warnings, "count=2"));
-    EXPECT_TRUE(contains_message_with_substring(result.warnings, "missing asset-relative textures"));
+    EXPECT_TRUE(
+        contains_message_with_substring(result.warnings, "missing asset-relative textures"));
     EXPECT_TRUE(contains_message_with_substring(result.infos, "warnings=7"));
 }
 
