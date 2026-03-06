@@ -40,6 +40,9 @@ template <typename StartFn> absl::Status await_emit(StartFn&& start) {
     auto promise = std::make_shared<std::promise<absl::Status>>();
     std::future<absl::Status> future = promise->get_future();
     start([promise](absl::Status status) { promise->set_value(std::move(status)); });
+    if (future.wait_for(2s) != std::future_status::ready) {
+        return absl::DeadlineExceededError("timed out waiting for async emit completion");
+    }
     return future.get();
 }
 

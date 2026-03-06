@@ -177,15 +177,37 @@ class LiveGatewaySession final : public GatewayLiveSession,
     }
 
   private:
+    static void CompleteEmitCallback(std::string_view session_id, std::string_view operation,
+                                     GatewayEmitCallback& on_complete, absl::Status status) {
+        if (!on_complete) {
+            return;
+        }
+
+        try {
+            on_complete(std::move(status));
+        } catch (const std::exception& error) {
+            LOG(ERROR) << "AI gateway session=" << session_id
+                       << " async emit callback threw op=" << operation << " detail='"
+                       << SanitizeForLog(error.what()) << "'";
+        } catch (...) {
+            LOG(ERROR) << "AI gateway session=" << session_id
+                       << " async emit callback threw op=" << operation
+                       << " detail='unknown exception'";
+        }
+    }
+
     template <typename Fn>
     void InvokeOnTransport(std::string_view operation, Fn&& fn, GatewayEmitCallback on_complete) {
         if (closed_.load()) {
-            LOG(WARNING) << "AI gateway session=" << session_id_
-                         << " rejected async emit op=" << operation << " detail='"
-                         << SanitizeForLog("websocket session is closed") << "'";
-            if (on_complete) {
-                on_complete(failed_precondition("websocket session is closed"));
-            }
+            auto self = shared_from_this();
+            asio::post(websocket_.get_executor(), [self, operation = std::string(operation),
+                                                   on_complete = std::move(on_complete)]() mutable {
+                LOG(WARNING) << "AI gateway session=" << self->session_id_
+                             << " rejected async emit op=" << operation << " detail='"
+                             << SanitizeForLog("websocket session is closed") << "'";
+                CompleteEmitCallback(self->session_id_, operation, on_complete,
+                                     failed_precondition("websocket session is closed"));
+            });
             return;
         }
 
@@ -206,9 +228,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
                              << " async emit failed op=" << operation << " detail='"
                              << SanitizeForLog(status.message()) << "'";
             }
-            if (on_complete) {
-                on_complete(std::move(status));
-            }
+            CompleteEmitCallback(self->session_id_, operation, on_complete, std::move(status));
         });
     }
 

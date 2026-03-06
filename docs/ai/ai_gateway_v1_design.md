@@ -51,8 +51,9 @@ As of 2026-03-06:
   - real-socket integration coverage for ingress, handshake/protocol failures, binary frames,
     shutdown behavior, session cleanup, and server-owned egress while a client is idle
 - a narrow application-facing live-session emission API now exists for `text.output`,
-  `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`, but no stub
-  responder or planner/executor path drives it yet
+  `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`; it now
+  completes through callback-based async completion on the session executor, but no stub responder
+  or planner/executor path drives it yet
 - live session transport now uses async Beast accept/read/write on the shared server `io_context`,
   with queued outbound writes so reads no longer block writes; the top-level accept loop remains a
   separate blocking server thread
@@ -173,7 +174,10 @@ Current implementation note (2026-03-06):
 - a runnable Beast-backed gateway server and `isla_ai_gateway` binary now exist for real-socket
   ingress testing and application-owned typed event handoff
 - a narrow server-owned live-session egress API now exists for outbound protocol emission through
-  the existing adapter/session-handler boundary
+  the existing adapter/session-handler boundary, with callback-based async completion instead of a
+  blocking caller bridge
+- the async emit path now logs rejected/failed operations at the server boundary, guards callback
+  exceptions, and uses bounded waits in integration tests so dropped callbacks fail deterministically
 - deterministic application-owned turn completion/cancellation orchestration remains unimplemented;
   later phases still need the first real responder path
 
@@ -410,7 +414,8 @@ As of 2026-03-06, the following Phase-2-aligned implementation exists:
   - `SessionClosedEvent`
 - a `GatewaySessionRegistry` that tracks live sessions and supports `session_id` lookup/count
 - a `GatewayLiveSession` API that can now emit server-owned `text.output`, `audio.output`,
-  `turn.completed`, `turn.cancelled`, and `error` frames through the existing session adapter
+  `turn.completed`, `turn.cancelled`, and `error` frames through the existing session adapter using
+  callback-based async completion
 - async per-session Beast accept/read/write on the shared server `io_context`, with queued writes
   so outbound frames are no longer blocked behind an idle read
 - a closed-session reaper that joins finished session threads and prevents indefinite retention of
@@ -432,6 +437,6 @@ Known carry-forward constraints from the current implementation:
 - accepted in-flight turns do not yet have a fully defined shutdown terminal policy during
   `server.Stop()`
 - the server still uses a blocking accept loop thread above the async per-session transport
-- the current `GatewayLiveSession` egress API is synchronous to callers via a blocking bridge onto
-  the transport executor; a future async application-facing emit surface is still desirable before
-  growing heavy server-owned streaming or orchestration work
+- the current `GatewayLiveSession` egress API is callback-based and final-message-oriented; a richer
+  stream-oriented orchestration surface may still be desirable before growing heavy server-owned
+  streaming or orchestration work
