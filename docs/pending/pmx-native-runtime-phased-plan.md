@@ -47,24 +47,47 @@ Operational interpretation:
   application runtime owner.
 
 > [!NOTE]
-> **Current status (2026-03-05):**
-> - Native PMX startup selection does not exist yet; `.pmx` startup handling still routes through
->   `pmx2gltf` conversion orchestration.
-> - Animated runtime loading is glTF-specific.
-> - Static mesh loading is `.obj/.gltf/.glb`-specific.
-> - PMX-sidecar work completed so far assumes converted glTF runtime assets, not direct PMX runtime
->   loading.
-> - This document is an alternative forward plan for native PMX runtime support scoped only to
->   direct PMX loading, skinned rendering, texture/material mapping, startup integration, and
->   regression hardening.
+> **Current status (2026-03-06):**
+> - Phase 0 is implemented.
+> - `saba` is integrated as a parser-only third-party dependency behind a new native PMX runtime
+>   boundary in `engine/src/render`.
+> - The native PMX boundary currently exposes a probe/diagnostics contract only; startup selection,
+>   runtime world population, and skinned rendering remain unimplemented for native PMX.
+> - Native PMX startup selection still does not exist yet; `.pmx` startup handling still routes
+>   through `pmx2gltf` conversion orchestration.
+> - Animated runtime loading is still glTF-specific.
+> - Static mesh loading is still `.obj/.gltf/.glb`-specific.
+> - PMX-sidecar work completed so far still assumes converted glTF runtime assets, not direct PMX
+>   runtime loading.
+> - Phase 0 already established the baseline native PMX support matrix, parser diagnostics, and
+>   asset-relative texture/path hardening policy that the later phases should build on rather than
+>   redefine.
 
 ### Changelog
 
 - 2026-03-05: added initial native PMX runtime alternative plan scoped to direct PMX loading via
   `saba`, skinned rendering integration, PMX material/texture mapping baseline, startup intake, and
   regression coverage.
+- 2026-03-06: completed Phase 0 with a pinned `saba` parser integration, a dedicated
+  `pmx_native_runtime` boundary, structured probe diagnostics, phase-0 PMX fixtures/tests, and
+  checked-in repository patching for `saba` fetch setup.
 
 ## Phase 0: Saba Integration + Native PMX Runtime Boundary
+
+> [!NOTE]
+> **Status (2026-03-06): Implemented.**
+> - `saba` is pinned in the build and isolated behind parser-only Bazel wiring.
+> - `engine/src/render/pmx_native_runtime.cpp` and `engine/src/render/pmx_saba_bridge.cpp`
+>   establish the first native PMX runtime boundary.
+> - The phase-0 support matrix is encoded in `pmx_native_runtime.hpp` and covered by tests.
+> - The probe contract now reports:
+>   - PMX vertex/face/material/texture/bone/morph/physics counts
+>   - skinning mode counts for `BDEF1`, `BDEF2`, `BDEF4`, `SDEF`, and `QDEF`
+>   - IK and append-transform bone counts
+>   - texture hardening counts for drive/rooted paths, parent traversal, and missing asset-relative
+>     textures
+>   - deferred-feature diagnostics for morphs, physics, and toon/sphere/edge material channels
+> - Existing startup/model-intake behavior was intentionally left unchanged for later phases.
 
 ### Goal
 
@@ -94,6 +117,11 @@ destabilizing the existing glTF path.
 - Repo builds with `saba` integrated and isolated behind new PMX runtime modules.
 - A clear PMX-native loader/runtime boundary exists without broad glTF module churn.
 - The first supported/unsupported PMX feature matrix is documented in code/comments/tests.
+- Phase-0 regression coverage exists for:
+  - invalid/non-PMX probe failures
+  - successful probe of a minimal valid PMX fixture
+  - explicit diagnostics for unsupported/deferred PMX features
+  - asset-relative texture path hardening, including drive-relative and backslash-traversal cases
 
 ## Phase 1: Native PMX Asset Loading + Skeleton Bridge
 
@@ -104,10 +132,13 @@ topology, and stable diagnostics.
 
 ### Scope
 
-- Add native PMX loader module(s), for example:
-  - `engine/src/render/include/pmx_asset_loader.hpp`
-  - `engine/src/render/pmx_asset_loader.cpp`
-  - supporting PMX asset/runtime type headers as needed
+- Extend the existing Phase-0 native PMX boundary instead of introducing a second parallel entry
+  point:
+  - keep `pmx_native_runtime` as the format boundary
+  - add loader/asset/runtime types underneath or beside it, for example:
+    - `engine/src/render/include/pmx_asset_loader.hpp`
+    - `engine/src/render/pmx_asset_loader.cpp`
+    - supporting PMX asset/runtime type headers as needed
 - Use `saba` to parse PMX data and extract:
   - vertices
   - index buffers
@@ -118,11 +149,16 @@ topology, and stable diagnostics.
 - Normalize PMX names/strings into stable UTF-8 runtime strings for bones/materials/textures.
 - Normalize PMX-relative texture paths against the PMX asset directory with the same hardening
   expectations already applied to runtime asset-relative texture loading.
+  - Preserve the Phase-0 policy that rejects:
+    - rooted/drive-qualified texture paths, including drive-relative `C:foo.png` forms
+    - parent traversal expressed with either `/` or `\`
 - Establish deterministic PMX load-time validation and diagnostics for:
   - malformed PMX data
   - missing textures
   - unsupported feature encounters
   - invalid bone/material references
+  - Build directly on the Phase-0 probe diagnostics/counters instead of redefining a separate
+    validation policy.
 - Preserve source identity metadata needed for later startup/material diagnostics.
 - Keep PMX loading separate from startup/world-population code so the loader remains unit-testable.
 
@@ -131,6 +167,7 @@ topology, and stable diagnostics.
 - A native `.pmx` file can be parsed directly into stable runtime asset structures.
 - Skeleton and submesh/material partition data are available to downstream runtime population code.
 - Failure behavior is explicit and diagnosable rather than silent or converter-dependent.
+- Phase-0 probe coverage remains intact while richer runtime asset import is added.
 
 ## Phase 2: PMX Deformation + Skinned Rendering Path
 
@@ -148,6 +185,9 @@ Make native PMX characters render as deforming skinned assets through `isla`'s r
     assumptions
   - provide a deterministic CPU deformation fallback for PMX cases that cannot be represented
     safely in the current shader-side skinning contract
+- Preserve the Phase-0 support-matrix interpretation:
+  - `BDEF1`, `BDEF2`, and `BDEF4` are the initial direct-skinning targets
+  - `SDEF` and `QDEF` remain explicit fallback cases until later work expands support
 - Reuse current large-skeleton partition/remap helpers where possible instead of introducing a
   separate PMX-only draw partitioning strategy.
 - Add client/runtime population path(s) for PMX skinned meshes without routing through
@@ -165,7 +205,8 @@ Make native PMX characters render as deforming skinned assets through `isla`'s r
 
 - A native PMX character renders in `isla` with usable skinned deformation behavior.
 - Existing renderer-side static/skinned program selection remains stable.
-- Unsupported PMX deformation semantics fail clearly or use explicit fallback behavior.
+- Unsupported PMX deformation semantics fail clearly or use explicit fallback behavior already
+  established in the Phase-0 diagnostics contract.
 
 ## Phase 3: PMX Material + Texture Mapping Baseline
 
@@ -183,6 +224,9 @@ predictable results.
   - cull policy
   - primary albedo texture path
 - Resolve PMX texture references directly from the PMX package without converter-generated sidecars.
+- Reuse the Phase-0 texture/path diagnostics as the baseline intake contract:
+  - asset-relative paths only
+  - explicit warnings for drive/rooted paths, parent traversal, and missing textures
 - Preserve multi-material PMX partition boundaries through runtime world population.
 - Define baseline handling for PMX material features not yet represented in the current renderer:
   - toon textures
@@ -201,6 +245,13 @@ predictable results.
 - Multi-material PMX assets no longer require glTF conversion to preserve basic material intent.
 
 ## Phase 4: Startup Intake + Native PMX Asset Selection
+
+> [!NOTE]
+> **Carry-forward from Phase 0 (2026-03-06):**
+> - This phase still has to wire native PMX startup selection.
+> - The current startup path remains conversion-first for `.pmx`.
+> - When native startup lands, it should surface the structured Phase-0 probe diagnostics rather
+>   than inventing a second PMX-specific logging vocabulary.
 
 ### Goal
 
@@ -221,6 +272,8 @@ without conversion.
   - direct PMX selection
   - PMX-native load success/failure
   - fallback behavior when PMX-native loading is unavailable or disabled
+- Reuse the existing Phase-0 probe summaries/warnings so startup logs report the same PMX feature
+  and texture-hardening facts already covered by unit tests.
 - Keep glTF startup behavior stable and deterministic while adding PMX-native selection logic.
 - Remove converter dependence from the primary `.pmx` startup path for this milestone.
 
@@ -231,6 +284,12 @@ without conversion.
 - Existing glTF startup behavior remains intact.
 
 ## Phase 5: Native PMX Regression Coverage + CI
+
+> [!NOTE]
+> **Carry-forward from Phase 0 (2026-03-06):**
+> - Phase-0 regression coverage already exists for the probe boundary with canonical PMX fixtures.
+> - Later regression work should extend those fixtures and assertions rather than duplicating probe
+>   coverage through only higher-level startup tests.
 
 ### Goal
 
@@ -251,6 +310,7 @@ subsystems.
   - single-material skinned PMX
   - multi-material textured PMX
   - negative fixtures for malformed/missing-path cases
+  - retain the existing phase-0 probe fixtures as canonical small PMX diagnostics fixtures
 - Add client/runtime smoke coverage for direct PMX startup loading similar to current animated
   startup coverage.
 - Wire new PMX-native tests into Bazel and CI alongside existing render/runtime tests.
@@ -282,6 +342,8 @@ Close the first native PMX milestone with a clear, supportable runtime baseline.
   - usable skinned rendering
   - primary texture/material mapping
   - startup intake support
+- Publish the Phase-0 parser/probe contract as part of the operator-facing support story so users
+  know what diagnostics and unsupported-feature warnings to expect before full runtime parity.
 - Publish the intentionally deferred items:
   - VMD playback
   - PMX physics
@@ -309,8 +371,9 @@ Close the first native PMX milestone with a clear, supportable runtime baseline.
 
 ## Suggested Delivery Milestones
 
-1. First direct PMX parse milestone: after Phase 1.
-2. First visible native PMX character milestone: after Phase 2.
-3. First materially usable native PMX visual baseline: after Phase 3.
-4. First end-user direct PMX startup milestone: after Phase 4.
-5. First maintainable native PMX runtime baseline: after Phase 5/6.
+1. First direct PMX probe/diagnostics milestone: after Phase 0.
+2. First direct PMX runtime asset bridge milestone: after Phase 1.
+3. First visible native PMX character milestone: after Phase 2.
+4. First materially usable native PMX visual baseline: after Phase 3.
+5. First end-user direct PMX startup milestone: after Phase 4.
+6. First maintainable native PMX runtime baseline: after Phase 5/6.

@@ -9,6 +9,7 @@ cc_library(
         "model_renderer.hpp",
         "model_renderer_skinning_utils.hpp",
         "overlay_transparency.hpp",
+        "pmx_native_runtime.hpp",
         "pmx_physics_sidecar.hpp",
         "pmx_texture_remap_sidecar.hpp",
         "render_types.hpp",
@@ -25,5 +26,6 @@ cc_library(
     deps = [
         ":render",
         "//engine/src/render:render",
+        "//engine/src/render:pmx_native_runtime",
     ],
 )
