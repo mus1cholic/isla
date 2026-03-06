@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -20,6 +21,7 @@ struct GatewayServerConfig {
     std::string bind_host = "127.0.0.1";
     std::uint16_t port = 0;
     int listen_backlog = 8;
+    std::chrono::milliseconds shutdown_write_grace_period{ std::chrono::seconds(2) };
 };
 
 class GatewayApplicationEventSink {
@@ -33,6 +35,9 @@ class GatewayApplicationEventSink {
 };
 
 using GatewayEmitCallback = std::function<void(absl::Status)>;
+// Async emit completion reports that the operation ran on the session transport executor and was
+// accepted or rejected by the transport boundary; it does not mean bytes have flushed to the
+// remote client socket.
 
 class GatewayLiveSession {
   public:

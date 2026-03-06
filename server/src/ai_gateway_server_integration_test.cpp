@@ -262,6 +262,32 @@ class GatewayStubResponderServerTest : public ::testing::Test {
     GatewayServer server_;
 };
 
+class GatewayServerShortShutdownGraceTest : public ::testing::Test {
+  protected:
+    GatewayServerShortShutdownGraceTest()
+        : server_(
+              GatewayServerConfig{
+                  .bind_host = "127.0.0.1",
+                  .port = 0,
+                  .listen_backlog = 4,
+                  .shutdown_write_grace_period = 50ms,
+              },
+              &sink_, std::make_unique<SequentialSessionIdGenerator>("srv_stop_")) {}
+
+    void SetUp() override {
+        ASSERT_TRUE(server_.Start().ok());
+        ASSERT_TRUE(server_.is_running());
+        ASSERT_NE(server_.bound_port(), 0);
+    }
+
+    void TearDown() override {
+        server_.Stop();
+    }
+
+    RecordingApplicationSink sink_;
+    GatewayServer server_;
+};
+
 TEST_F(GatewayServerTest, RealSocketTurnIngressReachesTypedApplicationSink) {
     {
         RealWebSocketClient client;
@@ -573,6 +599,44 @@ TEST_F(GatewayServerTest, StopClosesStartedSessionAndClearsRegistry) {
 
         client.CloseTransport();
     }
+}
+
+TEST_F(GatewayServerShortShutdownGraceTest, StopReturnsPromptlyWhenPendingWriteDoesNotDrain) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    ASSERT_TRUE(
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+            .ok());
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.accepted_turns.size() == 1U; }));
+
+    const std::shared_ptr<GatewayLiveSession> live_session =
+        server_.session_registry().FindSession(session_id);
+    ASSERT_NE(live_session, nullptr);
+
+    // This uses a large pending socket write to exercise the shutdown grace-period fallback
+    // because the current integration harness does not provide a fully synthetic stalled-write
+    // path.
+    std::promise<absl::Status> emit_promise;
+    std::future<absl::Status> emit_future = emit_promise.get_future();
+    live_session->AsyncEmitTextOutput(std::string("turn_1"), std::string(8U * 1024U * 1024U, 'x'),
+                                      [&emit_promise](absl::Status status) mutable {
+                                          emit_promise.set_value(std::move(status));
+                                      });
+    ASSERT_EQ(emit_future.wait_for(2s), std::future_status::ready);
+    ASSERT_TRUE(emit_future.get().ok());
+
+    auto stop_future = std::async(std::launch::async, [this] { server_.Stop(); });
+    EXPECT_EQ(stop_future.wait_for(2s), std::future_status::ready);
+    EXPECT_FALSE(server_.is_running());
 }
 
 TEST_F(GatewayStubResponderServerTest, StubResponderReturnsFinalTextAndCompletion) {

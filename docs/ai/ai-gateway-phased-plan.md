@@ -526,6 +526,9 @@ Close the loop through the same session boundary without introducing provider de
 - OpenAI config, provider wiring, or network traffic.
 - Fish/TTS config, provider wiring, or network traffic.
 - Any provider-specific retry, fallback, or streaming policy.
+- Replacing the stub responder's simple pending-turn scan with a deadline-ordered queue; Phase 2.5
+  keeps the local responder intentionally simple and can revisit that optimization once real
+  executor/provider load exists.
 
 ### Required Artifacts
 

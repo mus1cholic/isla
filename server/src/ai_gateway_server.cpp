@@ -19,6 +19,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
@@ -54,9 +55,11 @@ class LiveGatewaySession final : public GatewayLiveSession,
                                  public std::enable_shared_from_this<LiveGatewaySession> {
   public:
     LiveGatewaySession(tcp::socket socket, GatewaySessionRegistry& registry,
-                       GatewayWebSocketSessionFactory& factory, std::string remote_endpoint)
+                       GatewayWebSocketSessionFactory& factory, std::string remote_endpoint,
+                       std::chrono::milliseconds shutdown_write_grace_period)
         : websocket_(std::move(socket)), registry_(registry), factory_(factory),
-          remote_endpoint_(std::move(remote_endpoint)) {}
+          remote_endpoint_(std::move(remote_endpoint)), shutdown_timer_(websocket_.get_executor()),
+          shutdown_write_grace_period_(shutdown_write_grace_period) {}
 
     ~LiveGatewaySession() override {
         Join();
@@ -76,6 +79,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
         auto self = shared_from_this();
         asio::post(websocket_.get_executor(), [self] {
             self->server_shutdown_requested_.store(true);
+            self->ArmShutdownForceCloseTimer();
             self->RequestGracefulClose();
         });
     }
@@ -361,21 +365,6 @@ class LiveGatewaySession final : public GatewayLiveSession,
             return;
         }
 
-        if (read_buffer_.size() > kMaxInboundWebSocketMessageBytes) {
-            read_buffer_.consume(read_buffer_.size());
-            if (adapter_ != nullptr) {
-                const absl::Status status =
-                    adapter_->HandleTransportError("websocket message too large");
-                if (!status.ok() && !adapter_->is_closed()) {
-                    LOG(WARNING) << "AI gateway session=" << session_id_
-                                 << " failed handling oversized payload detail='"
-                                 << SanitizeForLog(status.message()) << "'";
-                }
-            }
-            MaybeFinish();
-            return;
-        }
-
         const std::string payload = beast::buffers_to_string(read_buffer_.data());
         read_buffer_.consume(read_buffer_.size());
         const absl::Status status = adapter_ == nullptr
@@ -457,6 +446,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
     }
 
     void DoForceCloseTransport() {
+        CancelShutdownForceCloseTimer();
         transport_force_closed_.store(true);
         VLOG(1) << "AI gateway session=" << session_id_
                 << " force closing transport pending_writes=" << pending_writes_.size()
@@ -471,6 +461,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
             return;
         }
 
+        CancelShutdownForceCloseTimer();
         auto& socket = websocket_.next_layer();
         transport_closed_ = true;
         boost::system::error_code error;
@@ -497,9 +488,45 @@ class LiveGatewaySession final : public GatewayLiveSession,
         if (finished_.exchange(true)) {
             return;
         }
+        CancelShutdownForceCloseTimer();
         closed_.store(true);
         std::lock_guard<std::mutex> lock(state_mutex_);
         finished_cv_.notify_all();
+    }
+
+    void ArmShutdownForceCloseTimer() {
+        if (shutdown_timer_armed_ ||
+            shutdown_write_grace_period_ <= std::chrono::milliseconds::zero()) {
+            return;
+        }
+        shutdown_timer_armed_ = true;
+        shutdown_timer_.expires_after(shutdown_write_grace_period_);
+        auto self = shared_from_this();
+        shutdown_timer_.async_wait([self](const boost::system::error_code& error) {
+            self->OnShutdownForceCloseTimer(error);
+        });
+    }
+
+    void CancelShutdownForceCloseTimer() {
+        if (!shutdown_timer_armed_) {
+            return;
+        }
+        shutdown_timer_armed_ = false;
+        shutdown_timer_.cancel();
+    }
+
+    void OnShutdownForceCloseTimer(const boost::system::error_code& error) {
+        if (error == asio::error::operation_aborted) {
+            return;
+        }
+        shutdown_timer_armed_ = false;
+        if (transport_closed_ || finished_.load() || !server_shutdown_requested_.load()) {
+            return;
+        }
+        LOG(WARNING) << "AI gateway session=" << session_id_
+                     << " forcing transport close after shutdown grace period pending_writes="
+                     << pending_writes_.size();
+        DoForceCloseTransport();
     }
 
     std::mutex state_mutex_;
@@ -512,6 +539,8 @@ class LiveGatewaySession final : public GatewayLiveSession,
     std::deque<std::string> pending_writes_;
     std::string session_id_;
     std::string remote_endpoint_;
+    asio::steady_timer shutdown_timer_;
+    std::chrono::milliseconds shutdown_write_grace_period_;
     std::atomic<bool> closed_{ false };
     std::atomic<bool> finished_{ false };
     std::atomic<bool> transport_force_closed_{ false };
@@ -521,6 +550,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
     bool write_in_progress_ = false;
     bool close_after_writes_ = false;
     bool transport_closed_ = false;
+    bool shutdown_timer_armed_ = false;
 };
 
 } // namespace
@@ -809,7 +839,8 @@ class GatewayServer::Impl {
             VLOG(1) << "AI gateway accepted TCP connection remote=" << remote_endpoint_label;
 
             auto session = std::make_shared<LiveGatewaySession>(
-                std::move(socket), session_registry_, session_factory_, remote_endpoint_label);
+                std::move(socket), session_registry_, session_factory_, remote_endpoint_label,
+                config_.shutdown_write_grace_period);
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 sessions_.push_back(session);

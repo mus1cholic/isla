@@ -446,3 +446,6 @@ Known carry-forward constraints from the current implementation:
 - the current `GatewayLiveSession` egress API is callback-based and final-message-oriented; a richer
   stream-oriented orchestration surface may still be desirable before growing heavy server-owned
   streaming or orchestration work
+- the Phase-2.5 stub responder still scans its pending-turn map to find ready work; a deadline-
+  ordered queue is intentionally deferred until profiling or later live executor phases justify the
+  extra bookkeeping complexity
