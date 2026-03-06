@@ -6,7 +6,8 @@
 
 - A C++ desktop client/runtime codebase built around Bazel
 - A runnable Phase-2 AI gateway ingress server and WebSocket endpoint in `server/src`
-- A narrow application-facing live-session egress API, but no stubbed responder/orchestration path yet
+- A narrow application-facing async live-session egress API, but no stubbed responder/orchestration
+  path yet
 - No existing OpenAI integration
 - No existing text-to-speech integration
 
@@ -115,6 +116,8 @@ Sequencing rule for the remaining work:
 > - A narrow application-facing live-session emission API now exists for `text.output`,
 >   `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`, but no
 >   responder/planner/executor path drives it yet.
+> - `GatewayLiveSession` egress now completes through callback-based async completion posted onto
+>   the session executor, with bounded integration-test waits and guarded callback/error logging.
 > - The live session transport now uses async Beast accept/read/write on the shared server
 >   `io_context`, with queued outbound writes so reads no longer block writes; the top-level
 >   accept loop remains a separate blocking server thread.
@@ -126,6 +129,10 @@ Sequencing rule for the remaining work:
 
 ### Changelog
 
+- 2026-03-06: converted `GatewayLiveSession` egress from a blocking caller bridge to callback-based
+  async completion on the session executor, added warning/error logging around async emit failures
+  and callback exceptions, and hardened integration-test waits so dropped callbacks fail
+  deterministically instead of hanging CI.
 - 2026-03-06: replaced the per-session blocking read/write mutex model with async per-session Beast
   I/O on the shared server `io_context`, added a narrow `GatewayLiveSession` egress API for
   server-owned protocol emission, and expanded unit/integration coverage for live-session egress,
@@ -383,8 +390,8 @@ optional audio output.
 >   - `GatewayApplicationEventSink` callbacks for `TurnAcceptedEvent`,
 >     `TurnCancelRequestedEvent`, and `SessionClosedEvent`
 >   - `GatewaySessionRegistry` lookup/count surfaces for live sessions by `session_id`
->   - a narrow `GatewayLiveSession` emission API for `text.output`, `audio.output`,
->     `turn.completed`, `turn.cancelled`, and `error`
+>   - a narrow callback-based async `GatewayLiveSession` emission API for `text.output`,
+>     `audio.output`, `turn.completed`, `turn.cancelled`, and `error`
 >   - async per-session Beast accept/read/write on the shared server `io_context`, with queued
 >     writes so outbound frames are not blocked behind idle reads
 >   - server-owned logging for start/stop, accepted TCP/WebSocket connections, handshake
@@ -396,10 +403,11 @@ optional audio output.
 > - Known implementation follow-ups:
 >   - deterministic stubbed turn-completion/cancellation behavior remains deferred to Phase 2.5
 >   - the server still uses a blocking accept loop thread above the async per-session transport
->   - the current `GatewayLiveSession` egress API is synchronous to callers via a blocking bridge
->     onto the transport executor; a future async application-facing emit surface is still desirable
->   - accepted in-flight turn shutdown semantics remain intentionally incomplete until server-owned
->     egress exists
+>   - the current `GatewayLiveSession` egress API is callback-based and final-message-oriented; a
+>     richer stream-oriented orchestration surface may still be desirable before heavy server-owned
+>     streaming work lands
+>   - accepted in-flight turn shutdown semantics remain intentionally incomplete until a server-owned
+>     responder/orchestrator exists
 
 ### Goal
 
@@ -486,10 +494,9 @@ to application-owned code.
 > - This phase should define the first explicit terminal policy for accepted in-flight turns during
 >   `server.Stop()`, because Phase 2 currently guarantees transport/session teardown but not a
 >   client-visible final turn event.
-> - The per-session transport is now async/queued and good enough for final-response stub work, but
->   the current application-facing emit API is still synchronous to callers via a blocking bridge
->   onto the transport executor. If later phases add heavier orchestration or streaming, prefer a
->   fully async caller-facing emit contract rather than expanding that bridge.
+> - The per-session transport is now async/queued and the current application-facing emit API is
+>   already callback-based async, so this phase can build responder/orchestration work directly on
+>   that boundary rather than first replacing a blocking caller bridge.
 
 ### Goal
 
@@ -556,6 +563,8 @@ Close the loop through the same session boundary without introducing provider de
 >   parsing, turn lifecycle rules, or transport logging rules inside executor code.
 > - Executor-facing contracts should consume typed accepted-turn data from the application boundary
 >   rather than reaching back into socket/session transport code.
+> - Any later server-owned response emission should continue using the existing callback-based async
+>   `GatewayLiveSession` seam rather than reintroducing synchronous transport bridges.
 > - Live OpenAI network integration is intentionally deferred to Phase 3.5.
 
 ### Goal
@@ -624,6 +633,8 @@ Route gateway text requests to OpenAI through the executor boundary established 
 >   reinterpreting raw client JSON.
 > - Once Phases 2.5 and 3.5 land, the live turn-completion path and live OpenAI path should remain
 >   behind those boundaries rather than being called directly from websocket code.
+> - The existing live-session egress seam is callback-based async, so orchestration code should
+>   remain non-blocking when composing final turn output.
 
 ### Goal
 
