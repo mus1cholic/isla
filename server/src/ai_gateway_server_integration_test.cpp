@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -34,6 +35,13 @@ namespace websocket = beast::websocket;
 namespace protocol = isla::shared::ai_gateway;
 using tcp = asio::ip::tcp;
 using namespace std::chrono_literals;
+
+template <typename StartFn> absl::Status await_emit(StartFn&& start) {
+    auto promise = std::make_shared<std::promise<absl::Status>>();
+    std::future<absl::Status> future = promise->get_future();
+    start([promise](absl::Status status) { promise->set_value(std::move(status)); });
+    return future.get();
+}
 
 class RecordingApplicationSink final : public GatewayApplicationEventSink {
   public:
@@ -364,8 +372,13 @@ TEST_F(GatewayServerTest, ServerOwnedWritesReachIdleClientWhileAsyncReadIsPendin
     const std::shared_ptr<GatewayLiveSession> live_session =
         server_.session_registry().FindSession(session_id);
     ASSERT_NE(live_session, nullptr);
-    ASSERT_TRUE(live_session->EmitTextOutput("turn_1", "stub reply").ok());
-    ASSERT_TRUE(live_session->EmitTurnCompleted("turn_1").ok());
+    ASSERT_TRUE(await_emit([&](GatewayEmitCallback on_complete) {
+                    live_session->AsyncEmitTextOutput("turn_1", "stub reply",
+                                                      std::move(on_complete));
+                }).ok());
+    ASSERT_TRUE(await_emit([&](GatewayEmitCallback on_complete) {
+                    live_session->AsyncEmitTurnCompleted("turn_1", std::move(on_complete));
+                }).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> text_output = client.ReadJsonFrame();
     ASSERT_TRUE(text_output.ok()) << text_output.status().ToString();
@@ -408,9 +421,47 @@ TEST_F(GatewayServerTest, ServerOwnedEmitFailsCleanlyAfterTransportClose) {
     ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
     ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
 
-    const absl::Status status = live_session->EmitTextOutput("turn_1", "late reply");
+    const absl::Status status = await_emit([&](GatewayEmitCallback on_complete) {
+        live_session->AsyncEmitTextOutput("turn_1", "late reply", std::move(on_complete));
+    });
     EXPECT_FALSE(status.ok());
     EXPECT_NE(std::string(status.message()).find("closed"), std::string::npos);
+}
+
+TEST_F(GatewayServerTest, ServerOwnedTurnCancelledReachesClientAfterAcceptedCancel) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    ASSERT_TRUE(
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+            .ok());
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.accepted_turns.size() == 1U; }));
+
+    ASSERT_TRUE(client.SendJson(R"json({"type":"turn.cancel","turn_id":"turn_1"})json").ok());
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.cancel_requests.size() == 1U; }));
+
+    const std::shared_ptr<GatewayLiveSession> live_session =
+        server_.session_registry().FindSession(session_id);
+    ASSERT_NE(live_session, nullptr);
+    ASSERT_TRUE(await_emit([&](GatewayEmitCallback on_complete) {
+                    live_session->AsyncEmitTurnCancelled("turn_1", std::move(on_complete));
+                }).ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> cancelled_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(cancelled_frame.ok()) << cancelled_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TurnCancelledMessage>(*cancelled_frame));
+    EXPECT_EQ(std::get<protocol::TurnCancelledMessage>(*cancelled_frame).turn_id, "turn_1");
+
+    client.CloseTransport();
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
 }
 
 TEST_F(GatewayServerTest, StopClosesStartedSessionAndClearsRegistry) {

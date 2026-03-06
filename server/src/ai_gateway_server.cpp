@@ -5,7 +5,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
-#include <future>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -86,70 +85,83 @@ class LiveGatewaySession final : public GatewayLiveSession,
         return closed_.load();
     }
 
-    [[nodiscard]] absl::Status EmitTextOutput(std::string_view turn_id,
-                                              std::string_view text) override {
+    void AsyncEmitTextOutput(std::string turn_id, std::string text,
+                             GatewayEmitCallback on_complete) override {
         VLOG(1) << "AI gateway session=" << session_id_
                 << " queueing server-owned text output turn_id=" << SanitizeForLog(turn_id);
-        return InvokeOnTransport([this, turn_id = std::string(turn_id), text = std::string(text)] {
-            if (adapter_ == nullptr) {
-                return failed_precondition("websocket session is not ready");
-            }
-            return adapter_->EmitTextOutput(turn_id, text);
-        });
+        InvokeOnTransport(
+            "text.output",
+            [this, turn_id = std::move(turn_id), text = std::move(text)] {
+                if (adapter_ == nullptr) {
+                    return failed_precondition("websocket session is not ready");
+                }
+                return adapter_->EmitTextOutput(turn_id, text);
+            },
+            std::move(on_complete));
     }
 
-    [[nodiscard]] absl::Status EmitAudioOutput(std::string_view turn_id, std::string_view mime_type,
-                                               std::string_view audio_base64) override {
+    void AsyncEmitAudioOutput(std::string turn_id, std::string mime_type, std::string audio_base64,
+                              GatewayEmitCallback on_complete) override {
         VLOG(1) << "AI gateway session=" << session_id_
                 << " queueing server-owned audio output turn_id=" << SanitizeForLog(turn_id)
                 << " mime_type=" << SanitizeForLog(mime_type);
-        return InvokeOnTransport([this, turn_id = std::string(turn_id),
-                                  mime_type = std::string(mime_type),
-                                  audio_base64 = std::string(audio_base64)] {
-            if (adapter_ == nullptr) {
-                return failed_precondition("websocket session is not ready");
-            }
-            return adapter_->EmitAudioOutput(turn_id, mime_type, audio_base64);
-        });
+        InvokeOnTransport(
+            "audio.output",
+            [this, turn_id = std::move(turn_id), mime_type = std::move(mime_type),
+             audio_base64 = std::move(audio_base64)] {
+                if (adapter_ == nullptr) {
+                    return failed_precondition("websocket session is not ready");
+                }
+                return adapter_->EmitAudioOutput(turn_id, mime_type, audio_base64);
+            },
+            std::move(on_complete));
     }
 
-    [[nodiscard]] absl::Status EmitTurnCompleted(std::string_view turn_id) override {
+    void AsyncEmitTurnCompleted(std::string turn_id, GatewayEmitCallback on_complete) override {
         VLOG(1) << "AI gateway session=" << session_id_
                 << " queueing server-owned turn completed turn_id=" << SanitizeForLog(turn_id);
-        return InvokeOnTransport([this, turn_id = std::string(turn_id)] {
-            if (adapter_ == nullptr) {
-                return failed_precondition("websocket session is not ready");
-            }
-            return adapter_->EmitTurnCompleted(turn_id);
-        });
+        InvokeOnTransport(
+            "turn.completed",
+            [this, turn_id = std::move(turn_id)] {
+                if (adapter_ == nullptr) {
+                    return failed_precondition("websocket session is not ready");
+                }
+                return adapter_->EmitTurnCompleted(turn_id);
+            },
+            std::move(on_complete));
     }
 
-    [[nodiscard]] absl::Status EmitTurnCancelled(std::string_view turn_id) override {
+    void AsyncEmitTurnCancelled(std::string turn_id, GatewayEmitCallback on_complete) override {
         VLOG(1) << "AI gateway session=" << session_id_
                 << " queueing server-owned turn cancelled turn_id=" << SanitizeForLog(turn_id);
-        return InvokeOnTransport([this, turn_id = std::string(turn_id)] {
-            if (adapter_ == nullptr) {
-                return failed_precondition("websocket session is not ready");
-            }
-            return adapter_->EmitTurnCancelled(turn_id);
-        });
+        InvokeOnTransport(
+            "turn.cancelled",
+            [this, turn_id = std::move(turn_id)] {
+                if (adapter_ == nullptr) {
+                    return failed_precondition("websocket session is not ready");
+                }
+                return adapter_->EmitTurnCancelled(turn_id);
+            },
+            std::move(on_complete));
     }
 
-    [[nodiscard]] absl::Status EmitError(std::optional<std::string_view> turn_id,
-                                         std::string_view code, std::string_view message) override {
+    void AsyncEmitError(std::optional<std::string> turn_id, std::string code, std::string message,
+                        GatewayEmitCallback on_complete) override {
         VLOG(1) << "AI gateway session=" << session_id_
                 << " queueing server-owned error code=" << SanitizeForLog(code) << " turn_id='"
                 << (turn_id.has_value() ? SanitizeForLog(*turn_id) : std::string("<none>")) << "'";
-        return InvokeOnTransport(
-            [this, turn_id = turn_id ? std::optional<std::string>(*turn_id) : std::nullopt,
-             code = std::string(code), message = std::string(message)] {
+        InvokeOnTransport(
+            "error",
+            [this, turn_id = std::move(turn_id), code = std::move(code),
+             message = std::move(message)] {
                 if (adapter_ == nullptr) {
                     return failed_precondition("websocket session is not ready");
                 }
                 const std::optional<std::string_view> turn_id_view =
                     turn_id ? std::optional<std::string_view>(*turn_id) : std::nullopt;
                 return adapter_->EmitError(turn_id_view, code, message);
-            });
+            },
+            std::move(on_complete));
     }
 
     [[nodiscard]] absl::Status SendTextFrame(std::string_view frame) override {
@@ -165,38 +177,39 @@ class LiveGatewaySession final : public GatewayLiveSession,
     }
 
   private:
-    template <typename Fn> [[nodiscard]] absl::Status InvokeOnTransport(Fn&& fn) {
+    template <typename Fn>
+    void InvokeOnTransport(std::string_view operation, Fn&& fn, GatewayEmitCallback on_complete) {
         if (closed_.load()) {
-            return failed_precondition("websocket session is closed");
+            LOG(WARNING) << "AI gateway session=" << session_id_
+                         << " rejected async emit op=" << operation << " detail='"
+                         << SanitizeForLog("websocket session is closed") << "'";
+            if (on_complete) {
+                on_complete(failed_precondition("websocket session is closed"));
+            }
+            return;
         }
 
         auto self = shared_from_this();
-        auto promise = std::make_shared<std::promise<absl::Status>>();
-        std::future<absl::Status> future = promise->get_future();
-        // TODO(ai-gateway): Replace this blocking bridge with an async application-facing egress
-        // API on GatewayLiveSession. Current drawbacks:
-        // - Emit* callers block a thread waiting for transport-thread execution.
-        // - The implementation relies on `dispatch` re-entrancy to make same-executor calls safe.
-        // - Promise/future plumbing exists only to preserve a synchronous surface.
-        // Suggested follow-up:
-        // 1. Introduce async Emit* methods with an explicit completion callback or future result.
-        // 2. Marshal directly onto the session executor and complete after validation/enqueue.
-        // 3. Update callers/tests to await async completion instead of blocking here.
-        // `dispatch` preserves re-entrant calls from the transport executor by running inline
-        // when we're already on the correct thread, while still marshaling cross-thread calls
-        // back onto the session executor.
-        asio::dispatch(
-            websocket_.get_executor(), [self, promise, fn = std::forward<Fn>(fn)]() mutable {
-                try {
-                    promise->set_value(fn());
-                } catch (const std::exception& error) {
-                    promise->set_value(absl::InternalError(error.what()));
-                } catch (...) {
-                    promise->set_value(
-                        absl::InternalError("unknown exception during transport invocation"));
-                }
-            });
-        return future.get();
+        asio::post(websocket_.get_executor(), [self, operation = std::string(operation),
+                                               fn = std::forward<Fn>(fn),
+                                               on_complete = std::move(on_complete)]() mutable {
+            absl::Status status;
+            try {
+                status = fn();
+            } catch (const std::exception& error) {
+                status = absl::InternalError(error.what());
+            } catch (...) {
+                status = absl::InternalError("unknown exception during transport invocation");
+            }
+            if (!status.ok()) {
+                LOG(WARNING) << "AI gateway session=" << self->session_id_
+                             << " async emit failed op=" << operation << " detail='"
+                             << SanitizeForLog(status.message()) << "'";
+            }
+            if (on_complete) {
+                on_complete(std::move(status));
+            }
+        });
     }
 
     [[nodiscard]] absl::Status EnqueueWrite(std::string frame) {
