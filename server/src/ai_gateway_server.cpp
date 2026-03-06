@@ -4,10 +4,10 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -143,9 +143,15 @@ class LiveGatewaySession final : public GatewayLiveSession,
                 websocket::stream_base::timeout::suggested(beast::role_type::server));
             websocket_.accept(error);
             if (error) {
-                LOG(WARNING) << "AI gateway rejected websocket handshake remote="
-                             << remote_endpoint_ << " detail='" << SanitizeForLog(error.message())
-                             << "'";
+                if (transport_force_closed_.load()) {
+                    VLOG(1) << "AI gateway handshake interrupted by server stop remote="
+                            << remote_endpoint_ << " detail='" << SanitizeForLog(error.message())
+                            << "'";
+                } else {
+                    LOG(WARNING) << "AI gateway rejected websocket handshake remote="
+                                 << remote_endpoint_ << " detail='"
+                                 << SanitizeForLog(error.message()) << "'";
+                }
                 auto& socket = websocket_.next_layer();
                 boost::system::error_code close_error;
                 const auto close_result = socket.close(close_error);

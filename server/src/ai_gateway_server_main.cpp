@@ -1,4 +1,3 @@
-#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <csignal>
@@ -16,10 +15,27 @@
 
 namespace {
 
-std::atomic<bool> g_stop_requested{ false };
+volatile std::sig_atomic_t g_stop_requested = 0;
 
 void handle_signal(int /*unused*/) {
-    g_stop_requested.store(true);
+    g_stop_requested = 1;
+}
+
+const char* close_reason_name(isla::server::ai_gateway::SessionCloseReason reason) {
+    using isla::server::ai_gateway::SessionCloseReason;
+    switch (reason) {
+    case SessionCloseReason::ProtocolEnded:
+        return "protocol_ended";
+    case SessionCloseReason::TransportClosed:
+        return "transport_closed";
+    case SessionCloseReason::TransportError:
+        return "transport_error";
+    case SessionCloseReason::SendFailed:
+        return "send_failed";
+    case SessionCloseReason::ServerStopping:
+        return "server_stopping";
+    }
+    return "unknown";
 }
 
 absl::StatusOr<int> parse_int_argument(std::string_view value, std::string_view name) {
@@ -55,7 +71,7 @@ class LoggingApplicationSink final : public isla::server::ai_gateway::GatewayApp
 
     void OnSessionClosed(const isla::server::ai_gateway::SessionClosedEvent& event) override {
         LOG(INFO) << "AI gateway session closed session=" << event.session_id
-                  << " reason=" << static_cast<int>(event.reason) << " detail='"
+                  << " reason=" << close_reason_name(event.reason) << " detail='"
                   << isla::server::ai_gateway::SanitizeForLog(event.detail) << "'";
     }
 };
@@ -123,7 +139,7 @@ int main(int argc, char** argv) {
     }
 
     LOG(INFO) << "AI gateway listening on " << config->bind_host << ":" << server.bound_port();
-    while (!g_stop_requested.load()) {
+    while (g_stop_requested == 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 

@@ -1,13 +1,12 @@
 #include "ai_gateway_server.hpp"
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
-#include <utility>
 #include <variant>
 #include <vector>
 
@@ -456,9 +455,8 @@ TEST_F(GatewayServerTest, ReapsManyShortLivedSessionsWithoutAccumulatingState) {
             client.CloseTransport();
         }
 
-        ASSERT_TRUE(sink_.WaitFor([&] {
-            return sink_.closed_sessions.size() == static_cast<std::size_t>(i + 1);
-        }));
+        ASSERT_TRUE(sink_.WaitFor(
+            [&] { return sink_.closed_sessions.size() == static_cast<std::size_t>(i + 1); }));
         ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
     }
 
