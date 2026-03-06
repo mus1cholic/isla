@@ -46,7 +46,7 @@ const json* find_key(const json& object, std::string_view key) {
     if (!object.is_object()) {
         return nullptr;
     }
-    const auto it = object.find(key);
+    const auto it = object.find(std::string(key));
     if (it == object.end()) {
         return nullptr;
     }
@@ -70,7 +70,7 @@ json serialize_message(const GatewayMessage& message) {
         Overloaded{
             [](const SessionStartMessage& value) {
                 json object = { { "type", message_type_name(MessageType::SessionStart) } };
-                if (value.client_session_id.has_value()) {
+                if (value.client_session_id.has_value() && !value.client_session_id->empty()) {
                     object["client_session_id"] = *value.client_session_id;
                 }
                 return object;
@@ -119,10 +119,10 @@ json serialize_message(const GatewayMessage& message) {
                 json object = { { "type", message_type_name(MessageType::Error) },
                                 { "code", value.code },
                                 { "message", value.message } };
-                if (value.session_id.has_value()) {
+                if (value.session_id.has_value() && !value.session_id->empty()) {
                     object["session_id"] = *value.session_id;
                 }
-                if (value.turn_id.has_value()) {
+                if (value.turn_id.has_value() && !value.turn_id->empty()) {
                     object["turn_id"] = *value.turn_id;
                 }
                 return object;

@@ -5,8 +5,8 @@
 `isla` currently has:
 
 - A C++ desktop client/runtime codebase built around Bazel
-- No backend/server implementation yet
-- No existing websocket protocol between the client and a remote service
+- No runnable backend/server process yet
+- No actual WebSocket transport adapter yet
 - No existing OpenAI integration
 - No existing text-to-speech integration
 
@@ -64,8 +64,23 @@ Operational interpretation:
 > [!NOTE]
 > **Current status (2026-03-06):**
 > - Phase 0 is implemented.
+> - Phase 1 is partially implemented.
 > - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
-> - No server code has been implemented yet.
+> - Shared protocol/session scaffolding now exists in:
+>   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
+>   - `shared/include/isla/shared/ai_gateway_session.hpp`
+>   - `server/src/ai_gateway_session_handler.hpp`
+> - The implemented Phase-1 slice currently covers:
+>   - typed JSON protocol messages and JSON parse/serialize coverage
+>   - session/turn lifecycle state enforcement for one in-flight turn per session
+>   - a transport-facing session handler that accepts incoming JSON frames and emits protocol
+>     frames/events for later WebSocket integration
+>   - dedicated protocol/session handler tests under Bazel
+> - Phase 1 is not complete yet because the repo still lacks:
+>   - the actual WebSocket text-frame adapter around the session handler
+>   - per-connection session ID generation/wiring from a real connection/session factory
+>   - transport-boundary integration for connection close/error sequencing
+> - No runnable gateway server process has been implemented yet.
 > - The chosen v1 transport split is:
 >   - client/server: WebSocket
 >   - server/OpenAI: HTTP/SSE via Responses API
@@ -90,6 +105,10 @@ Operational interpretation:
 - 2026-03-06: completed Phase 0 with a dedicated v1 gateway architecture baseline in
   `docs/ai/ai_gateway_v1_design.md`, including the initial WebSocket protocol contract,
   planner/executor boundary, upstream transport decisions, and deferred-alternative inventory.
+- 2026-03-06: implemented the core Phase-1 protocol/session scaffolding in `shared/src` and
+  `server/src`, including typed JSON message parsing/serialization, session lifecycle state
+  enforcement, a transport-facing session handler, and dedicated tests; actual WebSocket adapter
+  wiring remains pending.
 
 ## Architecture Snapshot
 
@@ -170,6 +189,19 @@ Freeze the first server-side architecture and protocol boundaries before impleme
   history.
 
 ## Phase 1: Client/Gateway WebSocket Protocol
+
+> [!NOTE]
+> **Status (2026-03-06): Partially implemented.**
+> - Implemented so far:
+>   - shared protocol types for `session.*`, `text.*`, `audio.output`, `turn.*`, and `error`
+>   - JSON parse/serialize support behind the shared protocol boundary
+>   - `SessionState` lifecycle enforcement for one active turn per session
+>   - `GatewaySessionHandler` for transport-facing frame handling and immediate protocol replies
+>   - protocol/session/session-handler regression tests
+> - Still required before Phase 1 is fully complete:
+>   - a real WebSocket-facing adapter that converts text frames to/from `GatewaySessionHandler`
+>   - per-connection session ID generation and wiring
+>   - final transport-boundary handling for connection close and terminal turn error sequencing
 
 ### Goal
 
@@ -282,9 +314,19 @@ optional audio output.
 ### Exit Criteria
 
 - The client/gateway websocket contract is explicit, minimal, and stable enough to implement.
+- The contract is exercised by shared/session-handler tests rather than existing only in docs.
+- A WebSocket-facing adapter exists that uses the shared protocol/session-handler boundary instead
+  of reimplementing the contract ad hoc.
 - The protocol can later grow chunked input/output events without requiring a transport redesign.
 
 ## Phase 2: OpenAI Execution Path
+
+> [!NOTE]
+> **Carry-forward from Phase 1 (2026-03-06):**
+> - Shared protocol types, session state enforcement, and a transport-facing session handler now
+>   exist.
+> - Phase 2 should build on those boundaries rather than redefining client/gateway message parsing
+>   or turn lifecycle rules inside executor code.
 
 ### Goal
 
@@ -439,6 +481,12 @@ gateway text result
 
 ## Phase 5: Streaming-Ready Internal Event Model
 
+> [!NOTE]
+> **Carry-forward from Phase 1 (2026-03-06):**
+> - Phase-1 protocol code already reserves `text.delta` and `audio.output_chunk` event names.
+> - Later streaming work should extend the existing shared protocol/session-handler boundary rather
+>   than introducing a second parallel client contract.
+
 ### Goal
 
 Preserve future chunk-style streaming capability without exposing that complexity to the client
@@ -479,6 +527,14 @@ immediately.
 
 ## Phase 6: First End-to-End Gateway Slice
 
+> [!NOTE]
+> **Carry-forward from Phases 0/1 (2026-03-06):**
+> - The architecture baseline is documented.
+> - The shared protocol/session boundary and transport-facing session handler skeleton already
+>   exist.
+> - This phase still has to add the runnable server process and the actual WebSocket-facing adapter
+>   before planner/executor/provider work can be wired end-to-end.
+
 ### Goal
 
 Ship the first usable server path with minimal moving parts.
@@ -487,6 +543,8 @@ Ship the first usable server path with minimal moving parts.
 
 - Build the C++ gateway server skeleton.
 - Implement the websocket endpoint and first text-input protocol with optional audio output.
+- Reuse the existing shared protocol/session-handler scaffolding instead of re-encoding protocol
+  rules directly in the endpoint implementation.
 - Implement the planner/executor single-step flow.
 - Integrate OpenAI via Responses API.
 - Return final text output to the client.

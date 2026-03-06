@@ -74,7 +74,7 @@ TEST(AiGatewayProtocolTest, RoundTripsSessionLifecycleMessages) {
 
 TEST(AiGatewayProtocolTest, RoundTripsTurnMessages) {
     {
-        const GatewayMessage original = TextInputMessage{ "turn_1", "hello" };
+        const GatewayMessage original = TextInputMessage{ .turn_id = "turn_1", .text = "hello" };
         const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));
         ASSERT_TRUE(parsed.ok()) << parsed.status().ToString();
         ASSERT_TRUE(std::holds_alternative<TextInputMessage>(*parsed));
@@ -109,7 +109,8 @@ TEST(AiGatewayProtocolTest, RoundTripsTurnMessages) {
 }
 
 TEST(AiGatewayProtocolTest, RoundTripsTextOutputMessage) {
-    const GatewayMessage original = TextOutputMessage{ "turn_42", "hello from gateway" };
+    const GatewayMessage original =
+        TextOutputMessage{ .turn_id = "turn_42", .text = "hello from gateway" };
 
     const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));
 
@@ -122,8 +123,10 @@ TEST(AiGatewayProtocolTest, RoundTripsTextOutputMessage) {
 }
 
 TEST(AiGatewayProtocolTest, RoundTripsErrorWithIds) {
-    const GatewayMessage original = ErrorMessage{ std::string("srv_123"), std::string("turn_1"),
-                                                  "bad_request", "Missing text" };
+    const GatewayMessage original = ErrorMessage{ .session_id = std::string("srv_123"),
+                                                  .turn_id = std::string("turn_1"),
+                                                  .code = "bad_request",
+                                                  .message = "Missing text" };
 
     const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));
 
