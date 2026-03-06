@@ -1,10 +1,25 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 cc_library(
     name = "shared",
     srcs = ["build_info.cpp"],
     visibility = ["//visibility:public"],
     deps = ["//shared/include/isla/shared:shared_headers"],
+)
+
+cc_library(
+    name = "ai_gateway_protocol",
+    srcs = [
+        "ai_gateway_protocol.cpp",
+        "ai_gateway_session.cpp",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//shared/include/isla/shared:ai_gateway_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
 )
 
 cc_library(
@@ -16,3 +31,20 @@ cc_library(
     deps = ["@rules_cc//cc/runfiles"],
 )
 
+cc_test(
+    name = "ai_gateway_protocol_test",
+    srcs = ["ai_gateway_protocol_test.cpp"],
+    deps = [
+        ":ai_gateway_protocol",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "ai_gateway_session_test",
+    srcs = ["ai_gateway_session_test.cpp"],
+    deps = [
+        ":ai_gateway_protocol",
+        "@googletest//:gtest_main",
+    ],
+)

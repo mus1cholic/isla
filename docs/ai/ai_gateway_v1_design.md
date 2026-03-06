@@ -22,12 +22,24 @@ or code comments.
 
 As of 2026-03-06:
 
-- no AI gateway server implementation exists yet
-- no client/gateway WebSocket protocol implementation exists yet
+- the v1 architecture baseline is documented
+- shared protocol/session scaffolding exists in:
+  - `shared/include/isla/shared/ai_gateway_protocol.hpp`
+  - `shared/include/isla/shared/ai_gateway_session.hpp`
+  - `server/src/ai_gateway_session_handler.hpp`
+- the repo now has:
+  - typed protocol message definitions
+  - JSON parse/serialize support for the v1 message contract
+  - session/turn lifecycle enforcement for one in-flight turn per session
+  - a transport-facing session handler that consumes incoming JSON frames and emits outgoing
+    protocol frames/events
+- no runnable AI gateway server process exists yet
+- no actual client/gateway WebSocket adapter exists yet
 - no OpenAI integration exists yet
 - no Fish Audio integration exists yet
 
-This document defines the architecture baseline that later code should implement.
+This document defines the architecture baseline that later code should implement. The current
+Phase-1 code is a partial realization of this contract, not a complete gateway server.
 
 ## Normative Terms
 
@@ -127,6 +139,13 @@ The initial protocol baseline consists of:
 - `turn.cancel`
 - `turn.cancelled`
 - `error`
+
+Current implementation note (2026-03-06):
+
+- message structs and JSON parse/serialize support are implemented
+- session state enforcement is implemented
+- a transport-facing session handler is implemented
+- the actual WebSocket text-frame adapter that owns a live connection is still pending
 
 ### Message Shapes
 
@@ -332,3 +351,20 @@ Phase 0 is complete when:
 - this document exists and is treated as the v1 baseline
 - the phased plan references this document as the architecture baseline
 - deferred alternatives are explicitly documented here instead of left implicit in chat history
+
+## Phase 1 Carry-Forward
+
+As of 2026-03-06, the following Phase-1-aligned implementation exists:
+
+- shared protocol types and JSON parsing/serialization
+- shared session lifecycle state enforcement
+- a transport-facing session handler that returns:
+  - outgoing protocol frames
+  - accepted-turn events
+  - cancel-request events
+
+The following Phase-1 work remains before the client/gateway transport boundary is fully wired:
+
+- a WebSocket-facing adapter that turns text frames into handler calls and writes returned frames
+- per-connection session ID generation/wiring
+- transport-boundary close/error sequencing tied to a real connection lifecycle
