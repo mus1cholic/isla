@@ -6,8 +6,8 @@
 
 - A C++ desktop client/runtime codebase built around Bazel
 - A runnable Phase-2 AI gateway ingress server and WebSocket endpoint in `server/src`
-- A narrow application-facing async live-session egress API, but no stubbed responder/orchestration
-  path yet
+- A narrow application-facing async live-session egress API plus a local Phase-2.5 stub
+  responder/orchestration path
 - No existing OpenAI integration
 - No existing text-to-speech integration
 
@@ -72,6 +72,7 @@ Sequencing rule for the remaining work:
 > - Phase 0 is implemented.
 > - Phase 1 is implemented.
 > - Phase 2 is implemented.
+> - Phase 2.5 is implemented.
 > - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
 > - Shared protocol/session scaffolding now exists in:
 >   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
@@ -114,21 +115,27 @@ Sequencing rule for the remaining work:
 > - Chunk-style streaming is intentionally deferred at the client protocol level, but the internal
 >   server abstraction should remain stream-capable from day one.
 > - A narrow application-facing live-session emission API now exists for `text.output`,
->   `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`, but no
->   responder/planner/executor path drives it yet.
+>   `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`.
+> - A local application-owned `GatewayStubResponder` now drives accepted-turn completion,
+>   accepted-cancel termination, and stop-time terminalization through that live-session seam.
 > - `GatewayLiveSession` egress now completes through callback-based async completion posted onto
 >   the session executor, with bounded integration-test waits and guarded callback/error logging.
 > - The live session transport now uses async Beast accept/read/write on the shared server
 >   `io_context`, with queued outbound writes so reads no longer block writes; the top-level
 >   accept loop remains a separate blocking server thread.
-> - Shutdown semantics for accepted in-flight turns still need to be finalized when Phase 2.5 adds
->   server-owned turn completion and cancellation egress.
+> - `server.Stop()` now gives accepted in-flight turns an explicit terminal policy:
+>   - accepted non-cancelled turns emit `error(code="server_stopping")` then `turn.completed`
+>   - accepted cancelled turns emit `turn.cancelled`
 > - Audio input and transcription are intentionally deferred from the first server slice.
 > - Self-hosted Fish workers, Spot GPU fleets, and OpenAI Realtime transport remain explicitly
 >   deferred alternatives rather than current implementation goals.
 
 ### Changelog
 
+- 2026-03-06: completed Phase 2.5 with an application-owned `GatewayStubResponder`, deterministic
+  stub text completion/cancellation over the live-session seam, graceful server-stop turn
+  terminalization before transport close, binary wiring to use the stub responder, and real-socket
+  integration coverage for stub success, cancellation, and `server_stopping` termination.
 - 2026-03-06: converted `GatewayLiveSession` egress from a blocking caller bridge to callback-based
   async completion on the session executor, added warning/error logging around async emit failures
   and callback exceptions, and hardened integration-test waits so dropped callbacks fail
@@ -394,20 +401,20 @@ optional audio output.
 >     `audio.output`, `turn.completed`, `turn.cancelled`, and `error`
 >   - async per-session Beast accept/read/write on the shared server `io_context`, with queued
 >     writes so outbound frames are not blocked behind idle reads
+>   - a `GatewayStubResponder` that consumes typed accepted-turn/cancel/session-close events and
+>     drives deterministic text completion/cancellation back through the same live-session boundary
 >   - server-owned logging for start/stop, accepted TCP/WebSocket connections, handshake
 >     rejection, and shutdown-triggered transport close
 >   - a closed-session reaper that joins finished session threads and prevents unbounded session
 >     retention
 >   - real-socket integration coverage for ingress, handshake/protocol failures, binary frames,
->     stop behavior, bind/startup failures, session reaping, and server-owned idle-client egress
+>     stop behavior, bind/startup failures, session reaping, server-owned idle-client egress, stub
+>     completion/cancellation, and `server_stopping` terminalization
 > - Known implementation follow-ups:
->   - deterministic stubbed turn-completion/cancellation behavior remains deferred to Phase 2.5
 >   - the server still uses a blocking accept loop thread above the async per-session transport
 >   - the current `GatewayLiveSession` egress API is callback-based and final-message-oriented; a
 >     richer stream-oriented orchestration surface may still be desirable before heavy server-owned
 >     streaming work lands
->   - accepted in-flight turn shutdown semantics remain intentionally incomplete until a server-owned
->     responder/orchestrator exists
 
 ### Goal
 

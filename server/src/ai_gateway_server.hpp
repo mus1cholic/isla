@@ -13,6 +13,8 @@
 
 namespace isla::server::ai_gateway {
 
+class GatewaySessionRegistry;
+
 struct GatewayServerConfig {
     std::string bind_host = "127.0.0.1";
     std::uint16_t port = 0;
@@ -26,6 +28,7 @@ class GatewayApplicationEventSink {
     virtual void OnTurnAccepted(const TurnAcceptedEvent& event) = 0;
     virtual void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) = 0;
     virtual void OnSessionClosed(const SessionClosedEvent& event) = 0;
+    virtual void OnServerStopping(GatewaySessionRegistry& session_registry) {}
 };
 
 using GatewayEmitCallback = std::function<void(absl::Status)>;

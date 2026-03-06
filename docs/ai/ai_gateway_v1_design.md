@@ -52,8 +52,10 @@ As of 2026-03-06:
     shutdown behavior, session cleanup, and server-owned egress while a client is idle
 - a narrow application-facing live-session emission API now exists for `text.output`,
   `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`; it now
-  completes through callback-based async completion on the session executor, but no stub responder
-  or planner/executor path drives it yet
+  completes through callback-based async completion on the session executor
+- a local `GatewayStubResponder` now consumes accepted-turn/cancel events, emits deterministic
+  stub text completion and cancellation through live sessions, and finalizes accepted in-flight
+  turns during `server.Stop()`
 - live session transport now uses async Beast accept/read/write on the shared server `io_context`,
   with queued outbound writes so reads no longer block writes; the top-level accept loop remains a
   separate blocking server thread
@@ -176,10 +178,13 @@ Current implementation note (2026-03-06):
 - a narrow server-owned live-session egress API now exists for outbound protocol emission through
   the existing adapter/session-handler boundary, with callback-based async completion instead of a
   blocking caller bridge
+- a `GatewayStubResponder` now provides the first application-owned outbound orchestration path for
+  deterministic `text.output`, `turn.completed`, `turn.cancelled`, and stop-time
+  `error(code="server_stopping")` handling
 - the async emit path now logs rejected/failed operations at the server boundary, guards callback
   exceptions, and uses bounded waits in integration tests so dropped callbacks fail deterministically
-- deterministic application-owned turn completion/cancellation orchestration remains unimplemented;
-  later phases still need the first real responder path
+- the first local responder path is now implemented, while planner/executor/provider work remains
+  for later phases
 
 ### Message Shapes
 
@@ -416,6 +421,8 @@ As of 2026-03-06, the following Phase-2-aligned implementation exists:
 - a `GatewayLiveSession` API that can now emit server-owned `text.output`, `audio.output`,
   `turn.completed`, `turn.cancelled`, and `error` frames through the existing session adapter using
   callback-based async completion
+- a `GatewayStubResponder` that consumes typed accepted-turn/cancel/session-close events and emits
+  deterministic completion/cancellation back through that live-session seam
 - async per-session Beast accept/read/write on the shared server `io_context`, with queued writes
   so outbound frames are no longer blocked behind an idle read
 - a closed-session reaper that joins finished session threads and prevents indefinite retention of
@@ -424,6 +431,8 @@ As of 2026-03-06, the following Phase-2-aligned implementation exists:
   - `session.start` / `session.end` over a real socket
   - typed accepted-turn and cancel handoff
   - server-owned egress while the client is idle
+  - stubbed turn completion and cancellation over a real socket
+  - stop-time `server_stopping` terminalization for an accepted turn
   - invalid handshake rejection
   - protocol error handling without tearing down the session
   - binary-frame rejection
@@ -433,9 +442,6 @@ As of 2026-03-06, the following Phase-2-aligned implementation exists:
 
 Known carry-forward constraints from the current implementation:
 
-- deterministic application-owned outbound turn handling is still missing and belongs to Phase 2.5
-- accepted in-flight turns do not yet have a fully defined shutdown terminal policy during
-  `server.Stop()`
 - the server still uses a blocking accept loop thread above the async per-session transport
 - the current `GatewayLiveSession` egress API is callback-based and final-message-oriented; a richer
   stream-oriented orchestration surface may still be desirable before growing heavy server-owned

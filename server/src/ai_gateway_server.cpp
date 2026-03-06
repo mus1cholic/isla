@@ -74,7 +74,10 @@ class LiveGatewaySession final : public GatewayLiveSession,
 
     void RequestStop() {
         auto self = shared_from_this();
-        asio::post(websocket_.get_executor(), [self] { self->DoForceCloseTransport(); });
+        asio::post(websocket_.get_executor(), [self] {
+            self->server_shutdown_requested_.store(true);
+            self->RequestGracefulClose();
+        });
     }
 
     [[nodiscard]] const std::string& session_id() const override {
@@ -265,7 +268,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
     void OnAccept(const boost::system::error_code& error) {
         accept_in_progress_ = false;
         if (error) {
-            if (transport_force_closed_.load()) {
+            if (transport_force_closed_.load() || server_shutdown_requested_.load()) {
                 VLOG(1) << "AI gateway handshake interrupted by server stop remote="
                         << remote_endpoint_ << " detail='" << SanitizeForLog(error.message())
                         << "'";
@@ -312,7 +315,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
 
         if (error) {
             if (adapter_ != nullptr) {
-                if (transport_force_closed_.load()) {
+                if (transport_force_closed_.load() || server_shutdown_requested_.load()) {
                     VLOG(1) << "AI gateway session=" << session_id_
                             << " transport closed by server stop remote=" << remote_endpoint_;
                     adapter_->HandleServerShutdown();
@@ -486,6 +489,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
     std::atomic<bool> closed_{ false };
     std::atomic<bool> finished_{ false };
     std::atomic<bool> transport_force_closed_{ false };
+    std::atomic<bool> server_shutdown_requested_{ false };
     bool accept_in_progress_ = false;
     bool read_in_progress_ = false;
     bool write_in_progress_ = false;
@@ -583,7 +587,8 @@ class GatewayServer::Impl {
     Impl(GatewayServerConfig config, GatewayApplicationEventSink* application_sink,
          std::unique_ptr<SessionIdGenerator> session_id_generator)
         : config_(std::move(config)), io_context_(1), session_registry_(application_sink),
-          session_factory_(std::move(session_id_generator)), acceptor_(io_context_) {}
+          session_factory_(std::move(session_id_generator)), acceptor_(io_context_),
+          application_sink_(application_sink) {}
 
     ~Impl() {
         Stop();
@@ -682,6 +687,11 @@ class GatewayServer::Impl {
             const auto close_result = acceptor_.close(error);
             static_cast<void>(close_result);
             sessions_to_stop = sessions_;
+        }
+        if (application_sink_ != nullptr) {
+            LOG(INFO) << "AI gateway server finalizing accepted turns before stop"
+                      << " active_sessions=" << sessions_to_stop.size();
+            application_sink_->OnServerStopping(session_registry_);
         }
         reap_cv_.notify_all();
 
@@ -823,6 +833,7 @@ class GatewayServer::Impl {
     GatewaySessionRegistry session_registry_;
     GatewayWebSocketSessionFactory session_factory_;
     tcp::acceptor acceptor_;
+    GatewayApplicationEventSink* application_sink_ = nullptr;
     mutable std::mutex mutex_;
     std::condition_variable reap_cv_;
     std::thread io_thread_;

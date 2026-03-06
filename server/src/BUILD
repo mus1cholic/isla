@@ -49,6 +49,20 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "ai_gateway_stub_responder",
+    srcs = ["ai_gateway_stub_responder.cpp"],
+    hdrs = ["ai_gateway_stub_responder.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":ai_gateway_logging_utils",
+        ":ai_gateway_server",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+    ],
+)
+
 cc_binary(
     name = "isla_ai_gateway",
     srcs = ["ai_gateway_server_main.cpp"],
@@ -57,6 +71,7 @@ cc_binary(
     deps = [
         ":ai_gateway_logging_utils",
         ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:initialize",
         "@abseil-cpp//absl/log:log",
@@ -84,6 +99,17 @@ cc_test(
 )
 
 cc_test(
+    name = "ai_gateway_stub_responder_test",
+    srcs = ["ai_gateway_stub_responder_test.cpp"],
+    deps = [
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
+        "@abseil-cpp//absl/status",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "ai_gateway_websocket_session_test",
     srcs = ["ai_gateway_websocket_session_test.cpp"],
     deps = [
@@ -97,6 +123,7 @@ cc_test(
     srcs = ["ai_gateway_server_integration_test.cpp"],
     deps = [
         ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
         "//shared/src:ai_gateway_protocol",
         "@boost.beast//:boost.beast",
         "@googletest//:gtest_main",
