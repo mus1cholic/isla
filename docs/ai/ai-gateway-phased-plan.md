@@ -5,8 +5,8 @@
 `isla` currently has:
 
 - A C++ desktop client/runtime codebase built around Bazel
-- No runnable backend/server process yet
-- No runnable WebSocket endpoint/server process yet
+- A runnable Phase-2 AI gateway ingress server and WebSocket endpoint in `server/src`
+- No application-facing outbound turn-completion path yet
 - No existing OpenAI integration
 - No existing text-to-speech integration
 
@@ -70,6 +70,7 @@ Sequencing rule for the remaining work:
 > **Current status (2026-03-06):**
 > - Phase 0 is implemented.
 > - Phase 1 is implemented.
+> - Phase 2 is implemented.
 > - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
 > - Shared protocol/session scaffolding now exists in:
 >   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
@@ -87,7 +88,18 @@ Sequencing rule for the remaining work:
 >   - transport-boundary connection close/error sequencing for active turns and session teardown
 >   - adapter-boundary logging with control-character sanitization for untrusted fields
 >   - dedicated protocol/session handler/session-adapter/logging tests under Bazel
-> - No runnable gateway server process has been implemented yet.
+> - The implemented Phase-2 slice now adds:
+>   - a runnable `isla_ai_gateway` server binary and config-parsing entrypoint
+>   - a Boost.Beast-backed WebSocket listener and live connection/session wiring
+>   - `GatewayServer`, `GatewaySessionRegistry`, `GatewayApplicationEventSink`, and
+>     `GatewayLiveSession` as the application-owned ingress/session-ownership boundary
+>   - typed handoff for accepted turns, cancel requests, and session-close events
+>   - session registry lookup by `session_id` and closed-session reaping during normal operation
+>     and shutdown
+>   - server start/stop logging, handshake/transport shutdown handling, and cross-platform
+>     accept-loop shutdown hardening for Ubuntu CI
+>   - real-socket integration coverage for happy-path ingress, protocol errors, handshake
+>     rejection, binary-frame rejection, shutdown behavior, startup failures, and reaping
 > - The chosen v1 transport split is:
 >   - client/server: WebSocket
 >   - server/OpenAI: HTTP/SSE via Responses API
@@ -100,12 +112,23 @@ Sequencing rule for the remaining work:
 >   - zero or one final audio result out
 > - Chunk-style streaming is intentionally deferred at the client protocol level, but the internal
 >   server abstraction should remain stream-capable from day one.
+> - No application-facing outbound emission API exists yet for `text.output`, `audio.output`,
+>   `turn.completed`, `turn.cancelled`, or post-acceptance `error`.
+> - The current live transport is intentionally a synchronous Beast implementation with one thread
+>   per session and a blocking read/write mutex; shared async execution remains deferred follow-up
+>   work rather than a completed Phase-2 objective.
+> - Shutdown semantics for accepted in-flight turns still need to be finalized when Phase 2.5 adds
+>   server-owned turn completion and cancellation egress.
 > - Audio input and transcription are intentionally deferred from the first server slice.
 > - Self-hosted Fish workers, Spot GPU fleets, and OpenAI Realtime transport remain explicitly
 >   deferred alternatives rather than current implementation goals.
 
 ### Changelog
 
+- 2026-03-06: completed Phase 2 with a runnable Boost.Beast-backed gateway server, application
+  event sink/session registry boundary, entrypoint binary, shutdown/reaping hardening, and
+  real-socket integration coverage; documented the remaining sync-transport limitations and
+  Phase-2.5 shutdown/egress follow-up work.
 - 2026-03-06: narrowed the remaining plan to smaller boundary-first slices by splitting live
   integration work into `.5` phases; Phase 2 now stops at runnable gateway ingress/session handoff,
   Phase 2.5 adds a local stubbed return path, Phase 3.5 owns live OpenAI hookup, and Phase 5.5
@@ -174,7 +197,8 @@ Future-compatible transport evolution intentionally preserved by this design:
 >   - Fish hosted HTTP as the first TTS transport
 >   - the single-step planner/executor boundary
 >   - the deferred-alternative list for later phases
-> - No gateway server code is implemented yet; later phases remain implementation work.
+> - A runnable Phase-2 gateway server now exists; Phase 0 remains the architecture baseline that
+>   later implementation phases extend.
 
 ### Goal
 
@@ -341,12 +365,32 @@ optional audio output.
 ## Phase 2: Runnable Gateway Ingress + Session Handoff
 
 > [!NOTE]
-> **Carry-forward from Phases 0/1 (2026-03-06):**
-> - The architecture baseline is documented.
-> - The shared protocol/session boundary, transport-facing session handler, WebSocket-facing
->   session adapter, session factory, and log-sanitization utility already exist.
-> - This phase intentionally stops at the runnable server/process and application handoff boundary;
->   planner/executor/provider work moves to later phases.
+> **Status (2026-03-06): Implemented.**
+> - Implemented artifacts:
+>   - `server/src/ai_gateway_server.hpp`
+>   - `server/src/ai_gateway_server.cpp`
+>   - `server/src/ai_gateway_server_main.cpp`
+>   - `server/src/ai_gateway_server_integration_test.cpp`
+> - Implemented behavior:
+>   - a runnable `isla_ai_gateway` process with `--host`, `--port`, and `--backlog` config parsing
+>   - a Boost.Beast-backed WebSocket ingress path that creates
+>     `GatewayWebSocketSessionAdapter`-owned live sessions
+>   - `GatewayApplicationEventSink` callbacks for `TurnAcceptedEvent`,
+>     `TurnCancelRequestedEvent`, and `SessionClosedEvent`
+>   - `GatewaySessionRegistry` lookup/count surfaces for live sessions by `session_id`
+>   - server-owned logging for start/stop, accepted TCP/WebSocket connections, handshake
+>     rejection, and shutdown-triggered transport close
+>   - a closed-session reaper that joins finished session threads and prevents unbounded session
+>     retention
+>   - real-socket integration coverage for ingress, handshake/protocol failures, binary frames,
+>     stop behavior, bind/startup failures, and session reaping
+> - Known implementation follow-ups:
+>   - outbound turn-completion/cancellation emission remains deferred to Phase 2.5
+>   - the current transport is synchronous Beast with one thread per session
+>   - reads currently hold the socket mutex during blocking `websocket_.read(...)`, so later
+>     concurrent server-owned writes should either stay carefully serialized or move to async I/O
+>   - accepted in-flight turn shutdown semantics remain intentionally incomplete until server-owned
+>     egress exists
 
 ### Goal
 
@@ -419,6 +463,21 @@ to application-owned code.
 
 ## Phase 2.5: Local Stub Turn Completion Path
 
+> [!NOTE]
+> **Carry-forward from Phase 2 (2026-03-06):**
+> - `GatewayServer`, `GatewaySessionRegistry`, `GatewayApplicationEventSink`, and
+>   `GatewayLiveSession` now exist as the runnable ingress/session-ownership boundary.
+> - Accepted turns, cancel requests, and session closes already arrive as typed events without
+>   reparsing raw client JSON outside the transport boundary.
+> - Live sessions are addressable by `session_id` and are reaped after close, so this phase can
+>   target application-facing turn egress rather than connection ownership.
+> - This phase should define the first explicit terminal policy for accepted in-flight turns during
+>   `server.Stop()`, because Phase 2 currently guarantees transport/session teardown but not a
+>   client-visible final turn event.
+> - The current sync Beast transport is good enough for final-response stub work, but any design
+>   that expects concurrent server-owned writes or later chunk streaming should plan for a future
+>   async transport refactor rather than expanding the blocking mutex model.
+
 ### Goal
 
 Close the loop through the same session boundary without introducing provider dependencies yet.
@@ -473,13 +532,17 @@ Close the loop through the same session boundary without introducing provider de
 ## Phase 3: OpenAI Executor Boundary
 
 > [!NOTE]
-> **Carry-forward from Phase 1 (2026-03-06):**
+> **Carry-forward from Phases 1/2 (2026-03-06):**
 > - Shared protocol types, session state enforcement, and a transport-facing session handler now
 >   exist.
 > - A WebSocket-facing session adapter, session factory, and log-sanitization utility now exist in
 >   `server/src`.
+> - A runnable Beast-backed gateway server, typed application ingress sink, and live session
+>   registry now exist.
 > - Phase 3 should build on those boundaries rather than redefining client/gateway message
 >   parsing, turn lifecycle rules, or transport logging rules inside executor code.
+> - Executor-facing contracts should consume typed accepted-turn data from the application boundary
+>   rather than reaching back into socket/session transport code.
 > - Live OpenAI network integration is intentionally deferred to Phase 3.5.
 
 ### Goal
@@ -541,13 +604,13 @@ Route gateway text requests to OpenAI through the executor boundary established 
 ## Phase 4: Planner/Executor Single-Step Orchestration
 
 > [!NOTE]
-> **Carry-forward from Phases 2/2.5/3.5 (2026-03-06):**
-> - The runnable gateway/server ingress path and application-owned session handoff boundary should
->   already exist.
+> **Carry-forward from implemented and preceding phases (2026-03-06):**
+> - The runnable gateway/server ingress path and application-owned session handoff boundary now
+>   exist in Phase 2.
 > - Planner/executor work should consume accepted-turn/cancel events from that boundary rather than
 >   reinterpreting raw client JSON.
-> - The live OpenAI path should already sit behind the executor boundary rather than being called
->   directly from websocket code.
+> - Once Phases 2.5 and 3.5 land, the live turn-completion path and live OpenAI path should remain
+>   behind those boundaries rather than being called directly from websocket code.
 
 ### Goal
 
@@ -702,6 +765,9 @@ self-hosted GPU infrastructure.
 >   than introducing a second parallel client contract.
 > - The current adapter already centralizes frame writes, close sequencing, and log sanitization;
 >   streaming extensions should preserve that single transport boundary.
+> - The current Phase-2 live transport is synchronous and intentionally optimized for final-output
+>   delivery, so exposing real concurrent outbound streaming will likely require an async session
+>   transport model before this phase is considered complete.
 
 ### Goal
 

@@ -38,13 +38,28 @@ As of 2026-03-06:
   - a WebSocket-facing session adapter and session factory that wire per-connection session IDs,
     text-frame handling, and transport close/error sequencing
   - adapter-level log sanitization for untrusted transport fields
-- no runnable AI gateway server process exists yet
+- the repo now also has a runnable Phase-2 gateway server in:
+  - `server/src/ai_gateway_server.hpp`
+  - `server/src/ai_gateway_server.cpp`
+  - `server/src/ai_gateway_server_main.cpp`
+  - `server/src/ai_gateway_server_integration_test.cpp`
+- the current runnable server provides:
+  - a Boost.Beast-backed WebSocket listener
+  - `GatewayApplicationEventSink` callbacks for accepted turns, cancel requests, and session close
+  - `GatewaySessionRegistry` lookup/count support for live sessions by `session_id`
+  - server start/stop logging, startup validation, shutdown handling, and closed-session reaping
+  - real-socket integration coverage for ingress, handshake/protocol failures, binary frames,
+    shutdown behavior, and session cleanup
+- no application-facing outbound turn-emission path exists yet for `text.output`, `audio.output`,
+  `turn.completed`, `turn.cancelled`, or post-acceptance `error`
+- the live transport is currently a synchronous Beast implementation with one thread per session;
+  async shared-executor transport remains deferred follow-up work
 - no OpenAI integration exists yet
 - no Fish Audio integration exists yet
 
 This document defines the architecture baseline that later code should implement. The current
-Phase-1 code is a complete realization of the client/gateway transport boundary, not a complete
-gateway server.
+Phase-1 and Phase-2 code are a complete realization of the client/gateway ingress boundary, not a
+complete end-to-end gateway pipeline.
 
 ## Normative Terms
 
@@ -153,6 +168,10 @@ Current implementation note (2026-03-06):
 - a WebSocket-facing session adapter/factory is implemented for text-frame handling and
   connection-lifecycle wiring
 - adapter-boundary logging now sanitizes untrusted fields before writing logs
+- a runnable Beast-backed gateway server and `isla_ai_gateway` binary now exist for real-socket
+  ingress testing and application-owned typed event handoff
+- server-owned outbound turn completion remains unimplemented; later phases still need the first
+  application-facing egress path
 
 ### Message Shapes
 
@@ -375,3 +394,34 @@ As of 2026-03-06, the following Phase-1-aligned implementation exists:
   frames, and owns connection close/error sequencing
 - per-connection session ID generation via `GatewayWebSocketSessionFactory`
 - a dedicated `SanitizeForLog(...)` helper for untrusted transport/log fields
+
+## Phase 2 Carry-Forward
+
+As of 2026-03-06, the following Phase-2-aligned implementation exists:
+
+- a runnable `GatewayServer` / `isla_ai_gateway` binary that accepts live WebSocket connections
+- a `GatewayApplicationEventSink` boundary for:
+  - `TurnAcceptedEvent`
+  - `TurnCancelRequestedEvent`
+  - `SessionClosedEvent`
+- a `GatewaySessionRegistry` that tracks live sessions and supports `session_id` lookup/count
+- a closed-session reaper that joins finished session threads and prevents indefinite retention of
+  closed `LiveGatewaySession` objects
+- integration tests that cover:
+  - `session.start` / `session.end` over a real socket
+  - typed accepted-turn and cancel handoff
+  - invalid handshake rejection
+  - protocol error handling without tearing down the session
+  - binary-frame rejection
+  - idle and active-session shutdown
+  - registry cleanup and repeated short-lived sessions
+  - invalid bind host, double-start, and bind-in-use startup failures
+
+Known carry-forward constraints from the current implementation:
+
+- application-facing outbound turn emission is still missing and belongs to Phase 2.5
+- accepted in-flight turns do not yet have a fully defined shutdown terminal policy during
+  `server.Stop()`
+- the current transport holds a blocking read under a socket mutex, so future concurrent outbound
+  writes or real chunk streaming should plan for an async transport refactor instead of growing the
+  current sync model
