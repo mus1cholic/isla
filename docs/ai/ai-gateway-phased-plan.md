@@ -117,6 +117,8 @@ Operational interpretation:
 - 2026-03-06: tightened the completed Phase-1 boundary with adapter-level logging, log-sanitization
   utilities for untrusted fields, safer `StatusOr`-based test helpers, and refreshed editor
   compile-command coverage for `server/src`.
+- 2026-03-06: reordered the remaining phases so the first runnable gateway server slice now follows
+  immediately after Phase 1, without changing the substantive phase content.
 
 ## Architecture Snapshot
 
@@ -327,7 +329,50 @@ optional audio output.
   of reimplementing the contract ad hoc.
 - The protocol can later grow chunked input/output events without requiring a transport redesign.
 
-## Phase 2: OpenAI Execution Path
+## Phase 2: First End-to-End Gateway Slice
+
+> [!NOTE]
+> **Carry-forward from Phases 0/1 (2026-03-06):**
+> - The architecture baseline is documented.
+> - The shared protocol/session boundary, transport-facing session handler, WebSocket-facing
+>   session adapter, session factory, and log-sanitization utility already exist.
+> - This phase still has to add the runnable server process and bind a real WebSocket endpoint to
+>   the existing adapter before planner/executor/provider work can be wired end-to-end.
+
+### Goal
+
+Ship the first usable server path with minimal moving parts.
+
+### Scope
+
+- Build the C++ gateway server skeleton.
+- Implement the websocket endpoint and first text-input protocol with optional audio output.
+- Reuse the existing shared protocol/session-handler scaffolding instead of re-encoding protocol
+  rules directly in the endpoint implementation.
+- Implement the planner/executor single-step flow.
+- Integrate OpenAI via Responses API.
+- Return final text output to the client.
+- Return optional final audio output to the client when synthesis is requested.
+- Keep TTS integration behind a feature flag or a clearly separable stage if needed.
+
+### Recommended Delivery Order
+
+1. Gateway server process and config surface
+2. WebSocket endpoint and session lifecycle
+3. `text.input` -> planner -> executor -> `text.output`
+4. Internal stream-capable executor abstraction
+5. Fish adapter skeleton
+6. Hosted Fish integration
+
+### Exit Criteria
+
+- A client can connect to the gateway over WebSocket, send a text query, and receive a final model
+  response.
+- A client can receive final text and optional synthesized audio for the same turn without a
+  protocol extension.
+- The server structure is ready for later TTS and chunked-output expansion.
+
+## Phase 3: OpenAI Execution Path
 
 > [!NOTE]
 > **Carry-forward from Phase 1 (2026-03-06):**
@@ -335,7 +380,7 @@ optional audio output.
 >   exist.
 > - A WebSocket-facing session adapter, session factory, and log-sanitization utility now exist in
 >   `server/src`.
-> - Phase 2 should build on those boundaries rather than redefining client/gateway message
+> - Phase 3 should build on those boundaries rather than redefining client/gateway message
 >   parsing, turn lifecycle rules, or transport logging rules inside executor code.
 
 ### Goal
@@ -372,7 +417,7 @@ Route gateway text requests to OpenAI through a stable first upstream boundary.
 - The server has a clear OpenAI executor boundary independent of websocket handling.
 - The design preserves future streaming support without requiring v1 to expose deltas.
 
-## Phase 3: Planner/Executor Single-Step Orchestration
+## Phase 4: Planner/Executor Single-Step Orchestration
 
 > [!NOTE]
 > **Carry-forward from Phase 1 (2026-03-06):**
@@ -446,7 +491,7 @@ struct TurnResult {
   websocket layer.
 - The design preserves room for future multi-request planning without forcing it into v1.
 
-## Phase 4: Fish Audio Hosted TTS Integration
+## Phase 5: Fish Audio Hosted TTS Integration
 
 > [!NOTE]
 > **Carry-forward from Phase 1 (2026-03-06):**
@@ -504,7 +549,7 @@ gateway text result
   planner, executor, or websocket code.
 - Hosted Fish is the documented v1 TTS backend.
 
-## Phase 5: Streaming-Ready Internal Event Model
+## Phase 6: Streaming-Ready Internal Event Model
 
 > [!NOTE]
 > **Carry-forward from Phase 1 (2026-03-06):**
@@ -552,49 +597,6 @@ immediately.
   refactor.
 - The initial client product behavior remains intentionally simple.
 
-## Phase 6: First End-to-End Gateway Slice
-
-> [!NOTE]
-> **Carry-forward from Phases 0/1 (2026-03-06):**
-> - The architecture baseline is documented.
-> - The shared protocol/session boundary, transport-facing session handler, WebSocket-facing
->   session adapter, session factory, and log-sanitization utility already exist.
-> - This phase still has to add the runnable server process and bind a real WebSocket endpoint to
->   the existing adapter before planner/executor/provider work can be wired end-to-end.
-
-### Goal
-
-Ship the first usable server path with minimal moving parts.
-
-### Scope
-
-- Build the C++ gateway server skeleton.
-- Implement the websocket endpoint and first text-input protocol with optional audio output.
-- Reuse the existing shared protocol/session-handler scaffolding instead of re-encoding protocol
-  rules directly in the endpoint implementation.
-- Implement the planner/executor single-step flow.
-- Integrate OpenAI via Responses API.
-- Return final text output to the client.
-- Return optional final audio output to the client when synthesis is requested.
-- Keep TTS integration behind a feature flag or a clearly separable stage if needed.
-
-### Recommended Delivery Order
-
-1. Gateway server process and config surface
-2. WebSocket endpoint and session lifecycle
-3. `text.input` -> planner -> executor -> `text.output`
-4. Internal stream-capable executor abstraction
-5. Fish adapter skeleton
-6. Hosted Fish integration
-
-### Exit Criteria
-
-- A client can connect to the gateway over WebSocket, send a text query, and receive a final model
-  response.
-- A client can receive final text and optional synthesized audio for the same turn without a
-  protocol extension.
-- The server structure is ready for later TTS and chunked-output expansion.
-
 ## Phase 7: Voice Expansion + Deferred Infrastructure Revisit
 
 ### Goal
@@ -639,8 +641,8 @@ Revisit the deferred voice/streaming/infrastructure options after the first gate
 
 1. First documented architecture baseline: after Phase 0.
 2. First stable websocket text-turn protocol: after Phase 1.
-3. First OpenAI-backed text response through the gateway: after Phase 2/3.
-4. First hosted TTS-backed end-to-end response path: after Phase 4.
-5. First streaming-ready internal event model without client-visible deltas: after Phase 5.
-6. First usable AI gateway milestone: after Phase 6.
+3. First usable AI gateway milestone: after Phase 2.
+4. First OpenAI-backed text response through the gateway: after Phase 3/4.
+5. First hosted TTS-backed end-to-end response path: after Phase 5.
+6. First streaming-ready internal event model without client-visible deltas: after Phase 6.
 7. First evidence-based revisit of streaming/self-hosted alternatives: after Phase 7.
