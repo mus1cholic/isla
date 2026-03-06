@@ -27,19 +27,24 @@ As of 2026-03-06:
   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
   - `shared/include/isla/shared/ai_gateway_session.hpp`
   - `server/src/ai_gateway_session_handler.hpp`
+  - `server/src/ai_gateway_websocket_session.hpp`
+  - `server/src/ai_gateway_logging_utils.hpp`
 - the repo now has:
   - typed protocol message definitions
   - JSON parse/serialize support for the v1 message contract
   - session/turn lifecycle enforcement for one in-flight turn per session
   - a transport-facing session handler that consumes incoming JSON frames and emits outgoing
     protocol frames/events
+  - a WebSocket-facing session adapter and session factory that wire per-connection session IDs,
+    text-frame handling, and transport close/error sequencing
+  - adapter-level log sanitization for untrusted transport fields
 - no runnable AI gateway server process exists yet
-- no actual client/gateway WebSocket adapter exists yet
 - no OpenAI integration exists yet
 - no Fish Audio integration exists yet
 
 This document defines the architecture baseline that later code should implement. The current
-Phase-1 code is a partial realization of this contract, not a complete gateway server.
+Phase-1 code is a complete realization of the client/gateway transport boundary, not a complete
+gateway server.
 
 ## Normative Terms
 
@@ -145,7 +150,9 @@ Current implementation note (2026-03-06):
 - message structs and JSON parse/serialize support are implemented
 - session state enforcement is implemented
 - a transport-facing session handler is implemented
-- the actual WebSocket text-frame adapter that owns a live connection is still pending
+- a WebSocket-facing session adapter/factory is implemented for text-frame handling and
+  connection-lifecycle wiring
+- adapter-boundary logging now sanitizes untrusted fields before writing logs
 
 ### Message Shapes
 
@@ -228,6 +235,8 @@ Error:
 - `turn.completed` MUST terminate every successful or failed turn that was not cancelled.
 - `turn.cancelled` MUST terminate a turn after accepted cancellation.
 - `error` MAY omit `turn_id` only for failures that occur before a turn is accepted.
+- gateway transport logs SHOULD sanitize untrusted identifiers and provider/client-derived detail
+  strings before emission
 
 ### Reserved Future Events
 
@@ -362,9 +371,7 @@ As of 2026-03-06, the following Phase-1-aligned implementation exists:
   - outgoing protocol frames
   - accepted-turn events
   - cancel-request events
-
-The following Phase-1 work remains before the client/gateway transport boundary is fully wired:
-
-- a WebSocket-facing adapter that turns text frames into handler calls and writes returned frames
-- per-connection session ID generation/wiring
-- transport-boundary close/error sequencing tied to a real connection lifecycle
+- a WebSocket-facing session adapter that turns text frames into handler calls, writes returned
+  frames, and owns connection close/error sequencing
+- per-connection session ID generation via `GatewayWebSocketSessionFactory`
+- a dedicated `SanitizeForLog(...)` helper for untrusted transport/log fields

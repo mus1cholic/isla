@@ -12,10 +12,8 @@ namespace {
 
 namespace protocol = isla::shared::ai_gateway;
 
-protocol::GatewayMessage parse_frame_or_die(const std::string& frame) {
-    const absl::StatusOr<protocol::GatewayMessage> parsed = protocol::parse_json_message(frame);
-    EXPECT_TRUE(parsed.ok()) << parsed.status().ToString();
-    return *parsed;
+absl::StatusOr<protocol::GatewayMessage> parse_frame(const std::string& frame) {
+    return protocol::parse_json_message(frame);
 }
 
 TEST(AiGatewaySessionHandlerTest, SessionStartEmitsSessionStarted) {
@@ -28,9 +26,11 @@ TEST(AiGatewaySessionHandlerTest, SessionStartEmitsSessionStarted) {
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
     ASSERT_FALSE(result.accepted_turn.has_value());
 
-    const protocol::GatewayMessage frame = parse_frame_or_die(result.outgoing_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(frame));
-    EXPECT_EQ(std::get<protocol::SessionStartedMessage>(frame).session_id, "srv_test");
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*frame));
+    EXPECT_EQ(std::get<protocol::SessionStartedMessage>(*frame).session_id, "srv_test");
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateSessionStart) {
@@ -42,9 +42,11 @@ TEST(AiGatewaySessionHandlerTest, RejectsDuplicateSessionStart) {
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
-    const protocol::GatewayMessage frame = parse_frame_or_die(result.outgoing_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
-    const auto& error = std::get<protocol::ErrorMessage>(frame);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
     ASSERT_TRUE(error.session_id.has_value());
     EXPECT_EQ(*error.session_id, "srv_test");
 }
@@ -58,9 +60,11 @@ TEST(AiGatewaySessionHandlerTest, RejectsTextInputBeforeSessionStart) {
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
 
-    const protocol::GatewayMessage frame = parse_frame_or_die(result.outgoing_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
-    const auto& error = std::get<protocol::ErrorMessage>(frame);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
     EXPECT_FALSE(error.session_id.has_value());
     ASSERT_TRUE(error.turn_id.has_value());
     EXPECT_EQ(*error.turn_id, "turn_1");
@@ -84,8 +88,9 @@ TEST(AiGatewaySessionHandlerTest, AcceptsTextInputAsApplicationEvent) {
 TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
@@ -93,9 +98,11 @@ TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
-    const protocol::GatewayMessage frame = parse_frame_or_die(result.outgoing_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
-    const auto& error = std::get<protocol::ErrorMessage>(frame);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
     ASSERT_TRUE(error.turn_id.has_value());
     EXPECT_EQ(*error.turn_id, "turn_2");
 }
@@ -103,8 +110,9 @@ TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
 TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
     const absl::StatusOr<EmitResult> text = handler.EmitTextOutput("turn_1", "hi");
@@ -120,19 +128,28 @@ TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
     ASSERT_EQ(completed->outgoing_frames.size(), 1U);
     EXPECT_FALSE(handler.snapshot().active_turn.has_value());
 
-    EXPECT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(
-        parse_frame_or_die(text->outgoing_frames.front())));
-    EXPECT_TRUE(std::holds_alternative<protocol::AudioOutputMessage>(
-        parse_frame_or_die(audio->outgoing_frames.front())));
-    EXPECT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(
-        parse_frame_or_die(completed->outgoing_frames.front())));
+    const absl::StatusOr<protocol::GatewayMessage> text_frame =
+        parse_frame(text->outgoing_frames.front());
+    ASSERT_TRUE(text_frame.ok()) << text_frame.status().ToString();
+    EXPECT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(*text_frame));
+
+    const absl::StatusOr<protocol::GatewayMessage> audio_frame =
+        parse_frame(audio->outgoing_frames.front());
+    ASSERT_TRUE(audio_frame.ok()) << audio_frame.status().ToString();
+    EXPECT_TRUE(std::holds_alternative<protocol::AudioOutputMessage>(*audio_frame));
+
+    const absl::StatusOr<protocol::GatewayMessage> completed_frame =
+        parse_frame(completed->outgoing_frames.front());
+    ASSERT_TRUE(completed_frame.ok()) << completed_frame.status().ToString();
+    EXPECT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*completed_frame));
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsAudioBeforeText) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
     const absl::StatusOr<EmitResult> result =
@@ -145,8 +162,9 @@ TEST(AiGatewaySessionHandlerTest, RejectsAudioBeforeText) {
 TEST(AiGatewaySessionHandlerTest, SurfacesTurnCancelAsApplicationEvent) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
     const HandleIncomingResult cancel =
@@ -159,28 +177,89 @@ TEST(AiGatewaySessionHandlerTest, SurfacesTurnCancelAsApplicationEvent) {
     const absl::StatusOr<EmitResult> cancelled = handler.EmitTurnCancelled("turn_1");
     ASSERT_TRUE(cancelled.ok()) << cancelled.status().ToString();
     EXPECT_FALSE(handler.snapshot().active_turn.has_value());
-    EXPECT_TRUE(std::holds_alternative<protocol::TurnCancelledMessage>(
-        parse_frame_or_die(cancelled->outgoing_frames.front())));
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(cancelled->outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    EXPECT_TRUE(std::holds_alternative<protocol::TurnCancelledMessage>(*frame));
+}
+
+TEST(AiGatewaySessionHandlerTest, RejectsTurnCancelForUnknownTurn) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const HandleIncomingResult result =
+        handler.HandleIncomingJson(R"json({"type":"turn.cancel","turn_id":"turn_missing"})json");
+
+    EXPECT_FALSE(result.ok);
+    ASSERT_EQ(result.outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    ASSERT_TRUE(error.turn_id.has_value());
+    EXPECT_EQ(*error.turn_id, "turn_missing");
+}
+
+TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTurnCancelRequest) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok);
+    ASSERT_TRUE(
+        handler.HandleIncomingJson(R"json({"type":"turn.cancel","turn_id":"turn_1"})json").ok);
+
+    const HandleIncomingResult result =
+        handler.HandleIncomingJson(R"json({"type":"turn.cancel","turn_id":"turn_1"})json");
+
+    EXPECT_FALSE(result.ok);
+    ASSERT_EQ(result.outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    ASSERT_TRUE(error.turn_id.has_value());
+    EXPECT_EQ(*error.turn_id, "turn_1");
+}
+
+TEST(AiGatewaySessionHandlerTest, RejectsEmitTurnCancelledWithoutCancelRequest) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok);
+
+    const absl::StatusOr<EmitResult> result = handler.EmitTurnCancelled("turn_1");
+
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status().message(), "turn cancellation was not requested");
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsServerOwnedInboundMessages) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
 
-    const HandleIncomingResult result =
-        handler.HandleIncomingJson(R"json({"type":"text.output","turn_id":"turn_1","text":"x"})json");
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"text.output","turn_id":"turn_1","text":"x"})json");
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
-    EXPECT_TRUE(std::holds_alternative<protocol::ErrorMessage>(
-        parse_frame_or_die(result.outgoing_frames.front())));
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    EXPECT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWhileTurnIsActive) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
     const HandleIncomingResult result =
@@ -188,8 +267,10 @@ TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWhileTurnIsActive) {
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
-    EXPECT_TRUE(std::holds_alternative<protocol::ErrorMessage>(
-        parse_frame_or_die(result.outgoing_frames.front())));
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    EXPECT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWithMismatchedSessionId) {
@@ -201,9 +282,11 @@ TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWithMismatchedSessionId) {
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
-    const protocol::GatewayMessage frame = parse_frame_or_die(result.outgoing_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
-    const auto& error = std::get<protocol::ErrorMessage>(frame);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
     ASSERT_TRUE(error.session_id.has_value());
     EXPECT_EQ(*error.session_id, "srv_test");
 }
@@ -211,8 +294,9 @@ TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWithMismatchedSessionId) {
 TEST(AiGatewaySessionHandlerTest, SessionEndEmitsSessionEndedAfterTurnCompletes) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
     ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok());
     ASSERT_TRUE(handler.EmitTurnCompleted("turn_1").ok());
@@ -224,8 +308,10 @@ TEST(AiGatewaySessionHandlerTest, SessionEndEmitsSessionEndedAfterTurnCompletes)
     EXPECT_TRUE(result.should_close);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
     EXPECT_EQ(handler.snapshot().status, protocol::SessionStatus::Ended);
-    EXPECT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(
-        parse_frame_or_die(result.outgoing_frames.front())));
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    EXPECT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*frame));
 }
 
 TEST(AiGatewaySessionHandlerTest, ParseFailureReturnsErrorFrame) {
@@ -235,9 +321,11 @@ TEST(AiGatewaySessionHandlerTest, ParseFailureReturnsErrorFrame) {
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
-    const protocol::GatewayMessage frame = parse_frame_or_die(result.outgoing_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
-    const auto& error = std::get<protocol::ErrorMessage>(frame);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
     EXPECT_FALSE(error.session_id.has_value());
     EXPECT_EQ(error.code, "bad_request");
 }
@@ -245,8 +333,9 @@ TEST(AiGatewaySessionHandlerTest, ParseFailureReturnsErrorFrame) {
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTextOutput) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
     ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok());
 
@@ -259,8 +348,9 @@ TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTextOutput) {
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateAudioOutput) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
     ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok());
     ASSERT_TRUE(handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==").ok());
@@ -290,9 +380,11 @@ TEST(AiGatewaySessionHandlerTest, EmitErrorOmitsIdsBeforeSessionStart) {
 
     ASSERT_TRUE(result.ok()) << result.status().ToString();
     ASSERT_EQ(result->outgoing_frames.size(), 1U);
-    const protocol::GatewayMessage frame = parse_frame_or_die(result->outgoing_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
-    const auto& error = std::get<protocol::ErrorMessage>(frame);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result->outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
     EXPECT_FALSE(error.session_id.has_value());
     EXPECT_FALSE(error.turn_id.has_value());
 }
@@ -300,8 +392,9 @@ TEST(AiGatewaySessionHandlerTest, EmitErrorOmitsIdsBeforeSessionStart) {
 TEST(AiGatewaySessionHandlerTest, EmitErrorIncludesSessionAndTurnAfterSessionStart) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
-    ASSERT_TRUE(handler.HandleIncomingJson(
-                           R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
     const absl::StatusOr<EmitResult> result =
@@ -309,9 +402,11 @@ TEST(AiGatewaySessionHandlerTest, EmitErrorIncludesSessionAndTurnAfterSessionSta
 
     ASSERT_TRUE(result.ok()) << result.status().ToString();
     ASSERT_EQ(result->outgoing_frames.size(), 1U);
-    const protocol::GatewayMessage frame = parse_frame_or_die(result->outgoing_frames.front());
-    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
-    const auto& error = std::get<protocol::ErrorMessage>(frame);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result->outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
     ASSERT_TRUE(error.session_id.has_value());
     ASSERT_TRUE(error.turn_id.has_value());
     EXPECT_EQ(*error.session_id, "srv_test");

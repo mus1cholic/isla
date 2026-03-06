@@ -5,6 +5,7 @@ refresh_compile_commands(
     targets = [
         "//client/...",
         "//engine/...",
+        "//server/...",
         "//shared/...",
     ],
     exclude_headers = "all",
