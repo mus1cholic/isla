@@ -4,6 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -12,9 +14,12 @@
 #include <vector>
 
 #include <boost/asio/buffer.hpp>
+#include <boost/asio/dispatch.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
@@ -55,23 +60,22 @@ class LiveGatewaySession final : public GatewayLiveSession,
           remote_endpoint_(std::move(remote_endpoint)) {}
 
     ~LiveGatewaySession() override {
-        RequestStop();
         Join();
     }
 
     void Start() {
-        // TODO(ai-gateway): Replace the per-session thread model with shared async I/O execution.
-        thread_ = std::thread([self = shared_from_this()] { self->Run(); });
+        auto self = shared_from_this();
+        asio::post(websocket_.get_executor(), [self] { self->DoAccept(); });
     }
 
     void Join() {
-        if (thread_.joinable()) {
-            thread_.join();
-        }
+        std::unique_lock<std::mutex> lock(state_mutex_);
+        finished_cv_.wait(lock, [this] { return finished_.load(); });
     }
 
     void RequestStop() {
-        ForceCloseTransport();
+        auto self = shared_from_this();
+        asio::post(websocket_.get_executor(), [self] { self->DoForceCloseTransport(); });
     }
 
     [[nodiscard]] const std::string& session_id() const override {
@@ -82,32 +86,313 @@ class LiveGatewaySession final : public GatewayLiveSession,
         return closed_.load();
     }
 
+    [[nodiscard]] absl::Status EmitTextOutput(std::string_view turn_id,
+                                              std::string_view text) override {
+        VLOG(1) << "AI gateway session=" << session_id_
+                << " queueing server-owned text output turn_id=" << SanitizeForLog(turn_id);
+        return InvokeOnTransport([this, turn_id = std::string(turn_id), text = std::string(text)] {
+            if (adapter_ == nullptr) {
+                return failed_precondition("websocket session is not ready");
+            }
+            return adapter_->EmitTextOutput(turn_id, text);
+        });
+    }
+
+    [[nodiscard]] absl::Status EmitAudioOutput(std::string_view turn_id, std::string_view mime_type,
+                                               std::string_view audio_base64) override {
+        VLOG(1) << "AI gateway session=" << session_id_
+                << " queueing server-owned audio output turn_id=" << SanitizeForLog(turn_id)
+                << " mime_type=" << SanitizeForLog(mime_type);
+        return InvokeOnTransport([this, turn_id = std::string(turn_id),
+                                  mime_type = std::string(mime_type),
+                                  audio_base64 = std::string(audio_base64)] {
+            if (adapter_ == nullptr) {
+                return failed_precondition("websocket session is not ready");
+            }
+            return adapter_->EmitAudioOutput(turn_id, mime_type, audio_base64);
+        });
+    }
+
+    [[nodiscard]] absl::Status EmitTurnCompleted(std::string_view turn_id) override {
+        VLOG(1) << "AI gateway session=" << session_id_
+                << " queueing server-owned turn completed turn_id=" << SanitizeForLog(turn_id);
+        return InvokeOnTransport([this, turn_id = std::string(turn_id)] {
+            if (adapter_ == nullptr) {
+                return failed_precondition("websocket session is not ready");
+            }
+            return adapter_->EmitTurnCompleted(turn_id);
+        });
+    }
+
+    [[nodiscard]] absl::Status EmitTurnCancelled(std::string_view turn_id) override {
+        VLOG(1) << "AI gateway session=" << session_id_
+                << " queueing server-owned turn cancelled turn_id=" << SanitizeForLog(turn_id);
+        return InvokeOnTransport([this, turn_id = std::string(turn_id)] {
+            if (adapter_ == nullptr) {
+                return failed_precondition("websocket session is not ready");
+            }
+            return adapter_->EmitTurnCancelled(turn_id);
+        });
+    }
+
+    [[nodiscard]] absl::Status EmitError(std::optional<std::string_view> turn_id,
+                                         std::string_view code, std::string_view message) override {
+        VLOG(1) << "AI gateway session=" << session_id_
+                << " queueing server-owned error code=" << SanitizeForLog(code) << " turn_id='"
+                << (turn_id.has_value() ? SanitizeForLog(*turn_id) : std::string("<none>")) << "'";
+        return InvokeOnTransport(
+            [this, turn_id = turn_id ? std::optional<std::string>(*turn_id) : std::nullopt,
+             code = std::string(code), message = std::string(message)] {
+                if (adapter_ == nullptr) {
+                    return failed_precondition("websocket session is not ready");
+                }
+                const std::optional<std::string_view> turn_id_view =
+                    turn_id ? std::optional<std::string_view>(*turn_id) : std::nullopt;
+                return adapter_->EmitError(turn_id_view, code, message);
+            });
+    }
+
     [[nodiscard]] absl::Status SendTextFrame(std::string_view frame) override {
-        std::lock_guard<std::mutex> lock(websocket_mutex_);
+        if (closed_.load()) {
+            return failed_precondition("websocket session is closed");
+        }
+        return InvokeOnTransport([this, frame = std::string(frame)]() mutable {
+            return EnqueueWrite(std::move(frame));
+        });
+    }
+
+    void Close() override {
+        auto self = shared_from_this();
+        asio::dispatch(websocket_.get_executor(), [self] { self->RequestGracefulClose(); });
+    }
+
+  private:
+    template <typename Fn> [[nodiscard]] absl::Status InvokeOnTransport(Fn&& fn) {
         if (closed_.load()) {
             return failed_precondition("websocket session is closed");
         }
 
-        boost::system::error_code error;
-        websocket_.text(true);
-        const std::size_t bytes_written =
-            websocket_.write(asio::buffer(frame.data(), frame.size()), error);
-        if (error) {
-            return absl::UnavailableError(format_error("websocket write failed", error));
+        auto self = shared_from_this();
+        auto promise = std::make_shared<std::promise<absl::Status>>();
+        std::future<absl::Status> future = promise->get_future();
+        asio::dispatch(
+            websocket_.get_executor(),
+            [self, promise, fn = std::forward<Fn>(fn)]() mutable { promise->set_value(fn()); });
+        return future.get();
+    }
+
+    [[nodiscard]] absl::Status EnqueueWrite(std::string frame) {
+        if (transport_closed_) {
+            return failed_precondition("websocket session transport is closed");
         }
-        if (bytes_written != frame.size()) {
-            return absl::UnavailableError("websocket write sent a partial text frame");
+        if (close_after_writes_) {
+            return failed_precondition("websocket session is closing");
+        }
+
+        pending_writes_.push_back(std::move(frame));
+        VLOG(1) << "AI gateway session=" << session_id_
+                << " enqueued websocket text frame pending_writes=" << pending_writes_.size();
+        if (!write_in_progress_) {
+            DoWriteNext();
         }
         return absl::OkStatus();
     }
 
-    void Close() override {
-        std::lock_guard<std::mutex> lock(websocket_mutex_);
-        if (closed_.load()) {
+    void DoAccept() {
+        if (transport_closed_) {
+            FinishSession();
+            return;
+        }
+
+        accept_in_progress_ = true;
+        websocket_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
+        auto self = shared_from_this();
+        websocket_.async_accept(
+            [self](const boost::system::error_code& error) { self->OnAccept(error); });
+    }
+
+    void OnAccept(const boost::system::error_code& error) {
+        accept_in_progress_ = false;
+        if (error) {
+            if (transport_force_closed_.load()) {
+                VLOG(1) << "AI gateway handshake interrupted by server stop remote="
+                        << remote_endpoint_ << " detail='" << SanitizeForLog(error.message())
+                        << "'";
+            } else {
+                LOG(WARNING) << "AI gateway rejected websocket handshake remote="
+                             << remote_endpoint_ << " detail='" << SanitizeForLog(error.message())
+                             << "'";
+            }
+            DoCloseTransport();
+            return;
+        }
+
+        adapter_ = factory_.CreateSession(*this, &registry_);
+        if (adapter_ == nullptr) {
+            LOG(ERROR) << "AI gateway could not create a websocket session adapter";
+            RequestGracefulClose();
+            return;
+        }
+
+        session_id_ = adapter_->session_id();
+        registry_.RegisterSession(shared_from_this());
+        VLOG(1) << "AI gateway accepted websocket transport remote=" << remote_endpoint_
+                << " session=" << session_id_;
+        StartRead();
+    }
+
+    void StartRead() {
+        if (transport_closed_ || adapter_ == nullptr || adapter_->is_closed()) {
+            MaybeFinish();
+            return;
+        }
+
+        read_in_progress_ = true;
+        auto self = shared_from_this();
+        websocket_.async_read(read_buffer_, [self](const boost::system::error_code& error,
+                                                   const std::size_t bytes_read) {
+            self->OnRead(error, bytes_read);
+        });
+    }
+
+    void OnRead(const boost::system::error_code& error, std::size_t bytes_read) {
+        read_in_progress_ = false;
+        static_cast<void>(bytes_read);
+
+        if (error) {
+            if (adapter_ != nullptr) {
+                if (transport_force_closed_.load()) {
+                    VLOG(1) << "AI gateway session=" << session_id_
+                            << " transport closed by server stop remote=" << remote_endpoint_;
+                    adapter_->HandleServerShutdown();
+                    transport_closed_ = true;
+                } else if (error == websocket::error::closed) {
+                    adapter_->HandleTransportClosed();
+                    transport_closed_ = true;
+                } else {
+                    const absl::Status status = adapter_->HandleTransportError(error.message());
+                    if (!status.ok() && !adapter_->is_closed()) {
+                        LOG(WARNING) << "AI gateway session=" << session_id_
+                                     << " failed handling transport error detail='"
+                                     << SanitizeForLog(status.message()) << "'";
+                    }
+                }
+            }
+            MaybeFinish();
+            return;
+        }
+
+        if (!websocket_.got_text()) {
+            if (adapter_ != nullptr) {
+                const absl::Status status =
+                    adapter_->HandleTransportError("unsupported websocket opcode");
+                if (!status.ok() && !adapter_->is_closed()) {
+                    LOG(WARNING) << "AI gateway session=" << session_id_
+                                 << " failed handling invalid opcode detail='"
+                                 << SanitizeForLog(status.message()) << "'";
+                }
+            }
+            MaybeFinish();
+            return;
+        }
+
+        const std::string payload = beast::buffers_to_string(read_buffer_.data());
+        read_buffer_.consume(read_buffer_.size());
+        const absl::Status status = adapter_ == nullptr
+                                        ? failed_precondition("websocket session is not ready")
+                                        : adapter_->HandleIncomingTextFrame(payload);
+        if (!status.ok() && adapter_ != nullptr && adapter_->is_closed()) {
+            MaybeFinish();
+            return;
+        }
+
+        StartRead();
+    }
+
+    void DoWriteNext() {
+        if (transport_closed_ || pending_writes_.empty()) {
+            MaybeFinish();
+            return;
+        }
+
+        write_in_progress_ = true;
+        websocket_.text(true);
+        auto self = shared_from_this();
+        websocket_.async_write(
+            asio::buffer(pending_writes_.front().data(), pending_writes_.front().size()),
+            [self](const boost::system::error_code& error, const std::size_t bytes_written) {
+                self->OnWrite(error, bytes_written);
+            });
+    }
+
+    void OnWrite(const boost::system::error_code& error, std::size_t bytes_written) {
+        write_in_progress_ = false;
+
+        if (error) {
+            if (adapter_ != nullptr) {
+                adapter_->HandleSendFailure(format_error("websocket write failed", error));
+            }
+            pending_writes_.clear();
+            DoForceCloseTransport();
+            return;
+        }
+        if (pending_writes_.empty()) {
+            LOG(ERROR) << "AI gateway session=" << session_id_
+                       << " write completion arrived without a pending frame";
+            MaybeFinish();
+            return;
+        }
+        if (bytes_written != pending_writes_.front().size()) {
+            if (adapter_ != nullptr) {
+                adapter_->HandleSendFailure("websocket write sent a partial text frame");
+            }
+            pending_writes_.clear();
+            DoForceCloseTransport();
+            return;
+        }
+
+        pending_writes_.pop_front();
+        if (!pending_writes_.empty()) {
+            DoWriteNext();
+            return;
+        }
+
+        if (close_after_writes_) {
+            DoCloseTransport();
+            return;
+        }
+        MaybeFinish();
+    }
+
+    void RequestGracefulClose() {
+        close_after_writes_ = true;
+        if (!write_in_progress_ && pending_writes_.empty()) {
+            DoCloseTransport();
+            return;
+        }
+        VLOG(1) << "AI gateway session=" << session_id_
+                << " deferring graceful close until pending writes flush pending_writes="
+                << pending_writes_.size()
+                << " write_in_progress=" << (write_in_progress_ ? "true" : "false");
+    }
+
+    void DoForceCloseTransport() {
+        transport_force_closed_.store(true);
+        VLOG(1) << "AI gateway session=" << session_id_
+                << " force closing transport pending_writes=" << pending_writes_.size()
+                << " read_in_progress=" << (read_in_progress_ ? "true" : "false")
+                << " write_in_progress=" << (write_in_progress_ ? "true" : "false");
+        DoCloseTransport();
+    }
+
+    void DoCloseTransport() {
+        if (transport_closed_) {
+            MaybeFinish();
             return;
         }
 
         auto& socket = websocket_.next_layer();
+        transport_closed_ = true;
         boost::system::error_code error;
         const auto shutdown_result = socket.shutdown(tcp::socket::shutdown_both, error);
         static_cast<void>(shutdown_result);
@@ -117,128 +402,44 @@ class LiveGatewaySession final : public GatewayLiveSession,
         if (error && error != websocket::error::closed) {
             VLOG(1) << "AI gateway close failed detail='" << SanitizeForLog(error.message()) << "'";
         }
-        closed_.store(true);
+        MaybeFinish();
     }
 
-  private:
-    void ForceCloseTransport() {
-        if (transport_force_closed_.exchange(true)) {
+    void MaybeFinish() {
+        if (finished_.load() || accept_in_progress_ || read_in_progress_ || write_in_progress_ ||
+            !transport_closed_) {
             return;
         }
-
-        auto& socket = websocket_.next_layer();
-        boost::system::error_code error;
-        const auto shutdown_result = socket.shutdown(tcp::socket::shutdown_both, error);
-        static_cast<void>(shutdown_result);
-        error.clear();
-        const auto close_result = socket.close(error);
-        static_cast<void>(close_result);
+        FinishSession();
     }
 
-    void Run() {
-        {
-            std::lock_guard<std::mutex> lock(websocket_mutex_);
-            boost::system::error_code error;
-            websocket_.set_option(
-                websocket::stream_base::timeout::suggested(beast::role_type::server));
-            websocket_.accept(error);
-            if (error) {
-                if (transport_force_closed_.load()) {
-                    VLOG(1) << "AI gateway handshake interrupted by server stop remote="
-                            << remote_endpoint_ << " detail='" << SanitizeForLog(error.message())
-                            << "'";
-                } else {
-                    LOG(WARNING) << "AI gateway rejected websocket handshake remote="
-                                 << remote_endpoint_ << " detail='"
-                                 << SanitizeForLog(error.message()) << "'";
-                }
-                auto& socket = websocket_.next_layer();
-                boost::system::error_code close_error;
-                const auto close_result = socket.close(close_error);
-                static_cast<void>(close_result);
-                closed_.store(true);
-                return;
-            }
-        }
-
-        adapter_ = factory_.CreateSession(*this, &registry_);
-        if (adapter_ == nullptr) {
-            LOG(ERROR) << "AI gateway could not create a websocket session adapter";
-            Close();
+    void FinishSession() {
+        if (finished_.exchange(true)) {
             return;
         }
-
-        session_id_ = adapter_->session_id();
-        registry_.RegisterSession(shared_from_this());
-        VLOG(1) << "AI gateway accepted websocket transport remote=" << remote_endpoint_
-                << " session=" << session_id_;
-
-        while (!adapter_->is_closed()) {
-            beast::flat_buffer buffer;
-            boost::system::error_code error;
-
-            {
-                // TODO(ai-gateway): Move session I/O to async read/write so reads do not block
-                // writes. Critical issue.
-                std::lock_guard<std::mutex> lock(websocket_mutex_);
-                const std::size_t bytes_read = websocket_.read(buffer, error);
-                static_cast<void>(bytes_read);
-            }
-
-            if (error) {
-                if (transport_force_closed_.load()) {
-                    VLOG(1) << "AI gateway session=" << session_id_
-                            << " transport closed by server stop remote=" << remote_endpoint_;
-                    adapter_->HandleServerShutdown();
-                } else if (error == websocket::error::closed) {
-                    adapter_->HandleTransportClosed();
-                } else {
-                    const absl::Status status = adapter_->HandleTransportError(error.message());
-                    if (!status.ok() && !adapter_->is_closed()) {
-                        LOG(WARNING) << "AI gateway session=" << session_id_
-                                     << " failed handling transport error detail='"
-                                     << SanitizeForLog(status.message()) << "'";
-                    }
-                }
-                break;
-            }
-
-            if (!websocket_.got_text()) {
-                const absl::Status status =
-                    adapter_->HandleTransportError("unsupported websocket opcode");
-                if (!status.ok() && !adapter_->is_closed()) {
-                    LOG(WARNING) << "AI gateway session=" << session_id_
-                                 << " failed handling invalid opcode detail='"
-                                 << SanitizeForLog(status.message()) << "'";
-                }
-                break;
-            }
-
-            const std::string payload = beast::buffers_to_string(buffer.data());
-            const absl::Status status = adapter_->HandleIncomingTextFrame(payload);
-            if (!status.ok() && adapter_->is_closed()) {
-                break;
-            }
-        }
-
         closed_.store(true);
-        std::lock_guard<std::mutex> lock(websocket_mutex_);
-        auto& socket = websocket_.next_layer();
-        boost::system::error_code error;
-        const auto close_result = socket.close(error);
-        static_cast<void>(close_result);
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        finished_cv_.notify_all();
     }
 
-    mutable std::mutex websocket_mutex_;
+    std::mutex state_mutex_;
+    std::condition_variable finished_cv_;
     websocket::stream<tcp::socket> websocket_;
+    beast::flat_buffer read_buffer_;
     GatewaySessionRegistry& registry_;
     GatewayWebSocketSessionFactory& factory_;
     std::unique_ptr<GatewayWebSocketSessionAdapter> adapter_;
-    std::thread thread_;
+    std::deque<std::string> pending_writes_;
     std::string session_id_;
     std::string remote_endpoint_;
     std::atomic<bool> closed_{ false };
+    std::atomic<bool> finished_{ false };
     std::atomic<bool> transport_force_closed_{ false };
+    bool accept_in_progress_ = false;
+    bool read_in_progress_ = false;
+    bool write_in_progress_ = false;
+    bool close_after_writes_ = false;
+    bool transport_closed_ = false;
 };
 
 } // namespace
@@ -343,9 +544,18 @@ class GatewayServer::Impl {
             return failed_precondition("gateway server is already running");
         }
 
+        io_context_.restart();
+        work_guard_.emplace(asio::make_work_guard(io_context_));
+        io_thread_ = std::thread([this] { io_context_.run(); });
+
         boost::system::error_code error;
         const asio::ip::address address = asio::ip::make_address(config_.bind_host, error);
         if (error) {
+            work_guard_.reset();
+            io_context_.stop();
+            if (io_thread_.joinable()) {
+                io_thread_.join();
+            }
             return absl::InvalidArgumentError(format_error("invalid bind_host", error));
         }
 
@@ -354,6 +564,11 @@ class GatewayServer::Impl {
         const auto open_result = acceptor_.open(protocol, error);
         static_cast<void>(open_result);
         if (error) {
+            work_guard_.reset();
+            io_context_.stop();
+            if (io_thread_.joinable()) {
+                io_thread_.join();
+            }
             return absl::UnavailableError(format_error("acceptor open failed", error));
         }
 
@@ -364,6 +579,11 @@ class GatewayServer::Impl {
         const auto set_option_result = acceptor_.set_option(reuse_address, error);
         static_cast<void>(set_option_result);
         if (error) {
+            work_guard_.reset();
+            io_context_.stop();
+            if (io_thread_.joinable()) {
+                io_thread_.join();
+            }
             return absl::UnavailableError(format_error("acceptor reuse_address failed", error));
         }
 #endif
@@ -371,18 +591,33 @@ class GatewayServer::Impl {
         const auto bind_result = acceptor_.bind(endpoint, error);
         static_cast<void>(bind_result);
         if (error) {
+            work_guard_.reset();
+            io_context_.stop();
+            if (io_thread_.joinable()) {
+                io_thread_.join();
+            }
             return absl::UnavailableError(format_error("acceptor bind failed", error));
         }
 
         const auto listen_result = acceptor_.listen(config_.listen_backlog, error);
         static_cast<void>(listen_result);
         if (error) {
+            work_guard_.reset();
+            io_context_.stop();
+            if (io_thread_.joinable()) {
+                io_thread_.join();
+            }
             return absl::UnavailableError(format_error("acceptor listen failed", error));
         }
 
         const auto non_blocking_result = acceptor_.non_blocking(true, error);
         static_cast<void>(non_blocking_result);
         if (error) {
+            work_guard_.reset();
+            io_context_.stop();
+            if (io_thread_.joinable()) {
+                io_thread_.join();
+            }
             return absl::UnavailableError(format_error("acceptor non_blocking failed", error));
         }
 
@@ -394,6 +629,11 @@ class GatewayServer::Impl {
             const auto close_result = acceptor_.close(close_error);
             static_cast<void>(close_result);
             running_ = false;
+            work_guard_.reset();
+            io_context_.stop();
+            if (io_thread_.joinable()) {
+                io_thread_.join();
+            }
             return absl::UnavailableError(format_error("acceptor local_endpoint failed", error));
         }
         bound_port_ = local_endpoint.port();
@@ -444,6 +684,12 @@ class GatewayServer::Impl {
                 session->RequestStop();
                 session->Join();
             }
+        }
+
+        work_guard_.reset();
+        io_context_.stop();
+        if (io_thread_.joinable()) {
+            io_thread_.join();
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
@@ -546,11 +792,13 @@ class GatewayServer::Impl {
 
     GatewayServerConfig config_;
     asio::io_context io_context_;
+    std::optional<asio::executor_work_guard<asio::io_context::executor_type>> work_guard_;
     GatewaySessionRegistry session_registry_;
     GatewayWebSocketSessionFactory session_factory_;
     tcp::acceptor acceptor_;
     mutable std::mutex mutex_;
     std::condition_variable reap_cv_;
+    std::thread io_thread_;
     std::thread accept_thread_;
     std::thread reap_thread_;
     std::vector<std::shared_ptr<LiveGatewaySession>> sessions_;

@@ -70,7 +70,15 @@ class GatewayWebSocketSessionAdapter {
                                    GatewaySessionEventSink* event_sink = nullptr);
 
     [[nodiscard]] absl::Status HandleIncomingTextFrame(std::string_view frame);
+    [[nodiscard]] absl::Status EmitTextOutput(std::string_view turn_id, std::string_view text);
+    [[nodiscard]] absl::Status EmitAudioOutput(std::string_view turn_id, std::string_view mime_type,
+                                               std::string_view audio_base64);
+    [[nodiscard]] absl::Status EmitTurnCompleted(std::string_view turn_id);
+    [[nodiscard]] absl::Status EmitTurnCancelled(std::string_view turn_id);
+    [[nodiscard]] absl::Status EmitError(std::optional<std::string_view> turn_id,
+                                         std::string_view code, std::string_view message);
     [[nodiscard]] absl::Status HandleTransportError(std::string_view message);
+    void HandleSendFailure(std::string_view message);
     void HandleTransportClosed();
     void HandleServerShutdown();
 

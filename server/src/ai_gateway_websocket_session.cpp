@@ -95,6 +95,84 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
     return absl::OkStatus();
 }
 
+absl::Status GatewayWebSocketSessionAdapter::EmitTextOutput(std::string_view turn_id,
+                                                            std::string_view text) {
+    if (closed_) {
+        return failed_precondition("websocket session is closed");
+    }
+
+    const absl::StatusOr<EmitResult> emit_result = handler_.EmitTextOutput(turn_id, text);
+    if (!emit_result.ok()) {
+        return emit_result.status();
+    }
+    VLOG(1) << "AI gateway session=" << session_id_
+            << " emitting text output turn_id=" << SanitizeForLog(turn_id);
+    return SendFrames(emit_result->outgoing_frames);
+}
+
+absl::Status GatewayWebSocketSessionAdapter::EmitAudioOutput(std::string_view turn_id,
+                                                             std::string_view mime_type,
+                                                             std::string_view audio_base64) {
+    if (closed_) {
+        return failed_precondition("websocket session is closed");
+    }
+
+    const absl::StatusOr<EmitResult> emit_result =
+        handler_.EmitAudioOutput(turn_id, mime_type, audio_base64);
+    if (!emit_result.ok()) {
+        return emit_result.status();
+    }
+    VLOG(1) << "AI gateway session=" << session_id_
+            << " emitting audio output turn_id=" << SanitizeForLog(turn_id)
+            << " mime_type=" << SanitizeForLog(mime_type);
+    return SendFrames(emit_result->outgoing_frames);
+}
+
+absl::Status GatewayWebSocketSessionAdapter::EmitTurnCompleted(std::string_view turn_id) {
+    if (closed_) {
+        return failed_precondition("websocket session is closed");
+    }
+
+    const absl::StatusOr<EmitResult> emit_result = handler_.EmitTurnCompleted(turn_id);
+    if (!emit_result.ok()) {
+        return emit_result.status();
+    }
+    VLOG(1) << "AI gateway session=" << session_id_
+            << " emitting turn completed turn_id=" << SanitizeForLog(turn_id);
+    return SendFrames(emit_result->outgoing_frames);
+}
+
+absl::Status GatewayWebSocketSessionAdapter::EmitTurnCancelled(std::string_view turn_id) {
+    if (closed_) {
+        return failed_precondition("websocket session is closed");
+    }
+
+    const absl::StatusOr<EmitResult> emit_result = handler_.EmitTurnCancelled(turn_id);
+    if (!emit_result.ok()) {
+        return emit_result.status();
+    }
+    VLOG(1) << "AI gateway session=" << session_id_
+            << " emitting turn cancelled turn_id=" << SanitizeForLog(turn_id);
+    return SendFrames(emit_result->outgoing_frames);
+}
+
+absl::Status GatewayWebSocketSessionAdapter::EmitError(std::optional<std::string_view> turn_id,
+                                                       std::string_view code,
+                                                       std::string_view message) {
+    if (closed_) {
+        return failed_precondition("websocket session is closed");
+    }
+
+    const absl::StatusOr<EmitResult> emit_result = handler_.EmitError(turn_id, code, message);
+    if (!emit_result.ok()) {
+        return emit_result.status();
+    }
+    VLOG(1) << "AI gateway session=" << session_id_
+            << " emitting error code=" << SanitizeForLog(code) << " turn_id='"
+            << (turn_id.has_value() ? SanitizeForLog(*turn_id) : std::string("<none>")) << "'";
+    return SendFrames(emit_result->outgoing_frames);
+}
+
 absl::Status GatewayWebSocketSessionAdapter::HandleTransportError(std::string_view message) {
     if (closed_) {
         return failed_precondition("websocket session is closed");
@@ -135,6 +213,16 @@ absl::Status GatewayWebSocketSessionAdapter::HandleTransportError(std::string_vi
 
     CloseSession(SessionCloseReason::TransportError, message, inflight_turn_id, true);
     return absl::OkStatus();
+}
+
+void GatewayWebSocketSessionAdapter::HandleSendFailure(std::string_view message) {
+    if (closed_) {
+        return;
+    }
+
+    LOG(WARNING) << "AI gateway session=" << session_id_ << " send failure detail='"
+                 << SanitizeForLog(message) << "'";
+    CloseSession(SessionCloseReason::SendFailed, message, active_turn_id(), false);
 }
 
 void GatewayWebSocketSessionAdapter::HandleTransportClosed() {

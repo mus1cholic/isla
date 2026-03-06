@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -32,6 +33,16 @@ class GatewayLiveSession {
 
     [[nodiscard]] virtual const std::string& session_id() const = 0;
     [[nodiscard]] virtual bool is_closed() const = 0;
+    [[nodiscard]] virtual absl::Status EmitTextOutput(std::string_view turn_id,
+                                                      std::string_view text) = 0;
+    [[nodiscard]] virtual absl::Status EmitAudioOutput(std::string_view turn_id,
+                                                       std::string_view mime_type,
+                                                       std::string_view audio_base64) = 0;
+    [[nodiscard]] virtual absl::Status EmitTurnCompleted(std::string_view turn_id) = 0;
+    [[nodiscard]] virtual absl::Status EmitTurnCancelled(std::string_view turn_id) = 0;
+    [[nodiscard]] virtual absl::Status EmitError(std::optional<std::string_view> turn_id,
+                                                 std::string_view code,
+                                                 std::string_view message) = 0;
 };
 
 class GatewaySessionRegistry final : public GatewaySessionEventSink {

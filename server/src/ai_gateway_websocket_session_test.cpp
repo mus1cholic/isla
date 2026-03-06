@@ -3,7 +3,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <utility>
 #include <variant>
 #include <vector>
 
@@ -149,6 +148,78 @@ TEST(AiGatewayWebSocketSessionTest, TurnCancelIsForwardedToEventSink) {
     ASSERT_EQ(sink.cancel_requests.size(), 1U);
     EXPECT_EQ(sink.cancel_requests.front().session_id, "srv_test");
     EXPECT_EQ(sink.cancel_requests.front().turn_id, "turn_1");
+}
+
+TEST(AiGatewayWebSocketSessionTest, ServerOwnedEmitTextOutputAndCompletionPreserveFrameOrder) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+
+    ASSERT_TRUE(session.EmitTextOutput("turn_1", "stub reply").ok());
+    ASSERT_TRUE(session.EmitTurnCompleted("turn_1").ok());
+
+    ASSERT_EQ(connection.sent_frames.size(), 3U);
+
+    const absl::StatusOr<protocol::GatewayMessage> text_frame =
+        parse_frame(connection.sent_frames[1]);
+    ASSERT_TRUE(text_frame.ok()) << text_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(*text_frame));
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_frame).turn_id, "turn_1");
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_frame).text, "stub reply");
+
+    const absl::StatusOr<protocol::GatewayMessage> completed_frame =
+        parse_frame(connection.sent_frames[2]);
+    ASSERT_TRUE(completed_frame.ok()) << completed_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*completed_frame));
+    EXPECT_EQ(std::get<protocol::TurnCompletedMessage>(*completed_frame).turn_id, "turn_1");
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitTextOutputRejectsWithoutActiveTurn) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+
+    const absl::Status status = session.EmitTextOutput("turn_1", "stub reply");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.message(), "turn_id does not match the active turn");
+    EXPECT_FALSE(session.is_closed());
+    EXPECT_EQ(connection.close_calls, 0);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    EXPECT_TRUE(sink.closed_sessions.empty());
+}
+
+TEST(AiGatewayWebSocketSessionTest, EmitTextOutputSendFailureClosesSession) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+    connection.fail_next_send_ = true;
+
+    const absl::Status status = session.EmitTextOutput("turn_1", "stub reply");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    ASSERT_EQ(sink.closed_sessions.size(), 1U);
+    EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
+    EXPECT_TRUE(sink.closed_sessions.front().session_started);
+    ASSERT_TRUE(sink.closed_sessions.front().inflight_turn_id.has_value());
+    EXPECT_EQ(*sink.closed_sessions.front().inflight_turn_id, "turn_1");
+    EXPECT_TRUE(session.is_closed());
 }
 
 TEST(AiGatewayWebSocketSessionTest, SessionEndClosesTransportAfterReply) {
