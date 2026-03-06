@@ -13,10 +13,9 @@ namespace {
 namespace protocol = isla::shared::ai_gateway;
 
 protocol::GatewayMessage parse_frame_or_die(const std::string& frame) {
-    const protocol::MessageParseResult parsed = protocol::parse_json_message(frame);
-    EXPECT_TRUE(parsed.ok) << parsed.error_message;
-    EXPECT_TRUE(parsed.message.has_value());
-    return *parsed.message;
+    const absl::StatusOr<protocol::GatewayMessage> parsed = protocol::parse_json_message(frame);
+    EXPECT_TRUE(parsed.ok()) << parsed.status().ToString();
+    return *parsed;
 }
 
 TEST(AiGatewaySessionHandlerTest, SessionStartEmitsSessionStarted) {
@@ -108,24 +107,25 @@ TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
                            R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
-    const EmitResult text = handler.EmitTextOutput("turn_1", "hi");
-    const EmitResult audio = handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==");
-    const EmitResult completed = handler.EmitTurnCompleted("turn_1");
+    const absl::StatusOr<EmitResult> text = handler.EmitTextOutput("turn_1", "hi");
+    const absl::StatusOr<EmitResult> audio =
+        handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==");
+    const absl::StatusOr<EmitResult> completed = handler.EmitTurnCompleted("turn_1");
 
-    ASSERT_TRUE(text.ok);
-    ASSERT_TRUE(audio.ok);
-    ASSERT_TRUE(completed.ok);
-    ASSERT_EQ(text.outgoing_frames.size(), 1U);
-    ASSERT_EQ(audio.outgoing_frames.size(), 1U);
-    ASSERT_EQ(completed.outgoing_frames.size(), 1U);
+    ASSERT_TRUE(text.ok()) << text.status().ToString();
+    ASSERT_TRUE(audio.ok()) << audio.status().ToString();
+    ASSERT_TRUE(completed.ok()) << completed.status().ToString();
+    ASSERT_EQ(text->outgoing_frames.size(), 1U);
+    ASSERT_EQ(audio->outgoing_frames.size(), 1U);
+    ASSERT_EQ(completed->outgoing_frames.size(), 1U);
     EXPECT_FALSE(handler.snapshot().active_turn.has_value());
 
     EXPECT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(
-        parse_frame_or_die(text.outgoing_frames.front())));
+        parse_frame_or_die(text->outgoing_frames.front())));
     EXPECT_TRUE(std::holds_alternative<protocol::AudioOutputMessage>(
-        parse_frame_or_die(audio.outgoing_frames.front())));
+        parse_frame_or_die(audio->outgoing_frames.front())));
     EXPECT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(
-        parse_frame_or_die(completed.outgoing_frames.front())));
+        parse_frame_or_die(completed->outgoing_frames.front())));
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsAudioBeforeText) {
@@ -135,10 +135,11 @@ TEST(AiGatewaySessionHandlerTest, RejectsAudioBeforeText) {
                            R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
-    const EmitResult result = handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==");
+    const absl::StatusOr<EmitResult> result =
+        handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==");
 
-    EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.error_message, "audio output requires text output first");
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status().message(), "audio output requires text output first");
 }
 
 TEST(AiGatewaySessionHandlerTest, SurfacesTurnCancelAsApplicationEvent) {
@@ -155,11 +156,11 @@ TEST(AiGatewaySessionHandlerTest, SurfacesTurnCancelAsApplicationEvent) {
     EXPECT_EQ(cancel.cancel_requested->session_id, "srv_test");
     EXPECT_EQ(cancel.cancel_requested->turn_id, "turn_1");
 
-    const EmitResult cancelled = handler.EmitTurnCancelled("turn_1");
-    ASSERT_TRUE(cancelled.ok);
+    const absl::StatusOr<EmitResult> cancelled = handler.EmitTurnCancelled("turn_1");
+    ASSERT_TRUE(cancelled.ok()) << cancelled.status().ToString();
     EXPECT_FALSE(handler.snapshot().active_turn.has_value());
     EXPECT_TRUE(std::holds_alternative<protocol::TurnCancelledMessage>(
-        parse_frame_or_die(cancelled.outgoing_frames.front())));
+        parse_frame_or_die(cancelled->outgoing_frames.front())));
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsServerOwnedInboundMessages) {
@@ -213,8 +214,8 @@ TEST(AiGatewaySessionHandlerTest, SessionEndEmitsSessionEndedAfterTurnCompletes)
     ASSERT_TRUE(handler.HandleIncomingJson(
                            R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
-    ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok);
-    ASSERT_TRUE(handler.EmitTurnCompleted("turn_1").ok);
+    ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok());
+    ASSERT_TRUE(handler.EmitTurnCompleted("turn_1").ok());
 
     const HandleIncomingResult result =
         handler.HandleIncomingJson(R"json({"type":"session.end","session_id":"srv_test"})json");
@@ -247,12 +248,12 @@ TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTextOutput) {
     ASSERT_TRUE(handler.HandleIncomingJson(
                            R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
-    ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok);
+    ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok());
 
-    const EmitResult result = handler.EmitTextOutput("turn_1", "hi again");
+    const absl::StatusOr<EmitResult> result = handler.EmitTextOutput("turn_1", "hi again");
 
-    EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.error_message, "text output already emitted for active turn");
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status().message(), "text output already emitted for active turn");
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateAudioOutput) {
@@ -261,33 +262,35 @@ TEST(AiGatewaySessionHandlerTest, RejectsDuplicateAudioOutput) {
     ASSERT_TRUE(handler.HandleIncomingJson(
                            R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
-    ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok);
-    ASSERT_TRUE(handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==").ok);
+    ASSERT_TRUE(handler.EmitTextOutput("turn_1", "hi").ok());
+    ASSERT_TRUE(handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==").ok());
 
-    const EmitResult result = handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==");
+    const absl::StatusOr<EmitResult> result =
+        handler.EmitAudioOutput("turn_1", "audio/wav", "UklGRg==");
 
-    EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.error_message, "audio output already emitted for active turn");
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status().message(), "audio output already emitted for active turn");
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsTurnCompletedForUnknownTurn) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
 
-    const EmitResult result = handler.EmitTurnCompleted("turn_missing");
+    const absl::StatusOr<EmitResult> result = handler.EmitTurnCompleted("turn_missing");
 
-    EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.error_message, "turn_id does not match the active turn");
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status().message(), "turn_id does not match the active turn");
 }
 
 TEST(AiGatewaySessionHandlerTest, EmitErrorOmitsIdsBeforeSessionStart) {
     GatewaySessionHandler handler("srv_test");
 
-    const EmitResult result = handler.EmitError(std::nullopt, "bad_request", "invalid frame");
+    const absl::StatusOr<EmitResult> result =
+        handler.EmitError(std::nullopt, "bad_request", "invalid frame");
 
-    ASSERT_TRUE(result.ok);
-    ASSERT_EQ(result.outgoing_frames.size(), 1U);
-    const protocol::GatewayMessage frame = parse_frame_or_die(result.outgoing_frames.front());
+    ASSERT_TRUE(result.ok()) << result.status().ToString();
+    ASSERT_EQ(result->outgoing_frames.size(), 1U);
+    const protocol::GatewayMessage frame = parse_frame_or_die(result->outgoing_frames.front());
     ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
     const auto& error = std::get<protocol::ErrorMessage>(frame);
     EXPECT_FALSE(error.session_id.has_value());
@@ -301,11 +304,12 @@ TEST(AiGatewaySessionHandlerTest, EmitErrorIncludesSessionAndTurnAfterSessionSta
                            R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok);
 
-    const EmitResult result = handler.EmitError("turn_1", "bad_request", "missing text");
+    const absl::StatusOr<EmitResult> result =
+        handler.EmitError("turn_1", "bad_request", "missing text");
 
-    ASSERT_TRUE(result.ok);
-    ASSERT_EQ(result.outgoing_frames.size(), 1U);
-    const protocol::GatewayMessage frame = parse_frame_or_die(result.outgoing_frames.front());
+    ASSERT_TRUE(result.ok()) << result.status().ToString();
+    ASSERT_EQ(result->outgoing_frames.size(), 1U);
+    const protocol::GatewayMessage frame = parse_frame_or_die(result->outgoing_frames.front());
     ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(frame));
     const auto& error = std::get<protocol::ErrorMessage>(frame);
     ASSERT_TRUE(error.session_id.has_value());

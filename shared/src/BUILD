@@ -17,6 +17,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//shared/include/isla/shared:ai_gateway_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
@@ -33,6 +35,15 @@ cc_library(
 cc_test(
     name = "ai_gateway_protocol_test",
     srcs = ["ai_gateway_protocol_test.cpp"],
+    deps = [
+        ":ai_gateway_protocol",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "ai_gateway_session_test",
+    srcs = ["ai_gateway_session_test.cpp"],
     deps = [
         ":ai_gateway_protocol",
         "@googletest//:gtest_main",

@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "isla/shared/ai_gateway_protocol.hpp"
 #include "isla/shared/ai_gateway_session.hpp"
 
@@ -31,25 +32,24 @@ struct HandleIncomingResult {
 };
 
 struct EmitResult {
-    bool ok = false;
     std::vector<std::string> outgoing_frames;
-    std::string error_message;
 };
 
 class GatewaySessionHandler {
   public:
-    explicit GatewaySessionHandler(std::string session_id = "srv_1");
+    explicit GatewaySessionHandler(std::string session_id);
 
     [[nodiscard]] HandleIncomingResult HandleIncomingJson(std::string_view json_text);
-    [[nodiscard]] EmitResult EmitTextOutput(std::string_view turn_id, std::string_view text);
-    [[nodiscard]] EmitResult EmitAudioOutput(std::string_view turn_id,
-                                            std::string_view mime_type,
-                                            std::string_view audio_base64);
-    [[nodiscard]] EmitResult EmitTurnCompleted(std::string_view turn_id);
-    [[nodiscard]] EmitResult EmitTurnCancelled(std::string_view turn_id);
-    [[nodiscard]] EmitResult EmitError(std::optional<std::string_view> turn_id,
-                                       std::string_view code,
-                                       std::string_view message) const;
+    [[nodiscard]] absl::StatusOr<EmitResult> EmitTextOutput(std::string_view turn_id,
+                                                            std::string_view text);
+    [[nodiscard]] absl::StatusOr<EmitResult> EmitAudioOutput(std::string_view turn_id,
+                                                             std::string_view mime_type,
+                                                             std::string_view audio_base64);
+    [[nodiscard]] absl::StatusOr<EmitResult> EmitTurnCompleted(std::string_view turn_id);
+    [[nodiscard]] absl::StatusOr<EmitResult> EmitTurnCancelled(std::string_view turn_id);
+    [[nodiscard]] absl::StatusOr<EmitResult> EmitError(std::optional<std::string_view> turn_id,
+                                                       std::string_view code,
+                                                       std::string_view message) const;
 
     [[nodiscard]] const isla::shared::ai_gateway::SessionSnapshot& snapshot() const {
         return session_state_.snapshot();
@@ -59,9 +59,8 @@ class GatewaySessionHandler {
     [[nodiscard]] HandleIncomingResult RejectIncoming(std::optional<std::string_view> turn_id,
                                                       std::string_view code,
                                                       std::string_view message) const;
-    [[nodiscard]] std::string current_session_id() const;
-    [[nodiscard]] std::string encode(
-        const isla::shared::ai_gateway::GatewayMessage& message) const;
+    [[nodiscard]] const std::string& current_session_id() const;
+    [[nodiscard]] std::string encode(const isla::shared::ai_gateway::GatewayMessage& message) const;
 
     std::string session_id_;
     isla::shared::ai_gateway::SessionState session_state_{};

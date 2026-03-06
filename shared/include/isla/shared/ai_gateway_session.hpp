@@ -4,6 +4,8 @@
 #include <string>
 #include <string_view>
 
+#include "absl/status/status.h"
+
 namespace isla::shared::ai_gateway {
 
 enum class SessionStatus {
@@ -32,18 +34,14 @@ struct SessionSnapshot {
 
 class SessionState {
   public:
-    [[nodiscard]] bool start(std::string_view session_id, std::string* error_message = nullptr);
-    [[nodiscard]] bool begin_turn(std::string_view turn_id, std::string* error_message = nullptr);
-    [[nodiscard]] bool mark_text_output(std::string_view turn_id,
-                                        std::string* error_message = nullptr);
-    [[nodiscard]] bool mark_audio_output(std::string_view turn_id,
-                                         std::string* error_message = nullptr);
-    [[nodiscard]] bool complete_turn(std::string_view turn_id, std::string* error_message = nullptr);
-    [[nodiscard]] bool request_turn_cancel(std::string_view turn_id,
-                                           std::string* error_message = nullptr);
-    [[nodiscard]] bool confirm_turn_cancel(std::string_view turn_id,
-                                           std::string* error_message = nullptr);
-    [[nodiscard]] bool end(std::string* error_message = nullptr);
+    [[nodiscard]] absl::Status start(std::string_view session_id);
+    [[nodiscard]] absl::Status begin_turn(std::string_view turn_id);
+    [[nodiscard]] absl::Status mark_text_output(std::string_view turn_id);
+    [[nodiscard]] absl::Status mark_audio_output(std::string_view turn_id);
+    [[nodiscard]] absl::Status complete_turn(std::string_view turn_id);
+    [[nodiscard]] absl::Status request_turn_cancel(std::string_view turn_id);
+    [[nodiscard]] absl::Status confirm_turn_cancel(std::string_view turn_id);
+    [[nodiscard]] absl::Status end();
 
     [[nodiscard]] const SessionSnapshot& snapshot() const {
         return snapshot_;

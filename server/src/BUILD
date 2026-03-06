@@ -5,7 +5,11 @@ cc_library(
     srcs = ["ai_gateway_session_handler.cpp"],
     hdrs = ["ai_gateway_session_handler.hpp"],
     visibility = ["//visibility:public"],
-    deps = ["//shared/src:ai_gateway_protocol"],
+    deps = [
+        "//shared/src:ai_gateway_protocol",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
 )
 
 cc_test(

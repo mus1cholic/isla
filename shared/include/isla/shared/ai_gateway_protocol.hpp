@@ -5,6 +5,8 @@
 #include <string_view>
 #include <variant>
 
+#include "absl/status/statusor.h"
+
 namespace isla::shared::ai_gateway {
 
 enum class MessageType {
@@ -72,28 +74,15 @@ struct ErrorMessage {
     std::string message;
 };
 
-using GatewayMessage = std::variant<SessionStartMessage,
-                                    SessionStartedMessage,
-                                    SessionEndMessage,
-                                    SessionEndedMessage,
-                                    TextInputMessage,
-                                    TextOutputMessage,
-                                    AudioOutputMessage,
-                                    TurnCompletedMessage,
-                                    TurnCancelMessage,
-                                    TurnCancelledMessage,
-                                    ErrorMessage>;
-
-struct MessageParseResult {
-    bool ok = false;
-    std::optional<GatewayMessage> message;
-    std::string error_message;
-};
+using GatewayMessage =
+    std::variant<SessionStartMessage, SessionStartedMessage, SessionEndMessage, SessionEndedMessage,
+                 TextInputMessage, TextOutputMessage, AudioOutputMessage, TurnCompletedMessage,
+                 TurnCancelMessage, TurnCancelledMessage, ErrorMessage>;
 
 [[nodiscard]] const char* message_type_name(MessageType type);
 [[nodiscard]] std::optional<MessageType> parse_message_type(std::string_view type_name);
 [[nodiscard]] MessageType message_type(const GatewayMessage& message);
 [[nodiscard]] std::string to_json_string(const GatewayMessage& message);
-[[nodiscard]] MessageParseResult parse_json_message(std::string_view json_text);
+[[nodiscard]] absl::StatusOr<GatewayMessage> parse_json_message(std::string_view json_text);
 
 } // namespace isla::shared::ai_gateway

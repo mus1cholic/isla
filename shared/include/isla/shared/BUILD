@@ -15,4 +15,8 @@ cc_library(
     ],
     strip_include_prefix = "/shared/include",
     visibility = ["//visibility:public"],
+    deps = [
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
 )

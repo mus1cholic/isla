@@ -6,11 +6,12 @@
 namespace isla::shared::ai_gateway {
 namespace {
 
-bool fail(std::string_view message, std::string* error_message) {
-    if (error_message != nullptr) {
-        *error_message = std::string(message);
-    }
-    return false;
+absl::Status invalid_argument(std::string_view message) {
+    return absl::InvalidArgumentError(std::string(message));
+}
+
+absl::Status failed_precondition(std::string_view message) {
+    return absl::FailedPreconditionError(std::string(message));
 }
 
 bool matches_active_turn(const SessionSnapshot& snapshot, std::string_view turn_id) {
@@ -19,105 +20,105 @@ bool matches_active_turn(const SessionSnapshot& snapshot, std::string_view turn_
 
 } // namespace
 
-bool SessionState::start(std::string_view session_id, std::string* error_message) {
+absl::Status SessionState::start(std::string_view session_id) {
     if (session_id.empty()) {
-        return fail("session_id must be non-empty", error_message);
+        return invalid_argument("session_id must be non-empty");
     }
     if (snapshot_.status != SessionStatus::NotStarted) {
-        return fail("session is already started or ended", error_message);
+        return failed_precondition("session is already started or ended");
     }
 
     snapshot_.status = SessionStatus::Active;
     snapshot_.session_id = std::string(session_id);
     snapshot_.active_turn.reset();
-    return true;
+    return absl::OkStatus();
 }
 
-bool SessionState::begin_turn(std::string_view turn_id, std::string* error_message) {
+absl::Status SessionState::begin_turn(std::string_view turn_id) {
     if (snapshot_.status != SessionStatus::Active) {
-        return fail("session is not active", error_message);
+        return failed_precondition("session is not active");
     }
     if (turn_id.empty()) {
-        return fail("turn_id must be non-empty", error_message);
+        return invalid_argument("turn_id must be non-empty");
     }
     if (snapshot_.active_turn.has_value()) {
-        return fail("only one turn may be in flight per session", error_message);
+        return failed_precondition("only one turn may be in flight per session");
     }
 
-    snapshot_.active_turn = TurnState{std::string(turn_id), TurnStatus::InFlight, false, false};
-    return true;
+    snapshot_.active_turn = TurnState{ std::string(turn_id), TurnStatus::InFlight, false, false };
+    return absl::OkStatus();
 }
 
-bool SessionState::mark_text_output(std::string_view turn_id, std::string* error_message) {
+absl::Status SessionState::mark_text_output(std::string_view turn_id) {
     if (!matches_active_turn(snapshot_, turn_id)) {
-        return fail("turn_id does not match the active turn", error_message);
+        return failed_precondition("turn_id does not match the active turn");
     }
     if (snapshot_.active_turn->text_output_emitted) {
-        return fail("text output already emitted for active turn", error_message);
+        return failed_precondition("text output already emitted for active turn");
     }
 
     snapshot_.active_turn->text_output_emitted = true;
-    return true;
+    return absl::OkStatus();
 }
 
-bool SessionState::mark_audio_output(std::string_view turn_id, std::string* error_message) {
+absl::Status SessionState::mark_audio_output(std::string_view turn_id) {
     if (!matches_active_turn(snapshot_, turn_id)) {
-        return fail("turn_id does not match the active turn", error_message);
+        return failed_precondition("turn_id does not match the active turn");
     }
     if (!snapshot_.active_turn->text_output_emitted) {
-        return fail("audio output requires text output first", error_message);
+        return failed_precondition("audio output requires text output first");
     }
     if (snapshot_.active_turn->audio_output_emitted) {
-        return fail("audio output already emitted for active turn", error_message);
+        return failed_precondition("audio output already emitted for active turn");
     }
 
     snapshot_.active_turn->audio_output_emitted = true;
-    return true;
+    return absl::OkStatus();
 }
 
-bool SessionState::complete_turn(std::string_view turn_id, std::string* error_message) {
+absl::Status SessionState::complete_turn(std::string_view turn_id) {
     if (!matches_active_turn(snapshot_, turn_id)) {
-        return fail("turn_id does not match the active turn", error_message);
+        return failed_precondition("turn_id does not match the active turn");
     }
 
     snapshot_.active_turn.reset();
-    return true;
+    return absl::OkStatus();
 }
 
-bool SessionState::request_turn_cancel(std::string_view turn_id, std::string* error_message) {
+absl::Status SessionState::request_turn_cancel(std::string_view turn_id) {
     if (!matches_active_turn(snapshot_, turn_id)) {
-        return fail("turn_id does not match the active turn", error_message);
+        return failed_precondition("turn_id does not match the active turn");
     }
     if (snapshot_.active_turn->status == TurnStatus::CancelRequested) {
-        return fail("turn cancellation already requested", error_message);
+        return failed_precondition("turn cancellation already requested");
     }
 
     snapshot_.active_turn->status = TurnStatus::CancelRequested;
-    return true;
+    return absl::OkStatus();
 }
 
-bool SessionState::confirm_turn_cancel(std::string_view turn_id, std::string* error_message) {
+absl::Status SessionState::confirm_turn_cancel(std::string_view turn_id) {
     if (!matches_active_turn(snapshot_, turn_id)) {
-        return fail("turn_id does not match the active turn", error_message);
+        return failed_precondition("turn_id does not match the active turn");
     }
     if (snapshot_.active_turn->status != TurnStatus::CancelRequested) {
-        return fail("turn cancellation was not requested", error_message);
+        return failed_precondition("turn cancellation was not requested");
     }
 
     snapshot_.active_turn.reset();
-    return true;
+    return absl::OkStatus();
 }
 
-bool SessionState::end(std::string* error_message) {
+absl::Status SessionState::end() {
     if (snapshot_.status != SessionStatus::Active) {
-        return fail("session is not active", error_message);
+        return failed_precondition("session is not active");
     }
     if (snapshot_.active_turn.has_value()) {
-        return fail("session cannot end while a turn is in flight", error_message);
+        return failed_precondition("session cannot end while a turn is in flight");
     }
 
     snapshot_.status = SessionStatus::Ended;
-    return true;
+    return absl::OkStatus();
 }
 
 } // namespace isla::shared::ai_gateway
