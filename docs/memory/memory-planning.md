@@ -30,31 +30,102 @@ EpisodeStub - a 1-sentence **Semantic Stub** (e.g., `[System: Previously discuss
 
 **Goal:** Immediate task focus and zero-latency interaction.
 
-The context window of the LLM acts as the prefrontal cortex - able to store a small amount of things, but do so extremely well. The prefrontal cortex can only store a few XXXX.
+The context window of the LLM acts as the prefrontal cortex — able to store a small amount of things, but do so extremely well. The prefrontal cortex can hold roughly 4-7 "chunks" of information simultaneously (Miller's Law), and while LLM context windows are larger, their effectiveness also degrades with volume.
 
-Typical modern LLM context window have a capacity of around ~1m tokens. However, their effectiveness sharply drops at much earlier stages, similar to the prefrontal cortex. Therefore, we choose to hard-cap the context window at 256k tokens of the model's total limit to ensure high performance is maintained.
+Typical modern LLM context windows have a capacity of around ~1m tokens. However, their effectiveness sharply drops at much earlier stages. Therefore, we choose to hard-cap the context window at 256k tokens of the model's total limit to ensure high performance is maintained.
 
-**The "Rolling Flush":** Either when the threshold is reached, or an Episode is finished and a new Episode is detected, the system performs a **Semantic Boundary Flush**.
+### The Persistent Memory Cache
 
-- A lightweight LLM (e.g., Gemini Flash) scans backward to find a natural breaking point (end of a thought, completed code block), and marks the start and the end as a chunk. The end is usually
-    - In the case of detecting a new Episode, the chunk is the previous Episode
+Some knowledge should never require retrieval — the user's name, key relationships, core preferences. In the brain, this is **implicit memory**: things so deeply encoded (through repetition or emotional significance) that they're always available without conscious effort. You don't "search" for your own name when someone says hello.
+
+The persistent memory cache acts as an **L1 cache** over the Knowledge Graph. It's a small, pre-loaded subset of the most important KG entities, injected into every prompt unconditionally — the triager never gates it.
+
+The cache has two tiers, mirroring the brain's gradient of "knowing":
+
+**Active Models (~150 tokens):** Rich, 2-3 sentence descriptions of the most important entities. These are entities the user interacts with frequently or has recently been discussing.
+
+```
+[Airi] — the user. Casual, technical. Currently planning Sarah's birthday.
+[Sarah] — Airi's close friend. Birthday March 20. Peanut allergy. Prefers small gatherings.
+```
+
+**Familiar Labels (~200-400 tokens):** Name + relationship only, for entities the system knows about but doesn't need rich context for. Enough that the assistant recognizes names without retrieval, but details require a cache miss → KG fetch.
+
+```
+[Mochi] — Airi's cat
+[Takeshi] — Airi's cousin
+[Luna Bakery] — bakery Airi has used before
+[Dr. Park] — Airi's dentist
+```
+
+This maps to how the brain handles entity knowledge at different depths: a close coworker has a rich, active mental model (you know their projects, personality, recent conversations), while a cousin you haven't seen in 20 years is just a name and relationship — but you still know they exist without effort.
+
+#### Immediate Writes (Identity Declarations)
+
+Certain statements bypass the normal consolidation pipeline and write directly to the persistent cache — mirroring the brain's **flashbulb encoding**, where identity-relevant information gets privileged single-exposure encoding:
+
+- *"My name is Airi"* → immediately writes to active model
+- *"I'm allergic to peanuts"* → immediately writes to active model
+- *"My cousin's name is Takeshi"* → immediately writes to familiar labels
+
+A lightweight detector (pattern matching + small classifier) runs on every user message to catch these identity declarations.
+
+#### Promotion / Demotion Policy
+
+Managed during the sleep cycle. The policy uses simple discrete thresholds rather than continuous scoring, since LLMs work best with buckets.
+
+**Hardcoded (never demoted):**
+- `entity_user` — always in Active tier
+- `entity_assistant` — always in Active tier
+
+**Promotion (upward movement):**
+
+| Movement | Signal |
+| :--- | :--- |
+| Stored → Familiar | Entity appears in a consolidated mid-term episode |
+| Familiar → Active | Entity referenced in 3+ episodes within 7 days |
+| Familiar → Active (fast track) | Entity is the subject of an identity declaration (e.g., "Sarah is allergic to peanuts") |
+
+**Demotion (downward movement):**
+
+| Movement | Signal |
+| :--- | :--- |
+| Active → Familiar | Entity not referenced in any episode for 7+ days |
+| Familiar → Stored | Entity not referenced in any episode for 30+ days |
+
+Note: An entity is "referenced" when it appears in a mid-term episode's content — detected through entity lexicon matching. It doesn't need to be the topic of conversation; a passing mention counts.
+
+**Active Model Regeneration:** When an entity is promoted to Active, or when an Active entity's underlying KG facts change during consolidation, its active model summary is regenerated from its current KG subgraph. This happens during the sleep cycle, not at runtime.
+
+### The "Rolling Flush"
+
+Either when the threshold is reached, or an Episode is finished and a new Episode is detected, the system performs a **Semantic Boundary Flush**.
+
+- A lightweight LLM (e.g., Gemini Flash) scans backward to find a natural breaking point (end of a thought, completed code block), and marks the start and the end as a chunk.
+    - In the case of detecting a new Episode, the chunk is the previous Episode.
 - This chunk is removed from the window, sent to the mid-term memory, and replaced with an EpisodeStub.
 
-The layout of the working memory will be as follows at all times:
-```
-{system_prompt}
+### Context Window Layout
 
-{lifetime_persistent_memory}
-
-{task_persistent_memory}
-
-{conversation}
-```
-
-The layout of Conversation will be as follows at all times:
+The layout of the working memory at all times:
 
 ```
-{}
+┌─────────────────────────────────────────────┐
+│ {system_prompt}                             │
+├─────────────────────────────────────────────┤
+│ {persistent_memory_cache}                   │
+│  ├─ Active Models (rich, ~2-3 entities)     │
+│  └─ Familiar Labels (thin, ~20-50 entities) │
+├─────────────────────────────────────────────┤
+│ {retrieved_memory}  (injected by triager)   │
+│  ├─ Mid-Term episodes                       │
+│  ├─ KG facts (spreading activation)         │
+│  └─ Episodic narratives                     │
+├─────────────────────────────────────────────┤
+│ {conversation}                              │
+│  ├─ EpisodeStubs for flushed episodes       │
+│  └─ Current conversation messages           │
+└─────────────────────────────────────────────┘
 ```
 
 ---
@@ -346,19 +417,56 @@ Note: The vector search is the fallback, not the primary path. The entity cross-
 
 ## 7. Runtime Retrieval: The "Lazy" Gatekeeper
 
-The system only reaches for memory when cued, avoiding "context pollution" and unnecessary API latency. Basically, a lightweight (gemini flash) triager is called on every turn to ask, for the current user query, whether everything in the context window is sufficient enough to answer the user's query, or whether extra context is needed. If context is enough, the memory retrieval part is skipped. Otherwise:
+The system avoids unnecessary retrieval to prevent "context pollution" and wasted API latency. The persistent memory cache (§3) is **always present** in every prompt — the gatekeeper only controls retrieval from mid-term and long-term memory.
 
-| Tier | Trigger | Action |
+### The Triager (Binary Gate, Not a Router)
 
-| :--- | :--- | :--- | IGNORE THESE, START FROM 1 below
+A lightweight model (e.g., Gemini Flash) runs on every user turn with a single binary question: **"Is the current context window sufficient to answer this query, or is additional memory needed?"**
 
-| **1. Semantic Router** | Local Tiny Vector Search | Matches prompt against an in-memory **Entity Lexicon** (FAISS/HNSW). If similarity >0.85, the backend pulls the specific Graph triplets and injects them as "System Facts." |
+The triager does **not** route to specific memory systems. If the answer is "retrieve," all three systems fire in parallel and self-filter. This mirrors the brain — you don't consciously decide "I need a fact" vs. "I need a past experience." Both activate simultaneously, and irrelevant results simply don't surface.
 
-| **2. Mid-Term Expansion** | LLM Tool Call | If the LLM sees a **Stub** in its context window that it needs to expand, it calls `expand_mid_term(event_id)`. |
+For many routine turns ("thanks," "sounds good," "yes"), the triager correctly gates retrieval, saving latency on ~40-50% of interactions.
 
-| **3. Cued Recall** | LLM Tool Call | If the LLM recognizes it needs historical narrative context (e.g., "How did we solve this last month?"), it calls `search_past_episodes(query)`. |
+### When Retrieval is Triggered
 
-1. Mid-term memory: does a tool call to grab the mid-term memory given the prompt
+All three memory systems fire **in parallel**. Each system has built-in relevance filtering — if nothing relevant is found, it returns empty. No wasted tokens.
+
+#### Mid-Term Memory Retrieval
+
+Uses FAISS vector search + recency:
+
+1. Embed the user's query
+2. FAISS similarity search against mid-term episode embeddings → top-k (k=3) similar nodes
+3. From each seed node, do a **decaying walk** along the temporal linked list, grabbing the appropriate salience-tier compaction (Tier 1 for high-salience, Tier 2 for mid, Tier 3 for low)
+4. Separately grab the k' (k'=3) most recent nodes, excluding overlap from step 3
+5. If no episodes are relevant (similarity below threshold), return empty
+
+#### Long-Term Semantic Memory (KG) Retrieval
+
+Uses spreading activation with hop-based compression:
+
+1. Entity lexicon matches query terms to KG entities (seed entities)
+2. **Hop 1:** Retrieve all relationships for seed entities → return full triplets with metadata
+3. **Hop 2:** For each hop-1 connected entity, retrieve its connections → return **entity labels only** (no relationship detail, just "these concepts are nearby")
+4. Hop 2 only follows edges with confidence ≥ threshold to prevent exponential fan-out
+5. If no entities match in the lexicon, return empty
+
+The hop-based compression mirrors the brain's detail gradient: attention is sharpest at the center (hop 1 = full detail) and fades at the periphery (hop 2 = just labels).
+
+#### Long-Term Episodic Memory Retrieval
+
+Uses three retrieval paths, as detailed in §5B:
+
+1. **Direct similarity search** → top-K episodes by embedding cosine similarity → served at `summary_full`
+2. **Entity-triggered recall** → episodes linked to KG entities found during spreading activation → served at `summary_compressed`
+3. **Causal chain expansion** → walk `caused_by` / `led_to` links from any retrieved episode → served at `summary_compressed`
+4. Merge, deduplicate, score with composite formula, select appropriate summary tier by retrieval distance
+5. If no episodes exceed similarity threshold and no entity-triggered matches, return empty
+
+### Merge and Inject
+
+All results from the three systems are merged, ordered by time, and injected into the `{retrieved_memory}` block of the context window. The persistent cache + retrieved memory + conversation together form the full context that the main LLM reasons over.
+
 
 ---
 
@@ -440,12 +548,17 @@ All results are merged, scored, and ordered by time. The assistant's context win
 ```
 {system_prompt}
 
-{lifetime_persistent_memory}
+{persistent_memory_cache}
+  Active Models:
+    [Airi] — the user. Casual, technical. Currently planning Sarah's birthday.
+    [Sarah] — Airi's close friend. Birthday March 20. Peanut allergy.
+  Familiar Labels:
+    [Mochi] — Airi's cat
+    [Takeshi] — Airi's cousin
+    [Luna Bakery] — bakery Airi has used before
 
 {retrieved_memory}
-  KG Facts:
-    - Sarah's birthday: March 20
-    - Sarah has peanut allergy (confidence: 10)
+  KG Facts (spreading activation from entity_sarah):
     - Sarah prefers Thai cuisine (confidence: 7)
     - Nearby concepts: peanuts → [peanut_sauce], Thai → [pad_thai]
 
@@ -485,6 +598,9 @@ Note how each piece of the response came from a different memory layer:
 
 ## 10. Future Works
 
+### Persistent Memory Cache
+
+1. Replace discrete promotion/demotion thresholds with a **continuous activation model** — each entity has an activation score that accumulates on reference and decays daily (e.g., ×0.9/day). Tier membership is determined by score thresholds rather than hard episode counts and day limits. This more closely mimics the brain's synaptic strengthening and forgetting curve, but requires tuning the decay rate and threshold values.
 
 ### Mid-term Memory
 
