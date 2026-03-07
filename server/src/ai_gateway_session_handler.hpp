@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -10,6 +11,8 @@
 #include "isla/shared/ai_gateway_session.hpp"
 
 namespace isla::server::ai_gateway {
+
+inline constexpr std::size_t kMaxTextInputBytes = 32U * 1024U;
 
 struct TurnAcceptedEvent {
     std::string session_id;

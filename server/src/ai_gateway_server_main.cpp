@@ -10,8 +10,8 @@
 #include "absl/log/initialize.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
-#include "ai_gateway_logging_utils.hpp"
 #include "ai_gateway_server.hpp"
+#include "ai_gateway_stub_responder.hpp"
 
 namespace {
 
@@ -19,23 +19,6 @@ volatile std::sig_atomic_t g_stop_requested = 0;
 
 void handle_signal(int /*unused*/) {
     g_stop_requested = 1;
-}
-
-const char* close_reason_name(isla::server::ai_gateway::SessionCloseReason reason) {
-    using isla::server::ai_gateway::SessionCloseReason;
-    switch (reason) {
-    case SessionCloseReason::ProtocolEnded:
-        return "protocol_ended";
-    case SessionCloseReason::TransportClosed:
-        return "transport_closed";
-    case SessionCloseReason::TransportError:
-        return "transport_error";
-    case SessionCloseReason::SendFailed:
-        return "send_failed";
-    case SessionCloseReason::ServerStopping:
-        return "server_stopping";
-    }
-    return "unknown";
 }
 
 absl::StatusOr<int> parse_int_argument(std::string_view value, std::string_view name) {
@@ -55,26 +38,6 @@ absl::StatusOr<int> parse_int_argument(std::string_view value, std::string_view 
     }
     return parsed;
 }
-
-class LoggingApplicationSink final : public isla::server::ai_gateway::GatewayApplicationEventSink {
-  public:
-    void OnTurnAccepted(const isla::server::ai_gateway::TurnAcceptedEvent& event) override {
-        LOG(INFO) << "AI gateway accepted turn session=" << event.session_id
-                  << " turn_id=" << isla::server::ai_gateway::SanitizeForLog(event.turn_id);
-    }
-
-    void OnTurnCancelRequested(
-        const isla::server::ai_gateway::TurnCancelRequestedEvent& event) override {
-        LOG(INFO) << "AI gateway received cancel session=" << event.session_id
-                  << " turn_id=" << isla::server::ai_gateway::SanitizeForLog(event.turn_id);
-    }
-
-    void OnSessionClosed(const isla::server::ai_gateway::SessionClosedEvent& event) override {
-        LOG(INFO) << "AI gateway session closed session=" << event.session_id
-                  << " reason=" << close_reason_name(event.reason) << " detail='"
-                  << isla::server::ai_gateway::SanitizeForLog(event.detail) << "'";
-    }
-};
 
 absl::StatusOr<isla::server::ai_gateway::GatewayServerConfig> parse_args(int argc, char** argv) {
     isla::server::ai_gateway::GatewayServerConfig config;
@@ -130,14 +93,16 @@ int main(int argc, char** argv) {
     static_cast<void>(previous_sigint_handler);
     static_cast<void>(previous_sigterm_handler);
 
-    LoggingApplicationSink sink;
-    isla::server::ai_gateway::GatewayServer server(*config, &sink);
+    isla::server::ai_gateway::GatewayStubResponder responder;
+    isla::server::ai_gateway::GatewayServer server(*config, &responder);
+    responder.AttachSessionRegistry(&server.session_registry());
     const absl::Status start_status = server.Start();
     if (!start_status.ok()) {
         LOG(ERROR) << "AI gateway failed to start: " << start_status;
         return 1;
     }
 
+    LOG(INFO) << "AI gateway using local Phase-2.5 stub responder";
     LOG(INFO) << "AI gateway listening on " << config->bind_host << ":" << server.bound_port();
     while (g_stop_requested == 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));

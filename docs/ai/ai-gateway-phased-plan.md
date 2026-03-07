@@ -6,8 +6,8 @@
 
 - A C++ desktop client/runtime codebase built around Bazel
 - A runnable Phase-2 AI gateway ingress server and WebSocket endpoint in `server/src`
-- A narrow application-facing async live-session egress API, but no stubbed responder/orchestration
-  path yet
+- A narrow application-facing async live-session egress API plus a local Phase-2.5 stub
+  responder/orchestration path
 - No existing OpenAI integration
 - No existing text-to-speech integration
 
@@ -68,10 +68,11 @@ Sequencing rule for the remaining work:
 - `.5` phases add live external integrations only after the preceding boundary is in place.
 
 > [!NOTE]
-> **Current status (2026-03-06):**
+> **Current status (2026-03-07):**
 > - Phase 0 is implemented.
 > - Phase 1 is implemented.
 > - Phase 2 is implemented.
+> - Phase 2.5 is implemented.
 > - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
 > - Shared protocol/session scaffolding now exists in:
 >   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
@@ -114,21 +115,41 @@ Sequencing rule for the remaining work:
 > - Chunk-style streaming is intentionally deferred at the client protocol level, but the internal
 >   server abstraction should remain stream-capable from day one.
 > - A narrow application-facing live-session emission API now exists for `text.output`,
->   `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`, but no
->   responder/planner/executor path drives it yet.
+>   `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`.
+> - A local application-owned `GatewayStubResponder` now drives accepted-turn completion,
+>   accepted-cancel termination, and stop-time terminalization through that live-session seam.
 > - `GatewayLiveSession` egress now completes through callback-based async completion posted onto
->   the session executor, with bounded integration-test waits and guarded callback/error logging.
+>   the session executor, with bounded integration-test waits and guarded callback/error logging;
+>   completion indicates transport-executor acceptance/rejection, not remote socket flush.
 > - The live session transport now uses async Beast accept/read/write on the shared server
 >   `io_context`, with queued outbound writes so reads no longer block writes; the top-level
 >   accept loop remains a separate blocking server thread.
-> - Shutdown semantics for accepted in-flight turns still need to be finalized when Phase 2.5 adds
->   server-owned turn completion and cancellation egress.
+> - `server.Stop()` now gives accepted in-flight turns an explicit terminal policy:
+>   - accepted non-cancelled turns emit `error(code="server_stopping")` then `turn.completed`
+>   - accepted cancelled turns emit `turn.cancelled`
+> - Server shutdown now uses a bounded per-session graceful-write window before force-closing stalled
+>   transports, so slow or malicious clients cannot block shutdown indefinitely.
+> - The gateway now enforces concrete v1 input size limits:
+>   - inbound websocket message max: 64 KiB
+>   - `text.input.text` max: 32 KiB
+> - The stub responder now tracks pending and in-progress turns separately, ignores mismatched or
+>   untracked cancel requests, and best-effort terminalizes accepted turns after post-acceptance
+>   emit failures so sessions do not remain wedged.
 > - Audio input and transcription are intentionally deferred from the first server slice.
 > - Self-hosted Fish workers, Spot GPU fleets, and OpenAI Realtime transport remain explicitly
 >   deferred alternatives rather than current implementation goals.
 
 ### Changelog
 
+- 2026-03-07: hardened the implemented Phase-2.5 slice with separate pending/in-progress stub-turn
+  tracking, best-effort accepted-turn terminalization after post-acceptance emit failures,
+  configurable stub async-emit waits, oversize websocket/text-input guards, non-blocking late
+  shutdown terminalization, bounded graceful shutdown writes with force-close fallback, and
+  expanded responder/server regression coverage for these cases.
+- 2026-03-06: completed Phase 2.5 with an application-owned `GatewayStubResponder`, deterministic
+  stub text completion/cancellation over the live-session seam, graceful server-stop turn
+  terminalization before transport close, binary wiring to use the stub responder, and real-socket
+  integration coverage for stub success, cancellation, and `server_stopping` termination.
 - 2026-03-06: converted `GatewayLiveSession` egress from a blocking caller bridge to callback-based
   async completion on the session executor, added warning/error logging around async emit failures
   and callback exceptions, and hardened integration-test waits so dropped callbacks fail
@@ -401,13 +422,10 @@ optional audio output.
 >   - real-socket integration coverage for ingress, handshake/protocol failures, binary frames,
 >     stop behavior, bind/startup failures, session reaping, and server-owned idle-client egress
 > - Known implementation follow-ups:
->   - deterministic stubbed turn-completion/cancellation behavior remains deferred to Phase 2.5
 >   - the server still uses a blocking accept loop thread above the async per-session transport
 >   - the current `GatewayLiveSession` egress API is callback-based and final-message-oriented; a
 >     richer stream-oriented orchestration surface may still be desirable before heavy server-owned
 >     streaming work lands
->   - accepted in-flight turn shutdown semantics remain intentionally incomplete until a server-owned
->     responder/orchestrator exists
 
 ### Goal
 
@@ -481,7 +499,43 @@ to application-owned code.
 ## Phase 2.5: Local Stub Turn Completion Path
 
 > [!NOTE]
-> **Carry-forward from Phase 2 (2026-03-06):**
+> **Status (2026-03-07): Implemented.**
+> - Implemented artifacts:
+>   - `server/src/ai_gateway_stub_responder.hpp`
+>   - `server/src/ai_gateway_stub_responder.cpp`
+>   - additional Phase-2.5 coverage in:
+>     - `server/src/ai_gateway_stub_responder_test.cpp`
+>     - `server/src/ai_gateway_server_integration_test.cpp`
+> - Implemented behavior:
+>   - an application-owned `GatewayStubResponder` wired into `isla_ai_gateway`
+>   - deterministic stub `text.output` then `turn.completed` for successful accepted turns
+>   - deterministic `turn.cancelled` for accepted cancellations, including cancellation that
+>     arrives after a turn has moved from pending to in-progress responder state
+>   - explicit stop-time terminalization for accepted turns:
+>     - non-cancelled turns emit `error(code="server_stopping")` then `turn.completed`
+>     - cancelled turns emit `turn.cancelled`
+>   - pending/in-progress turn tracking inside the stub responder so mismatched or untracked cancel
+>     requests are ignored rather than synthesizing new responder state
+>   - best-effort accepted-turn terminalization after post-acceptance emit failures so later turns
+>     are not rejected as spuriously concurrent on an otherwise still-open session
+>   - a single blocking stub worker with configurable async-emit timeout, retained intentionally as
+>     a simple deterministic Phase-2.5 orchestration model
+>   - bounded websocket shutdown grace periods before force-close fallback so slow clients cannot
+>     block server shutdown indefinitely
+>   - explicit v1 size guards:
+>     - inbound websocket message max: 64 KiB
+>     - `text.input.text` max: 32 KiB
+> - Integration/unit coverage now includes:
+>   - stub success, sequential turns, and clean `session.end` after stub completion
+>   - accepted cancellation before reply and after dequeue into in-progress responder state
+>   - stop-time `server_stopping` terminalization
+>   - responder exception survival and later-turn recovery
+>   - post-acceptance emit-failure terminalization
+>   - oversized websocket/text-input rejection paths
+>   - bounded shutdown behavior for stalled writes
+
+> [!NOTE]
+> **Carry-forward from Phase 2 (2026-03-07):**
 > - `GatewayServer`, `GatewaySessionRegistry`, `GatewayApplicationEventSink`, and
 >   `GatewayLiveSession` now exist as the runnable ingress/session-ownership boundary.
 > - Accepted turns, cancel requests, and session closes already arrive as typed events without
@@ -519,6 +573,9 @@ Close the loop through the same session boundary without introducing provider de
 - OpenAI config, provider wiring, or network traffic.
 - Fish/TTS config, provider wiring, or network traffic.
 - Any provider-specific retry, fallback, or streaming policy.
+- Replacing the stub responder's simple pending-turn scan with a deadline-ordered queue; Phase 2.5
+  keeps the local responder intentionally simple and can revisit that optimization once real
+  executor/provider load exists.
 
 ### Required Artifacts
 
@@ -526,6 +583,8 @@ Close the loop through the same session boundary without introducing provider de
   exposing raw websocket frame construction to the caller.
 - A deterministic stubbed turn responder that returns final text through that emission path.
 - Explicit turn-finalization behavior for both successful stubbed turns and accepted cancellations.
+- Explicit terminal behavior for accepted-turn emit failures and bounded shutdown behavior for
+  stalled transports.
 
 ### Demo
 
@@ -540,12 +599,16 @@ Close the loop through the same session boundary without introducing provider de
   responder enabled.
 - Verify final frame ordering for successful stubbed turns.
 - Verify cancellation termination behavior through the same application-facing emission seam.
+- Verify post-acceptance emit-failure terminalization, oversized input rejection, and bounded
+  shutdown behavior.
 
 ### Exit Criteria
 
 - A client can connect to the runnable gateway, send a text query, and receive a final non-provider
   text response plus `turn.completed`.
 - A cancelled accepted turn can terminate through the same server-owned session boundary.
+- Accepted-turn failures after server-side acceptance still attempt terminalization through the same
+  session boundary, and shutdown remains bounded even with stalled clients.
 - The server now has explicit application-facing ingress and egress seams for later planner,
   executor, and provider work.
 
@@ -565,6 +628,9 @@ Close the loop through the same session boundary without introducing provider de
 >   rather than reaching back into socket/session transport code.
 > - Any later server-owned response emission should continue using the existing callback-based async
 >   `GatewayLiveSession` seam rather than reintroducing synchronous transport bridges.
+> - That seam's completion callback currently means transport-executor acceptance/rejection, not
+>   remote socket flush; later executor/provider work should preserve or explicitly redefine that
+>   contract rather than assuming network delivery semantics.
 > - Live OpenAI network integration is intentionally deferred to Phase 3.5.
 
 ### Goal
@@ -635,6 +701,9 @@ Route gateway text requests to OpenAI through the executor boundary established 
 >   behind those boundaries rather than being called directly from websocket code.
 > - The existing live-session egress seam is callback-based async, so orchestration code should
 >   remain non-blocking when composing final turn output.
+> - The current Phase-2.5 stub worker is intentionally single-threaded/blocking for deterministic
+>   local orchestration; later planner/executor work can replace that simplification if measured
+>   concurrency needs justify it.
 
 ### Goal
 
@@ -793,6 +862,9 @@ self-hosted GPU infrastructure.
 >   the earlier read-blocks-write limitation for final-output delivery.
 > - Client-visible chunk streaming and a non-blocking application-facing emit contract still remain
 >   future work beyond the current final-output-oriented egress seam.
+> - The current completion callback on server-owned emits reports transport acceptance/rejection,
+>   not remote socket flush, so later streaming work must decide explicitly whether to preserve or
+>   refine that completion semantic.
 
 ### Goal
 
