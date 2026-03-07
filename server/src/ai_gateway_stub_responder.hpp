@@ -55,6 +55,9 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
                                               std::string_view turn_id) const;
     void ForgetInProgressTurn(std::string_view session_id, std::string_view turn_id);
     void AsyncFinishServerStoppingTurn(const PendingTurn& turn);
+    void BestEffortTerminateAcceptedTurn(const PendingTurn& turn, std::string_view code,
+                                         std::string_view message,
+                                         std::string_view log_context) noexcept;
     void FinishProcessingExceptionTurn(const PendingTurn& turn, std::string_view detail) noexcept;
     void FinishSuccessfulTurn(const PendingTurn& turn);
     void FinishCancelledTurn(const PendingTurn& turn);

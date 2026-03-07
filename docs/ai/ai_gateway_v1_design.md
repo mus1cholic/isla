@@ -1,6 +1,6 @@
 # AI Gateway v1 Design Baseline (Phase 0)
 
-Last updated: 2026-03-06
+Last updated: 2026-03-07
 
 ## Purpose
 
@@ -20,7 +20,7 @@ or code comments.
 
 ## Current Repository Status
 
-As of 2026-03-06:
+As of 2026-03-07:
 
 - the v1 architecture baseline is documented
 - shared protocol/session scaffolding exists in:
@@ -56,6 +56,11 @@ As of 2026-03-06:
 - a local `GatewayStubResponder` now consumes accepted-turn/cancel events, emits deterministic
   stub text completion and cancellation through live sessions, and finalizes accepted in-flight
   turns during `server.Stop()`
+- the gateway now enforces concrete v1 size limits:
+  - inbound websocket message max: 64 KiB
+  - `text.input.text` max: 32 KiB
+- shutdown now gives queued writes a bounded grace period before force-closing stalled transports,
+  so slow clients cannot block server shutdown indefinitely
 - live session transport now uses async Beast accept/read/write on the shared server `io_context`,
   with queued outbound writes so reads no longer block writes; the top-level accept loop remains a
   separate blocking server thread
@@ -181,6 +186,8 @@ Current implementation note (2026-03-06):
 - a `GatewayStubResponder` now provides the first application-owned outbound orchestration path for
   deterministic `text.output`, `turn.completed`, `turn.cancelled`, and stop-time
   `error(code="server_stopping")` handling
+- the emit completion callback currently means transport-executor acceptance/rejection, not remote
+  socket flush
 - the async emit path now logs rejected/failed operations at the server boundary, guards callback
   exceptions, and uses bounded waits in integration tests so dropped callbacks fail deterministically
 - the first local responder path is now implemented, while planner/executor/provider work remains
@@ -264,6 +271,8 @@ Error:
 - `audio.output` MUST be emitted only after `text.output` for the same successful turn in v1.
 - `audio.output` MUST carry a self-describing `mime_type`.
 - `audio.output` MUST carry inline base64 payload data in v1 so the protocol stays JSON-only.
+- `text.input.text` SHOULD remain bounded by implementation-defined limits at the gateway boundary;
+  the current implementation rejects text payloads above 32 KiB.
 - `turn.completed` MUST terminate every successful or failed turn that was not cancelled.
 - `turn.cancelled` MUST terminate a turn after accepted cancellation.
 - `error` MAY omit `turn_id` only for failures that occur before a turn is accepted.
@@ -425,6 +434,7 @@ As of 2026-03-06, the following Phase-2-aligned implementation exists:
   deterministic completion/cancellation back through that live-session seam
 - async per-session Beast accept/read/write on the shared server `io_context`, with queued writes
   so outbound frames are no longer blocked behind an idle read
+- bounded graceful-write shutdown fallback so stalled clients cannot block `server.Stop()`
 - a closed-session reaper that joins finished session threads and prevents indefinite retention of
   closed `LiveGatewaySession` objects
 - integration tests that cover:
@@ -433,6 +443,8 @@ As of 2026-03-06, the following Phase-2-aligned implementation exists:
   - server-owned egress while the client is idle
   - stubbed turn completion and cancellation over a real socket
   - stop-time `server_stopping` terminalization for an accepted turn
+  - oversized websocket/text-input rejection
+  - bounded shutdown when writes do not drain promptly
   - invalid handshake rejection
   - protocol error handling without tearing down the session
   - binary-frame rejection
@@ -449,3 +461,6 @@ Known carry-forward constraints from the current implementation:
 - the Phase-2.5 stub responder still scans its pending-turn map to find ready work; a deadline-
   ordered queue is intentionally deferred until profiling or later live executor phases justify the
   extra bookkeeping complexity
+- the Phase-2.5 stub responder intentionally uses a single blocking worker with a configurable
+  async-emit wait timeout to keep local orchestration deterministic; later executor phases may
+  replace that simplification if concurrency needs justify it

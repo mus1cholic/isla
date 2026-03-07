@@ -42,7 +42,6 @@ class RecordingLiveSession final : public GatewayLiveSession {
 
     void AsyncEmitTextOutput(std::string turn_id, std::string text,
                              GatewayEmitCallback on_complete) override {
-        RecordEvent({ .op = "text.output", .turn_id = std::move(turn_id), .payload = text });
         absl::Status status = absl::OkStatus();
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -50,6 +49,9 @@ class RecordingLiveSession final : public GatewayLiveSession {
                 fail_next_text_output_ = false;
                 status = absl::UnavailableError("text output failed");
             }
+        }
+        if (status.ok()) {
+            RecordEvent({ .op = "text.output", .turn_id = std::move(turn_id), .payload = text });
         }
         on_complete(std::move(status));
     }
@@ -86,22 +88,29 @@ class RecordingLiveSession final : public GatewayLiveSession {
 
     void AsyncEmitError(std::optional<std::string> turn_id, std::string code, std::string message,
                         GatewayEmitCallback on_complete) override {
-        RecordEvent({
-            .op = "error",
-            .turn_id = turn_id.value_or(""),
-            .payload = code + ":" + message,
-        });
+        absl::Status status = absl::OkStatus();
         bool delay_completion = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (fail_next_error_output_) {
+                fail_next_error_output_ = false;
+                status = absl::UnavailableError("error output failed");
+            }
             delay_completion = delay_next_error_completion_;
             if (delay_completion) {
                 delay_next_error_completion_ = false;
                 pending_error_completion_ = std::move(on_complete);
             }
         }
+        if (status.ok()) {
+            RecordEvent({
+                .op = "error",
+                .turn_id = turn_id.value_or(""),
+                .payload = code + ":" + message,
+            });
+        }
         if (!delay_completion) {
-            on_complete(absl::OkStatus());
+            on_complete(std::move(status));
         }
     }
 
@@ -118,6 +127,11 @@ class RecordingLiveSession final : public GatewayLiveSession {
     void FailNextTextOutput() {
         std::lock_guard<std::mutex> lock(mutex_);
         fail_next_text_output_ = true;
+    }
+
+    void FailNextErrorOutput() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        fail_next_error_output_ = true;
     }
 
     void MarkClosed() {
@@ -173,6 +187,7 @@ class RecordingLiveSession final : public GatewayLiveSession {
     GatewayEmitCallback pending_error_completion_;
     bool delay_next_error_completion_ = false;
     bool fail_next_text_output_ = false;
+    bool fail_next_error_output_ = false;
     bool closed_ = false;
 };
 
@@ -296,12 +311,15 @@ TEST_F(GatewayStubResponderTest, EmitFailureDoesNotBlockLaterTurns) {
         .text = "first",
     });
 
-    ASSERT_TRUE(session_->WaitForEventCount(1U));
+    ASSERT_TRUE(session_->WaitForEventCount(2U));
     {
         const std::vector<EmittedEvent> first_events = session_->events();
-        ASSERT_EQ(first_events.size(), 1U);
-        EXPECT_EQ(first_events[0].op, "text.output");
+        ASSERT_EQ(first_events.size(), 2U);
+        EXPECT_EQ(first_events[0].op, "error");
         EXPECT_EQ(first_events[0].turn_id, "turn_1");
+        EXPECT_EQ(first_events[0].payload, "internal_error:stub responder failed to emit text output");
+        EXPECT_EQ(first_events[1].op, "turn.completed");
+        EXPECT_EQ(first_events[1].turn_id, "turn_1");
     }
 
     responder_.OnTurnAccepted(TurnAcceptedEvent{
@@ -310,14 +328,14 @@ TEST_F(GatewayStubResponderTest, EmitFailureDoesNotBlockLaterTurns) {
         .text = "second",
     });
 
-    ASSERT_TRUE(session_->WaitForEventCount(3U));
+    ASSERT_TRUE(session_->WaitForEventCount(4U));
     const std::vector<EmittedEvent> events = session_->events();
-    ASSERT_EQ(events.size(), 3U);
-    EXPECT_EQ(events[1].op, "text.output");
-    EXPECT_EQ(events[1].turn_id, "turn_2");
-    EXPECT_EQ(events[1].payload, "stub echo: second");
-    EXPECT_EQ(events[2].op, "turn.completed");
+    ASSERT_EQ(events.size(), 4U);
+    EXPECT_EQ(events[2].op, "text.output");
     EXPECT_EQ(events[2].turn_id, "turn_2");
+    EXPECT_EQ(events[2].payload, "stub echo: second");
+    EXPECT_EQ(events[3].op, "turn.completed");
+    EXPECT_EQ(events[3].turn_id, "turn_2");
 }
 
 TEST_F(GatewayStubResponderTest, CompletionHookCanQueueNextTurnForSameSession) {
@@ -366,6 +384,22 @@ TEST_F(GatewayStubResponderTest, OversizedAcceptedTurnIsTerminalizedWithoutReply
     EXPECT_EQ(events[0].payload, "bad_request:text.input text exceeds maximum length");
     EXPECT_EQ(events[1].op, "turn.completed");
     EXPECT_EQ(events[1].turn_id, "turn_1");
+}
+
+TEST_F(GatewayStubResponderTest, OversizedTurnStillCompletesWhenErrorEmitFails) {
+    session_->FailNextErrorOutput();
+
+    responder_.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = std::string(kMaxTextInputBytes + 1U, 'x'),
+    });
+
+    ASSERT_TRUE(session_->WaitForEventCount(1U));
+    const std::vector<EmittedEvent> events = session_->events();
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].op, "turn.completed");
+    EXPECT_EQ(events[0].turn_id, "turn_1");
 }
 
 TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndWorkerContinues) {

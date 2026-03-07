@@ -1,6 +1,5 @@
 #include "ai_gateway_stub_responder.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <future>
 #include <optional>
@@ -12,6 +11,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "ai_gateway_logging_utils.hpp"
+#include "ai_gateway_session_handler.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -74,15 +74,14 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             VLOG(1) << "AI gateway stub queued turn session=" << event.session_id
                     << " turn_id=" << SanitizeForLog(event.turn_id)
                     << " delay_ms=" << config_.response_delay.count();
-            pending_turns_.insert_or_assign(
-                event.session_id,
-                PendingTurn{
-                    .session_id = event.session_id,
-                    .turn_id = event.turn_id,
-                    .text = event.text,
-                    .ready_at = Clock::now() + config_.response_delay,
-                    .cancel_requested = false,
-                });
+            pending_turns_.insert_or_assign(event.session_id,
+                                            PendingTurn{
+                                                .session_id = event.session_id,
+                                                .turn_id = event.turn_id,
+                                                .text = event.text,
+                                                .ready_at = Clock::now() + config_.response_delay,
+                                                .cancel_requested = false,
+                                            });
         }
     }
 
@@ -344,12 +343,14 @@ void GatewayStubResponder::AsyncFinishServerStoppingTurn(const PendingTurn& turn
         });
 }
 
-void GatewayStubResponder::FinishProcessingExceptionTurn(const PendingTurn& turn,
-                                                         std::string_view detail) noexcept {
+void GatewayStubResponder::BestEffortTerminateAcceptedTurn(const PendingTurn& turn,
+                                                           std::string_view code,
+                                                           std::string_view message,
+                                                           std::string_view log_context) noexcept {
     try {
         GatewaySessionRegistry* registry = session_registry();
         if (registry == nullptr) {
-            LOG(WARNING) << "AI gateway stub missing session registry after processing failure"
+            LOG(WARNING) << "AI gateway stub missing session registry during " << log_context
                          << " session=" << turn.session_id
                          << " turn_id=" << SanitizeForLog(turn.turn_id);
             return;
@@ -358,46 +359,54 @@ void GatewayStubResponder::FinishProcessingExceptionTurn(const PendingTurn& turn
         const std::shared_ptr<GatewayLiveSession> live_session =
             registry->FindSession(turn.session_id);
         if (live_session == nullptr) {
-            LOG(WARNING) << "AI gateway stub lost live session after processing failure"
+            LOG(WARNING) << "AI gateway stub lost live session during " << log_context
                          << " session=" << turn.session_id
                          << " turn_id=" << SanitizeForLog(turn.turn_id);
             return;
         }
 
-        absl::Status status =
+        if (!code.empty() && !message.empty()) {
+            const absl::Status error_status =
+                await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
+                    live_session->AsyncEmitError(turn.turn_id, std::string(code),
+                                                 std::string(message), std::move(on_complete));
+                });
+            if (!error_status.ok()) {
+                LOG(WARNING) << "AI gateway stub failed to emit follow-up error during "
+                             << log_context << " session=" << turn.session_id
+                             << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                             << SanitizeForLog(error_status.message()) << "'";
+            }
+        }
+
+        const absl::Status completion_status =
             await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
-                live_session->AsyncEmitError(turn.turn_id, "internal_error",
-                                             "stub responder processing failed",
-                                             std::move(on_complete));
+                live_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
             });
-        if (!status.ok()) {
-            LOG(WARNING) << "AI gateway stub failed to emit processing error session="
-                         << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
-                         << " detail='" << SanitizeForLog(status.message()) << "'";
-            return;
+        if (!completion_status.ok()) {
+            LOG(WARNING) << "AI gateway stub failed to emit follow-up completion during "
+                         << log_context << " session=" << turn.session_id
+                         << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                         << SanitizeForLog(completion_status.message()) << "'";
         }
-
-        status = await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
-            live_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
-        });
-        if (!status.ok()) {
-            LOG(WARNING) << "AI gateway stub failed to emit processing completion session="
-                         << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
-                         << " detail='" << SanitizeForLog(status.message()) << "'";
-            return;
-        }
-
-        VLOG(1) << "AI gateway stub terminalized failed turn session=" << turn.session_id
-                << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
-                << SanitizeForLog(detail) << "'";
     } catch (const std::exception& error) {
-        LOG(ERROR) << "AI gateway stub exception fallback failed session=" << turn.session_id
-                   << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
-                   << SanitizeForLog(error.what()) << "'";
+        LOG(ERROR) << "AI gateway stub follow-up terminalization failed during " << log_context
+                   << " session=" << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
+                   << " detail='" << SanitizeForLog(error.what()) << "'";
     } catch (...) {
-        LOG(ERROR) << "AI gateway stub exception fallback failed session=" << turn.session_id
-                   << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='unknown exception'";
+        LOG(ERROR) << "AI gateway stub follow-up terminalization failed during " << log_context
+                   << " session=" << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
+                   << " detail='unknown exception'";
     }
+}
+
+void GatewayStubResponder::FinishProcessingExceptionTurn(const PendingTurn& turn,
+                                                         std::string_view detail) noexcept {
+    BestEffortTerminateAcceptedTurn(turn, "internal_error", "stub responder processing failed",
+                                    "processing failure");
+    VLOG(1) << "AI gateway stub terminalized failed turn session=" << turn.session_id
+            << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='" << SanitizeForLog(detail)
+            << "'";
 }
 
 void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
@@ -428,27 +437,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         LOG(ERROR) << "AI gateway stub rejected oversized accepted turn session=" << turn.session_id
                    << " turn_id=" << SanitizeForLog(turn.turn_id)
                    << " text_bytes=" << turn.text.size();
-        absl::Status status =
-            await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
-                live_session->AsyncEmitError(turn.turn_id, "bad_request",
-                                             "text.input text exceeds maximum length",
-                                             std::move(on_complete));
-            });
-        if (!status.ok()) {
-            LOG(WARNING) << "AI gateway stub failed to emit oversized-turn error session="
-                         << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
-                         << " detail='" << SanitizeForLog(status.message()) << "'";
-            return;
-        }
-
-        status = await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
-            live_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
-        });
-        if (!status.ok()) {
-            LOG(WARNING) << "AI gateway stub failed to emit oversized-turn completion session="
-                         << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
-                         << " detail='" << SanitizeForLog(status.message()) << "'";
-        }
+        BestEffortTerminateAcceptedTurn(turn, "bad_request",
+                                        "text.input text exceeds maximum length", "oversized turn");
         return;
     }
 
@@ -474,6 +464,9 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         LOG(WARNING) << "AI gateway stub failed to emit text output session=" << turn.session_id
                      << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
                      << SanitizeForLog(status.message()) << "'";
+        BestEffortTerminateAcceptedTurn(turn, "internal_error",
+                                        "stub responder failed to emit text output",
+                                        "text output failure");
         return;
     }
 
