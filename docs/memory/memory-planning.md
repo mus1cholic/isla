@@ -22,7 +22,7 @@ Conversation - The entire conversation (user + assistant)
 
 Episode - an Episode represents a conversation that happens during a Session. One conversation has Messages revolved around the same Topic. Therefore, as soon as the user switches to a different topic, that indicates the start of a new ConversationEvent. ConversationEvents  may contain many conversations on the same topic, because either 1. the context window limit was too big, or
 
-EpisodeStub - a 1-sentence **Semantic Stub** (e.g., `[System: Previously discussed CMake configuration]`), preserving the "train of thought" without the token weight.
+EpisodeStub - a minimal positional bookmark left in the conversation when an episode is flushed (e.g., `[debugging inverted normals — resolved]`). It provides **conversational coherence** — marking *where* in the conversation flow a topic was discussed. It does not carry detail; detail lives in the always-present mid-term Tier 2 summary for the same episode.
 
 ## 3. Layer 1: Working Memory (The Prefrontal Cortex)
 
@@ -60,15 +60,11 @@ The cache has two tiers, mirroring the brain's gradient of "knowing":
 
 This maps to how the brain handles entity knowledge at different depths: a close coworker has a rich, active mental model (you know their projects, personality, recent conversations), while a cousin you haven't seen in 20 years is just a name and relationship — but you still know they exist without effort.
 
-#### Immediate Writes (Identity Declarations)
+#### Immediate Fact Availability
 
-Certain statements bypass the normal consolidation pipeline and write directly to the persistent cache — mirroring the brain's **flashbulb encoding**, where identity-relevant information gets privileged single-exposure encoding:
+For **hardcoded entities** (`entity_user`, `entity_assistant`): when a fact is stated about them (e.g., "My name is Airi"), the persistent cache text is updated immediately via **write-back caching** — the cache is updated in-memory, and the KG catches up during the next sleep cycle.
 
-- *"My name is Airi"* → immediately writes to active model
-- *"I'm allergic to peanuts"* → immediately writes to active model
-- *"My cousin's name is Takeshi"* → immediately writes to familiar labels
-
-A lightweight detector (pattern matching + small classifier) runs on every user message to catch these identity declarations.
+For **all other entities**: immediate fact availability is handled by mid-term memory being **always present** in the context window (see §4). Since all mid-term episodes are injected at Tier 2 summaries, any facts stated within them are visible to the LLM without retrieval.
 
 #### Promotion / Demotion Policy
 
@@ -84,7 +80,6 @@ Managed during the sleep cycle. The policy uses simple discrete thresholds rathe
 | :--- | :--- |
 | Stored → Familiar | Entity appears in a consolidated mid-term episode |
 | Familiar → Active | Entity referenced in 3+ episodes within 7 days |
-| Familiar → Active (fast track) | Entity is the subject of an identity declaration (e.g., "Sarah is allergic to peanuts") |
 
 **Demotion (downward movement):**
 
@@ -105,6 +100,8 @@ Either when the threshold is reached, or an Episode is finished and a new Episod
     - In the case of detecting a new Episode, the chunk is the previous Episode.
 - This chunk is removed from the window, sent to the mid-term memory, and replaced with an EpisodeStub.
 
+**Stubs vs. Mid-Term Block:** These serve complementary roles. The stub stays inline in `{conversation}` as a positional marker (~5-10 tokens) so the LLM knows the conversation didn't start abruptly at the next topic. The mid-term block in `{mid_term_episodes}` carries the actual Tier 2 narrative summary. Together: the stub says *"something was discussed here,"* the mid-term block says *"here's what it was about."*
+
 ### Context Window Layout
 
 The layout of the working memory at all times:
@@ -117,8 +114,10 @@ The layout of the working memory at all times:
 │  ├─ Active Models (rich, ~2-3 entities)     │
 │  └─ Familiar Labels (thin, ~20-50 entities) │
 ├─────────────────────────────────────────────┤
+│ {mid_term_episodes}  (always present)       │
+│  └─ All episodes at Tier 2 summaries        │
+├─────────────────────────────────────────────┤
 │ {retrieved_memory}  (injected by triager)   │
-│  ├─ Mid-Term episodes                       │
 │  ├─ KG facts (spreading activation)         │
 │  └─ Episodic narratives                     │
 ├─────────────────────────────────────────────┤
@@ -146,25 +145,27 @@ As soon as an Episode is determined to be pushed to the mid-term memory, an asyn
 
 The model generates three different resolution compactions for the Episode, in addition to a **Salience Score (1-10)**:
 
-- **High-Res (Tier 1):** Raw text or exact code/commands, with exact numbers stored. (for scores 8-10).
-- **Mid-Res (Tier 2):** Multi-sentence (max 4-6) narrative paragraph (for scores 4-7).
-- **Low-Res (Tier 3):** Single summary sentence + 5 keywords (for scores 1-3).
-- **Epistemic Tagging:** A boolean flag `contains_actionable_fact` is set if the node contains a state change or system fact (e.g., "I switched to SQLite").
+- **Tier 2 (Always-Present Summary):** Multi-sentence (max 4-6) narrative paragraph. This is the representation that is **always injected** into the context window. Generated for every episode regardless of salience.
+- **Tier 1 (On-Demand Expansion):** Raw text or exact code/commands, with exact numbers stored. Only generated for high-salience episodes (scores 8-10). Available via `expand_mid_term(episode_id)` tool call when the LLM needs full detail.
+- **Tier 3 (Consolidation Reference):** Single summary sentence + 5 keywords. Used during the sleep cycle as a lightweight reference for consolidation/pruning decisions.
+
+Note: Salience does not determine *whether* an episode is visible — all episodes are always present at Tier 2. Salience determines the *ceiling* of available detail: high-salience episodes can be expanded to Tier 1, others cannot.
 
 #### Step 2:
 
-Send the mid-res paragraph summary to an embedding model, and store the embedding.
+Send the Tier 2 summary to an embedding model, and store the embedding.
 
 Then, the embedding is stored in FAISS, and the other fields are stored in GraphDB.
 
-### Retrieval Methodology
+### Always-Present Mid-Term Context
 
-When the memory triager determines that memory needs to be retrieved, we do a vector embedding retrieval from FAISS, and grab two sets:
+All mid-term episodes are injected into the context window at their Tier 2 summaries at all times. This is **ungated** — the triager does not control mid-term visibility.
 
-1. Starting from the k-most (k=3) similar nodes, we do a decaying-walk, grabbing the appropriate salient-scored compaction
-2. The k'-most (k'=3) recent nodes, excluding the coverage from #1
+This mirrors the brain's hippocampus: you always have a background awareness of what happened recently. You don't need to "try to remember" what you discussed this morning — the hippocampal trace keeps it available until sleep consolidation transfers it to long-term storage.
 
-After this, we order each result by time, and then send it back to the main llm prompt
+**Token cost:** ~20 episodes × ~100 tokens each = ~2,000 tokens. Against a 256k token budget, this is <1%.
+
+**On-demand expansion:** If the LLM reads a Tier 2 summary and needs the exact code or raw details (for a high-salience episode), it calls `expand_mid_term(episode_id)` to load the Tier 1 content. This is the only mid-term retrieval that requires an explicit action.
 
 ---
 
@@ -191,6 +192,7 @@ Entity {
   id:         "entity_cpp",
   label:      "C++",
   category:   "language",       // lightweight tag for disambiguation (not scoping)
+  activeness: 6,               // 1-10, determines persistent cache tier (see §3)
   created_at: ...,
   updated_at: ...
 }
@@ -403,11 +405,16 @@ Note: The vector search is the fallback, not the primary path. The entity cross-
 
 1.  **Replay:** A high-reasoning LLM scans the Mid-Term linked list.
 
-2.  **Consolidation:** * Nodes marked `contains_actionable_fact: true` are extracted into the **Knowledge Graph**.
+2.  **Consolidation:**
+    * A high-reasoning LLM analyzes each episode's narrative and extracts factual statements into the **Knowledge Graph**.
+    * High-salience nodes (Tier 1 & 2) are embedded into the **Vector DB** as long-term episodes.
 
-    * High-salience nodes (Tier 1 & 2) are embedded into the **Vector DB**.
+3.  **Cache Maintenance:**
+    * Entity activeness scores are updated (increment for referenced entities, decay for unreferenced).
+    * Active model summaries are regenerated for entities whose KG facts changed.
+    * Entities are promoted/demoted between cache tiers based on updated activeness scores.
 
-3.  **Synaptic Pruning:** Any node with `salience < 3` AND `fact: false` is permanently deleted. The Mid-Term staging ground is wiped clean once consolidated.
+4.  **Synaptic Pruning:** Any node with `salience < 3` is permanently deleted. The Mid-Term staging ground is wiped clean once consolidated.
 
 
 
@@ -417,29 +424,19 @@ Note: The vector search is the fallback, not the primary path. The entity cross-
 
 ## 7. Runtime Retrieval: The "Lazy" Gatekeeper
 
-The system avoids unnecessary retrieval to prevent "context pollution" and wasted API latency. The persistent memory cache (§3) is **always present** in every prompt — the gatekeeper only controls retrieval from mid-term and long-term memory.
+The system avoids unnecessary retrieval to prevent "context pollution" and wasted API latency. Two memory layers are **always present** without gating: the persistent memory cache (§3) and mid-term episodes (§4). The gatekeeper only controls retrieval from **long-term** memory.
 
-### The Triager (Binary Gate, Not a Router)
+### The Triager (Binary Gate for Long-Term Only)
 
-A lightweight model (e.g., Gemini Flash) runs on every user turn with a single binary question: **"Is the current context window sufficient to answer this query, or is additional memory needed?"**
+A lightweight model (e.g., Gemini Flash) runs on every user turn with a single binary question: **"Does this query require knowledge or experiences beyond what's currently in the context window?"**
 
-The triager does **not** route to specific memory systems. If the answer is "retrieve," all three systems fire in parallel and self-filter. This mirrors the brain — you don't consciously decide "I need a fact" vs. "I need a past experience." Both activate simultaneously, and irrelevant results simply don't surface.
+Since the context window already contains the persistent cache (identity-level knowledge) and all mid-term episodes (recent narrative context), the triager is only deciding whether long-term memory (KG + episodic) is needed. This makes the triager's job simpler and more reliable — it's gating deep recall, not recent memory.
 
-For many routine turns ("thanks," "sounds good," "yes"), the triager correctly gates retrieval, saving latency on ~40-50% of interactions.
+For many routine turns ("thanks," "sounds good," "yes"), the triager correctly skips long-term retrieval, saving latency.
 
-### When Retrieval is Triggered
+### When Long-Term Retrieval is Triggered
 
-All three memory systems fire **in parallel**. Each system has built-in relevance filtering — if nothing relevant is found, it returns empty. No wasted tokens.
-
-#### Mid-Term Memory Retrieval
-
-Uses FAISS vector search + recency:
-
-1. Embed the user's query
-2. FAISS similarity search against mid-term episode embeddings → top-k (k=3) similar nodes
-3. From each seed node, do a **decaying walk** along the temporal linked list, grabbing the appropriate salience-tier compaction (Tier 1 for high-salience, Tier 2 for mid, Tier 3 for low)
-4. Separately grab the k' (k'=3) most recent nodes, excluding overlap from step 3
-5. If no episodes are relevant (similarity below threshold), return empty
+Both long-term systems fire **in parallel**. Each system has built-in relevance filtering — if nothing relevant is found, it returns empty.
 
 #### Long-Term Semantic Memory (KG) Retrieval
 
@@ -465,7 +462,7 @@ Uses three retrieval paths, as detailed in §5B:
 
 ### Merge and Inject
 
-All results from the three systems are merged, ordered by time, and injected into the `{retrieved_memory}` block of the context window. The persistent cache + retrieved memory + conversation together form the full context that the main LLM reasons over.
+Results from both long-term systems are merged, ordered by relevance, and injected into the `{retrieved_memory}` block of the context window. Combined with the always-present persistent cache and mid-term episodes, this forms the full context the main LLM reasons over.
 
 
 ---
@@ -500,24 +497,17 @@ The user types: **"What should I keep in mind for Sarah's party this year?"**
 
 ### Step 1: Lazy Gatekeeper
 
-The triager sees the query references "Sarah's party" — context that isn't fully in the working memory window. Verdict: **retrieve**.
+The persistent cache already has Sarah's core facts (birthday, allergy) and mid-term already has today's restaurant conversation. The triager sees the query references "Sarah's party" and checks: does the LLM need long-term memory beyond what's already present? Verdict: **yes** — this likely involves past experiences.
 
-### Step 2: All Three Systems Fire in Parallel
-
-**Mid-Term Memory (FAISS + Linked List):**
-- FAISS similarity search matches against today's earlier conversation about restaurant options
-- Returns the episode at Tier 2 (mid-res): *"Discussed restaurant options for Sarah's birthday. Narrowed down to Italian or Thai. User leaning toward Thai because Sarah mentioned liking it recently."*
-- Recency set (k'=3) also grabs two other recent episodes from this week
+### Step 2: Long-Term Systems Fire in Parallel
 
 **Semantic Memory (Knowledge Graph):**
 - Entity lexicon matches "Sarah" → `entity_sarah`
 - Spreading activation, hop 1:
   ```
-  [Sarah] → (birthday) → [March 20]          ← full triplet
-  [Sarah] → (has_allergy) → [peanuts]         ← full triplet (confidence: 10)
   [Sarah] → (prefers_cuisine) → [Thai]        ← full triplet (confidence: 7)
-  [Sarah] → (is_a) → [friend]                 ← full triplet
   ```
+  (Note: birthday and allergy are already in the persistent cache — no need to retrieve them again)
 - Hop 2 (entity-label only, compressed):
   ```
   peanuts is connected to: [anaphylaxis, epipen]
@@ -543,7 +533,7 @@ The triager sees the query references "Sarah's party" — context that isn't ful
 
 ### Step 3: Merge and Inject
 
-All results are merged, scored, and ordered by time. The assistant's context window now contains:
+Long-term results are merged with what's already in the context window. The assistant now has:
 
 ```
 {system_prompt}
@@ -557,13 +547,15 @@ All results are merged, scored, and ordered by time. The assistant's context win
     [Takeshi] — Airi's cousin
     [Luna Bakery] — bakery Airi has used before
 
-{retrieved_memory}
+{mid_term_episodes}  (always present)
+    - [Today] Discussed restaurant options for Sarah's birthday.
+      Narrowed down to Italian or Thai. Leaning toward Thai.
+    - [Today] ...other recent episodes...
+
+{retrieved_memory}  (injected by triager)
   KG Facts (spreading activation from entity_sarah):
     - Sarah prefers Thai cuisine (confidence: 7)
     - Nearby concepts: peanuts → [peanut_sauce], Thai → [pad_thai]
-
-  Recent (Mid-Term):
-    - [Today] Discussed restaurants, leaning toward Thai
 
   Past Experiences (Episodic):
     - [Last year] Party planning: venue cancelled, hosted at home,
@@ -588,11 +580,11 @@ With all this context, the assistant can give a comprehensive answer:
 > 6. You were leaning toward Thai earlier today — want me to help compare the Thai restaurants you were looking at?"
 
 Note how each piece of the response came from a different memory layer:
-- Points 1-2: KG facts (semantic memory)
+- Points 1-2: Persistent cache (always present, no retrieval needed)
 - Point 2 follow-up about peanut sauce: KG hop 2 connection (Thai → peanut_sauce)
 - Point 3: Episodic memory, compressed (entity-triggered recall)
 - Points 4-5: Episodic memory, full (direct similarity match)
-- Point 6: Mid-term memory (today's conversation)
+- Point 6: Mid-term memory (always present, today's conversation)
 
 ---
 
@@ -606,3 +598,9 @@ Note how each piece of the response came from a different memory layer:
 
 1. The current way of association only captures temporal adjacency - add weighted edges between nodes that share keywords or high embedding similarity
 2. Memory reconsolidation - bump salience score when something gets retrieved
+
+### Long-Term Semantic Memory
+
+1. **Property-based retrieval** — Currently, retrieval only activates from entity labels (e.g., "Sarah" matches `entity_sarah`). Property values on relationships (e.g., "umbrella-shaped" on a birthmark fact) are not indexed and cannot trigger retrieval. This means the system cannot make associative leaps from a property value to an entity (e.g., hearing "umbrella symbol" and recalling Sarah's umbrella-shaped birthmark). Two candidate approaches:
+    - **Option A: Reification** — Promote distinctive property values to first-class entity nodes in the KG ('umbrella_shape' becomes an entity connected to Sarah). Creates richer associative paths but significantly increases graph size and requires deciding which values to promote.
+    - **Option B: Embedded fact index** — Generate text embeddings for each KG relationship (e.g., embed "Sarah has an umbrella-shaped birthmark") and store in a small vector index. Query similarity search surfaces relevant facts without restructuring the graph. Simpler to implement but retrieval is fuzzy, not exact.
