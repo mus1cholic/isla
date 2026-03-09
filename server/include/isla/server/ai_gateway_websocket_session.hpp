@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "absl/status/status.h"
-#include "ai_gateway_session_handler.hpp"
+#include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/shared/ai_gateway_session.hpp"
 
 namespace isla::server::ai_gateway {

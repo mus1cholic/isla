@@ -1,4 +1,4 @@
-#include "ai_gateway_stub_responder_utils.hpp"
+#include "isla/server/ai_gateway_stub_responder_utils.hpp"
 
 #include <chrono>
 

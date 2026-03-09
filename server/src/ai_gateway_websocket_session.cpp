@@ -1,4 +1,4 @@
-#include "ai_gateway_websocket_session.hpp"
+#include "isla/server/ai_gateway_websocket_session.hpp"
 
 #include <optional>
 #include <string>
@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "absl/log/log.h"
-#include "ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {

@@ -11,7 +11,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
-#include "ai_gateway_server.hpp"
+#include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 
 namespace isla::server::ai_gateway {
@@ -44,6 +44,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void OnServerStopping(GatewaySessionRegistry& session_registry) override;
     [[nodiscard]] absl::StatusOr<std::string>
     RenderSessionMemoryPrompt(std::string_view session_id) const;
+    [[nodiscard]] bool WaitForAcceptedTurns(std::size_t expected_count);
 
   private:
     using Clock = std::chrono::steady_clock;
@@ -101,6 +102,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     absl::flat_hash_map<std::string, std::shared_ptr<SessionMemoryState>> memory_by_session_;
     bool stopping_ = false;
     bool worker_stop_requested_ = false;
+    std::size_t accepted_turns_count_ = 0;
 };
 
 } // namespace isla::server::ai_gateway
