@@ -125,9 +125,20 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
     return absl::OkStatus();
 }
 
-absl::Status MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
-    return HandleConversationMessage(query.session_id, query.turn_id, query.text, query.create_time,
-                                     MessageRole::User);
+absl::StatusOr<UserQueryMemoryResult>
+MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
+    const absl::Status status = HandleConversationMessage(
+        query.session_id, query.turn_id, query.text, query.create_time, MessageRole::User);
+    if (!status.ok()) {
+        return status;
+    }
+
+    absl::StatusOr<std::string> rendered_working_memory = RenderFullWorkingMemory();
+    if (!rendered_working_memory.ok()) {
+        return rendered_working_memory.status();
+    }
+
+    return UserQueryMemoryResult{ .rendered_working_memory = std::move(*rendered_working_memory) };
 }
 
 absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantReply& reply) {
@@ -140,8 +151,8 @@ MemoryOrchestrator::ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlus
     return memory_.ApplyCompletedOngoingEpisodeFlush(flush);
 }
 
-absl::StatusOr<std::string> MemoryOrchestrator::RenderPrompt() const {
-    return memory_.RenderPrompt();
+absl::StatusOr<std::string> MemoryOrchestrator::RenderFullWorkingMemory() const {
+    return memory_.RenderFullWorkingMemory();
 }
 
 } // namespace isla::server::memory

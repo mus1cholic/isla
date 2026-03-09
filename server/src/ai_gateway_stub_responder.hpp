@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 #include "ai_gateway_server.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 
@@ -72,7 +73,8 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
                                   const PendingTurn& turn);
     [[nodiscard]] GatewaySessionRegistry* session_registry() const;
     [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id);
-    [[nodiscard]] absl::Status HandleAcceptedTurnMemory(const TurnAcceptedEvent& event);
+    [[nodiscard]] absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
+    HandleAcceptedTurnMemory(const TurnAcceptedEvent& event);
     [[nodiscard]] absl::Status HandleSuccessfulReplyMemory(const PendingTurn& turn,
                                                            std::string_view reply_text);
 

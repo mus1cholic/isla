@@ -41,6 +41,10 @@ struct GatewayAssistantReply : GatewayTurnText {
           } {}
 };
 
+struct UserQueryMemoryResult {
+    std::string rendered_working_memory;
+};
+
 // Central entry point for gateway-delivered user turns. The gateway only forwards the raw user
 // query; this handler is responsible for converting it into working-memory state changes and
 // coordinating future mid/long-term memory hooks.
@@ -51,11 +55,12 @@ class MemoryOrchestrator {
     [[nodiscard]] static MemoryOrchestrator Create(std::string session_id,
                                                    const WorkingMemoryInit& init);
 
-    [[nodiscard]] absl::Status HandleUserQuery(const GatewayUserQuery& query);
+    [[nodiscard]] absl::StatusOr<UserQueryMemoryResult>
+    HandleUserQuery(const GatewayUserQuery& query);
     [[nodiscard]] absl::Status HandleAssistantReply(const GatewayAssistantReply& reply);
     [[nodiscard]] absl::Status
     ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
-    [[nodiscard]] absl::StatusOr<std::string> RenderPrompt() const;
+    [[nodiscard]] absl::StatusOr<std::string> RenderFullWorkingMemory() const;
 
     [[nodiscard]] const std::string& session_id() const {
         return session_id_;

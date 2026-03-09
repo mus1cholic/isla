@@ -85,11 +85,12 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
         return;
     }
 
-    const absl::Status memory_status = HandleAcceptedTurnMemory(event);
-    if (!memory_status.ok()) {
+    const absl::StatusOr<isla::server::memory::UserQueryMemoryResult> memory_result =
+        HandleAcceptedTurnMemory(event);
+    if (!memory_result.ok()) {
         LOG(ERROR) << "AI gateway stub failed to process turn memory session=" << event.session_id
                    << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='"
-                   << SanitizeForLog(memory_status.message()) << "'";
+                   << SanitizeForLog(memory_result.status().message()) << "'";
         BestEffortTerminateAcceptedTurn(
             PendingTurn{
                 .session_id = event.session_id,
@@ -101,6 +102,9 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             "internal_error", "stub responder failed to update memory", "memory update failure");
         return;
     }
+    VLOG(1) << "AI gateway stub prepared user prompt session=" << event.session_id
+            << " turn_id=" << SanitizeForLog(event.turn_id)
+            << " working_memory_bytes=" << memory_result->rendered_working_memory.size();
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -628,7 +632,8 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
     return absl::OkStatus();
 }
 
-absl::Status GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
+absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
+GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = memory_by_session_.find(event.session_id);
     if (it == memory_by_session_.end()) {
@@ -656,7 +661,7 @@ GatewayStubResponder::RenderSessionMemoryPrompt(std::string_view session_id) con
     if (it == memory_by_session_.end()) {
         return absl::NotFoundError("memory orchestrator not found for session");
     }
-    return it->second.RenderPrompt();
+    return it->second.RenderFullWorkingMemory();
 }
 
 } // namespace isla::server::ai_gateway
