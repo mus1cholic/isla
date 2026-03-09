@@ -356,7 +356,7 @@ TEST_F(GatewayServerTest, RealSocketTurnIngressReachesTypedApplicationSink) {
         EXPECT_EQ(sink_.started_sessions.back().session_id, session_id);
 
         const std::string end_message =
-            std::string(R"({"type":"session.end","session_id":")") + session_id + "\"}";
+            std::string("{\"type\":\"session.end\",\"session_id\":\"") + session_id + "\"}";
         const absl::Status end_status = client.SendJson(end_message);
         ASSERT_TRUE(end_status.ok()) << end_status;
 

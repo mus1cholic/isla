@@ -10,6 +10,7 @@
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "ai_gateway_logging_utils.hpp"
 #include "ai_gateway_session_handler.hpp"
 #include "ai_gateway_stub_responder_utils.hpp"
