@@ -20,6 +20,10 @@ struct TurnAcceptedEvent {
     std::string text;
 };
 
+struct SessionStartedEvent {
+    std::string session_id;
+};
+
 struct TurnCancelRequestedEvent {
     std::string session_id;
     std::string turn_id;
@@ -28,6 +32,7 @@ struct TurnCancelRequestedEvent {
 struct HandleIncomingResult {
     bool ok = false;
     std::vector<std::string> outgoing_frames;
+    std::optional<SessionStartedEvent> session_started;
     std::optional<TurnAcceptedEvent> accepted_turn;
     std::optional<TurnCancelRequestedEvent> cancel_requested;
     bool should_close = false;

@@ -203,10 +203,21 @@ class GatewayStubResponderTest : public ::testing::Test {
         registry_.RegisterSession(session_);
     }
 
+    void SetUp() override {
+        responder_.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    }
+
     GatewayStubResponder responder_;
     GatewaySessionRegistry registry_;
     std::shared_ptr<RecordingLiveSession> session_;
 };
+
+TEST_F(GatewayStubResponderTest, SessionStartCreatesMemoryPromptBeforeAnyTurn) {
+    const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_NE(prompt->find("{conversation}"), std::string::npos);
+    EXPECT_NE(prompt->find("- (empty)"), std::string::npos);
+}
 
 TEST_F(GatewayStubResponderTest, AcceptedTurnEmitsStubTextAndCompletion) {
     responder_.OnTurnAccepted(TurnAcceptedEvent{
@@ -223,6 +234,22 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnEmitsStubTextAndCompletion) {
     EXPECT_EQ(events[0].payload, "stub echo: hello");
     EXPECT_EQ(events[1].op, "turn.completed");
     EXPECT_EQ(events[1].turn_id, "turn_1");
+}
+
+TEST_F(GatewayStubResponderTest, AcceptedTurnUpdatesSessionMemoryPrompt) {
+    responder_.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(session_->WaitForEventCount(2U));
+    const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_NE(prompt->find("- [user | "), std::string::npos);
+    EXPECT_NE(prompt->find("] hello"), std::string::npos);
+    EXPECT_NE(prompt->find("- [assistant | "), std::string::npos);
+    EXPECT_NE(prompt->find("] stub echo: hello"), std::string::npos);
 }
 
 TEST_F(GatewayStubResponderTest, CancelBeforeReplyEmitsTurnCancelled) {
@@ -317,7 +344,8 @@ TEST_F(GatewayStubResponderTest, EmitFailureDoesNotBlockLaterTurns) {
         ASSERT_EQ(first_events.size(), 2U);
         EXPECT_EQ(first_events[0].op, "error");
         EXPECT_EQ(first_events[0].turn_id, "turn_1");
-        EXPECT_EQ(first_events[0].payload, "internal_error:stub responder failed to emit text output");
+        EXPECT_EQ(first_events[0].payload,
+                  "internal_error:stub responder failed to emit text output");
         EXPECT_EQ(first_events[1].op, "turn.completed");
         EXPECT_EQ(first_events[1].turn_id, "turn_1");
     }
@@ -418,6 +446,7 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
     responder.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = "srv_test",
@@ -452,6 +481,32 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
     EXPECT_EQ(events[3].turn_id, "turn_2");
 }
 
+TEST(GatewayStubResponderStandaloneTest, AcceptedTurnWithoutSessionStartFailsClosed) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .response_prefix = "stub echo: ",
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].op, "error");
+    EXPECT_EQ(events[0].turn_id, "turn_1");
+    EXPECT_EQ(events[0].payload, "internal_error:stub responder failed to update memory");
+    EXPECT_EQ(events[1].op, "turn.completed");
+    EXPECT_EQ(events[1].turn_id, "turn_1");
+}
+
 TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCancelled) {
     auto builder_started = std::make_shared<std::promise<void>>();
     std::future<void> started_future = builder_started->get_future();
@@ -472,6 +527,7 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
     responder.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = "srv_test",
@@ -493,6 +549,32 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
     EXPECT_EQ(events[0].turn_id, "turn_1");
 }
 
+TEST(GatewayStubResponderStandaloneTest, SessionCloseAfterSessionStartRemovesEmptyMemory) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .response_prefix = "stub echo: ",
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    ASSERT_TRUE(responder.RenderSessionMemoryPrompt("srv_test").ok());
+
+    responder.OnSessionClosed(SessionClosedEvent{
+        .session_id = "srv_test",
+        .session_started = true,
+        .inflight_turn_id = std::nullopt,
+        .reason = SessionCloseReason::ProtocolEnded,
+        .detail = "session ended",
+    });
+
+    const absl::StatusOr<std::string> prompt = responder.RenderSessionMemoryPrompt("srv_test");
+    EXPECT_FALSE(prompt.ok());
+    EXPECT_EQ(prompt.status().code(), absl::StatusCode::kNotFound);
+}
+
 TEST(GatewayStubResponderStandaloneTest, AcceptedTurnDuringShutdownDoesNotBlockOnDelayedEmit) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
@@ -502,6 +584,7 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnDuringShutdownDoesNotBlockO
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
     responder.OnServerStopping(registry);
     session->DelayNextErrorCompletion();

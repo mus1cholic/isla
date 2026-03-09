@@ -42,6 +42,7 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
             return RejectIncoming(std::nullopt, "bad_request", status.message());
         }
         result.ok = true;
+        result.session_started = SessionStartedEvent{ .session_id = session_id_ };
         result.outgoing_frames.push_back(encode(protocol::SessionStartedMessage{ session_id_ }));
         return result;
     }

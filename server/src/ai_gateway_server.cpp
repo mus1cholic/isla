@@ -579,6 +579,12 @@ class GatewaySessionRegistry::Impl {
         return sessions_.size();
     }
 
+    void ForwardSessionStarted(const SessionStartedEvent& event) {
+        if (application_sink_ != nullptr) {
+            application_sink_->OnSessionStarted(event);
+        }
+    }
+
     void ForwardAccepted(const TurnAcceptedEvent& event) {
         if (application_sink_ != nullptr) {
             application_sink_->OnTurnAccepted(event);
@@ -623,6 +629,10 @@ GatewaySessionRegistry::FindSession(std::string_view session_id) const {
 
 std::size_t GatewaySessionRegistry::SessionCount() const {
     return impl_->SessionCount();
+}
+
+void GatewaySessionRegistry::OnSessionStarted(const SessionStartedEvent& event) {
+    impl_->ForwardSessionStarted(event);
 }
 
 void GatewaySessionRegistry::OnTurnAccepted(const TurnAcceptedEvent& event) {

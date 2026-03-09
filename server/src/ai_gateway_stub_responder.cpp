@@ -10,8 +10,10 @@
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "ai_gateway_logging_utils.hpp"
 #include "ai_gateway_session_handler.hpp"
+#include "ai_gateway_stub_responder_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -27,14 +29,6 @@ absl::Status await_emit(std::chrono::milliseconds timeout, StartFn&& start) {
         return absl::DeadlineExceededError("timed out waiting for async emit completion");
     }
     return future.get();
-}
-
-std::string build_stub_reply(std::string_view prefix, std::string_view text) {
-    std::string reply;
-    reply.reserve(prefix.size() + text.size());
-    reply.append(prefix);
-    reply.append(text);
-    return reply;
 }
 
 } // namespace
@@ -62,6 +56,15 @@ void GatewayStubResponder::AttachSessionRegistry(GatewaySessionRegistry* session
     session_registry_ = session_registry;
 }
 
+void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
+    LOG(INFO) << "AI gateway stub observed session start session=" << event.session_id;
+    const absl::Status status = InitializeSessionMemory(event.session_id);
+    if (!status.ok()) {
+        LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
+                   << event.session_id << " detail='" << SanitizeForLog(status.message()) << "'";
+    }
+}
+
 void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
     LOG(INFO) << "AI gateway stub accepted turn session=" << event.session_id
               << " turn_id=" << SanitizeForLog(event.turn_id);
@@ -70,21 +73,7 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stopping = stopping_;
-        if (!stopping) {
-            VLOG(1) << "AI gateway stub queued turn session=" << event.session_id
-                    << " turn_id=" << SanitizeForLog(event.turn_id)
-                    << " delay_ms=" << config_.response_delay.count();
-            pending_turns_.insert_or_assign(event.session_id,
-                                            PendingTurn{
-                                                .session_id = event.session_id,
-                                                .turn_id = event.turn_id,
-                                                .text = event.text,
-                                                .ready_at = Clock::now() + config_.response_delay,
-                                                .cancel_requested = false,
-                                            });
-        }
     }
-
     if (stopping) {
         AsyncFinishServerStoppingTurn(PendingTurn{
             .session_id = event.session_id,
@@ -94,6 +83,38 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             .cancel_requested = false,
         });
         return;
+    }
+
+    const absl::Status memory_status = HandleAcceptedTurnMemory(event);
+    if (!memory_status.ok()) {
+        LOG(ERROR) << "AI gateway stub failed to process turn memory session=" << event.session_id
+                   << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='"
+                   << SanitizeForLog(memory_status.message()) << "'";
+        BestEffortTerminateAcceptedTurn(
+            PendingTurn{
+                .session_id = event.session_id,
+                .turn_id = event.turn_id,
+                .text = event.text,
+                .ready_at = Clock::now(),
+                .cancel_requested = false,
+            },
+            "internal_error", "stub responder failed to update memory", "memory update failure");
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        VLOG(1) << "AI gateway stub queued turn session=" << event.session_id
+                << " turn_id=" << SanitizeForLog(event.turn_id)
+                << " delay_ms=" << config_.response_delay.count();
+        pending_turns_.insert_or_assign(event.session_id,
+                                        PendingTurn{
+                                            .session_id = event.session_id,
+                                            .turn_id = event.turn_id,
+                                            .text = event.text,
+                                            .ready_at = Clock::now() + config_.response_delay,
+                                            .cancel_requested = false,
+                                        });
     }
 
     cv_.notify_all();
@@ -117,6 +138,7 @@ void GatewayStubResponder::OnSessionClosed(const SessionClosedEvent& event) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto pending_erased = pending_turns_.erase(event.session_id);
     const auto in_progress_erased = in_progress_turns_.erase(event.session_id);
+    memory_by_session_.erase(event.session_id);
     if (pending_erased > 0U || in_progress_erased > 0U) {
         VLOG(1) << "AI gateway stub dropped pending turn for closed session session="
                 << event.session_id;
@@ -139,6 +161,7 @@ void GatewayStubResponder::OnServerStopping(GatewaySessionRegistry& session_regi
         }
         pending_turns_.clear();
         in_progress_turns_.clear();
+        memory_by_session_.clear();
     }
 
     VLOG(1) << "AI gateway stub stopping pending_turns=" << turns_to_finalize.size();
@@ -444,7 +467,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
 
     const std::string reply = config_.reply_builder
                                   ? config_.reply_builder(config_.response_prefix, turn.text)
-                                  : build_stub_reply(config_.response_prefix, turn.text);
+                                  : BuildStubReply(config_.response_prefix, turn.text);
     if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
         VLOG(1) << "AI gateway stub aborted reply emission during shutdown session="
                 << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);
@@ -467,6 +490,17 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         BestEffortTerminateAcceptedTurn(turn, "internal_error",
                                         "stub responder failed to emit text output",
                                         "text output failure");
+        return;
+    }
+
+    status = HandleSuccessfulReplyMemory(turn, reply);
+    if (!status.ok()) {
+        LOG(WARNING) << "AI gateway stub failed to record assistant reply in memory session="
+                     << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id)
+                     << " detail='" << SanitizeForLog(status.message()) << "'";
+        BestEffortTerminateAcceptedTurn(turn, "internal_error",
+                                        "stub responder failed to update memory",
+                                        "memory update failure");
         return;
     }
 
@@ -576,6 +610,53 @@ void GatewayStubResponder::FinishServerStoppingTurn(GatewaySessionRegistry& sess
 GatewaySessionRegistry* GatewayStubResponder::session_registry() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return session_registry_;
+}
+
+absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view session_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto [it, inserted] = memory_by_session_.try_emplace(
+        std::string(session_id),
+        isla::server::memory::MemoryOrchestrator::Create(
+            std::string(session_id), isla::server::memory::WorkingMemoryInit{
+                                         .system_prompt = config_.memory_system_prompt,
+                                         .user_id = config_.memory_user_id,
+                                     }));
+    static_cast<void>(it);
+    if (!inserted) {
+        return absl::AlreadyExistsError("memory orchestrator already exists for session");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = memory_by_session_.find(event.session_id);
+    if (it == memory_by_session_.end()) {
+        return absl::FailedPreconditionError("missing memory orchestrator for started session");
+    }
+    return it->second.HandleUserQuery(isla::server::memory::GatewayUserQuery(
+        event.session_id, event.turn_id, event.text, NowTimestamp()));
+}
+
+absl::Status GatewayStubResponder::HandleSuccessfulReplyMemory(const PendingTurn& turn,
+                                                               std::string_view reply_text) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = memory_by_session_.find(turn.session_id);
+    if (it == memory_by_session_.end()) {
+        return absl::FailedPreconditionError("missing memory orchestrator for session");
+    }
+    return it->second.HandleAssistantReply(isla::server::memory::GatewayAssistantReply(
+        turn.session_id, turn.turn_id, std::string(reply_text), NowTimestamp()));
+}
+
+absl::StatusOr<std::string>
+GatewayStubResponder::RenderSessionMemoryPrompt(std::string_view session_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = memory_by_session_.find(std::string(session_id));
+    if (it == memory_by_session_.end()) {
+        return absl::NotFoundError("memory orchestrator not found for session");
+    }
+    return it->second.RenderPrompt();
 }
 
 } // namespace isla::server::ai_gateway

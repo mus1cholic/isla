@@ -28,6 +28,7 @@ class GatewayApplicationEventSink {
   public:
     virtual ~GatewayApplicationEventSink() = default;
 
+    virtual void OnSessionStarted(const SessionStartedEvent& event) = 0;
     virtual void OnTurnAccepted(const TurnAcceptedEvent& event) = 0;
     virtual void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) = 0;
     virtual void OnSessionClosed(const SessionClosedEvent& event) = 0;
@@ -69,6 +70,7 @@ class GatewaySessionRegistry final : public GatewaySessionEventSink {
     FindSession(std::string_view session_id) const;
     [[nodiscard]] std::size_t SessionCount() const;
 
+    void OnSessionStarted(const SessionStartedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;
     void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) override;
     void OnSessionClosed(const SessionClosedEvent& event) override;

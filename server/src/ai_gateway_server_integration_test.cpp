@@ -50,6 +50,14 @@ template <typename StartFn> absl::Status await_emit(StartFn&& start) {
 
 class RecordingApplicationSink final : public GatewayApplicationEventSink {
   public:
+    void OnSessionStarted(const SessionStartedEvent& event) override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            started_sessions.push_back(event);
+        }
+        cv_.notify_all();
+    }
+
     void OnTurnAccepted(const TurnAcceptedEvent& event) override {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -81,6 +89,7 @@ class RecordingApplicationSink final : public GatewayApplicationEventSink {
 
     std::mutex mutex_;
     std::condition_variable cv_;
+    std::vector<SessionStartedEvent> started_sessions;
     std::vector<TurnAcceptedEvent> accepted_turns;
     std::vector<TurnCancelRequestedEvent> cancel_requests;
     std::vector<SessionClosedEvent> closed_sessions;
@@ -301,6 +310,8 @@ TEST_F(GatewayServerTest, RealSocketTurnIngressReachesTypedApplicationSink) {
             std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
         EXPECT_EQ(session_id, "srv_it_1");
 
+        ASSERT_TRUE(sink_.WaitFor([&] { return sink_.started_sessions.size() == 1U; }));
+        EXPECT_EQ(sink_.started_sessions.front().session_id, session_id);
         ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 1U; }));
         const std::shared_ptr<GatewayLiveSession> live_session =
             server_.session_registry().FindSession(session_id);
@@ -341,6 +352,8 @@ TEST_F(GatewayServerTest, RealSocketTurnIngressReachesTypedApplicationSink) {
         const std::string session_id =
             std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
         EXPECT_EQ(session_id, "srv_it_2");
+        ASSERT_TRUE(sink_.WaitFor([&] { return sink_.started_sessions.size() == 2U; }));
+        EXPECT_EQ(sink_.started_sessions.back().session_id, session_id);
 
         const std::string end_message =
             std::string("{\"type\":\"session.end\",\"session_id\":\"") + session_id + "\"}";

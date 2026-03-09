@@ -42,6 +42,7 @@ class GatewaySessionEventSink {
   public:
     virtual ~GatewaySessionEventSink() = default;
 
+    virtual void OnSessionStarted(const SessionStartedEvent& event) = 0;
     virtual void OnTurnAccepted(const TurnAcceptedEvent& event) = 0;
     virtual void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) = 0;
     virtual void OnSessionClosed(const SessionClosedEvent& event) = 0;
