@@ -181,6 +181,22 @@ TEST(MemoryTypesTest, ConversationItemsRoundTripForEpisodeAndStubVariants) {
     EXPECT_EQ(round_trip.items[1].episode_stub->content, "[stub]");
 }
 
+TEST(MemoryTypesTest, ConversationItemSerializationRejectsMissingTaggedPayload) {
+    const ConversationItem invalid_episode_item{
+        .type = ConversationItemType::OngoingEpisode,
+        .ongoing_episode = std::nullopt,
+        .episode_stub = std::nullopt,
+    };
+    const ConversationItem invalid_stub_item{
+        .type = ConversationItemType::EpisodeStub,
+        .ongoing_episode = std::nullopt,
+        .episode_stub = std::nullopt,
+    };
+
+    EXPECT_THROW((void)json(invalid_episode_item), std::bad_optional_access);
+    EXPECT_THROW((void)json(invalid_stub_item), std::bad_optional_access);
+}
+
 TEST(MemoryTypesTest, TimestampRoundTripsFractionalSeconds) {
     const Timestamp timestamp = json("2026-03-08T15:00:00.123Z").get<Timestamp>();
 

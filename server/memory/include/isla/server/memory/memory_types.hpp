@@ -139,12 +139,11 @@ NLOHMANN_JSON_SERIALIZE_ENUM(MessageRole, {
                                               { MessageRole::Assistant, "assistant" },
                                           })
 
-NLOHMANN_JSON_SERIALIZE_ENUM(ConversationItemType, {
-                                                       { ConversationItemType::OngoingEpisode,
-                                                         "ongoing_episode" },
-                                                       { ConversationItemType::EpisodeStub,
-                                                         "episode_stub" },
-                                                   })
+NLOHMANN_JSON_SERIALIZE_ENUM(ConversationItemType,
+                             {
+                                 { ConversationItemType::OngoingEpisode, "ongoing_episode" },
+                                 { ConversationItemType::EpisodeStub, "episode_stub" },
+                             })
 
 NLOHMANN_JSON_SERIALIZE_ENUM(LongTermEpisodeOutcome,
                              {
@@ -183,11 +182,10 @@ inline void to_json(nlohmann::json& j, const ConversationItem& value) {
     j = nlohmann::json{ { "type", value.type } };
     switch (value.type) {
     case ConversationItemType::OngoingEpisode:
-        j["ongoing_episode"] =
-            value.ongoing_episode.value_or(OngoingEpisode{ .messages = {} });
+        j["ongoing_episode"] = value.ongoing_episode.value();
         break;
     case ConversationItemType::EpisodeStub:
-        j["episode_stub"] = value.episode_stub.value_or(EpisodeStub{});
+        j["episode_stub"] = value.episode_stub.value();
         break;
     }
 }
