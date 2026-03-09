@@ -6,6 +6,7 @@ cc_library(
         "conversation.hpp",
         "memory_timestamp_utils.hpp",
         "memory_types.hpp",
+        "memory_orchestrator.hpp",
         "working_memory_utils.hpp",
         "working_memory.hpp",
     ],
