@@ -1,0 +1,138 @@
+#include "isla/server/memory/memory_orchestrator.hpp"
+
+#include <string_view>
+#include <utility>
+
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "isla/server/memory/conversation.hpp"
+
+namespace isla::server::memory {
+namespace {
+
+absl::Status invalid_argument(std::string_view message) {
+    return absl::InvalidArgumentError(std::string(message));
+}
+
+} // namespace
+
+MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory memory)
+    : session_id_(std::move(session_id)), memory_(std::move(memory)) {}
+
+MemoryOrchestrator MemoryOrchestrator::Create(std::string session_id,
+                                              const WorkingMemoryInit& init) {
+    return { std::move(session_id), WorkingMemory::Create(init) };
+}
+
+absl::Status MemoryOrchestrator::ValidateTurnText(const GatewayTurnText& turn_text,
+                                                  std::string_view role_label) const {
+    if (turn_text.session_id.empty()) {
+        return invalid_argument(std::string("gateway ") + std::string(role_label) +
+                                " text must include a session_id");
+    }
+    if (turn_text.turn_id.empty()) {
+        return invalid_argument(std::string("gateway ") + std::string(role_label) +
+                                " text must include a turn_id");
+    }
+    if (turn_text.session_id != session_id_) {
+        LOG(WARNING) << "MemoryOrchestrator rejected turn text for mismatched session"
+                     << " expected_session_id=" << session_id_
+                     << " received_session_id=" << turn_text.session_id;
+        return invalid_argument("gateway turn text session_id does not match handler");
+    }
+    return absl::OkStatus();
+}
+
+absl::StatusOr<std::optional<RetrievedMemory>>
+MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
+    static_cast<void>(user_message);
+    // TODO: Query mid-term and long-term memory systems here before prompt rendering.
+    return std::nullopt;
+}
+
+absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>>
+MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& user_message) {
+    static_cast<void>(user_message);
+    // TODO: Trigger semantic-boundary/threshold-based flush capture here.
+    return std::nullopt;
+}
+
+absl::Status MemoryOrchestrator::AfterUserQueryAppended(const Message& user_message) {
+    const absl::StatusOr<std::optional<RetrievedMemory>> retrieved_memory =
+        RetrieveRelevantMemories(user_message);
+    if (!retrieved_memory.ok()) {
+        return retrieved_memory.status();
+    }
+    memory_.SetRetrievedMemory(*retrieved_memory);
+
+    const absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>> flush_candidate =
+        MaybeCaptureFlushCandidate(user_message);
+    if (!flush_candidate.ok()) {
+        return flush_candidate.status();
+    }
+    if (flush_candidate->has_value()) {
+        // TODO: Queue async flush work when a candidate is returned.
+        VLOG(1) << "MemoryOrchestrator identified a flush candidate session_id=" << session_id_
+                << " conversation_item_index=" << flush_candidate->value().conversation_item_index;
+    }
+    return absl::OkStatus();
+}
+
+absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assistant_message) {
+    static_cast<void>(assistant_message);
+    // TODO: Apply assistant-side memory updates here (write-back caching, salience updates, etc.).
+    return absl::OkStatus();
+}
+
+absl::Status MemoryOrchestrator::HandleConversationMessage(const GatewayTurnText& turn_text,
+                                                           MessageRole role) {
+    const absl::Status validation_status =
+        ValidateTurnText(turn_text, role == MessageRole::User ? "user" : "assistant");
+    if (!validation_status.ok()) {
+        return validation_status;
+    }
+
+    Message message{
+        .role = role,
+        .content = turn_text.text,
+        .create_time = turn_text.create_time,
+    };
+    if (role == MessageRole::User) {
+        AppendUserMessage(memory_.mutable_conversation(), message.content, message.create_time);
+        const absl::Status post_status = AfterUserQueryAppended(message);
+        if (!post_status.ok()) {
+            return post_status;
+        }
+    } else {
+        AppendAssistantMessage(memory_.mutable_conversation(), message.content,
+                               message.create_time);
+        const absl::Status post_status = AfterAssistantReplyAppended(message);
+        if (!post_status.ok()) {
+            return post_status;
+        }
+    }
+
+    VLOG(1) << "MemoryOrchestrator handled conversation message session_id=" << session_id_
+            << " turn_id=" << turn_text.turn_id
+            << " role=" << (role == MessageRole::User ? "user" : "assistant");
+    return absl::OkStatus();
+}
+
+absl::Status MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
+    return HandleConversationMessage(query, MessageRole::User);
+}
+
+absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantReply& reply) {
+    return HandleConversationMessage(reply, MessageRole::Assistant);
+}
+
+absl::Status
+MemoryOrchestrator::ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush) {
+    return memory_.ApplyCompletedOngoingEpisodeFlush(flush);
+}
+
+absl::StatusOr<std::string> MemoryOrchestrator::RenderPrompt() const {
+    return memory_.RenderPrompt();
+}
+
+} // namespace isla::server::memory

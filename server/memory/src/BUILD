@@ -49,6 +49,19 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "memory_orchestrator",
+    srcs = ["memory_orchestrator.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":working_memory",
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
 cc_test(
     name = "conversation_test",
     srcs = ["conversation_test.cpp"],
@@ -64,6 +77,16 @@ cc_test(
     srcs = ["working_memory_test.cpp"],
     deps = [
         ":working_memory",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "memory_orchestrator_test",
+    srcs = ["memory_orchestrator_test.cpp"],
+    deps = [
+        ":memory_orchestrator",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
