@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -111,12 +112,11 @@ struct Session {
     std::optional<Timestamp> ended_at;
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(MessageRole,
-                             {
-                                 { MessageRole::User, "user" },
-                                 { MessageRole::Assistant, "assistant" },
-                                 { MessageRole::Stub, "stub" },
-                             })
+NLOHMANN_JSON_SERIALIZE_ENUM(MessageRole, {
+                                              { MessageRole::User, "user" },
+                                              { MessageRole::Assistant, "assistant" },
+                                              { MessageRole::Stub, "stub" },
+                                          })
 
 NLOHMANN_JSON_SERIALIZE_ENUM(LongTermEpisodeOutcome,
                              {
@@ -147,6 +147,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LongTermEpisode, lte_id, summary
                                                 original_episode_ids, caused_by, led_to)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Session, session_id, system_prompt,
                                                 persistent_memory_cache, mid_term_episodes,
-                                                retrieved_memory, conversation, created_at, ended_at)
+                                                retrieved_memory, conversation, created_at,
+                                                ended_at)
 
 } // namespace isla::server::memory

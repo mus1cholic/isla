@@ -109,5 +109,29 @@ TEST(MemoryTypesTest, SerializesLongTermEpisodeEnumsAndOptionalLinks) {
     EXPECT_FALSE(round_trip.caused_by.has_value());
 }
 
+TEST(MemoryTypesTest, TimestampRoundTripsFractionalSeconds) {
+    const Timestamp timestamp = json("2026-03-08T15:00:00.123Z").get<Timestamp>();
+
+    EXPECT_EQ(json(timestamp), "2026-03-08T15:00:00.123Z");
+}
+
+TEST(MemoryTypesTest, TimestampParsesPositiveOffsetIntoUtc) {
+    const Timestamp timestamp = json("2026-03-08T15:00:00+02:30").get<Timestamp>();
+
+    EXPECT_EQ(json(timestamp), "2026-03-08T12:30:00Z");
+}
+
+TEST(MemoryTypesTest, TimestampParsesNegativeOffsetIntoUtc) {
+    const Timestamp timestamp = json("2026-03-08T15:00:00-07:15").get<Timestamp>();
+
+    EXPECT_EQ(json(timestamp), "2026-03-08T22:15:00Z");
+}
+
+TEST(MemoryTypesTest, TimestampRejectsInvalidStrings) {
+    EXPECT_THROW((void)json("2026-03-08 15:00:00Z").get<Timestamp>(), std::invalid_argument);
+    EXPECT_THROW((void)json("2026-13-08T15:00:00Z").get<Timestamp>(), std::invalid_argument);
+    EXPECT_THROW((void)json("2026-03-08T15:00:00").get<Timestamp>(), std::invalid_argument);
+}
+
 } // namespace
 } // namespace isla::server::memory

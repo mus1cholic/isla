@@ -100,9 +100,8 @@ Timestamp ParseTimestamp(std::string_view text) {
         throw std::invalid_argument("timestamp has trailing characters");
     }
 
-    const std::chrono::year_month_day ymd{
-        std::chrono::year{ year } / std::chrono::month{ month } / std::chrono::day{ day }
-    };
+    const std::chrono::year_month_day ymd{ std::chrono::year{ year } / std::chrono::month{ month } /
+                                           std::chrono::day{ day } };
     if (!ymd.ok()) {
         throw std::invalid_argument("timestamp date component is out of range");
     }
@@ -116,21 +115,16 @@ Timestamp ParseTimestamp(std::string_view text) {
 std::string FormatTimestamp(Timestamp timestamp) {
     const auto days = std::chrono::floor<std::chrono::days>(timestamp);
     const std::chrono::year_month_day ymd{ days };
-    const auto time_of_day = timestamp - days;
-    const auto hours = std::chrono::duration_cast<std::chrono::hours>(time_of_day);
-    const auto minutes = std::chrono::duration_cast<std::chrono::minutes>(time_of_day - hours);
-    const auto seconds =
-        std::chrono::duration_cast<std::chrono::seconds>(time_of_day - hours - minutes);
-    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-        time_of_day - hours - minutes - seconds);
+    const std::chrono::hh_mm_ss time_of_day{ timestamp - days };
 
     std::ostringstream stream;
     stream << std::setfill('0') << std::setw(4) << static_cast<int>(ymd.year()) << '-'
            << std::setw(2) << static_cast<unsigned>(ymd.month()) << '-' << std::setw(2)
-           << static_cast<unsigned>(ymd.day()) << 'T' << std::setw(2) << hours.count() << ':'
-           << std::setw(2) << minutes.count() << ':' << std::setw(2) << seconds.count();
-    if (milliseconds.count() != 0) {
-        stream << '.' << std::setw(3) << milliseconds.count();
+           << static_cast<unsigned>(ymd.day()) << 'T' << std::setw(2) << time_of_day.hours().count()
+           << ':' << std::setw(2) << time_of_day.minutes().count() << ':' << std::setw(2)
+           << time_of_day.seconds().count();
+    if (time_of_day.subseconds().count() != 0) {
+        stream << '.' << std::setw(3) << time_of_day.subseconds().count();
     }
     stream << 'Z';
     return stream.str();
