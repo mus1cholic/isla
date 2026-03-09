@@ -615,5 +615,156 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnDuringShutdownDoesNotBlockO
     EXPECT_EQ(events[1].turn_id, "turn_1");
 }
 
+TEST(GatewayStubResponderStandaloneTest,
+     DifferentSessionRenderDoesNotBlockWhileOtherSessionMemoryIsLocked) {
+    auto user_query_started = std::make_shared<std::promise<void>>();
+    std::future<void> user_query_started_future = user_query_started->get_future();
+    auto allow_user_query_finish = std::make_shared<std::promise<void>>();
+    std::shared_future<void> allow_user_query_finish_future =
+        allow_user_query_finish->get_future().share();
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .response_prefix = "stub echo: ",
+        .on_user_query_memory_ready =
+            [user_query_started, allow_user_query_finish_future](
+                std::string_view session_id,
+                const isla::server::memory::UserQueryMemoryResult& user_query_memory_result) {
+                static_cast<void>(user_query_memory_result);
+                if (session_id != "srv_one") {
+                    return;
+                }
+                user_query_started->set_value();
+                allow_user_query_finish_future.wait();
+            },
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session_one = std::make_shared<RecordingLiveSession>("srv_one");
+    auto session_two = std::make_shared<RecordingLiveSession>("srv_two");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session_one);
+    registry.RegisterSession(session_two);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_one" });
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_two" });
+
+    auto accepted_future = std::async(std::launch::async, [&] {
+        responder.OnTurnAccepted(TurnAcceptedEvent{
+            .session_id = "srv_one",
+            .turn_id = "turn_1",
+            .text = "hello from one",
+        });
+    });
+
+    ASSERT_EQ(user_query_started_future.wait_for(2s), std::future_status::ready);
+
+    auto render_future = std::async(std::launch::async,
+                                    [&] { return responder.RenderSessionMemoryPrompt("srv_two"); });
+    ASSERT_EQ(render_future.wait_for(100ms), std::future_status::ready);
+    const absl::StatusOr<std::string> prompt = render_future.get();
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_NE(prompt->find("- (empty)"), std::string::npos);
+
+    allow_user_query_finish->set_value();
+    ASSERT_EQ(accepted_future.wait_for(2s), std::future_status::ready);
+    ASSERT_TRUE(session_one->WaitForEventCount(2U));
+}
+
+TEST(GatewayStubResponderStandaloneTest, SameSessionRenderWaitsForOngoingMemoryMutation) {
+    auto user_query_started = std::make_shared<std::promise<void>>();
+    std::future<void> user_query_started_future = user_query_started->get_future();
+    auto allow_user_query_finish = std::make_shared<std::promise<void>>();
+    std::shared_future<void> allow_user_query_finish_future =
+        allow_user_query_finish->get_future().share();
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .response_prefix = "stub echo: ",
+        .on_user_query_memory_ready =
+            [user_query_started, allow_user_query_finish_future](
+                std::string_view session_id,
+                const isla::server::memory::UserQueryMemoryResult& user_query_memory_result) {
+                static_cast<void>(user_query_memory_result);
+                if (session_id != "srv_test") {
+                    return;
+                }
+                user_query_started->set_value();
+                allow_user_query_finish_future.wait();
+            },
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    auto accepted_future = std::async(std::launch::async, [&] {
+        responder.OnTurnAccepted(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_1",
+            .text = "hello",
+        });
+    });
+
+    ASSERT_EQ(user_query_started_future.wait_for(2s), std::future_status::ready);
+
+    auto render_future = std::async(
+        std::launch::async, [&] { return responder.RenderSessionMemoryPrompt("srv_test"); });
+    EXPECT_NE(render_future.wait_for(100ms), std::future_status::ready);
+
+    allow_user_query_finish->set_value();
+    ASSERT_EQ(accepted_future.wait_for(2s), std::future_status::ready);
+    ASSERT_EQ(render_future.wait_for(2s), std::future_status::ready);
+    const absl::StatusOr<std::string> prompt = render_future.get();
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_NE(prompt->find("- [user | "), std::string::npos);
+    EXPECT_NE(prompt->find("] hello"), std::string::npos);
+}
+
+TEST(GatewayStubResponderStandaloneTest, ConcurrentMultiSessionTurnsKeepMemoryIsolated) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .response_prefix = "stub echo: ",
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session_one = std::make_shared<RecordingLiveSession>("srv_one");
+    auto session_two = std::make_shared<RecordingLiveSession>("srv_two");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session_one);
+    registry.RegisterSession(session_two);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_one" });
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_two" });
+
+    auto first_turn = std::async(std::launch::async, [&] {
+        responder.OnTurnAccepted(TurnAcceptedEvent{
+            .session_id = "srv_one",
+            .turn_id = "turn_1",
+            .text = "alpha",
+        });
+    });
+    auto second_turn = std::async(std::launch::async, [&] {
+        responder.OnTurnAccepted(TurnAcceptedEvent{
+            .session_id = "srv_two",
+            .turn_id = "turn_2",
+            .text = "beta",
+        });
+    });
+
+    ASSERT_EQ(first_turn.wait_for(2s), std::future_status::ready);
+    ASSERT_EQ(second_turn.wait_for(2s), std::future_status::ready);
+    ASSERT_TRUE(session_one->WaitForEventCount(2U));
+    ASSERT_TRUE(session_two->WaitForEventCount(2U));
+
+    const absl::StatusOr<std::string> prompt_one = responder.RenderSessionMemoryPrompt("srv_one");
+    const absl::StatusOr<std::string> prompt_two = responder.RenderSessionMemoryPrompt("srv_two");
+    ASSERT_TRUE(prompt_one.ok()) << prompt_one.status();
+    ASSERT_TRUE(prompt_two.ok()) << prompt_two.status();
+    EXPECT_NE(prompt_one->find("alpha"), std::string::npos);
+    EXPECT_NE(prompt_one->find("stub echo: alpha"), std::string::npos);
+    EXPECT_EQ(prompt_one->find("beta"), std::string::npos);
+    EXPECT_NE(prompt_two->find("beta"), std::string::npos);
+    EXPECT_NE(prompt_two->find("stub echo: beta"), std::string::npos);
+    EXPECT_EQ(prompt_two->find("alpha"), std::string::npos);
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway

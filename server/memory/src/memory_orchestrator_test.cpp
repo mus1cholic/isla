@@ -119,6 +119,9 @@ TEST_F(MemoryOrchestratorTest, EndToEndConversationProducesExpectedWorkingMemory
         GatewayUserQuery("srv_test", "turn_001", "Please help me plan Sarah's birthday.",
                          Ts("2026-03-08T14:00:00Z")));
     ASSERT_TRUE(user_result.ok()) << user_result.status();
+    EXPECT_NE(user_result->rendered_working_memory.find(
+                  "- [user | 2026-03-08T14:00:00Z] Please help me plan Sarah's birthday."),
+              std::string::npos);
     ASSERT_TRUE(orchestrator
                     .HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001",
                                                                 "I can help you plan it.",
