@@ -785,6 +785,8 @@ TEST_F(GatewayStubResponderServerTest, StopEmitsServerStoppingErrorAndCompletion
             .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
             .ok());
 
+    ASSERT_TRUE(responder_.WaitForAcceptedTurns(1));
+
     std::thread stop_thread([this] { server_.Stop(); });
 
     const absl::StatusOr<protocol::GatewayMessage> error_frame = client.ReadJsonFrame();

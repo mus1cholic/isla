@@ -72,6 +72,7 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
     bool stopping = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        ++accepted_turns_count_;
         stopping = stopping_;
     }
     if (stopping) {
@@ -678,6 +679,12 @@ GatewayStubResponder::RenderSessionMemoryPrompt(std::string_view session_id) con
     }
     std::lock_guard<std::mutex> lock(session_memory->mutex);
     return session_memory->orchestrator.RenderFullWorkingMemory();
+}
+
+bool GatewayStubResponder::WaitForAcceptedTurns(std::size_t expected_count) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, std::chrono::seconds(2),
+                        [this, expected_count] { return accepted_turns_count_ >= expected_count; });
 }
 
 } // namespace isla::server::ai_gateway
