@@ -58,12 +58,12 @@ MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& user_message) {
 }
 
 absl::Status MemoryOrchestrator::AfterUserQueryAppended(const Message& user_message) {
-    const absl::StatusOr<std::optional<RetrievedMemory>> retrieved_memory =
+    absl::StatusOr<std::optional<RetrievedMemory>> retrieved_memory =
         RetrieveRelevantMemories(user_message);
     if (!retrieved_memory.ok()) {
         return retrieved_memory.status();
     }
-    memory_.SetRetrievedMemory(*retrieved_memory);
+    memory_.SetRetrievedMemory(std::move(*retrieved_memory));
 
     const absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>> flush_candidate =
         MaybeCaptureFlushCandidate(user_message);
@@ -84,46 +84,55 @@ absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assi
     return absl::OkStatus();
 }
 
-absl::Status MemoryOrchestrator::HandleConversationMessage(const GatewayTurnText& turn_text,
+absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view session_id,
+                                                           std::string_view turn_id,
+                                                           std::string_view text,
+                                                           Timestamp create_time,
                                                            MessageRole role) {
+    const GatewayTurnText turn_text{
+        .session_id = std::string(session_id),
+        .turn_id = std::string(turn_id),
+        .text = std::string(text),
+        .create_time = create_time,
+    };
     const absl::Status validation_status =
         ValidateTurnText(turn_text, role == MessageRole::User ? "user" : "assistant");
     if (!validation_status.ok()) {
         return validation_status;
     }
 
-    Message message{
-        .role = role,
-        .content = turn_text.text,
-        .create_time = turn_text.create_time,
-    };
     if (role == MessageRole::User) {
-        AppendUserMessage(memory_.mutable_conversation(), message.content, message.create_time);
-        const absl::Status post_status = AfterUserQueryAppended(message);
+        AppendUserMessage(memory_.mutable_conversation(), std::string(text), create_time);
+        const Message& user_message =
+            memory_.conversation().items.back().ongoing_episode->messages.back();
+        const absl::Status post_status = AfterUserQueryAppended(user_message);
         if (!post_status.ok()) {
             return post_status;
         }
     } else {
-        AppendAssistantMessage(memory_.mutable_conversation(), message.content,
-                               message.create_time);
-        const absl::Status post_status = AfterAssistantReplyAppended(message);
+        AppendAssistantMessage(memory_.mutable_conversation(), std::string(text), create_time);
+        const Message& assistant_message =
+            memory_.conversation().items.back().ongoing_episode->messages.back();
+        const absl::Status post_status = AfterAssistantReplyAppended(assistant_message);
         if (!post_status.ok()) {
             return post_status;
         }
     }
 
     VLOG(1) << "MemoryOrchestrator handled conversation message session_id=" << session_id_
-            << " turn_id=" << turn_text.turn_id
+            << " turn_id=" << turn_id
             << " role=" << (role == MessageRole::User ? "user" : "assistant");
     return absl::OkStatus();
 }
 
 absl::Status MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
-    return HandleConversationMessage(query, MessageRole::User);
+    return HandleConversationMessage(query.session_id, query.turn_id, query.text, query.create_time,
+                                     MessageRole::User);
 }
 
 absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantReply& reply) {
-    return HandleConversationMessage(reply, MessageRole::Assistant);
+    return HandleConversationMessage(reply.session_id, reply.turn_id, reply.text, reply.create_time,
+                                     MessageRole::Assistant);
 }
 
 absl::Status

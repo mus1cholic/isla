@@ -1,5 +1,6 @@
 #include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/working_memory.hpp"
+#include "isla/server/memory/working_memory_utils.hpp"
 
 #include <string>
 
@@ -167,6 +168,28 @@ TEST_F(WorkingMemoryTest, RendersMixedConversationItemsInOriginalOrder) {
     ASSERT_NE(second_pos, std::string::npos);
     EXPECT_LT(first_pos, stub_pos);
     EXPECT_LT(stub_pos, second_pos);
+}
+
+TEST_F(WorkingMemoryTest, EscapePromptTextEscapesPromptControlCharacters) {
+    EXPECT_EQ(EscapePromptText("line1\nline2\r\t\\tail"), "line1\\nline2\\r\\t\\\\tail");
+}
+
+TEST_F(WorkingMemoryTest, RenderPromptEscapesControlCharactersInDynamicTextFields) {
+    WorkingMemory memory = MakeMemory();
+    memory.UpsertActiveModel("entity\nuser", "Airi\\nlikes tests");
+    memory.UpsertFamiliarLabel("entity_friend", "Sarah\r\nfriend");
+    memory.SetRetrievedMemory("retrieved\tmemory\nline");
+    AppendUserMessage(memory.mutable_conversation(), "hello\nworld", Ts("2026-03-08T14:00:01Z"));
+    memory.AppendEpisodeStub("stub\rcontent", Ts("2026-03-08T14:00:02Z"));
+
+    const absl::StatusOr<std::string> prompt = memory.RenderPrompt();
+
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_NE(prompt->find("- [entity\\nuser] Airi\\\\nlikes tests"), std::string::npos);
+    EXPECT_NE(prompt->find("- [entity_friend] Sarah\\r\\nfriend"), std::string::npos);
+    EXPECT_NE(prompt->find("retrieved\\tmemory\\nline"), std::string::npos);
+    EXPECT_NE(prompt->find("- [user | 2026-03-08T14:00:01Z] hello\\nworld"), std::string::npos);
+    EXPECT_NE(prompt->find("- [stub | 2026-03-08T14:00:02Z] stub\\rcontent"), std::string::npos);
 }
 
 TEST_F(WorkingMemoryTest, WriteBackCoreEntityPromotesToActiveCache) {

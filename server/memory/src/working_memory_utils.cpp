@@ -39,9 +39,13 @@ void AppendLine(std::string& output, std::string_view line) {
     output.push_back('\n');
 }
 
+void AppendEscapedPromptText(std::string& output, std::string_view text) {
+    output.append(EscapePromptText(text));
+}
+
 void AppendEpisodeLine(std::string& output, const Episode& episode) {
     output.append("- [");
-    output.append(episode.episode_id);
+    AppendEscapedPromptText(output, episode.episode_id);
     output.append(" | ");
     output.append(FormatTimestamp(episode.created_at));
     output.append(" | salience: ");
@@ -50,7 +54,7 @@ void AppendEpisodeLine(std::string& output, const Episode& episode) {
         output.append(" | expandable");
     }
     output.append("] ");
-    output.append(episode.tier2_summary);
+    AppendEscapedPromptText(output, episode.tier2_summary);
     output.push_back('\n');
 }
 
@@ -67,7 +71,7 @@ void AppendMessageLine(std::string& output, const Message& message) {
     output.append(" | ");
     output.append(FormatTimestamp(message.create_time));
     output.append("] ");
-    output.append(message.content);
+    AppendEscapedPromptText(output, message.content);
     output.push_back('\n');
 }
 
@@ -75,7 +79,7 @@ void AppendEpisodeStubLine(std::string& output, const EpisodeStub& episode_stub)
     output.append("- [stub | ");
     output.append(FormatTimestamp(episode_stub.create_time));
     output.append("] ");
-    output.append(episode_stub.content);
+    AppendEscapedPromptText(output, episode_stub.content);
     output.push_back('\n');
 }
 
@@ -91,6 +95,31 @@ void UpsertFamiliarLabel(PersistentMemoryCache& cache, std::string entity_id, st
     UpsertCacheEntry(cache.familiar_labels, std::move(entity_id), std::move(text));
 }
 
+std::string EscapePromptText(std::string_view text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char ch : text) {
+        switch (ch) {
+        case '\\':
+            escaped.append("\\\\");
+            break;
+        case '\n':
+            escaped.append("\\n");
+            break;
+        case '\r':
+            escaped.append("\\r");
+            break;
+        case '\t':
+            escaped.append("\\t");
+            break;
+        default:
+            escaped.push_back(ch);
+            break;
+        }
+    }
+    return escaped;
+}
+
 absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
     std::string output;
     AppendLine(output, "{system_prompt}");
@@ -103,7 +132,11 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
         AppendLine(output, "- (none)");
     } else {
         for (const ActiveModel& model : working_memory.persistent_memory_cache.active_models) {
-            AppendLine(output, "- [" + model.entity_id + "] " + model.text);
+            output.append("- [");
+            AppendEscapedPromptText(output, model.entity_id);
+            output.append("] ");
+            AppendEscapedPromptText(output, model.text);
+            output.push_back('\n');
         }
     }
     AppendLine(output, "Familiar Labels:");
@@ -111,7 +144,11 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
         AppendLine(output, "- (none)");
     } else {
         for (const FamiliarLabel& label : working_memory.persistent_memory_cache.familiar_labels) {
-            AppendLine(output, "- [" + label.entity_id + "] " + label.text);
+            output.append("- [");
+            AppendEscapedPromptText(output, label.entity_id);
+            output.append("] ");
+            AppendEscapedPromptText(output, label.text);
+            output.push_back('\n');
         }
     }
 
@@ -125,9 +162,12 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
     }
 
     AppendLine(output, "{retrieved_memory}");
-    AppendLine(output, working_memory.retrieved_memory.has_value()
-                           ? *working_memory.retrieved_memory
-                           : "(none)");
+    if (working_memory.retrieved_memory.has_value()) {
+        AppendEscapedPromptText(output, *working_memory.retrieved_memory);
+        output.push_back('\n');
+    } else {
+        AppendLine(output, "(none)");
+    }
 
     AppendLine(output, "{conversation}");
     if (working_memory.conversation.items.empty()) {

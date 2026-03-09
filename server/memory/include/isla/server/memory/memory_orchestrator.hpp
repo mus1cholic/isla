@@ -17,8 +17,29 @@ struct GatewayTurnText {
     Timestamp create_time;
 };
 
-using GatewayUserQuery = GatewayTurnText;
-using GatewayAssistantReply = GatewayTurnText;
+struct GatewayUserQuery : GatewayTurnText {
+    GatewayUserQuery() = default;
+    GatewayUserQuery(std::string session_id_in, std::string turn_id_in, std::string text_in,
+                     Timestamp create_time_in)
+        : GatewayTurnText{
+              .session_id = std::move(session_id_in),
+              .turn_id = std::move(turn_id_in),
+              .text = std::move(text_in),
+              .create_time = create_time_in,
+          } {}
+};
+
+struct GatewayAssistantReply : GatewayTurnText {
+    GatewayAssistantReply() = default;
+    GatewayAssistantReply(std::string session_id_in, std::string turn_id_in, std::string text_in,
+                          Timestamp create_time_in)
+        : GatewayTurnText{
+              .session_id = std::move(session_id_in),
+              .turn_id = std::move(turn_id_in),
+              .text = std::move(text_in),
+              .create_time = create_time_in,
+          } {}
+};
 
 // Central entry point for gateway-delivered user turns. The gateway only forwards the raw user
 // query; this handler is responsible for converting it into working-memory state changes and
@@ -51,8 +72,10 @@ class MemoryOrchestrator {
   private:
     [[nodiscard]] absl::Status ValidateTurnText(const GatewayTurnText& turn_text,
                                                 std::string_view role_label) const;
-    [[nodiscard]] absl::Status HandleConversationMessage(const GatewayTurnText& turn_text,
-                                                         MessageRole role);
+    [[nodiscard]] absl::Status HandleConversationMessage(std::string_view session_id,
+                                                         std::string_view turn_id,
+                                                         std::string_view text,
+                                                         Timestamp create_time, MessageRole role);
     [[nodiscard]] absl::Status AfterUserQueryAppended(const Message& user_message);
     [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
