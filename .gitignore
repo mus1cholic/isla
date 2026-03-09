@@ -17,6 +17,8 @@ desktop.ini
 .clangd/
 .vscode/.browse.VC.db
 .vscode/.browse.VC.db-journal
+__pycache__/
+*.pyc
 
 # Bazel outputs/symlinks
 bazel-*
