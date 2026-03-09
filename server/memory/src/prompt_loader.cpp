@@ -10,9 +10,14 @@
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::memory {
 namespace {
+
+std::string sanitize_for_log(std::string_view value) {
+    return isla::server::ai_gateway::SanitizeForLog(value);
+}
 
 std::vector<std::string> workspace_candidates() {
     std::vector<std::string> candidates;
@@ -72,11 +77,13 @@ absl::StatusOr<std::filesystem::path> ResolvePromptPath(std::string_view runfile
             ResolveFromManifest(runfiles_manifest, runfile_path);
         if (resolved.ok()) {
             VLOG(1) << "PromptLoader resolved prompt via runfiles manifest runfile_path='"
-                    << runfile_path << "' resolved_path='" << resolved->string() << "'";
+                    << sanitize_for_log(runfile_path) << "' resolved_path='"
+                    << sanitize_for_log(resolved->string()) << "'";
             return resolved;
         }
-        VLOG(2) << "PromptLoader failed manifest resolution runfile_path='" << runfile_path
-                << "' detail='" << resolved.status().message() << "'";
+        VLOG(2) << "PromptLoader failed manifest resolution runfile_path='"
+                << sanitize_for_log(runfile_path) << "' detail='"
+                << sanitize_for_log(resolved.status().message()) << "'";
     }
 
     const std::vector<std::string> workspaces = workspace_candidates();
@@ -104,13 +111,15 @@ absl::StatusOr<std::filesystem::path> ResolvePromptPath(std::string_view runfile
         std::error_code exists_error;
         if (std::filesystem::exists(candidate, exists_error) && !exists_error) {
             VLOG(1) << "PromptLoader resolved prompt via filesystem probe runfile_path='"
-                    << runfile_path << "' resolved_path='" << candidate.string() << "'";
+                    << sanitize_for_log(runfile_path) << "' resolved_path='"
+                    << sanitize_for_log(candidate.string()) << "'";
             return candidate;
         }
         if (exists_error) {
-            VLOG(2) << "PromptLoader failed filesystem probe runfile_path='" << runfile_path
-                    << "' candidate='" << candidate.string() << "' detail='"
-                    << exists_error.message() << "'";
+            VLOG(2) << "PromptLoader failed filesystem probe runfile_path='"
+                    << sanitize_for_log(runfile_path) << "' candidate='"
+                    << sanitize_for_log(candidate.string()) << "' detail='"
+                    << sanitize_for_log(exists_error.message()) << "'";
         }
     }
 
@@ -140,8 +149,9 @@ absl::StatusOr<std::string> LoadPrompt(std::string_view runfile_path) {
     }
     absl::StatusOr<std::string> prompt = ReadPromptFile(*prompt_path);
     if (prompt.ok()) {
-        VLOG(1) << "PromptLoader loaded prompt runfile_path='" << runfile_path
-                << "' resolved_path='" << prompt_path->string()
+        VLOG(1) << "PromptLoader loaded prompt runfile_path='"
+                << sanitize_for_log(runfile_path) << "' resolved_path='"
+                << sanitize_for_log(prompt_path->string())
                 << "' bytes=" << prompt->size();
     }
     return prompt;
@@ -152,15 +162,15 @@ absl::StatusOr<std::string> LoadSystemPrompt() {
 }
 
 const std::string& DefaultSystemPrompt() {
-    static const std::string* prompt = [] {
+    static const std::string prompt = [] {
         absl::StatusOr<std::string> loaded_prompt = LoadSystemPrompt();
         if (!loaded_prompt.ok()) {
             LOG(FATAL) << "Failed to load bundled memory system prompt detail='"
-                       << loaded_prompt.status().message() << "'";
+                       << sanitize_for_log(loaded_prompt.status().message()) << "'";
         }
-        return new std::string(std::move(*loaded_prompt));
+        return std::move(*loaded_prompt);
     }();
-    return *prompt;
+    return prompt;
 }
 
 } // namespace isla::server::memory
