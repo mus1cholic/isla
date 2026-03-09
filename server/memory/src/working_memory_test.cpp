@@ -1,4 +1,5 @@
 #include "isla/server/memory/conversation.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 #include "isla/server/memory/working_memory.hpp"
 #include "isla/server/memory/working_memory_utils.hpp"
 
@@ -50,6 +51,28 @@ TEST_F(WorkingMemoryTest, CreateBuildsEmptyWorkingMemoryShape) {
 )json"));
 }
 
+TEST_F(WorkingMemoryTest, CreateWithoutExplicitSystemPromptUsesBundledPrompt) {
+    const WorkingMemory memory = WorkingMemory::Create(WorkingMemoryInit{
+        .system_prompt = "",
+        .user_id = "user_001",
+    });
+
+    EXPECT_EQ(memory.snapshot().system_prompt, DefaultSystemPrompt());
+}
+
+TEST_F(WorkingMemoryTest, RenderWithoutExplicitSystemPromptStartsWithBundledPrompt) {
+    const WorkingMemory memory = WorkingMemory::Create(WorkingMemoryInit{
+        .system_prompt = "",
+        .user_id = "user_001",
+    });
+
+    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
+
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_EQ(prompt->compare(0, DefaultSystemPrompt().size(), DefaultSystemPrompt()), 0);
+    EXPECT_NE(prompt->find("<persistent_memory_cache>"), std::string::npos);
+}
+
 TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
     WorkingMemory memory = MakeMemory();
     memory.UpsertActiveModel("entity_user", "Airi, the user.");
@@ -83,11 +106,11 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
 
     const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
     ASSERT_TRUE(prompt.ok()) << prompt.status();
-    const std::size_t system_pos = prompt->find("{system_prompt}");
-    const std::size_t cache_pos = prompt->find("{persistent_memory_cache}");
-    const std::size_t mid_term_pos = prompt->find("{mid_term_episodes}");
-    const std::size_t retrieved_pos = prompt->find("{retrieved_memory}");
-    const std::size_t conversation_pos = prompt->find("{conversation}");
+    const std::size_t system_pos = prompt->find("You are Isla.");
+    const std::size_t cache_pos = prompt->find("<persistent_memory_cache>");
+    const std::size_t mid_term_pos = prompt->find("<mid_term_episodes>");
+    const std::size_t retrieved_pos = prompt->find("<retrieved_memory>");
+    const std::size_t conversation_pos = prompt->find("<conversation>");
 
     ASSERT_NE(system_pos, std::string::npos);
     ASSERT_NE(cache_pos, std::string::npos);

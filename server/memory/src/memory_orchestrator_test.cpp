@@ -130,18 +130,17 @@ TEST_F(MemoryOrchestratorTest, EndToEndConversationProducesExpectedWorkingMemory
 
     const absl::StatusOr<std::string> prompt = orchestrator.RenderFullWorkingMemory();
     ASSERT_TRUE(prompt.ok()) << prompt.status();
-    EXPECT_EQ(*prompt, R"prompt({system_prompt}
-You are Isla.
-{persistent_memory_cache}
+    EXPECT_EQ(*prompt, R"prompt(You are Isla.
+<persistent_memory_cache>
 Active Models:
 - (none)
 Familiar Labels:
 - (none)
-{mid_term_episodes}
+<mid_term_episodes>
 - (none)
-{retrieved_memory}
+<retrieved_memory>
 (none)
-{conversation}
+<conversation>
 - [user | 2026-03-08T14:00:00Z] Please help me plan Sarah's birthday.
 - [assistant | 2026-03-08T14:00:05Z] I can help you plan it.
 )prompt");

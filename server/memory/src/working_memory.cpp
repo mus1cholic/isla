@@ -5,6 +5,7 @@
 
 #include "absl/log/log.h"
 #include "isla/server/memory/conversation.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 #include "isla/server/memory/working_memory_utils.hpp"
 
 namespace isla::server::memory {
@@ -32,7 +33,7 @@ WorkingMemory::WorkingMemory(WorkingMemoryState state) : state_(std::move(state)
 
 WorkingMemory WorkingMemory::Create(const WorkingMemoryInit& init) {
     return WorkingMemory(WorkingMemoryState{
-        .system_prompt = init.system_prompt,
+        .system_prompt = init.system_prompt.empty() ? DefaultSystemPrompt() : init.system_prompt,
         .persistent_memory_cache = {},
         .mid_term_episodes = {},
         .retrieved_memory = std::nullopt,

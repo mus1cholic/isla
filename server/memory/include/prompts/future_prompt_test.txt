@@ -1,0 +1,2 @@
+Future prompt fixture.
+Use this file to validate generic prompt loading.

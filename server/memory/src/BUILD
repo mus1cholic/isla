@@ -33,6 +33,21 @@ cc_test(
 )
 
 cc_library(
+    name = "prompt_loader",
+    srcs = [
+        "prompt_loader.cpp",
+    ],
+    data = ["//server/memory/include/prompts:prompt_assets"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "working_memory",
     srcs = [
         "working_memory.cpp",
@@ -42,6 +57,7 @@ cc_library(
     deps = [
         ":conversation",
         ":memory_types",
+        ":prompt_loader",
         "//server/memory/include/isla/server/memory:memory_headers",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
@@ -69,6 +85,16 @@ cc_test(
         ":conversation",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "prompt_loader_test",
+    srcs = ["prompt_loader_test.cpp"],
+    data = ["//server/memory/include/prompts:prompt_assets"],
+    deps = [
+        ":prompt_loader",
+        "@googletest//:gtest_main",
     ],
 )
 

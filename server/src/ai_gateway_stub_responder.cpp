@@ -14,6 +14,7 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/ai_gateway_stub_responder_utils.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -628,18 +629,26 @@ GatewayStubResponder::FindSessionMemory(std::string_view session_id) const {
 }
 
 absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view session_id) {
+    const bool using_bundled_system_prompt = config_.memory_system_prompt.empty();
+    const std::string system_prompt = using_bundled_system_prompt
+                                          ? isla::server::memory::DefaultSystemPrompt()
+                                          : config_.memory_system_prompt;
     std::lock_guard<std::mutex> lock(mutex_);
     const auto [it, inserted] = memory_by_session_.try_emplace(
         std::string(session_id),
         std::make_shared<SessionMemoryState>(isla::server::memory::MemoryOrchestrator::Create(
             std::string(session_id), isla::server::memory::WorkingMemoryInit{
-                                         .system_prompt = config_.memory_system_prompt,
+                                         .system_prompt = system_prompt,
                                          .user_id = config_.memory_user_id,
                                      })));
     static_cast<void>(it);
     if (!inserted) {
         return absl::AlreadyExistsError("memory orchestrator already exists for session");
     }
+    VLOG(1) << "AI gateway stub initialized session memory session=" << session_id
+            << " system_prompt_source="
+            << (using_bundled_system_prompt ? "bundled_default" : "explicit_override")
+            << " system_prompt_bytes=" << system_prompt.size();
     return absl::OkStatus();
 }
 

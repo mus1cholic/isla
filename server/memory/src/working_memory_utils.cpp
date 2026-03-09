@@ -122,11 +122,12 @@ std::string EscapePromptText(std::string_view text) {
 
 absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
     std::string output;
-    AppendLine(output, "{system_prompt}");
-    AppendLine(output,
-               working_memory.system_prompt.empty() ? "(empty)" : working_memory.system_prompt);
+    output.append(working_memory.system_prompt);
+    if (!output.empty() && output.back() != '\n') {
+        output.push_back('\n');
+    }
 
-    AppendLine(output, "{persistent_memory_cache}");
+    AppendLine(output, "<persistent_memory_cache>");
     AppendLine(output, "Active Models:");
     if (working_memory.persistent_memory_cache.active_models.empty()) {
         AppendLine(output, "- (none)");
@@ -152,7 +153,7 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
         }
     }
 
-    AppendLine(output, "{mid_term_episodes}");
+    AppendLine(output, "<mid_term_episodes>");
     if (working_memory.mid_term_episodes.empty()) {
         AppendLine(output, "- (none)");
     } else {
@@ -161,7 +162,7 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
         }
     }
 
-    AppendLine(output, "{retrieved_memory}");
+    AppendLine(output, "<retrieved_memory>");
     if (working_memory.retrieved_memory.has_value()) {
         AppendEscapedPromptText(output, *working_memory.retrieved_memory);
         output.push_back('\n');
@@ -169,7 +170,7 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
         AppendLine(output, "(none)");
     }
 
-    AppendLine(output, "{conversation}");
+    AppendLine(output, "<conversation>");
     if (working_memory.conversation.items.empty()) {
         AppendLine(output, "- (empty)");
     } else {

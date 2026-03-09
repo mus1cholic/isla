@@ -16,6 +16,7 @@
 
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -215,8 +216,17 @@ class GatewayStubResponderTest : public ::testing::Test {
 TEST_F(GatewayStubResponderTest, SessionStartCreatesMemoryPromptBeforeAnyTurn) {
     const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
     ASSERT_TRUE(prompt.ok()) << prompt.status();
-    EXPECT_NE(prompt->find("{conversation}"), std::string::npos);
+    EXPECT_NE(prompt->find("<conversation>"), std::string::npos);
     EXPECT_NE(prompt->find("- (empty)"), std::string::npos);
+}
+
+TEST_F(GatewayStubResponderTest, SessionStartUsesBundledSystemPromptByDefault) {
+    const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
+
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_EQ(prompt->compare(0, isla::server::memory::DefaultSystemPrompt().size(),
+                              isla::server::memory::DefaultSystemPrompt()),
+              0);
 }
 
 TEST_F(GatewayStubResponderTest, AcceptedTurnEmitsStubTextAndCompletion) {
