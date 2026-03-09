@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -182,10 +183,18 @@ inline void to_json(nlohmann::json& j, const ConversationItem& value) {
     j = nlohmann::json{ { "type", value.type } };
     switch (value.type) {
     case ConversationItemType::OngoingEpisode:
-        j["ongoing_episode"] = value.ongoing_episode.value();
+        if (!value.ongoing_episode.has_value()) {
+            throw std::invalid_argument(
+                "ConversationItem type=ongoing_episode is missing ongoing_episode payload");
+        }
+        j["ongoing_episode"] = *value.ongoing_episode;
         break;
     case ConversationItemType::EpisodeStub:
-        j["episode_stub"] = value.episode_stub.value();
+        if (!value.episode_stub.has_value()) {
+            throw std::invalid_argument(
+                "ConversationItem type=episode_stub is missing episode_stub payload");
+        }
+        j["episode_stub"] = *value.episode_stub;
         break;
     }
 }

@@ -13,6 +13,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )

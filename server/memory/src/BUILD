@@ -45,6 +45,7 @@ cc_library(
         "//server/memory/include/isla/server/memory:memory_headers",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
     ],
 )
 

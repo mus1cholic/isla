@@ -21,6 +21,13 @@ bool IsExpandableEpisode(const Episode& episode) {
            !episode.tier1_detail->empty();
 }
 
+absl::Status ValidateCompletedEpisode(const Episode& episode) {
+    if (episode.episode_id.empty() || episode.tier2_summary.empty() || episode.tier3_ref.empty()) {
+        return invalid_argument("completed flush episode must include id, tier2, and tier3 data");
+    }
+    return absl::OkStatus();
+}
+
 WorkingMemory::WorkingMemory(WorkingMemoryState state) : state_(std::move(state)) {}
 
 WorkingMemory WorkingMemory::Create(const WorkingMemoryInit& init) {
@@ -75,34 +82,61 @@ absl::Status WorkingMemory::WriteBackCoreEntity(std::string_view entity_id, std:
     return absl::OkStatus();
 }
 
-absl::Status WorkingMemory::FlushOngoingEpisode(const FlushRequest& request) {
-    if (request.episode.episode_id.empty() || request.episode.tier2_summary.empty() ||
-        request.episode.tier3_ref.empty()) {
-        return invalid_argument("flush episode must include id and summary fields");
+absl::StatusOr<OngoingEpisodeFlushCandidate>
+WorkingMemory::CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index) const {
+    if (conversation_item_index >= state_.conversation.items.size()) {
+        return invalid_argument("flush target exceeds conversation size");
     }
+    const auto& item = state_.conversation.items[conversation_item_index];
+    if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
+        return invalid_argument("flush target must be an ongoing episode");
+    }
+    if (item.ongoing_episode->messages.empty()) {
+        return invalid_argument("flush target must contain at least one message");
+    }
+
+    VLOG(1) << "WorkingMemory captured ongoing episode for async flush conversation_item_index="
+            << conversation_item_index
+            << " message_count=" << item.ongoing_episode->messages.size();
+    // TODO: The async flush worker should consume this snapshot to perform natural-boundary
+    // detection and generate tier1/tier2/tier3 before ApplyCompletedOngoingEpisodeFlush mutates
+    // conversation state.
+    return OngoingEpisodeFlushCandidate{
+        .conversation_item_index = conversation_item_index,
+        .ongoing_episode = *item.ongoing_episode,
+    };
+}
+
+absl::Status
+WorkingMemory::ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFlush& flush) {
+    const absl::Status episode_status = ValidateCompletedEpisode(flush.episode);
+    if (!episode_status.ok()) {
+        return episode_status;
+    }
+
     const absl::Status replace_status =
-        ReplaceOngoingEpisodeWithStub(state_.conversation, request.conversation_item_index,
-                                      request.stub_text, request.stub_timestamp);
+        ReplaceOngoingEpisodeWithStub(state_.conversation, flush.conversation_item_index,
+                                      flush.episode.tier3_ref, flush.stub_timestamp);
     if (!replace_status.ok()) {
-        LOG(WARNING) << "WorkingMemory flush failed conversation_item_index="
-                     << request.conversation_item_index << " detail='" << replace_status.message()
+        LOG(WARNING) << "WorkingMemory apply flush failed conversation_item_index="
+                     << flush.conversation_item_index << " detail='" << replace_status.message()
                      << "'";
         return replace_status;
     }
 
     auto insert_at = std::upper_bound(state_.mid_term_episodes.begin(),
-                                      state_.mid_term_episodes.end(), request.episode.created_at,
+                                      state_.mid_term_episodes.end(), flush.episode.created_at,
                                       [](Timestamp created_at, const Episode& episode) {
                                           return created_at < episode.created_at;
                                       });
-    state_.mid_term_episodes.insert(insert_at, request.episode);
-    LOG(INFO) << "WorkingMemory flushed ongoing episode conversation_item_index="
-              << request.conversation_item_index << " episode_id=" << request.episode.episode_id
+    state_.mid_term_episodes.insert(insert_at, flush.episode);
+    LOG(INFO) << "WorkingMemory applied completed flush conversation_item_index="
+              << flush.conversation_item_index << " episode_id=" << flush.episode.episode_id
               << " mid_term_count=" << state_.mid_term_episodes.size();
     return absl::OkStatus();
 }
 
-std::string WorkingMemory::RenderPrompt() const {
+absl::StatusOr<std::string> WorkingMemory::RenderPrompt() const {
     return RenderWorkingMemoryPrompt(state_);
 }
 

@@ -58,8 +58,12 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
                       Ts("2026-03-08T14:01:00Z"));
     AppendAssistantMessage(memory.mutable_conversation(), "I can help with that.",
                            Ts("2026-03-08T14:01:05Z"));
+    const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
+        memory.CaptureOngoingEpisodeForFlush(0);
+    ASSERT_TRUE(captured.ok()) << captured.status();
+    ASSERT_EQ(captured->ongoing_episode.messages.size(), 2U);
     ASSERT_TRUE(memory
-                    .FlushOngoingEpisode(FlushRequest{
+                    .ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
                         .conversation_item_index = 0,
                         .episode =
                             Episode{
@@ -72,17 +76,17 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
                                 .embedding = {},
                                 .created_at = Ts("2026-03-08T14:01:10Z"),
                             },
-                        .stub_text = "[party planning - active]",
                         .stub_timestamp = Ts("2026-03-08T14:01:11Z"),
                     })
                     .ok());
 
-    const std::string prompt = memory.RenderPrompt();
-    const std::size_t system_pos = prompt.find("{system_prompt}");
-    const std::size_t cache_pos = prompt.find("{persistent_memory_cache}");
-    const std::size_t mid_term_pos = prompt.find("{mid_term_episodes}");
-    const std::size_t retrieved_pos = prompt.find("{retrieved_memory}");
-    const std::size_t conversation_pos = prompt.find("{conversation}");
+    const absl::StatusOr<std::string> prompt = memory.RenderPrompt();
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    const std::size_t system_pos = prompt->find("{system_prompt}");
+    const std::size_t cache_pos = prompt->find("{persistent_memory_cache}");
+    const std::size_t mid_term_pos = prompt->find("{mid_term_episodes}");
+    const std::size_t retrieved_pos = prompt->find("{retrieved_memory}");
+    const std::size_t conversation_pos = prompt->find("{conversation}");
 
     ASSERT_NE(system_pos, std::string::npos);
     ASSERT_NE(cache_pos, std::string::npos);
@@ -93,9 +97,9 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
     EXPECT_LT(cache_pos, mid_term_pos);
     EXPECT_LT(mid_term_pos, retrieved_pos);
     EXPECT_LT(retrieved_pos, conversation_pos);
-    EXPECT_NE(prompt.find("- [ep_001 | 2026-03-08T14:01:10Z | salience: 9 | expandable]"),
+    EXPECT_NE(prompt->find("- [ep_001 | 2026-03-08T14:01:10Z | salience: 9 | expandable]"),
               std::string::npos);
-    EXPECT_NE(prompt.find("- [stub | 2026-03-08T14:01:11Z] [party planning - active]"),
+    EXPECT_NE(prompt->find("- [stub | 2026-03-08T14:01:11Z] Party planning episode."),
               std::string::npos);
 
     ExpectWorkingMemoryJsonEq(memory, json::parse(R"json(
@@ -133,7 +137,7 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
       {
         "type": "episode_stub",
         "episode_stub": {
-          "content": "[party planning - active]",
+          "content": "Party planning episode.",
           "create_time": "2026-03-08T14:01:11Z"
         }
       }
@@ -152,10 +156,11 @@ TEST_F(WorkingMemoryTest, RendersMixedConversationItemsInOriginalOrder) {
     BeginOngoingEpisode(memory.mutable_conversation());
     AppendAssistantMessage(memory.mutable_conversation(), "second", Ts("2026-03-08T14:00:03Z"));
 
-    const std::string prompt = memory.RenderPrompt();
-    const std::size_t first_pos = prompt.find("- [user | 2026-03-08T14:00:01Z] first");
-    const std::size_t stub_pos = prompt.find("- [stub | 2026-03-08T14:00:02Z] [stub]");
-    const std::size_t second_pos = prompt.find("- [assistant | 2026-03-08T14:00:03Z] second");
+    const absl::StatusOr<std::string> prompt = memory.RenderPrompt();
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    const std::size_t first_pos = prompt->find("- [user | 2026-03-08T14:00:01Z] first");
+    const std::size_t stub_pos = prompt->find("- [stub | 2026-03-08T14:00:02Z] [stub]");
+    const std::size_t second_pos = prompt->find("- [assistant | 2026-03-08T14:00:03Z] second");
 
     ASSERT_NE(first_pos, std::string::npos);
     ASSERT_NE(stub_pos, std::string::npos);
@@ -206,8 +211,12 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
     BeginOngoingEpisode(memory.mutable_conversation());
     AppendUserMessage(memory.mutable_conversation(), "three", Ts("2026-03-08T14:00:03Z"));
     AppendAssistantMessage(memory.mutable_conversation(), "four", Ts("2026-03-08T14:00:04Z"));
+    const absl::StatusOr<OngoingEpisodeFlushCandidate> captured_newer =
+        memory.CaptureOngoingEpisodeForFlush(1);
+    ASSERT_TRUE(captured_newer.ok()) << captured_newer.status();
+    ASSERT_EQ(captured_newer->ongoing_episode.messages.size(), 2U);
     ASSERT_TRUE(memory
-                    .FlushOngoingEpisode(FlushRequest{
+                    .ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
                         .conversation_item_index = 1,
                         .episode =
                             Episode{
@@ -220,12 +229,15 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
                                 .embedding = {},
                                 .created_at = Ts("2026-03-08T14:00:06Z"),
                             },
-                        .stub_text = "[middle flushed]",
                         .stub_timestamp = Ts("2026-03-08T14:00:07Z"),
                     })
                     .ok());
+    const absl::StatusOr<OngoingEpisodeFlushCandidate> captured_older =
+        memory.CaptureOngoingEpisodeForFlush(0);
+    ASSERT_TRUE(captured_older.ok()) << captured_older.status();
+    ASSERT_EQ(captured_older->ongoing_episode.messages.size(), 2U);
     ASSERT_TRUE(memory
-                    .FlushOngoingEpisode(FlushRequest{
+                    .ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
                         .conversation_item_index = 0,
                         .episode =
                             Episode{
@@ -238,7 +250,6 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
                                 .embedding = {},
                                 .created_at = Ts("2026-03-08T14:00:05Z"),
                             },
-                        .stub_text = "[opening flushed]",
                         .stub_timestamp = Ts("2026-03-08T14:00:08Z"),
                     })
                     .ok());
@@ -247,10 +258,10 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
     ASSERT_EQ(state.conversation.items.size(), 2U);
     EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
     ASSERT_TRUE(state.conversation.items[0].episode_stub.has_value());
-    EXPECT_EQ(state.conversation.items[0].episode_stub->content, "[opening flushed]");
+    EXPECT_EQ(state.conversation.items[0].episode_stub->content, "Older ref");
     EXPECT_EQ(state.conversation.items[1].type, ConversationItemType::EpisodeStub);
     ASSERT_TRUE(state.conversation.items[1].episode_stub.has_value());
-    EXPECT_EQ(state.conversation.items[1].episode_stub->content, "[middle flushed]");
+    EXPECT_EQ(state.conversation.items[1].episode_stub->content, "Newer ref");
 
     ASSERT_EQ(state.mid_term_episodes.size(), 2U);
     EXPECT_EQ(state.mid_term_episodes[0].episode_id, "ep_older");
@@ -291,14 +302,14 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
       {
         "type": "episode_stub",
         "episode_stub": {
-          "content": "[opening flushed]",
+          "content": "Older ref",
           "create_time": "2026-03-08T14:00:08Z"
         }
       },
       {
         "type": "episode_stub",
         "episode_stub": {
-          "content": "[middle flushed]",
+          "content": "Newer ref",
           "create_time": "2026-03-08T14:00:07Z"
         }
       }
@@ -316,9 +327,13 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodePreservesNeighborConversationItems)
     memory.AppendEpisodeStub("[existing stub]", Ts("2026-03-08T14:00:02Z"));
     BeginOngoingEpisode(memory.mutable_conversation());
     AppendAssistantMessage(memory.mutable_conversation(), "third", Ts("2026-03-08T14:00:03Z"));
+    const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
+        memory.CaptureOngoingEpisodeForFlush(2);
+    ASSERT_TRUE(captured.ok()) << captured.status();
+    ASSERT_EQ(captured->ongoing_episode.messages.size(), 1U);
 
     ASSERT_TRUE(memory
-                    .FlushOngoingEpisode(FlushRequest{
+                    .ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
                         .conversation_item_index = 2,
                         .episode =
                             Episode{
@@ -331,7 +346,6 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodePreservesNeighborConversationItems)
                                 .embedding = {},
                                 .created_at = Ts("2026-03-08T14:00:04Z"),
                             },
-                        .stub_text = "[replaced]",
                         .stub_timestamp = Ts("2026-03-08T14:00:05Z"),
                     })
                     .ok());
@@ -346,66 +360,52 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodePreservesNeighborConversationItems)
     EXPECT_EQ(state.conversation.items[1].episode_stub->content, "[existing stub]");
     EXPECT_EQ(state.conversation.items[2].type, ConversationItemType::EpisodeStub);
     ASSERT_TRUE(state.conversation.items[2].episode_stub.has_value());
-    EXPECT_EQ(state.conversation.items[2].episode_stub->content, "[replaced]");
+    EXPECT_EQ(state.conversation.items[2].episode_stub->content, "ref");
+}
+
+TEST_F(WorkingMemoryTest, RenderPromptRejectsConversationItemsMissingTaggedPayload) {
+    WorkingMemory memory = MakeMemory();
+    memory.mutable_conversation().items.push_back(ConversationItem{
+        .type = ConversationItemType::EpisodeStub,
+        .ongoing_episode = std::nullopt,
+        .episode_stub = std::nullopt,
+    });
+
+    const absl::StatusOr<std::string> prompt = memory.RenderPrompt();
+
+    ASSERT_FALSE(prompt.ok());
+    EXPECT_EQ(prompt.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 
 TEST_F(WorkingMemoryTest, FlushOngoingEpisodeRejectsInvalidRequests) {
     WorkingMemory memory = MakeMemory();
     AppendUserMessage(memory.mutable_conversation(), "one", Ts("2026-03-08T14:00:01Z"));
 
-    const absl::Status bad_target = memory.FlushOngoingEpisode(FlushRequest{
-        .conversation_item_index = 1,
-        .episode =
-            Episode{
-                .episode_id = "ep_001",
-                .tier1_detail = std::nullopt,
-                .tier2_summary = "summary",
-                .tier3_ref = "ref",
-                .tier3_keywords = {},
-                .salience = 1,
-                .embedding = {},
-                .created_at = Ts("2026-03-08T14:00:02Z"),
-            },
-        .stub_text = "[stub]",
-        .stub_timestamp = Ts("2026-03-08T14:00:03Z"),
-    });
+    const absl::StatusOr<OngoingEpisodeFlushCandidate> bad_target =
+        memory.CaptureOngoingEpisodeForFlush(1);
     EXPECT_FALSE(bad_target.ok());
 
     memory.AppendEpisodeStub("[existing stub]", Ts("2026-03-08T14:00:04Z"));
-    const absl::Status wrong_kind = memory.FlushOngoingEpisode(FlushRequest{
-        .conversation_item_index = 1,
-        .episode =
-            Episode{
-                .episode_id = "ep_002",
-                .tier1_detail = std::nullopt,
-                .tier2_summary = "summary",
-                .tier3_ref = "ref",
-                .tier3_keywords = {},
-                .salience = 1,
-                .embedding = {},
-                .created_at = Ts("2026-03-08T14:00:05Z"),
-            },
-        .stub_text = "[stub]",
-        .stub_timestamp = Ts("2026-03-08T14:00:06Z"),
-    });
+    const absl::StatusOr<OngoingEpisodeFlushCandidate> wrong_kind =
+        memory.CaptureOngoingEpisodeForFlush(1);
     EXPECT_FALSE(wrong_kind.ok());
 
-    const absl::Status bad_episode = memory.FlushOngoingEpisode(FlushRequest{
-        .conversation_item_index = 0,
-        .episode =
-            Episode{
-                .episode_id = "",
-                .tier1_detail = std::nullopt,
-                .tier2_summary = "",
-                .tier3_ref = "",
-                .tier3_keywords = {},
-                .salience = 1,
-                .embedding = {},
-                .created_at = Ts("2026-03-08T14:00:02Z"),
-            },
-        .stub_text = "",
-        .stub_timestamp = Ts("2026-03-08T14:00:03Z"),
-    });
+    const absl::Status bad_episode =
+        memory.ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
+            .conversation_item_index = 1,
+            .episode =
+                Episode{
+                    .episode_id = "",
+                    .tier1_detail = std::nullopt,
+                    .tier2_summary = "",
+                    .tier3_ref = "",
+                    .tier3_keywords = {},
+                    .salience = 1,
+                    .embedding = {},
+                    .created_at = Ts("2026-03-08T14:00:05Z"),
+                },
+            .stub_timestamp = Ts("2026-03-08T14:00:06Z"),
+        });
     EXPECT_FALSE(bad_episode.ok());
 }
 

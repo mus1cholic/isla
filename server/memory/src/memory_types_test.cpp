@@ -193,8 +193,8 @@ TEST(MemoryTypesTest, ConversationItemSerializationRejectsMissingTaggedPayload) 
         .episode_stub = std::nullopt,
     };
 
-    EXPECT_THROW((void)json(invalid_episode_item), std::bad_optional_access);
-    EXPECT_THROW((void)json(invalid_stub_item), std::bad_optional_access);
+    EXPECT_THROW((void)json(invalid_episode_item), std::invalid_argument);
+    EXPECT_THROW((void)json(invalid_stub_item), std::invalid_argument);
 }
 
 TEST(MemoryTypesTest, TimestampRoundTripsFractionalSeconds) {

@@ -10,6 +10,10 @@
 namespace isla::server::memory {
 namespace {
 
+absl::Status failed_precondition(std::string_view message) {
+    return absl::FailedPreconditionError(std::string(message));
+}
+
 template <typename Entry>
 void EraseCacheEntry(std::vector<Entry>& entries, std::string_view entity_id) {
     entries.erase(
@@ -87,7 +91,7 @@ void UpsertFamiliarLabel(PersistentMemoryCache& cache, std::string entity_id, st
     UpsertCacheEntry(cache.familiar_labels, std::move(entity_id), std::move(text));
 }
 
-std::string RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
+absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
     std::string output;
     AppendLine(output, "{system_prompt}");
     AppendLine(output,
@@ -132,16 +136,20 @@ std::string RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) 
         for (const ConversationItem& item : working_memory.conversation.items) {
             switch (item.type) {
             case ConversationItemType::OngoingEpisode:
-                if (item.ongoing_episode.has_value()) {
-                    for (const Message& message : item.ongoing_episode->messages) {
-                        AppendMessageLine(output, message);
-                    }
+                if (!item.ongoing_episode.has_value()) {
+                    return failed_precondition(
+                        "conversation item type=ongoing_episode is missing payload");
+                }
+                for (const Message& message : item.ongoing_episode->messages) {
+                    AppendMessageLine(output, message);
                 }
                 break;
             case ConversationItemType::EpisodeStub:
-                if (item.episode_stub.has_value()) {
-                    AppendEpisodeStubLine(output, *item.episode_stub);
+                if (!item.episode_stub.has_value()) {
+                    return failed_precondition(
+                        "conversation item type=episode_stub is missing payload");
                 }
+                AppendEpisodeStubLine(output, *item.episode_stub);
                 break;
             }
         }
