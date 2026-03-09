@@ -817,6 +817,3 @@ Note how each piece of the response came from a different memory layer:
 ### Long-Term Episodic Memory
 
 1. **Emotional valence tagging** - Add a `valence` field (`positive | negative | neutral | mixed`) to `LongTermEpisode`. In the brain, the amygdala tags memories with emotional tone, affecting encoding strength and retrieval priority. This would allow the assistant to adjust response tone when referencing past experiences (e.g., "remember how stressful that was?") and could feed into re-ranker scoring as an additional signal.
-
-
-
