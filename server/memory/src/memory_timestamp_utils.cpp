@@ -62,9 +62,13 @@ Timestamp ParseTimestamp(std::string_view text) {
         }
 
         const std::size_t fraction_digits = cursor - fraction_start;
-        const std::size_t digits_to_use = std::min<std::size_t>(fraction_digits, 3);
-        milliseconds = ParseFixedDigits(text, fraction_start, digits_to_use);
-        for (std::size_t index = digits_to_use; index < 3; ++index) {
+        if (fraction_digits > 3) {
+            throw std::invalid_argument(
+                "timestamp fractional seconds exceed millisecond precision");
+        }
+
+        milliseconds = ParseFixedDigits(text, fraction_start, fraction_digits);
+        for (std::size_t index = fraction_digits; index < 3; ++index) {
             milliseconds *= 10;
         }
     }

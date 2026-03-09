@@ -131,6 +131,7 @@ TEST(MemoryTypesTest, TimestampRejectsInvalidStrings) {
     EXPECT_THROW((void)json("2026-03-08 15:00:00Z").get<Timestamp>(), std::invalid_argument);
     EXPECT_THROW((void)json("2026-13-08T15:00:00Z").get<Timestamp>(), std::invalid_argument);
     EXPECT_THROW((void)json("2026-03-08T15:00:00").get<Timestamp>(), std::invalid_argument);
+    EXPECT_THROW((void)json("2026-03-08T15:00:00.1234Z").get<Timestamp>(), std::invalid_argument);
 }
 
 } // namespace
