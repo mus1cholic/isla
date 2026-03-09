@@ -24,6 +24,8 @@ TEST(AiGatewaySessionHandlerTest, SessionStartEmitsSessionStarted) {
 
     ASSERT_TRUE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
+    ASSERT_TRUE(result.session_started.has_value());
+    EXPECT_EQ(result.session_started->session_id, "srv_test");
     ASSERT_FALSE(result.accepted_turn.has_value());
 
     const absl::StatusOr<protocol::GatewayMessage> frame =

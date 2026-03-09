@@ -50,6 +50,14 @@ cc_library(
 )
 
 cc_library(
+    name = "ai_gateway_stub_responder_utils",
+    srcs = ["ai_gateway_stub_responder_utils.cpp"],
+    hdrs = ["ai_gateway_stub_responder_utils.hpp"],
+    visibility = ["//visibility:public"],
+    deps = ["//server/memory/include/isla/server/memory:memory_headers"],
+)
+
+cc_library(
     name = "ai_gateway_stub_responder",
     srcs = ["ai_gateway_stub_responder.cpp"],
     hdrs = ["ai_gateway_stub_responder.hpp"],
@@ -57,6 +65,8 @@ cc_library(
     deps = [
         ":ai_gateway_logging_utils",
         ":ai_gateway_server",
+        ":ai_gateway_stub_responder_utils",
+        "//server/memory/src:memory_orchestrator",
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",

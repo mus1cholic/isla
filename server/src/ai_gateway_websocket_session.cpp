@@ -58,6 +58,9 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
         return send_status;
     }
 
+    if (result.session_started.has_value() && event_sink_ != nullptr) {
+        event_sink_->OnSessionStarted(*result.session_started);
+    }
     if (result.accepted_turn.has_value() && event_sink_ != nullptr) {
         event_sink_->OnTurnAccepted(*result.accepted_turn);
     }
@@ -88,8 +91,7 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
         return failed_precondition(result.error_message);
     }
 
-    if (handler_.snapshot().status == isla::shared::ai_gateway::SessionStatus::Active &&
-        !handler_.snapshot().active_turn.has_value() && result.outgoing_frames.size() == 1U) {
+    if (result.session_started.has_value()) {
         VLOG(1) << "AI gateway session=" << session_id_ << " started";
     }
     return absl::OkStatus();

@@ -41,6 +41,10 @@ class FakeWebSocketConnection final : public GatewayWebSocketConnection {
 
 class RecordingEventSink final : public GatewaySessionEventSink {
   public:
+    void OnSessionStarted(const SessionStartedEvent& event) override {
+        started_sessions.push_back(event);
+    }
+
     void OnTurnAccepted(const TurnAcceptedEvent& event) override {
         accepted_turns.push_back(event);
     }
@@ -53,6 +57,7 @@ class RecordingEventSink final : public GatewaySessionEventSink {
         closed_sessions.push_back(event);
     }
 
+    std::vector<SessionStartedEvent> started_sessions;
     std::vector<TurnAcceptedEvent> accepted_turns;
     std::vector<TurnCancelRequestedEvent> cancel_requests;
     std::vector<SessionClosedEvent> closed_sessions;
@@ -75,10 +80,13 @@ TEST(AiGatewayWebSocketSessionTest, FactoryGeneratesPerConnectionSessionIds) {
 
 TEST(AiGatewayWebSocketSessionTest, SessionStartWritesSessionStartedFrame) {
     FakeWebSocketConnection connection;
-    GatewayWebSocketSessionAdapter session("srv_test", connection);
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
     ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
     ASSERT_EQ(connection.sent_frames.size(), 1U);
+    ASSERT_EQ(sink.started_sessions.size(), 1U);
+    EXPECT_EQ(sink.started_sessions.front().session_id, "srv_test");
 
     const absl::StatusOr<protocol::GatewayMessage> frame =
         parse_frame(connection.sent_frames.front());
