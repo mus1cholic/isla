@@ -14,7 +14,7 @@ import argparse
 import asyncio
 import json
 import sys
-from typing import Any
+from typing import Any, Protocol
 
 try:
     import websockets
@@ -25,6 +25,12 @@ except ImportError as exc:  # pragma: no cover - runtime dependency check
         file=sys.stderr,
     )
     raise SystemExit(2) from exc
+
+
+class WebSocketLike(Protocol):
+    async def send(self, message: str) -> None: ...
+
+    async def recv(self) -> str | bytes: ...
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,11 +67,11 @@ def make_url(host: str, port: int, path: str) -> str:
     return f"ws://{host}:{port}{normalized_path}"
 
 
-async def send_json(socket: Any, payload: dict[str, Any]) -> None:
+async def send_json(socket: WebSocketLike, payload: dict[str, Any]) -> None:
     await socket.send(json.dumps(payload))
 
 
-async def recv_json(socket: Any, timeout_seconds: float) -> dict[str, Any]:
+async def recv_json(socket: WebSocketLike, timeout_seconds: float) -> dict[str, Any]:
     raw_message = await asyncio.wait_for(socket.recv(), timeout=timeout_seconds)
     if not isinstance(raw_message, str):
         raise AssertionError(f"expected text frame, got {type(raw_message).__name__}")
