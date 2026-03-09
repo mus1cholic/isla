@@ -1,4 +1,4 @@
-#include "ai_gateway_stub_responder.hpp"
+#include "isla/server/ai_gateway_stub_responder.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -15,7 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "absl/status/status.h"
-#include "ai_gateway_server.hpp"
+#include "isla/server/ai_gateway_server.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {

@@ -10,8 +10,8 @@
 #include "absl/log/initialize.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
-#include "ai_gateway_server.hpp"
-#include "ai_gateway_stub_responder.hpp"
+#include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/ai_gateway_stub_responder.hpp"
 
 namespace {
 

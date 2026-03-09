@@ -11,7 +11,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
-#include "ai_gateway_server.hpp"
+#include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 
 namespace isla::server::ai_gateway {

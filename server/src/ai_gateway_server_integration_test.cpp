@@ -1,4 +1,4 @@
-#include "ai_gateway_server.hpp"
+#include "isla/server/ai_gateway_server.hpp"
 
 #include <array>
 #include <chrono>
@@ -25,7 +25,7 @@
 
 #include <gtest/gtest.h>
 
-#include "ai_gateway_stub_responder.hpp"
+#include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/shared/ai_gateway_protocol.hpp"
 
 namespace isla::server::ai_gateway {

@@ -1,4 +1,4 @@
-#include "ai_gateway_websocket_session.hpp"
+#include "isla/server/ai_gateway_websocket_session.hpp"
 
 #include <memory>
 #include <optional>

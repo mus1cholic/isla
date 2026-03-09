@@ -1,4 +1,4 @@
-#include "ai_gateway_stub_responder.hpp"
+#include "isla/server/ai_gateway_stub_responder.hpp"
 
 #include <chrono>
 #include <future>
@@ -11,9 +11,9 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "ai_gateway_logging_utils.hpp"
-#include "ai_gateway_session_handler.hpp"
-#include "ai_gateway_stub_responder_utils.hpp"
+#include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_session_handler.hpp"
+#include "isla/server/ai_gateway_stub_responder_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {

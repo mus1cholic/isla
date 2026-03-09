@@ -10,7 +10,7 @@
 #include <string_view>
 
 #include "absl/status/status.h"
-#include "ai_gateway_websocket_session.hpp"
+#include "isla/server/ai_gateway_websocket_session.hpp"
 
 namespace isla::server::ai_gateway {
 

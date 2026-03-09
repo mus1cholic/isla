@@ -1,4 +1,4 @@
-#include "ai_gateway_server.hpp"
+#include "isla/server/ai_gateway_server.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -28,7 +28,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
-#include "ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
