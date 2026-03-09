@@ -81,7 +81,7 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
                     })
                     .ok());
 
-    const absl::StatusOr<std::string> prompt = memory.RenderPrompt();
+    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     const std::size_t system_pos = prompt->find("{system_prompt}");
     const std::size_t cache_pos = prompt->find("{persistent_memory_cache}");
@@ -157,7 +157,7 @@ TEST_F(WorkingMemoryTest, RendersMixedConversationItemsInOriginalOrder) {
     BeginOngoingEpisode(memory.mutable_conversation());
     AppendAssistantMessage(memory.mutable_conversation(), "second", Ts("2026-03-08T14:00:03Z"));
 
-    const absl::StatusOr<std::string> prompt = memory.RenderPrompt();
+    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     const std::size_t first_pos = prompt->find("- [user | 2026-03-08T14:00:01Z] first");
     const std::size_t stub_pos = prompt->find("- [stub | 2026-03-08T14:00:02Z] [stub]");
@@ -182,7 +182,7 @@ TEST_F(WorkingMemoryTest, RenderPromptEscapesControlCharactersInDynamicTextField
     AppendUserMessage(memory.mutable_conversation(), "hello\nworld", Ts("2026-03-08T14:00:01Z"));
     memory.AppendEpisodeStub("stub\rcontent", Ts("2026-03-08T14:00:02Z"));
 
-    const absl::StatusOr<std::string> prompt = memory.RenderPrompt();
+    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
 
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     EXPECT_NE(prompt->find("- [entity\\nuser] Airi\\\\nlikes tests"), std::string::npos);
@@ -394,7 +394,7 @@ TEST_F(WorkingMemoryTest, RenderPromptRejectsConversationItemsMissingTaggedPaylo
         .episode_stub = std::nullopt,
     });
 
-    const absl::StatusOr<std::string> prompt = memory.RenderPrompt();
+    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
 
     ASSERT_FALSE(prompt.ok());
     EXPECT_EQ(prompt.status().code(), absl::StatusCode::kFailedPrecondition);

@@ -85,11 +85,12 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
         return;
     }
 
-    const absl::Status memory_status = HandleAcceptedTurnMemory(event);
-    if (!memory_status.ok()) {
+    const absl::StatusOr<isla::server::memory::UserQueryMemoryResult> memory_result =
+        HandleAcceptedTurnMemory(event);
+    if (!memory_result.ok()) {
         LOG(ERROR) << "AI gateway stub failed to process turn memory session=" << event.session_id
                    << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='"
-                   << SanitizeForLog(memory_status.message()) << "'";
+                   << SanitizeForLog(memory_result.status().message()) << "'";
         BestEffortTerminateAcceptedTurn(
             PendingTurn{
                 .session_id = event.session_id,
@@ -101,6 +102,9 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             "internal_error", "stub responder failed to update memory", "memory update failure");
         return;
     }
+    VLOG(1) << "AI gateway stub prepared user prompt session=" << event.session_id
+            << " turn_id=" << SanitizeForLog(event.turn_id)
+            << " working_memory_bytes=" << memory_result->rendered_working_memory.size();
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -612,15 +616,25 @@ GatewaySessionRegistry* GatewayStubResponder::session_registry() const {
     return session_registry_;
 }
 
+std::shared_ptr<GatewayStubResponder::SessionMemoryState>
+GatewayStubResponder::FindSessionMemory(std::string_view session_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = memory_by_session_.find(std::string(session_id));
+    if (it == memory_by_session_.end()) {
+        return nullptr;
+    }
+    return it->second;
+}
+
 absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view session_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto [it, inserted] = memory_by_session_.try_emplace(
         std::string(session_id),
-        isla::server::memory::MemoryOrchestrator::Create(
+        std::make_shared<SessionMemoryState>(isla::server::memory::MemoryOrchestrator::Create(
             std::string(session_id), isla::server::memory::WorkingMemoryInit{
                                          .system_prompt = config_.memory_system_prompt,
                                          .user_id = config_.memory_user_id,
-                                     }));
+                                     })));
     static_cast<void>(it);
     if (!inserted) {
         return absl::AlreadyExistsError("memory orchestrator already exists for session");
@@ -628,35 +642,42 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
     return absl::OkStatus();
 }
 
-absl::Status GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = memory_by_session_.find(event.session_id);
-    if (it == memory_by_session_.end()) {
+absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
+GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(event.session_id);
+    if (session_memory == nullptr) {
         return absl::FailedPreconditionError("missing memory orchestrator for started session");
     }
-    return it->second.HandleUserQuery(isla::server::memory::GatewayUserQuery(
-        event.session_id, event.turn_id, event.text, NowTimestamp()));
+    std::lock_guard<std::mutex> lock(session_memory->mutex);
+    absl::StatusOr<isla::server::memory::UserQueryMemoryResult> result =
+        session_memory->orchestrator.HandleUserQuery(isla::server::memory::GatewayUserQuery(
+            event.session_id, event.turn_id, event.text, NowTimestamp()));
+    if (result.ok() && config_.on_user_query_memory_ready) {
+        config_.on_user_query_memory_ready(event.session_id, *result);
+    }
+    return result;
 }
 
 absl::Status GatewayStubResponder::HandleSuccessfulReplyMemory(const PendingTurn& turn,
                                                                std::string_view reply_text) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = memory_by_session_.find(turn.session_id);
-    if (it == memory_by_session_.end()) {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(turn.session_id);
+    if (session_memory == nullptr) {
         return absl::FailedPreconditionError("missing memory orchestrator for session");
     }
-    return it->second.HandleAssistantReply(isla::server::memory::GatewayAssistantReply(
-        turn.session_id, turn.turn_id, std::string(reply_text), NowTimestamp()));
+    std::lock_guard<std::mutex> lock(session_memory->mutex);
+    return session_memory->orchestrator.HandleAssistantReply(
+        isla::server::memory::GatewayAssistantReply(turn.session_id, turn.turn_id,
+                                                    std::string(reply_text), NowTimestamp()));
 }
 
 absl::StatusOr<std::string>
 GatewayStubResponder::RenderSessionMemoryPrompt(std::string_view session_id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = memory_by_session_.find(std::string(session_id));
-    if (it == memory_by_session_.end()) {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(session_id);
+    if (session_memory == nullptr) {
         return absl::NotFoundError("memory orchestrator not found for session");
     }
-    return it->second.RenderPrompt();
+    std::lock_guard<std::mutex> lock(session_memory->mutex);
+    return session_memory->orchestrator.RenderFullWorkingMemory();
 }
 
 } // namespace isla::server::ai_gateway

@@ -3,12 +3,14 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 #include "ai_gateway_server.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 
@@ -21,6 +23,8 @@ struct GatewayStubResponderConfig {
     std::string memory_system_prompt = "You are Isla.";
     std::string memory_user_id = "gateway_user";
     std::function<std::string(std::string_view, std::string_view)> reply_builder;
+    std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>
+        on_user_query_memory_ready;
 };
 
 class GatewayStubResponder final : public GatewayApplicationEventSink {
@@ -43,6 +47,14 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
   private:
     using Clock = std::chrono::steady_clock;
+
+    struct SessionMemoryState {
+        explicit SessionMemoryState(isla::server::memory::MemoryOrchestrator orchestrator_in)
+            : orchestrator(std::move(orchestrator_in)) {}
+
+        mutable std::mutex mutex;
+        isla::server::memory::MemoryOrchestrator orchestrator;
+    };
 
     struct PendingTurn {
         std::string session_id;
@@ -71,8 +83,11 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void FinishServerStoppingTurn(GatewaySessionRegistry& session_registry,
                                   const PendingTurn& turn);
     [[nodiscard]] GatewaySessionRegistry* session_registry() const;
+    [[nodiscard]] std::shared_ptr<SessionMemoryState>
+    FindSessionMemory(std::string_view session_id) const;
     [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id);
-    [[nodiscard]] absl::Status HandleAcceptedTurnMemory(const TurnAcceptedEvent& event);
+    [[nodiscard]] absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
+    HandleAcceptedTurnMemory(const TurnAcceptedEvent& event);
     [[nodiscard]] absl::Status HandleSuccessfulReplyMemory(const PendingTurn& turn,
                                                            std::string_view reply_text);
 
@@ -83,7 +98,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     GatewaySessionRegistry* session_registry_ = nullptr;
     absl::flat_hash_map<std::string, PendingTurn> pending_turns_;
     absl::flat_hash_map<std::string, PendingTurn> in_progress_turns_;
-    absl::flat_hash_map<std::string, isla::server::memory::MemoryOrchestrator> memory_by_session_;
+    absl::flat_hash_map<std::string, std::shared_ptr<SessionMemoryState>> memory_by_session_;
     bool stopping_ = false;
     bool worker_stop_requested_ = false;
 };

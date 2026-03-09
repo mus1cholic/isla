@@ -95,9 +95,9 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
                                                            std::string_view text,
                                                            Timestamp create_time,
                                                            MessageRole role) {
-    const absl::Status validation_status =
-        ValidateTurnText(session_id, turn_id, role == MessageRole::User ? "user" : "assistant");
-    if (!validation_status.ok()) {
+    if (absl::Status validation_status =
+            ValidateTurnText(session_id, turn_id, role == MessageRole::User ? "user" : "assistant");
+        !validation_status.ok()) {
         return validation_status;
     }
 
@@ -105,16 +105,15 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
         AppendUserMessage(memory_.mutable_conversation(), std::string(text), create_time);
         const Message& user_message =
             memory_.conversation().items.back().ongoing_episode->messages.back();
-        const absl::Status post_status = AfterUserQueryAppended(user_message);
-        if (!post_status.ok()) {
+        if (absl::Status post_status = AfterUserQueryAppended(user_message); !post_status.ok()) {
             return post_status;
         }
     } else {
         AppendAssistantMessage(memory_.mutable_conversation(), std::string(text), create_time);
         const Message& assistant_message =
             memory_.conversation().items.back().ongoing_episode->messages.back();
-        const absl::Status post_status = AfterAssistantReplyAppended(assistant_message);
-        if (!post_status.ok()) {
+        if (absl::Status post_status = AfterAssistantReplyAppended(assistant_message);
+            !post_status.ok()) {
             return post_status;
         }
     }
@@ -125,9 +124,20 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
     return absl::OkStatus();
 }
 
-absl::Status MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
-    return HandleConversationMessage(query.session_id, query.turn_id, query.text, query.create_time,
-                                     MessageRole::User);
+absl::StatusOr<UserQueryMemoryResult>
+MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
+    if (absl::Status status = HandleConversationMessage(query.session_id, query.turn_id, query.text,
+                                                        query.create_time, MessageRole::User);
+        !status.ok()) {
+        return status;
+    }
+
+    absl::StatusOr<std::string> rendered_working_memory = RenderFullWorkingMemory();
+    if (!rendered_working_memory.ok()) {
+        return rendered_working_memory.status();
+    }
+
+    return UserQueryMemoryResult{ .rendered_working_memory = std::move(*rendered_working_memory) };
 }
 
 absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantReply& reply) {
@@ -140,8 +150,8 @@ MemoryOrchestrator::ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlus
     return memory_.ApplyCompletedOngoingEpisodeFlush(flush);
 }
 
-absl::StatusOr<std::string> MemoryOrchestrator::RenderPrompt() const {
-    return memory_.RenderPrompt();
+absl::StatusOr<std::string> MemoryOrchestrator::RenderFullWorkingMemory() const {
+    return memory_.RenderFullWorkingMemory();
 }
 
 } // namespace isla::server::memory
