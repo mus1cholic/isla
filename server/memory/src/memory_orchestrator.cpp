@@ -6,12 +6,17 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/memory/conversation.hpp"
+#include "isla/server/memory/working_memory_utils.hpp"
 
 namespace isla::server::memory {
 namespace {
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
+}
+
+std::string sanitize_for_log(std::string_view value) {
+    return EscapePromptText(value);
 }
 
 } // namespace
@@ -24,21 +29,22 @@ MemoryOrchestrator MemoryOrchestrator::Create(std::string session_id,
     return { std::move(session_id), WorkingMemory::Create(init) };
 }
 
-absl::Status MemoryOrchestrator::ValidateTurnText(const GatewayTurnText& turn_text,
+absl::Status MemoryOrchestrator::ValidateTurnText(std::string_view session_id,
+                                                  std::string_view turn_id,
                                                   std::string_view role_label) const {
-    if (turn_text.session_id.empty()) {
+    if (session_id.empty()) {
         return invalid_argument(std::string("gateway ") + std::string(role_label) +
                                 " text must include a session_id");
     }
-    if (turn_text.turn_id.empty()) {
+    if (turn_id.empty()) {
         return invalid_argument(std::string("gateway ") + std::string(role_label) +
                                 " text must include a turn_id");
     }
-    if (turn_text.session_id != session_id_) {
+    if (session_id != session_id_) {
         LOG(WARNING) << "MemoryOrchestrator rejected turn text for mismatched session"
-                     << " expected_session_id=" << session_id_
-                     << " received_session_id=" << turn_text.session_id;
-        return invalid_argument("gateway turn text session_id does not match handler");
+                     << " expected_session_id=" << sanitize_for_log(session_id_)
+                     << " received_session_id=" << sanitize_for_log(session_id);
+        return invalid_argument("gateway turn text session_id does not match orchestrator session");
     }
     return absl::OkStatus();
 }
@@ -89,14 +95,8 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
                                                            std::string_view text,
                                                            Timestamp create_time,
                                                            MessageRole role) {
-    const GatewayTurnText turn_text{
-        .session_id = std::string(session_id),
-        .turn_id = std::string(turn_id),
-        .text = std::string(text),
-        .create_time = create_time,
-    };
     const absl::Status validation_status =
-        ValidateTurnText(turn_text, role == MessageRole::User ? "user" : "assistant");
+        ValidateTurnText(session_id, turn_id, role == MessageRole::User ? "user" : "assistant");
     if (!validation_status.ok()) {
         return validation_status;
     }
@@ -119,8 +119,8 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
         }
     }
 
-    VLOG(1) << "MemoryOrchestrator handled conversation message session_id=" << session_id_
-            << " turn_id=" << turn_id
+    VLOG(1) << "MemoryOrchestrator handled conversation message session_id="
+            << sanitize_for_log(session_id_) << " turn_id=" << sanitize_for_log(turn_id)
             << " role=" << (role == MessageRole::User ? "user" : "assistant");
     return absl::OkStatus();
 }

@@ -70,7 +70,8 @@ class MemoryOrchestrator {
     }
 
   private:
-    [[nodiscard]] absl::Status ValidateTurnText(const GatewayTurnText& turn_text,
+    [[nodiscard]] absl::Status ValidateTurnText(std::string_view session_id,
+                                                std::string_view turn_id,
                                                 std::string_view role_label) const;
     [[nodiscard]] absl::Status HandleConversationMessage(std::string_view session_id,
                                                          std::string_view turn_id,
