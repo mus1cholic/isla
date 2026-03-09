@@ -3,10 +3,16 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "memory_headers",
     hdrs = [
+        "conversation.hpp",
         "memory_timestamp_utils.hpp",
         "memory_types.hpp",
+        "working_memory_utils.hpp",
+        "working_memory.hpp",
     ],
     strip_include_prefix = "/server/memory/include",
     visibility = ["//visibility:public"],
-    deps = ["@nlohmann_json_upstream//:nlohmann_json"],
+    deps = [
+        "@abseil-cpp//absl/status",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
 )

@@ -15,7 +15,11 @@ using RetrievedMemory = std::string;
 enum class MessageRole {
     User,
     Assistant,
-    Stub,
+};
+
+enum class ConversationItemType {
+    OngoingEpisode,
+    EpisodeStub,
 };
 
 enum class LongTermEpisodeOutcome {
@@ -46,11 +50,8 @@ struct Message {
     Timestamp create_time;
 };
 
-struct Conversation {
+struct OngoingEpisode {
     std::vector<Message> messages;
-    std::string user_id;
-    std::string conversation_id;
-    std::string session_id;
 };
 
 struct Episode {
@@ -62,6 +63,32 @@ struct Episode {
     int salience = 0;
     Embedding embedding;
     Timestamp created_at;
+};
+
+struct EpisodeStub {
+    std::string content;
+    Timestamp create_time;
+};
+
+struct ConversationItem {
+    ConversationItemType type = ConversationItemType::OngoingEpisode;
+    std::optional<OngoingEpisode> ongoing_episode;
+    std::optional<EpisodeStub> episode_stub;
+};
+
+struct Conversation {
+    std::vector<ConversationItem> items;
+    std::string user_id;
+};
+
+struct WorkingMemoryState {
+    std::string system_prompt;
+    PersistentMemoryCache persistent_memory_cache;
+    std::vector<Episode> mid_term_episodes;
+    // TODO: Replace this placeholder string with structured retrieved-memory
+    // types once the retrieval payload schema is defined.
+    std::optional<RetrievedMemory> retrieved_memory;
+    Conversation conversation;
 };
 
 struct Entity {
@@ -102,13 +129,7 @@ struct LongTermEpisode {
 
 struct Session {
     std::string session_id;
-    std::string system_prompt;
-    PersistentMemoryCache persistent_memory_cache;
-    std::vector<Episode> mid_term_episodes;
-    // TODO: Replace this placeholder string with structured retrieved-memory
-    // types once the retrieval payload schema is defined.
-    std::optional<RetrievedMemory> retrieved_memory;
-    Conversation conversation;
+    WorkingMemoryState working_memory;
     Timestamp created_at;
     std::optional<Timestamp> ended_at;
 };
@@ -116,8 +137,14 @@ struct Session {
 NLOHMANN_JSON_SERIALIZE_ENUM(MessageRole, {
                                               { MessageRole::User, "user" },
                                               { MessageRole::Assistant, "assistant" },
-                                              { MessageRole::Stub, "stub" },
                                           })
+
+NLOHMANN_JSON_SERIALIZE_ENUM(ConversationItemType, {
+                                                       { ConversationItemType::OngoingEpisode,
+                                                         "ongoing_episode" },
+                                                       { ConversationItemType::EpisodeStub,
+                                                         "episode_stub" },
+                                                   })
 
 NLOHMANN_JSON_SERIALIZE_ENUM(LongTermEpisodeOutcome,
                              {
@@ -132,11 +159,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FamiliarLabel, entity_id, text)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PersistentMemoryCache, active_models,
                                                 familiar_labels)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Message, role, content, create_time)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Conversation, messages, user_id, conversation_id,
-                                                session_id)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(OngoingEpisode, messages)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorkingMemoryState, system_prompt,
+                                                persistent_memory_cache, mid_term_episodes,
+                                                retrieved_memory, conversation)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Episode, episode_id, tier1_detail, tier2_summary,
                                                 tier3_ref, tier3_keywords, salience, embedding,
                                                 created_at)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(EpisodeStub, content, create_time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Entity, entity_id, label, category, activeness,
                                                 created_at, updated_at)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Relationship, relationship_id, from, predicate, to,
@@ -146,9 +176,36 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LongTermEpisode, lte_id, summary
                                                 summary_compressed, keywords, embedding,
                                                 related_entities, outcome, complexity, created_at,
                                                 original_episode_ids, caused_by, led_to)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Session, session_id, system_prompt,
-                                                persistent_memory_cache, mid_term_episodes,
-                                                retrieved_memory, conversation, created_at,
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Session, session_id, working_memory, created_at,
                                                 ended_at)
+
+inline void to_json(nlohmann::json& j, const ConversationItem& value) {
+    j = nlohmann::json{ { "type", value.type } };
+    switch (value.type) {
+    case ConversationItemType::OngoingEpisode:
+        j["ongoing_episode"] =
+            value.ongoing_episode.value_or(OngoingEpisode{ .messages = {} });
+        break;
+    case ConversationItemType::EpisodeStub:
+        j["episode_stub"] = value.episode_stub.value_or(EpisodeStub{});
+        break;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ConversationItem& value) {
+    j.at("type").get_to(value.type);
+    value.ongoing_episode.reset();
+    value.episode_stub.reset();
+    switch (value.type) {
+    case ConversationItemType::OngoingEpisode:
+        value.ongoing_episode = j.at("ongoing_episode").get<OngoingEpisode>();
+        break;
+    case ConversationItemType::EpisodeStub:
+        value.episode_stub = j.at("episode_stub").get<EpisodeStub>();
+        break;
+    }
+}
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Conversation, items, user_id)
 
 } // namespace isla::server::memory
