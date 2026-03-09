@@ -230,7 +230,9 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 """,
-    commit = "9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03",
+    # TODO(isla): Switch back to the next official nlohmann/json release once
+    # it includes the std::optional deserialization fix from PR #4742.
+    commit = "f534f4f75e12893716ea688679aeb768bff426c4",
     remote = "https://github.com/nlohmann/json.git",
 )
 
