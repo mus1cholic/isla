@@ -1,5 +1,14 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
+genrule(
+    name = "embedded_prompts_header",
+    srcs = ["//server/memory/include/prompts:prompt_assets"],
+    outs = ["embedded_prompts.inc"],
+    cmd_bash = "$(location //server/memory/include/prompts:embed_prompts_tool) \"$@\" $(locations //server/memory/include/prompts:prompt_assets)",
+    cmd_bat = "call $(location //server/memory/include/prompts:embed_prompts_tool) \"$@\" $(locations //server/memory/include/prompts:prompt_assets)",
+    tools = ["//server/memory/include/prompts:embed_prompts_tool"],
+)
+
 cc_library(
     name = "memory_types",
     srcs = ["memory_timestamp_utils.cpp"],
@@ -35,9 +44,9 @@ cc_test(
 cc_library(
     name = "prompt_loader",
     srcs = [
+        ":embedded_prompts_header",
         "prompt_loader.cpp",
     ],
-    data = ["//server/memory/include/prompts:prompt_assets"],
     visibility = ["//visibility:public"],
     deps = [
         "//server/memory/include/isla/server/memory:memory_headers",
@@ -92,7 +101,6 @@ cc_test(
 cc_test(
     name = "prompt_loader_test",
     srcs = ["prompt_loader_test.cpp"],
-    data = ["//server/memory/include/prompts:prompt_assets"],
     deps = [
         ":prompt_loader",
         "@googletest//:gtest_main",

@@ -222,11 +222,11 @@ TEST_F(GatewayStubResponderTest, SessionStartCreatesMemoryPromptBeforeAnyTurn) {
 
 TEST_F(GatewayStubResponderTest, SessionStartUsesBundledSystemPromptByDefault) {
     const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
+    const absl::StatusOr<std::string> system_prompt = isla::server::memory::LoadSystemPrompt();
 
     ASSERT_TRUE(prompt.ok()) << prompt.status();
-    EXPECT_EQ(prompt->compare(0, isla::server::memory::DefaultSystemPrompt().size(),
-                              isla::server::memory::DefaultSystemPrompt()),
-              0);
+    ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
+    EXPECT_EQ(prompt->compare(0, system_prompt->size(), *system_prompt), 0);
 }
 
 TEST_F(GatewayStubResponderTest, AcceptedTurnEmitsStubTextAndCompletion) {

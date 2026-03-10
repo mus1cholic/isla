@@ -26,11 +26,20 @@ TEST(PromptLoaderTest, LoadPromptReadsNonSystemPromptAsset) {
               "Future prompt fixture.\nUse this file to validate generic prompt loading.\n");
 }
 
-TEST(PromptLoaderTest, DefaultSystemPromptMatchesLoadedSystemPrompt) {
+TEST(PromptLoaderTest, ResolveSystemPromptUsesEmbeddedDefaultWhenConfigIsEmpty) {
+    const absl::StatusOr<std::string> resolved_prompt = ResolveSystemPrompt("");
     const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
 
+    ASSERT_TRUE(resolved_prompt.ok()) << resolved_prompt.status();
     ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
-    EXPECT_EQ(DefaultSystemPrompt(), *system_prompt);
+    EXPECT_EQ(*resolved_prompt, *system_prompt);
+}
+
+TEST(PromptLoaderTest, ResolveSystemPromptPreservesExplicitPrompt) {
+    const absl::StatusOr<std::string> resolved_prompt = ResolveSystemPrompt("configured prompt");
+
+    ASSERT_TRUE(resolved_prompt.ok()) << resolved_prompt.status();
+    EXPECT_EQ(*resolved_prompt, "configured prompt");
 }
 
 TEST(PromptLoaderTest, LoadPromptReturnsNotFoundForMissingAsset) {
@@ -39,6 +48,18 @@ TEST(PromptLoaderTest, LoadPromptReturnsNotFoundForMissingAsset) {
 
     ASSERT_FALSE(missing_prompt.ok());
     EXPECT_EQ(missing_prompt.status().code(), absl::StatusCode::kNotFound);
+}
+
+TEST(PromptLoaderTest, LoadPromptDoesNotReadTraversalOrAbsoluteLikePaths) {
+    const absl::StatusOr<std::string> traversal_prompt =
+        LoadPrompt("../memory/include/prompts/system_prompt.txt");
+    const absl::StatusOr<std::string> absolute_like_prompt =
+        LoadPrompt("C:/secret/system_prompt.txt");
+
+    ASSERT_FALSE(traversal_prompt.ok());
+    EXPECT_EQ(traversal_prompt.status().code(), absl::StatusCode::kNotFound);
+    ASSERT_FALSE(absolute_like_prompt.ok());
+    EXPECT_EQ(absolute_like_prompt.status().code(), absl::StatusCode::kNotFound);
 }
 
 } // namespace

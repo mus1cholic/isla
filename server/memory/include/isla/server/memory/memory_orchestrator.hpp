@@ -52,8 +52,8 @@ class MemoryOrchestrator {
   public:
     MemoryOrchestrator(std::string session_id, WorkingMemory memory);
 
-    [[nodiscard]] static MemoryOrchestrator Create(std::string session_id,
-                                                   const WorkingMemoryInit& init);
+    [[nodiscard]] static absl::StatusOr<MemoryOrchestrator> Create(std::string session_id,
+                                                                   const WorkingMemoryInit& init);
 
     [[nodiscard]] absl::StatusOr<UserQueryMemoryResult>
     HandleUserQuery(const GatewayUserQuery& query);

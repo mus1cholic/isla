@@ -31,9 +31,14 @@ absl::Status ValidateCompletedEpisode(const Episode& episode) {
 
 WorkingMemory::WorkingMemory(WorkingMemoryState state) : state_(std::move(state)) {}
 
-WorkingMemory WorkingMemory::Create(const WorkingMemoryInit& init) {
+absl::StatusOr<WorkingMemory> WorkingMemory::Create(const WorkingMemoryInit& init) {
+    absl::StatusOr<std::string> system_prompt = ResolveSystemPrompt(init.system_prompt);
+    if (!system_prompt.ok()) {
+        return system_prompt.status();
+    }
+
     return WorkingMemory(WorkingMemoryState{
-        .system_prompt = init.system_prompt.empty() ? DefaultSystemPrompt() : init.system_prompt,
+        .system_prompt = std::move(*system_prompt),
         .persistent_memory_cache = {},
         .mid_term_episodes = {},
         .retrieved_memory = std::nullopt,

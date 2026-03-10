@@ -37,7 +37,7 @@ class WorkingMemory {
   public:
     explicit WorkingMemory(WorkingMemoryState state);
 
-    [[nodiscard]] static WorkingMemory Create(const WorkingMemoryInit& init);
+    [[nodiscard]] static absl::StatusOr<WorkingMemory> Create(const WorkingMemoryInit& init);
 
     [[nodiscard]] const WorkingMemoryState& snapshot() const {
         return state_;

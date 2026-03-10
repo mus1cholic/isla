@@ -19,7 +19,7 @@ class WorkingMemoryTest : public ::testing::Test {
         return json(text).get<Timestamp>();
     }
 
-    static WorkingMemory MakeMemory() {
+    static absl::StatusOr<WorkingMemory> MakeMemory() {
         return WorkingMemory::Create(WorkingMemoryInit{
             .system_prompt = "You are Isla.",
             .user_id = "user_001",
@@ -32,9 +32,10 @@ class WorkingMemoryTest : public ::testing::Test {
 };
 
 TEST_F(WorkingMemoryTest, CreateBuildsEmptyWorkingMemoryShape) {
-    const WorkingMemory memory = MakeMemory();
+    const absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
 
-    ExpectWorkingMemoryJsonEq(memory, json::parse(R"json(
+    ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
 {
   "system_prompt": "You are Isla.",
   "persistent_memory_cache": {
@@ -52,42 +53,49 @@ TEST_F(WorkingMemoryTest, CreateBuildsEmptyWorkingMemoryShape) {
 }
 
 TEST_F(WorkingMemoryTest, CreateWithoutExplicitSystemPromptUsesBundledPrompt) {
-    const WorkingMemory memory = WorkingMemory::Create(WorkingMemoryInit{
+    const absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
         .system_prompt = "",
         .user_id = "user_001",
     });
 
-    EXPECT_EQ(memory.snapshot().system_prompt, DefaultSystemPrompt());
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
+    ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
+    EXPECT_EQ(memory->snapshot().system_prompt, *system_prompt);
 }
 
 TEST_F(WorkingMemoryTest, RenderWithoutExplicitSystemPromptStartsWithBundledPrompt) {
-    const WorkingMemory memory = WorkingMemory::Create(WorkingMemoryInit{
+    const absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
         .system_prompt = "",
         .user_id = "user_001",
     });
+    ASSERT_TRUE(memory.ok()) << memory.status();
 
-    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
+    const absl::StatusOr<std::string> prompt = memory->RenderFullWorkingMemory();
+    const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
 
     ASSERT_TRUE(prompt.ok()) << prompt.status();
-    EXPECT_EQ(prompt->compare(0, DefaultSystemPrompt().size(), DefaultSystemPrompt()), 0);
+    ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
+    EXPECT_EQ(prompt->compare(0, system_prompt->size(), *system_prompt), 0);
     EXPECT_NE(prompt->find("<persistent_memory_cache>"), std::string::npos);
 }
 
 TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
-    WorkingMemory memory = MakeMemory();
-    memory.UpsertActiveModel("entity_user", "Airi, the user.");
-    memory.UpsertFamiliarLabel("entity_mochi", "Airi's cat");
-    memory.SetRetrievedMemory("Sarah prefers Thai cuisine.");
-    AppendUserMessage(memory.mutable_conversation(), "Please plan Sarah's party.",
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    memory->UpsertActiveModel("entity_user", "Airi, the user.");
+    memory->UpsertFamiliarLabel("entity_mochi", "Airi's cat");
+    memory->SetRetrievedMemory("Sarah prefers Thai cuisine.");
+    AppendUserMessage(memory->mutable_conversation(), "Please plan Sarah's party.",
                       Ts("2026-03-08T14:01:00Z"));
-    AppendAssistantMessage(memory.mutable_conversation(), "I can help with that.",
+    AppendAssistantMessage(memory->mutable_conversation(), "I can help with that.",
                            Ts("2026-03-08T14:01:05Z"));
     const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
-        memory.CaptureOngoingEpisodeForFlush(0);
+        memory->CaptureOngoingEpisodeForFlush(0);
     ASSERT_TRUE(captured.ok()) << captured.status();
     ASSERT_EQ(captured->ongoing_episode.messages.size(), 2U);
     ASSERT_TRUE(memory
-                    .ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
+                    ->ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
                         .conversation_item_index = 0,
                         .episode =
                             Episode{
@@ -104,7 +112,7 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
                     })
                     .ok());
 
-    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
+    const absl::StatusOr<std::string> prompt = memory->RenderFullWorkingMemory();
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     const std::size_t system_pos = prompt->find("You are Isla.");
     const std::size_t cache_pos = prompt->find("<persistent_memory_cache>");
@@ -126,7 +134,7 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
     EXPECT_NE(prompt->find("- [stub | 2026-03-08T14:01:11Z] Party planning episode."),
               std::string::npos);
 
-    ExpectWorkingMemoryJsonEq(memory, json::parse(R"json(
+    ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
 {
   "system_prompt": "You are Isla.",
   "persistent_memory_cache": {
@@ -173,14 +181,15 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
 }
 
 TEST_F(WorkingMemoryTest, RendersMixedConversationItemsInOriginalOrder) {
-    WorkingMemory memory = MakeMemory();
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
 
-    AppendUserMessage(memory.mutable_conversation(), "first", Ts("2026-03-08T14:00:01Z"));
-    memory.AppendEpisodeStub("[stub]", Ts("2026-03-08T14:00:02Z"));
-    BeginOngoingEpisode(memory.mutable_conversation());
-    AppendAssistantMessage(memory.mutable_conversation(), "second", Ts("2026-03-08T14:00:03Z"));
+    AppendUserMessage(memory->mutable_conversation(), "first", Ts("2026-03-08T14:00:01Z"));
+    memory->AppendEpisodeStub("[stub]", Ts("2026-03-08T14:00:02Z"));
+    BeginOngoingEpisode(memory->mutable_conversation());
+    AppendAssistantMessage(memory->mutable_conversation(), "second", Ts("2026-03-08T14:00:03Z"));
 
-    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
+    const absl::StatusOr<std::string> prompt = memory->RenderFullWorkingMemory();
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     const std::size_t first_pos = prompt->find("- [user | 2026-03-08T14:00:01Z] first");
     const std::size_t stub_pos = prompt->find("- [stub | 2026-03-08T14:00:02Z] [stub]");
@@ -198,14 +207,15 @@ TEST_F(WorkingMemoryTest, EscapePromptTextEscapesPromptControlCharacters) {
 }
 
 TEST_F(WorkingMemoryTest, RenderPromptEscapesControlCharactersInDynamicTextFields) {
-    WorkingMemory memory = MakeMemory();
-    memory.UpsertActiveModel("entity\nuser", "Airi\\nlikes tests");
-    memory.UpsertFamiliarLabel("entity_friend", "Sarah\r\nfriend");
-    memory.SetRetrievedMemory("retrieved\tmemory\nline");
-    AppendUserMessage(memory.mutable_conversation(), "hello\nworld", Ts("2026-03-08T14:00:01Z"));
-    memory.AppendEpisodeStub("stub\rcontent", Ts("2026-03-08T14:00:02Z"));
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    memory->UpsertActiveModel("entity\nuser", "Airi\\nlikes tests");
+    memory->UpsertFamiliarLabel("entity_friend", "Sarah\r\nfriend");
+    memory->SetRetrievedMemory("retrieved\tmemory\nline");
+    AppendUserMessage(memory->mutable_conversation(), "hello\nworld", Ts("2026-03-08T14:00:01Z"));
+    memory->AppendEpisodeStub("stub\rcontent", Ts("2026-03-08T14:00:02Z"));
 
-    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
+    const absl::StatusOr<std::string> prompt = memory->RenderFullWorkingMemory();
 
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     EXPECT_NE(prompt->find("- [entity\\nuser] Airi\\\\nlikes tests"), std::string::npos);
@@ -216,19 +226,20 @@ TEST_F(WorkingMemoryTest, RenderPromptEscapesControlCharactersInDynamicTextField
 }
 
 TEST_F(WorkingMemoryTest, WriteBackCoreEntityPromotesToActiveCache) {
-    WorkingMemory memory = MakeMemory();
-    memory.UpsertFamiliarLabel("entity_user", "Unknown user");
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    memory->UpsertFamiliarLabel("entity_user", "Unknown user");
 
-    ASSERT_TRUE(memory.WriteBackCoreEntity(kUserEntityId, "Airi, the user.").ok());
+    ASSERT_TRUE(memory->WriteBackCoreEntity(kUserEntityId, "Airi, the user.").ok());
 
-    const WorkingMemoryState& state = memory.snapshot();
+    const WorkingMemoryState& state = memory->snapshot();
     ASSERT_EQ(state.persistent_memory_cache.active_models.size(), 1U);
     EXPECT_EQ(state.persistent_memory_cache.active_models.front().entity_id, "entity_user");
     EXPECT_EQ(state.persistent_memory_cache.active_models.front().text, "Airi, the user.");
     EXPECT_TRUE(state.persistent_memory_cache.familiar_labels.empty());
-    EXPECT_FALSE(memory.WriteBackCoreEntity("entity_sarah", "Sarah").ok());
+    EXPECT_FALSE(memory->WriteBackCoreEntity("entity_sarah", "Sarah").ok());
 
-    ExpectWorkingMemoryJsonEq(memory, json::parse(R"json(
+    ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
 {
   "system_prompt": "You are Isla.",
   "persistent_memory_cache": {
@@ -251,18 +262,19 @@ TEST_F(WorkingMemoryTest, WriteBackCoreEntityPromotesToActiveCache) {
 }
 
 TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTermEntries) {
-    WorkingMemory memory = MakeMemory();
-    AppendUserMessage(memory.mutable_conversation(), "one", Ts("2026-03-08T14:00:01Z"));
-    AppendAssistantMessage(memory.mutable_conversation(), "two", Ts("2026-03-08T14:00:02Z"));
-    BeginOngoingEpisode(memory.mutable_conversation());
-    AppendUserMessage(memory.mutable_conversation(), "three", Ts("2026-03-08T14:00:03Z"));
-    AppendAssistantMessage(memory.mutable_conversation(), "four", Ts("2026-03-08T14:00:04Z"));
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    AppendUserMessage(memory->mutable_conversation(), "one", Ts("2026-03-08T14:00:01Z"));
+    AppendAssistantMessage(memory->mutable_conversation(), "two", Ts("2026-03-08T14:00:02Z"));
+    BeginOngoingEpisode(memory->mutable_conversation());
+    AppendUserMessage(memory->mutable_conversation(), "three", Ts("2026-03-08T14:00:03Z"));
+    AppendAssistantMessage(memory->mutable_conversation(), "four", Ts("2026-03-08T14:00:04Z"));
     const absl::StatusOr<OngoingEpisodeFlushCandidate> captured_newer =
-        memory.CaptureOngoingEpisodeForFlush(1);
+        memory->CaptureOngoingEpisodeForFlush(1);
     ASSERT_TRUE(captured_newer.ok()) << captured_newer.status();
     ASSERT_EQ(captured_newer->ongoing_episode.messages.size(), 2U);
     ASSERT_TRUE(memory
-                    .ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
+                    ->ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
                         .conversation_item_index = 1,
                         .episode =
                             Episode{
@@ -279,11 +291,11 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
                     })
                     .ok());
     const absl::StatusOr<OngoingEpisodeFlushCandidate> captured_older =
-        memory.CaptureOngoingEpisodeForFlush(0);
+        memory->CaptureOngoingEpisodeForFlush(0);
     ASSERT_TRUE(captured_older.ok()) << captured_older.status();
     ASSERT_EQ(captured_older->ongoing_episode.messages.size(), 2U);
     ASSERT_TRUE(memory
-                    .ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
+                    ->ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
                         .conversation_item_index = 0,
                         .episode =
                             Episode{
@@ -300,7 +312,7 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
                     })
                     .ok());
 
-    const WorkingMemoryState& state = memory.snapshot();
+    const WorkingMemoryState& state = memory->snapshot();
     ASSERT_EQ(state.conversation.items.size(), 2U);
     EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
     ASSERT_TRUE(state.conversation.items[0].episode_stub.has_value());
@@ -313,7 +325,7 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
     EXPECT_EQ(state.mid_term_episodes[0].episode_id, "ep_older");
     EXPECT_EQ(state.mid_term_episodes[1].episode_id, "ep_newer");
 
-    ExpectWorkingMemoryJsonEq(memory, json::parse(R"json(
+    ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
 {
   "system_prompt": "You are Isla.",
   "persistent_memory_cache": {
@@ -367,19 +379,20 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
 }
 
 TEST_F(WorkingMemoryTest, FlushOngoingEpisodePreservesNeighborConversationItems) {
-    WorkingMemory memory = MakeMemory();
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
 
-    AppendUserMessage(memory.mutable_conversation(), "first", Ts("2026-03-08T14:00:01Z"));
-    memory.AppendEpisodeStub("[existing stub]", Ts("2026-03-08T14:00:02Z"));
-    BeginOngoingEpisode(memory.mutable_conversation());
-    AppendAssistantMessage(memory.mutable_conversation(), "third", Ts("2026-03-08T14:00:03Z"));
+    AppendUserMessage(memory->mutable_conversation(), "first", Ts("2026-03-08T14:00:01Z"));
+    memory->AppendEpisodeStub("[existing stub]", Ts("2026-03-08T14:00:02Z"));
+    BeginOngoingEpisode(memory->mutable_conversation());
+    AppendAssistantMessage(memory->mutable_conversation(), "third", Ts("2026-03-08T14:00:03Z"));
     const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
-        memory.CaptureOngoingEpisodeForFlush(2);
+        memory->CaptureOngoingEpisodeForFlush(2);
     ASSERT_TRUE(captured.ok()) << captured.status();
     ASSERT_EQ(captured->ongoing_episode.messages.size(), 1U);
 
     ASSERT_TRUE(memory
-                    .ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
+                    ->ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
                         .conversation_item_index = 2,
                         .episode =
                             Episode{
@@ -396,7 +409,7 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodePreservesNeighborConversationItems)
                     })
                     .ok());
 
-    const WorkingMemoryState& state = memory.snapshot();
+    const WorkingMemoryState& state = memory->snapshot();
     ASSERT_EQ(state.conversation.items.size(), 3U);
     EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::OngoingEpisode);
     ASSERT_TRUE(state.conversation.items[0].ongoing_episode.has_value());
@@ -410,34 +423,36 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodePreservesNeighborConversationItems)
 }
 
 TEST_F(WorkingMemoryTest, RenderPromptRejectsConversationItemsMissingTaggedPayload) {
-    WorkingMemory memory = MakeMemory();
-    memory.mutable_conversation().items.push_back(ConversationItem{
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    memory->mutable_conversation().items.push_back(ConversationItem{
         .type = ConversationItemType::EpisodeStub,
         .ongoing_episode = std::nullopt,
         .episode_stub = std::nullopt,
     });
 
-    const absl::StatusOr<std::string> prompt = memory.RenderFullWorkingMemory();
+    const absl::StatusOr<std::string> prompt = memory->RenderFullWorkingMemory();
 
     ASSERT_FALSE(prompt.ok());
     EXPECT_EQ(prompt.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 
 TEST_F(WorkingMemoryTest, FlushOngoingEpisodeRejectsInvalidRequests) {
-    WorkingMemory memory = MakeMemory();
-    AppendUserMessage(memory.mutable_conversation(), "one", Ts("2026-03-08T14:00:01Z"));
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    AppendUserMessage(memory->mutable_conversation(), "one", Ts("2026-03-08T14:00:01Z"));
 
     const absl::StatusOr<OngoingEpisodeFlushCandidate> bad_target =
-        memory.CaptureOngoingEpisodeForFlush(1);
+        memory->CaptureOngoingEpisodeForFlush(1);
     EXPECT_FALSE(bad_target.ok());
 
-    memory.AppendEpisodeStub("[existing stub]", Ts("2026-03-08T14:00:04Z"));
+    memory->AppendEpisodeStub("[existing stub]", Ts("2026-03-08T14:00:04Z"));
     const absl::StatusOr<OngoingEpisodeFlushCandidate> wrong_kind =
-        memory.CaptureOngoingEpisodeForFlush(1);
+        memory->CaptureOngoingEpisodeForFlush(1);
     EXPECT_FALSE(wrong_kind.ok());
 
     const absl::Status bad_episode =
-        memory.ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
+        memory->ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
             .conversation_item_index = 1,
             .episode =
                 Episode{

@@ -24,9 +24,13 @@ std::string sanitize_for_log(std::string_view value) {
 MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory memory)
     : session_id_(std::move(session_id)), memory_(std::move(memory)) {}
 
-MemoryOrchestrator MemoryOrchestrator::Create(std::string session_id,
-                                              const WorkingMemoryInit& init) {
-    return { std::move(session_id), WorkingMemory::Create(init) };
+absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
+                                                              const WorkingMemoryInit& init) {
+    absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(init);
+    if (!memory.ok()) {
+        return memory.status();
+    }
+    return MemoryOrchestrator(std::move(session_id), std::move(*memory));
 }
 
 absl::Status MemoryOrchestrator::ValidateTurnText(std::string_view session_id,
