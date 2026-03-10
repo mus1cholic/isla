@@ -724,6 +724,7 @@ TEST(GatewayStubResponderStandaloneTest, SameSessionRenderWaitsForOngoingMemoryM
     allow_user_query_finish->set_value();
     ASSERT_EQ(accepted_future.wait_for(2s), std::future_status::ready);
     ASSERT_EQ(render_future.wait_for(2s), std::future_status::ready);
+    ASSERT_TRUE(session->WaitForEventCount(2U));
     const absl::StatusOr<std::string> prompt = render_future.get();
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     EXPECT_NE(prompt->find("- [user | "), std::string::npos);
