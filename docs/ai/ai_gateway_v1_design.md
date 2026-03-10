@@ -359,6 +359,9 @@ Current implementation note (2026-03-10):
   - one final execution result mapped back to one client-visible `text.output`
 - the current fake responder path has the planner construct the `OpenAiLlmStep`, and the executor
   supplies runtime turn input while constructing and dispatching `OpenAiLLMs`
+- known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
+  slow step execution or slow accepted-turn emit completion can delay unrelated sessions until a
+  later concurrency/isolation refactor lands
 - live OpenAI Responses API traffic remains deferred to the later adapter/integration phase
 
 Responsibilities:
@@ -429,6 +432,9 @@ Current implementation note (2026-03-10):
 
 - the current planner/executor boundary is final-result-only
 - `GatewayStubResponder` maps that final execution result to one final `text.output` in v1
+- the current responder path still has cross-session head-of-line blocking because execution and
+  accepted-turn terminalization run on one blocking worker; that isolation fix is intentionally
+  deferred beyond this PR
 
 ## Phase 0 Acceptance
 

@@ -53,7 +53,7 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
     }
 
     const HandleIncomingResult result = handler_.HandleIncomingJson(frame);
-    const absl::Status send_status = SendFrames(result.outgoing_frames);
+    absl::Status send_status = SendFrames(result.outgoing_frames);
     if (!send_status.ok()) {
         return send_status;
     }
@@ -69,15 +69,16 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
     }
 
     if (result.accepted_turn.has_value()) {
-        VLOG(1) << "AI gateway session=" << session_id_
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " accepted text turn turn_id=" << SanitizeForLog(result.accepted_turn->turn_id);
     }
     if (result.cancel_requested.has_value()) {
-        VLOG(1) << "AI gateway session=" << session_id_ << " accepted turn cancellation turn_id="
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
+                << " accepted turn cancellation turn_id="
                 << SanitizeForLog(result.cancel_requested->turn_id);
     }
     if (result.should_close) {
-        VLOG(1) << "AI gateway session=" << session_id_ << " ended by protocol";
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " ended by protocol";
         CloseSession(SessionCloseReason::ProtocolEnded, "session ended", std::nullopt, true);
     }
 
@@ -86,13 +87,14 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
         const char* log_level = snapshot.status == isla::shared::ai_gateway::SessionStatus::Active
                                     ? "active"
                                     : "inactive";
-        VLOG(1) << "AI gateway session=" << session_id_ << " rejected inbound frame while "
-                << log_level << " reason='" << SanitizeForLog(result.error_message) << "'";
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
+                << " rejected inbound frame while " << log_level << " reason='"
+                << SanitizeForLog(result.error_message) << "'";
         return failed_precondition(result.error_message);
     }
 
     if (result.session_started.has_value()) {
-        VLOG(1) << "AI gateway session=" << session_id_ << " started";
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " started";
     }
     return absl::OkStatus();
 }
@@ -107,7 +109,7 @@ absl::Status GatewayWebSocketSessionAdapter::EmitTextOutput(std::string_view tur
     if (!emit_result.ok()) {
         return emit_result.status();
     }
-    VLOG(1) << "AI gateway session=" << session_id_
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
             << " emitting text output turn_id=" << SanitizeForLog(turn_id);
     return SendFrames(emit_result->outgoing_frames);
 }
@@ -124,7 +126,7 @@ absl::Status GatewayWebSocketSessionAdapter::EmitAudioOutput(std::string_view tu
     if (!emit_result.ok()) {
         return emit_result.status();
     }
-    VLOG(1) << "AI gateway session=" << session_id_
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
             << " emitting audio output turn_id=" << SanitizeForLog(turn_id)
             << " mime_type=" << SanitizeForLog(mime_type);
     return SendFrames(emit_result->outgoing_frames);
@@ -139,7 +141,7 @@ absl::Status GatewayWebSocketSessionAdapter::EmitTurnCompleted(std::string_view 
     if (!emit_result.ok()) {
         return emit_result.status();
     }
-    VLOG(1) << "AI gateway session=" << session_id_
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
             << " emitting turn completed turn_id=" << SanitizeForLog(turn_id);
     return SendFrames(emit_result->outgoing_frames);
 }
@@ -153,7 +155,7 @@ absl::Status GatewayWebSocketSessionAdapter::EmitTurnCancelled(std::string_view 
     if (!emit_result.ok()) {
         return emit_result.status();
     }
-    VLOG(1) << "AI gateway session=" << session_id_
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
             << " emitting turn cancelled turn_id=" << SanitizeForLog(turn_id);
     return SendFrames(emit_result->outgoing_frames);
 }
@@ -169,7 +171,7 @@ absl::Status GatewayWebSocketSessionAdapter::EmitError(std::optional<std::string
     if (!emit_result.ok()) {
         return emit_result.status();
     }
-    VLOG(1) << "AI gateway session=" << session_id_
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
             << " emitting error code=" << SanitizeForLog(code) << " turn_id='"
             << (turn_id.has_value() ? SanitizeForLog(*turn_id) : std::string("<none>")) << "'";
     return SendFrames(emit_result->outgoing_frames);
@@ -183,8 +185,8 @@ absl::Status GatewayWebSocketSessionAdapter::HandleTransportError(std::string_vi
     const bool session_started =
         handler_.snapshot().status == isla::shared::ai_gateway::SessionStatus::Active;
     const std::optional<std::string> inflight_turn_id = active_turn_id();
-    LOG(WARNING) << "AI gateway session=" << session_id_ << " transport error detail='"
-                 << SanitizeForLog(message)
+    LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_)
+                 << " transport error detail='" << SanitizeForLog(message)
                  << "' session_started=" << (session_started ? "true" : "false")
                  << " inflight_turn_id='"
                  << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
@@ -200,7 +202,7 @@ absl::Status GatewayWebSocketSessionAdapter::HandleTransportError(std::string_vi
             return SendFrames(emit_result->outgoing_frames);
         };
 
-        const absl::Status error_status =
+        absl::Status error_status =
             emit_and_send(handler_.EmitError(*inflight_turn_id, "transport_error", message));
         if (!error_status.ok()) {
             return error_status;
@@ -222,7 +224,7 @@ void GatewayWebSocketSessionAdapter::HandleSendFailure(std::string_view message)
         return;
     }
 
-    LOG(WARNING) << "AI gateway session=" << session_id_ << " send failure detail='"
+    LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_) << " send failure detail='"
                  << SanitizeForLog(message) << "'";
     CloseSession(SessionCloseReason::SendFailed, message, active_turn_id(), false);
 }
@@ -233,7 +235,7 @@ void GatewayWebSocketSessionAdapter::HandleTransportClosed() {
     }
 
     const std::optional<std::string> inflight_turn_id = active_turn_id();
-    LOG(WARNING) << "AI gateway session=" << session_id_ << " transport closed"
+    LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_) << " transport closed"
                  << " session_started="
                  << (handler_.snapshot().status !=
                              isla::shared::ai_gateway::SessionStatus::NotStarted
@@ -252,7 +254,7 @@ void GatewayWebSocketSessionAdapter::HandleServerShutdown() {
     }
 
     const std::optional<std::string> inflight_turn_id = active_turn_id();
-    VLOG(1) << "AI gateway session=" << session_id_ << " closed for server shutdown"
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " closed for server shutdown"
             << " session_started="
             << (handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted
                     ? "true"
@@ -268,7 +270,7 @@ absl::Status GatewayWebSocketSessionAdapter::SendFrames(const std::vector<std::s
     for (const std::string& frame : frames) {
         const absl::Status status = connection_.SendTextFrame(frame);
         if (!status.ok()) {
-            LOG(WARNING) << "AI gateway session=" << session_id_
+            LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_)
                          << " failed to send websocket text frame: " << status;
             CloseSession(SessionCloseReason::SendFailed, status.message(), active_turn_id(), true);
             return status;
@@ -289,7 +291,7 @@ void GatewayWebSocketSessionAdapter::CloseSession(SessionCloseReason reason,
     if (close_transport) {
         connection_.Close();
     }
-    VLOG(1) << "AI gateway session=" << session_id_
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
             << " closed reason=" << close_reason_name(reason) << " session_started="
             << (handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted
                     ? "true"

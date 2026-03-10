@@ -94,7 +94,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
 
     void AsyncEmitTextOutput(std::string turn_id, std::string text,
                              GatewayEmitCallback on_complete) override {
-        VLOG(1) << "AI gateway session=" << session_id_
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " queueing server-owned text output turn_id=" << SanitizeForLog(turn_id);
         InvokeOnTransport(
             "text.output",
@@ -109,7 +109,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
 
     void AsyncEmitAudioOutput(std::string turn_id, std::string mime_type, std::string audio_base64,
                               GatewayEmitCallback on_complete) override {
-        VLOG(1) << "AI gateway session=" << session_id_
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " queueing server-owned audio output turn_id=" << SanitizeForLog(turn_id)
                 << " mime_type=" << SanitizeForLog(mime_type);
         InvokeOnTransport(
@@ -125,7 +125,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
     }
 
     void AsyncEmitTurnCompleted(std::string turn_id, GatewayEmitCallback on_complete) override {
-        VLOG(1) << "AI gateway session=" << session_id_
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " queueing server-owned turn completed turn_id=" << SanitizeForLog(turn_id);
         InvokeOnTransport(
             "turn.completed",
@@ -139,7 +139,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
     }
 
     void AsyncEmitTurnCancelled(std::string turn_id, GatewayEmitCallback on_complete) override {
-        VLOG(1) << "AI gateway session=" << session_id_
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " queueing server-owned turn cancelled turn_id=" << SanitizeForLog(turn_id);
         InvokeOnTransport(
             "turn.cancelled",
@@ -154,7 +154,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
 
     void AsyncEmitError(std::optional<std::string> turn_id, std::string code, std::string message,
                         GatewayEmitCallback on_complete) override {
-        VLOG(1) << "AI gateway session=" << session_id_
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " queueing server-owned error code=" << SanitizeForLog(code) << " turn_id='"
                 << (turn_id.has_value() ? SanitizeForLog(*turn_id) : std::string("<none>")) << "'";
         InvokeOnTransport(
@@ -193,11 +193,11 @@ class LiveGatewaySession final : public GatewayLiveSession,
         try {
             on_complete(std::move(status));
         } catch (const std::exception& error) {
-            LOG(ERROR) << "AI gateway session=" << session_id
+            LOG(ERROR) << "AI gateway session=" << SanitizeForLog(session_id)
                        << " async emit callback threw op=" << operation << " detail='"
                        << SanitizeForLog(error.what()) << "'";
         } catch (...) {
-            LOG(ERROR) << "AI gateway session=" << session_id
+            LOG(ERROR) << "AI gateway session=" << SanitizeForLog(session_id)
                        << " async emit callback threw op=" << operation
                        << " detail='unknown exception'";
         }
@@ -209,7 +209,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
             auto self = shared_from_this();
             asio::post(websocket_.get_executor(), [self, operation = std::string(operation),
                                                    on_complete = std::move(on_complete)]() mutable {
-                LOG(WARNING) << "AI gateway session=" << self->session_id_
+                LOG(WARNING) << "AI gateway session=" << SanitizeForLog(self->session_id_)
                              << " rejected async emit op=" << operation << " detail='"
                              << SanitizeForLog("websocket session is closed") << "'";
                 CompleteEmitCallback(self->session_id_, operation, on_complete,
@@ -231,7 +231,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
                 status = absl::InternalError("unknown exception during transport invocation");
             }
             if (!status.ok()) {
-                LOG(WARNING) << "AI gateway session=" << self->session_id_
+                LOG(WARNING) << "AI gateway session=" << SanitizeForLog(self->session_id_)
                              << " async emit failed op=" << operation << " detail='"
                              << SanitizeForLog(status.message()) << "'";
             }
@@ -248,7 +248,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
         }
 
         pending_writes_.push_back(std::move(frame));
-        VLOG(1) << "AI gateway session=" << session_id_
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " enqueued websocket text frame pending_writes=" << pending_writes_.size();
         if (!write_in_progress_) {
             DoWriteNext();
@@ -296,7 +296,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
         session_id_ = adapter_->session_id();
         registry_.RegisterSession(shared_from_this());
         VLOG(1) << "AI gateway accepted websocket transport remote=" << remote_endpoint_
-                << " session=" << session_id_;
+                << " session=" << SanitizeForLog(session_id_);
         StartRead();
     }
 
@@ -321,7 +321,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
         if (error) {
             if (adapter_ != nullptr) {
                 if (transport_force_closed_.load() || server_shutdown_requested_.load()) {
-                    VLOG(1) << "AI gateway session=" << session_id_
+                    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                             << " transport closed by server stop remote=" << remote_endpoint_;
                     adapter_->HandleServerShutdown();
                     transport_closed_ = true;
@@ -333,14 +333,14 @@ class LiveGatewaySession final : public GatewayLiveSession,
                     const absl::Status status =
                         adapter_->HandleTransportError("websocket message too large");
                     if (!status.ok() && !adapter_->is_closed()) {
-                        LOG(WARNING) << "AI gateway session=" << session_id_
+                        LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_)
                                      << " failed handling oversized message detail='"
                                      << SanitizeForLog(status.message()) << "'";
                     }
                 } else {
                     const absl::Status status = adapter_->HandleTransportError(error.message());
                     if (!status.ok() && !adapter_->is_closed()) {
-                        LOG(WARNING) << "AI gateway session=" << session_id_
+                        LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_)
                                      << " failed handling transport error detail='"
                                      << SanitizeForLog(status.message()) << "'";
                     }
@@ -355,7 +355,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
                 const absl::Status status =
                     adapter_->HandleTransportError("unsupported websocket opcode");
                 if (!status.ok() && !adapter_->is_closed()) {
-                    LOG(WARNING) << "AI gateway session=" << session_id_
+                    LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_)
                                  << " failed handling invalid opcode detail='"
                                  << SanitizeForLog(status.message()) << "'";
                 }
@@ -405,7 +405,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
             return;
         }
         if (pending_writes_.empty()) {
-            LOG(ERROR) << "AI gateway session=" << session_id_
+            LOG(ERROR) << "AI gateway session=" << SanitizeForLog(session_id_)
                        << " write completion arrived without a pending frame";
             MaybeFinish();
             return;
@@ -438,7 +438,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
             DoCloseTransport();
             return;
         }
-        VLOG(1) << "AI gateway session=" << session_id_
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " deferring graceful close until pending writes flush pending_writes="
                 << pending_writes_.size()
                 << " write_in_progress=" << (write_in_progress_ ? "true" : "false");
@@ -522,7 +522,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
         if (transport_closed_ || finished_.load() || !server_shutdown_requested_.load()) {
             return;
         }
-        LOG(WARNING) << "AI gateway session=" << session_id_
+        LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_)
                      << " forcing transport close after shutdown grace period pending_writes="
                      << pending_writes_.size();
         DoForceCloseTransport();
@@ -828,7 +828,8 @@ class GatewayServer::Impl {
             static_cast<void>(accept_result);
             if (error) {
                 if (error == asio::error::would_block || error == asio::error::try_again) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                    constexpr std::chrono::milliseconds kAcceptRetryDelay(25);
+                    std::this_thread::sleep_for(kAcceptRetryDelay);
                     continue;
                 }
                 if (stop_requested_.load()) {
@@ -863,7 +864,8 @@ class GatewayServer::Impl {
         VLOG(1) << "AI gateway session reaper started";
         std::unique_lock<std::mutex> lock(mutex_);
         while (!stop_requested_.load()) {
-            reap_cv_.wait_for(lock, std::chrono::milliseconds(250));
+            constexpr std::chrono::milliseconds kReapWaitInterval(250);
+            reap_cv_.wait_for(lock, kReapWaitInterval);
             lock.unlock();
             ReapClosedSessions();
             lock.lock();

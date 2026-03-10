@@ -4,7 +4,9 @@
 #include <string_view>
 #include <utility>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -58,9 +60,14 @@ OpenAiLLMs::GenerateContent(std::size_t item_index, const std::string& user_text
     std::string output_text;
     try {
         output_text = BuildResponse(user_text, response_prefix, response_builder);
-    } catch (const std::exception&) {
+    } catch (const std::exception& error) {
+        LOG(ERROR) << "AI gateway openai llms response building failed step_name='"
+                   << SanitizeForLog(step_name_) << "' detail='"
+                   << SanitizeForLog(error.what()) << "'";
         return absl::InternalError("stub responder processing failed");
     } catch (...) {
+        LOG(ERROR) << "AI gateway openai llms response building failed step_name='"
+                   << SanitizeForLog(step_name_) << "' detail='unknown exception'";
         return absl::InternalError("stub responder processing failed");
     }
 

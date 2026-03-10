@@ -146,6 +146,9 @@ Sequencing rule for the remaining work:
 >   - runtime turn input supplied at executor time instead of being stored in the plan itself
 > - The current planner/executor path is intentionally independent of gateway memory shaping; the
 >   existing memory system remains a separate responder concern.
+> - Known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
+>   slow step execution or slow accepted-turn emit completion can create cross-session head-of-line
+>   blocking. Fixing that isolation is deferred to the next PR rather than Phase 3.
 > - Audio input and transcription are intentionally deferred from the first server slice.
 > - Self-hosted Fish workers, Spot GPU fleets, and OpenAI Realtime transport remain explicitly
 >   deferred alternatives rather than current implementation goals.
@@ -652,6 +655,9 @@ Close the loop through the same session boundary without introducing provider de
 >   - explicit executor result/failure shapes with final-result-only execution
 >   - integration of the new boundary into `GatewayStubResponder` while preserving the existing
 >     live-session emission seam, cancellation handling, and final-output-oriented client contract
+> - Known limitation: `GatewayStubResponder` still processes all sessions through one blocking
+>   worker, so slow step execution or slow accepted-turn emit completion can delay unrelated
+>   sessions until the follow-up concurrency/isolation refactor lands.
 > - Live OpenAI network integration remains intentionally deferred to Phase 3.5.
 >
 > [!NOTE]
