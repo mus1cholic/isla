@@ -20,8 +20,6 @@ struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
     std::string response_prefix = "stub echo: ";
-    // Empty means "use the bundled memory prompt from server/memory/include/prompts".
-    std::string memory_system_prompt;
     std::string memory_user_id = "gateway_user";
     std::function<std::string(std::string_view, std::string_view)> reply_builder;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>

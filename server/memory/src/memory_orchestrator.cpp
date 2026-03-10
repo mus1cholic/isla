@@ -25,8 +25,11 @@ MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory mem
     : session_id_(std::move(session_id)), memory_(std::move(memory)) {}
 
 absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
-                                                              const WorkingMemoryInit& init) {
-    absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(init);
+                                                              const MemoryOrchestratorInit& init) {
+    absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
+        .system_prompt = "",
+        .user_id = init.user_id,
+    });
     if (!memory.ok()) {
         return memory.status();
     }

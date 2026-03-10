@@ -633,13 +633,12 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
     // materially more expensive later, replace this with a closed-session tombstone/generation
     // scheme rather than moving construction back outside the lock.
     std::lock_guard<std::mutex> lock(mutex_);
-    const bool using_bundled_system_prompt = config_.memory_system_prompt.empty();
     absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
-        isla::server::memory::MemoryOrchestrator::Create(
-            std::string(session_id), isla::server::memory::WorkingMemoryInit{
-                                         .system_prompt = config_.memory_system_prompt,
-                                         .user_id = config_.memory_user_id,
-                                     });
+        isla::server::memory::MemoryOrchestrator::Create(std::string(session_id),
+                                                         isla::server::memory::
+                                                             MemoryOrchestratorInit{
+                                                                 .user_id = config_.memory_user_id,
+                                                             });
     if (!orchestrator.ok()) {
         return orchestrator.status();
     }
@@ -650,11 +649,8 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
     if (!inserted) {
         return absl::AlreadyExistsError("memory orchestrator already exists for session");
     }
-    VLOG(1) << "AI gateway stub initialized session memory session=" << SanitizeForLog(session_id)
-            << " system_prompt_source="
-            << (using_bundled_system_prompt ? "bundled_default" : "explicit_override")
-            << " system_prompt_bytes="
-            << it->second->orchestrator.memory().snapshot().system_prompt.size();
+    VLOG(1) << "AI gateway stub initialized session memory session="
+            << SanitizeForLog(session_id);
     return absl::OkStatus();
 }
 

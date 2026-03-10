@@ -1,7 +1,9 @@
 #include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 
 #include <string>
+#include <utility>
 
 #include "absl/status/status.h"
 #include <gtest/gtest.h>
@@ -19,8 +21,18 @@ class MemoryOrchestratorTest : public ::testing::Test {
     }
 
     static absl::StatusOr<MemoryOrchestrator> MakeHandler() {
-        return MemoryOrchestrator::Create("srv_test", WorkingMemoryInit{
-                                                          .system_prompt = "You are Isla.",
+        absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
+            .system_prompt = "You are Isla.",
+            .user_id = "user_001",
+        });
+        if (!memory.ok()) {
+            return memory.status();
+        }
+        return MemoryOrchestrator("srv_test", std::move(*memory));
+    }
+
+    static absl::StatusOr<MemoryOrchestrator> MakeDefaultPromptHandler() {
+        return MemoryOrchestrator::Create("srv_test", MemoryOrchestratorInit{
                                                           .user_id = "user_001",
                                                       });
     }
@@ -206,6 +218,15 @@ TEST_F(MemoryOrchestratorTest, RejectsMissingTurnId) {
 
     ASSERT_FALSE(missing_turn.ok());
     EXPECT_EQ(missing_turn.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST_F(MemoryOrchestratorTest, CreateUsesWorkingMemoryDefaultPromptResolution) {
+    absl::StatusOr<MemoryOrchestrator> handler = MakeDefaultPromptHandler();
+    const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
+
+    ASSERT_TRUE(handler.ok()) << handler.status();
+    ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
+    EXPECT_EQ(handler->memory().snapshot().system_prompt, *system_prompt);
 }
 
 } // namespace

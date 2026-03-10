@@ -45,6 +45,10 @@ struct UserQueryMemoryResult {
     std::string rendered_working_memory;
 };
 
+struct MemoryOrchestratorInit {
+    std::string user_id;
+};
+
 // Central entry point for gateway-delivered user turns. The gateway only forwards the raw user
 // query; this handler is responsible for converting it into working-memory state changes and
 // coordinating future mid/long-term memory hooks.
@@ -52,8 +56,8 @@ class MemoryOrchestrator {
   public:
     MemoryOrchestrator(std::string session_id, WorkingMemory memory);
 
-    [[nodiscard]] static absl::StatusOr<MemoryOrchestrator> Create(std::string session_id,
-                                                                   const WorkingMemoryInit& init);
+    [[nodiscard]] static absl::StatusOr<MemoryOrchestrator>
+    Create(std::string session_id, const MemoryOrchestratorInit& init);
 
     [[nodiscard]] absl::StatusOr<UserQueryMemoryResult>
     HandleUserQuery(const GatewayUserQuery& query);
