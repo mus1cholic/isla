@@ -20,7 +20,6 @@ struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
     std::string response_prefix = "stub echo: ";
-    std::string memory_system_prompt = "You are Isla.";
     std::string memory_user_id = "gateway_user";
     std::function<std::string(std::string_view, std::string_view)> reply_builder;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>

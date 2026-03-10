@@ -16,6 +16,7 @@
 
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -215,8 +216,17 @@ class GatewayStubResponderTest : public ::testing::Test {
 TEST_F(GatewayStubResponderTest, SessionStartCreatesMemoryPromptBeforeAnyTurn) {
     const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
     ASSERT_TRUE(prompt.ok()) << prompt.status();
-    EXPECT_NE(prompt->find("{conversation}"), std::string::npos);
+    EXPECT_NE(prompt->find("<conversation>"), std::string::npos);
     EXPECT_NE(prompt->find("- (empty)"), std::string::npos);
+}
+
+TEST_F(GatewayStubResponderTest, SessionStartUsesBundledSystemPromptByDefault) {
+    const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
+    const absl::StatusOr<std::string> system_prompt = isla::server::memory::LoadSystemPrompt();
+
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
+    EXPECT_EQ(prompt->compare(0, system_prompt->size(), *system_prompt), 0);
 }
 
 TEST_F(GatewayStubResponderTest, AcceptedTurnEmitsStubTextAndCompletion) {
@@ -714,6 +724,7 @@ TEST(GatewayStubResponderStandaloneTest, SameSessionRenderWaitsForOngoingMemoryM
     allow_user_query_finish->set_value();
     ASSERT_EQ(accepted_future.wait_for(2s), std::future_status::ready);
     ASSERT_EQ(render_future.wait_for(2s), std::future_status::ready);
+    ASSERT_TRUE(session->WaitForEventCount(2U));
     const absl::StatusOr<std::string> prompt = render_future.get();
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     EXPECT_NE(prompt->find("- [user | "), std::string::npos);

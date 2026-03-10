@@ -1,5 +1,14 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
+genrule(
+    name = "embedded_prompts_header",
+    srcs = ["//server/memory/include/prompts:prompt_assets"],
+    outs = ["embedded_prompts.inc"],
+    cmd_bash = "$(location //server/memory/include/prompts:embed_prompts_tool) \"$@\" $(locations //server/memory/include/prompts:prompt_assets)",
+    cmd_bat = "call $(location //server/memory/include/prompts:embed_prompts_tool) \"$@\" $(locations //server/memory/include/prompts:prompt_assets)",
+    tools = ["//server/memory/include/prompts:embed_prompts_tool"],
+)
+
 cc_library(
     name = "memory_types",
     srcs = ["memory_timestamp_utils.cpp"],
@@ -33,6 +42,22 @@ cc_test(
 )
 
 cc_library(
+    name = "prompt_loader",
+    srcs = [
+        ":embedded_prompts_header",
+        "prompt_loader.cpp",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "//server/src:ai_gateway_logging_utils",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "working_memory",
     srcs = [
         "working_memory.cpp",
@@ -42,6 +67,7 @@ cc_library(
     deps = [
         ":conversation",
         ":memory_types",
+        ":prompt_loader",
         "//server/memory/include/isla/server/memory:memory_headers",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
@@ -56,6 +82,7 @@ cc_library(
     deps = [
         ":working_memory",
         "//server/memory/include/isla/server/memory:memory_headers",
+        "//server/src:ai_gateway_logging_utils",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -69,6 +96,15 @@ cc_test(
         ":conversation",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "prompt_loader_test",
+    srcs = ["prompt_loader_test.cpp"],
+    deps = [
+        ":prompt_loader",
+        "@googletest//:gtest_main",
     ],
 )
 
