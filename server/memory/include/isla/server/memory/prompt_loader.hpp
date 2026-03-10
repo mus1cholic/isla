@@ -7,10 +7,12 @@
 
 namespace isla::server::memory {
 
-inline constexpr std::string_view kSystemPromptRunfile =
-    "server/memory/include/prompts/system_prompt.txt";
+enum class PromptAsset {
+    kSystemPrompt,
+    kFuturePromptTest,
+};
 
-[[nodiscard]] absl::StatusOr<std::string> LoadPrompt(std::string_view runfile_path);
+[[nodiscard]] absl::StatusOr<std::string> LoadPrompt(PromptAsset prompt_asset);
 [[nodiscard]] absl::StatusOr<std::string> LoadSystemPrompt();
 [[nodiscard]] absl::StatusOr<std::string> ResolveSystemPrompt(std::string_view configured_prompt);
 

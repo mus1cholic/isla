@@ -5,11 +5,8 @@
 namespace isla::server::memory {
 namespace {
 
-inline constexpr std::string_view kFuturePromptTestRunfile =
-    "server/memory/include/prompts/future_prompt_test.txt";
-
 TEST(PromptLoaderTest, LoadPromptReadsSystemPromptAsset) {
-    const absl::StatusOr<std::string> generic_prompt = LoadPrompt(kSystemPromptRunfile);
+    const absl::StatusOr<std::string> generic_prompt = LoadPrompt(PromptAsset::kSystemPrompt);
     const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
 
     ASSERT_TRUE(generic_prompt.ok()) << generic_prompt.status();
@@ -19,7 +16,7 @@ TEST(PromptLoaderTest, LoadPromptReadsSystemPromptAsset) {
 }
 
 TEST(PromptLoaderTest, LoadPromptReadsNonSystemPromptAsset) {
-    const absl::StatusOr<std::string> prompt = LoadPrompt(kFuturePromptTestRunfile);
+    const absl::StatusOr<std::string> prompt = LoadPrompt(PromptAsset::kFuturePromptTest);
 
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     EXPECT_EQ(*prompt,
@@ -42,24 +39,11 @@ TEST(PromptLoaderTest, ResolveSystemPromptPreservesExplicitPrompt) {
     EXPECT_EQ(*resolved_prompt, "configured prompt");
 }
 
-TEST(PromptLoaderTest, LoadPromptReturnsNotFoundForMissingAsset) {
-    const absl::StatusOr<std::string> missing_prompt =
-        LoadPrompt("server/memory/include/prompts/does_not_exist.txt");
+TEST(PromptLoaderTest, LoadPromptRejectsUnknownPromptAsset) {
+    const absl::StatusOr<std::string> missing_prompt = LoadPrompt(static_cast<PromptAsset>(999));
 
     ASSERT_FALSE(missing_prompt.ok());
-    EXPECT_EQ(missing_prompt.status().code(), absl::StatusCode::kNotFound);
-}
-
-TEST(PromptLoaderTest, LoadPromptDoesNotReadTraversalOrAbsoluteLikePaths) {
-    const absl::StatusOr<std::string> traversal_prompt =
-        LoadPrompt("../memory/include/prompts/system_prompt.txt");
-    const absl::StatusOr<std::string> absolute_like_prompt =
-        LoadPrompt("C:/secret/system_prompt.txt");
-
-    ASSERT_FALSE(traversal_prompt.ok());
-    EXPECT_EQ(traversal_prompt.status().code(), absl::StatusCode::kNotFound);
-    ASSERT_FALSE(absolute_like_prompt.ok());
-    EXPECT_EQ(absolute_like_prompt.status().code(), absl::StatusCode::kNotFound);
+    EXPECT_EQ(missing_prompt.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 } // namespace

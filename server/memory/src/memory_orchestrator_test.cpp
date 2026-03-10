@@ -229,5 +229,31 @@ TEST_F(MemoryOrchestratorTest, CreateUsesWorkingMemoryDefaultPromptResolution) {
     EXPECT_EQ(handler->memory().snapshot().system_prompt, *system_prompt);
 }
 
+TEST_F(MemoryOrchestratorTest, HandleUserQueryRendersBundledDefaultPromptWhenConfigIsEmpty) {
+    absl::StatusOr<MemoryOrchestrator> handler = MakeDefaultPromptHandler();
+    const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
+
+    ASSERT_TRUE(handler.ok()) << handler.status();
+    ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
+
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "hello", Ts("2026-03-08T14:00:00Z")));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->rendered_working_memory.compare(0, system_prompt->size(), *system_prompt), 0);
+    EXPECT_NE(result->rendered_working_memory.find("- [user | 2026-03-08T14:00:00Z] hello"),
+              std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, CreateRejectsEmptySessionId) {
+    const absl::StatusOr<MemoryOrchestrator> handler =
+        MemoryOrchestrator::Create("", MemoryOrchestratorInit{
+                                           .user_id = "user_001",
+                                       });
+
+    ASSERT_FALSE(handler.ok());
+    EXPECT_EQ(handler.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 } // namespace
 } // namespace isla::server::memory
