@@ -12,7 +12,7 @@ TEST(AiGatewayPlannerTest, CreateFakeOpenAiPlanBuildsOneExecutableItem) {
     ASSERT_TRUE(planned.ok()) << planned.status();
     ASSERT_EQ(planned->steps.size(), 1U);
     ASSERT_TRUE(std::holds_alternative<OpenAiLlmStep>(planned->steps.front()));
-    const OpenAiLlmStep& openai_step = std::get<OpenAiLlmStep>(planned->steps.front());
+    const auto& openai_step = std::get<OpenAiLlmStep>(planned->steps.front());
     EXPECT_EQ(openai_step.step_name, "main");
     EXPECT_EQ(openai_step.model, "gpt-5.2");
 }
@@ -30,23 +30,11 @@ TEST(AiGatewayPlannerTest, ExecutorRejectsMissingRuntimeUserText) {
 
     GatewayPlanExecutor executor;
     const ExecutionOutcome outcome = executor.Execute(*planned, ExecutionRuntimeInput{
-                                                                   .user_text = "",
-                                                               });
+                                                                    .user_text = "",
+                                                                });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
     EXPECT_EQ(std::get<ExecutionFailure>(outcome).code, "invalid_request");
-}
-
-TEST(AiGatewayPlannerTest, CreateFakeOpenAiPlanRegistersOpenAiCallShape) {
-    const absl::StatusOr<ExecutionPlan> planned = CreateFakeOpenAiPlan();
-
-    ASSERT_TRUE(planned.ok()) << planned.status();
-    ASSERT_EQ(planned->steps.size(), 1U);
-    ASSERT_TRUE(std::holds_alternative<OpenAiLlmStep>(planned->steps.front()));
-
-    const OpenAiLlmStep& openai_step = std::get<OpenAiLlmStep>(planned->steps.front());
-    EXPECT_EQ(openai_step.step_name, "main");
-    EXPECT_EQ(openai_step.model, "gpt-5.2");
 }
 
 } // namespace

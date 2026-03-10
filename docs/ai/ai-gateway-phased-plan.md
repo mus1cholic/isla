@@ -712,8 +712,6 @@ live provider I/O.
 - The server has a clear OpenAI executor boundary independent of websocket handling.
 - The executor contract is explicit enough to wire to a fake or stub provider before live OpenAI
   integration exists.
-- The executor contract is explicit enough to wire to a fake or stub provider before live OpenAI
-  integration exists.
 
 ## Phase 3.5: OpenAI Responses Integration
 
