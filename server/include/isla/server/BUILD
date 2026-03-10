@@ -3,7 +3,11 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "server_headers",
     hdrs = [
+        "ai_gateway_executor.hpp",
         "ai_gateway_logging_utils.hpp",
+        "ai_gateway_planner.hpp",
+        "ai_gateway_step_registry.hpp",
+        "openai_llms.hpp",
         "ai_gateway_server.hpp",
         "ai_gateway_session_handler.hpp",
         "ai_gateway_stub_responder.hpp",

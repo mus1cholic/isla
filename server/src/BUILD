@@ -1,6 +1,56 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
 cc_library(
+    name = "ai_gateway_step_registry",
+    srcs = ["ai_gateway_step_registry.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_logging_utils",
+        ":openai_llms",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "ai_gateway_planner",
+    srcs = ["ai_gateway_planner.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":openai_llms",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "openai_llms",
+    srcs = ["openai_llms.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "ai_gateway_executor",
+    srcs = ["ai_gateway_executor.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_logging_utils",
+        ":openai_llms",
+        ":ai_gateway_step_registry",
+        "@abseil-cpp//absl/log:log",
+    ],
+)
+
+cc_library(
     name = "ai_gateway_session_handler",
     srcs = ["ai_gateway_session_handler.cpp"],
     visibility = ["//visibility:public"],
@@ -67,7 +117,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_executor",
         ":ai_gateway_logging_utils",
+        ":ai_gateway_planner",
         ":ai_gateway_server",
         ":ai_gateway_stub_responder_utils",
         "//server/memory/src:memory_orchestrator",
@@ -92,6 +144,49 @@ cc_binary(
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "ai_gateway_step_registry_test",
+    srcs = ["ai_gateway_step_registry_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_step_registry",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "ai_gateway_planner_test",
+    srcs = ["ai_gateway_planner_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_executor",
+        ":openai_llms",
+        ":ai_gateway_planner",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "ai_gateway_executor_test",
+    srcs = ["ai_gateway_executor_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_executor",
+        ":openai_llms",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "openai_llms_test",
+    srcs = ["openai_llms_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":openai_llms",
+        "@googletest//:gtest_main",
     ],
 )
 

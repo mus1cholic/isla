@@ -1,6 +1,7 @@
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
 #include <chrono>
+#include <exception>
 #include <future>
 #include <optional>
 #include <string>
@@ -14,7 +15,6 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/ai_gateway_stub_responder_utils.hpp"
-
 namespace isla::server::ai_gateway {
 namespace {
 
@@ -34,7 +34,11 @@ absl::Status await_emit(std::chrono::milliseconds timeout, StartFn&& start) {
 } // namespace
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
-    : config_(std::move(config)) {
+    : config_(std::move(config)),
+      executor_(GatewayStepRegistryConfig{
+          .response_prefix = config_.response_prefix,
+          .response_builder = config_.reply_builder,
+      }) {
     worker_ = std::thread([this] {
         try {
             WorkerLoop();
@@ -103,7 +107,7 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             "internal_error", "stub responder failed to update memory", "memory update failure");
         return;
     }
-    VLOG(1) << "AI gateway stub prepared user prompt session=" << event.session_id
+    VLOG(1) << "AI gateway stub prepared working memory session=" << event.session_id
             << " turn_id=" << SanitizeForLog(event.turn_id)
             << " working_memory_bytes=" << memory_result->rendered_working_memory.size();
 
@@ -470,9 +474,48 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
-    const std::string reply = config_.reply_builder
-                                  ? config_.reply_builder(config_.response_prefix, turn.text)
-                                  : BuildStubReply(config_.response_prefix, turn.text);
+    const absl::StatusOr<ExecutionPlan> execution_plan = CreateFakeOpenAiPlan();
+    if (!execution_plan.ok()) {
+        LOG(ERROR) << "AI gateway stub planner rejected accepted turn session=" << turn.session_id
+                   << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                   << SanitizeForLog(execution_plan.status().message()) << "'";
+        BestEffortTerminateAcceptedTurn(turn, "internal_error", "stub responder failed to plan request",
+                                        "planner failure");
+        return;
+    }
+    if (config_.on_execution_plan) {
+        try {
+            config_.on_execution_plan(*execution_plan);
+        } catch (const std::exception& error) {
+            LOG(ERROR) << "AI gateway stub planner hook threw session=" << turn.session_id
+                       << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
+                       << SanitizeForLog(error.what()) << "'";
+        } catch (...) {
+            LOG(ERROR) << "AI gateway stub planner hook threw session=" << turn.session_id
+                       << " turn_id=" << SanitizeForLog(turn.turn_id)
+                       << " detail='unknown exception'";
+        }
+    }
+
+    const ExecutionOutcome executor_outcome =
+        executor_.Execute(*execution_plan,
+                          ExecutionRuntimeInput{
+                              .user_text = turn.text,
+                          });
+    if (const auto* failure = std::get_if<ExecutionFailure>(&executor_outcome)) {
+        LOG(ERROR) << "AI gateway stub executor failed session=" << turn.session_id
+                   << " turn_id=" << SanitizeForLog(turn.turn_id) << " step_name="
+                   << SanitizeForLog(failure->step_name) << " code="
+                   << SanitizeForLog(failure->code) << " detail='"
+                   << SanitizeForLog(failure->message) << "'";
+        BestEffortTerminateAcceptedTurn(turn, failure->code, failure->message, "executor failure");
+        return;
+    }
+    const ExecutionResult& result = std::get<ExecutionResult>(executor_outcome);
+    const auto* last_result =
+        result.step_results.empty() ? nullptr : std::get_if<LlmCallResult>(&result.step_results.back());
+    const std::string reply =
+        last_result == nullptr ? std::string() : last_result->output_text;
     if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
         VLOG(1) << "AI gateway stub aborted reply emission during shutdown session="
                 << turn.session_id << " turn_id=" << SanitizeForLog(turn.turn_id);

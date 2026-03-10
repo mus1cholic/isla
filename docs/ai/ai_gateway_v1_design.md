@@ -1,6 +1,6 @@
 # AI Gateway v1 Design Baseline (Phase 0)
 
-Last updated: 2026-03-07
+Last updated: 2026-03-10
 
 ## Purpose
 
@@ -20,7 +20,7 @@ or code comments.
 
 ## Current Repository Status
 
-As of 2026-03-07:
+As of 2026-03-10:
 
 - the v1 architecture baseline is documented
 - shared protocol/session scaffolding exists in:
@@ -186,6 +186,25 @@ Current implementation note (2026-03-06):
 - a `GatewayStubResponder` now provides the first application-owned outbound orchestration path for
   deterministic `text.output`, `turn.completed`, `turn.cancelled`, and stop-time
   `error(code="server_stopping")` handling
+- the repo now also has an explicit Phase-3 planner/executor boundary in:
+  - `server/include/isla/server/ai_gateway_planner.hpp`
+  - `server/include/isla/server/ai_gateway_executor.hpp`
+  - `server/include/isla/server/openai_llms.hpp`
+  - `server/src/ai_gateway_planner.cpp`
+  - `server/src/openai_llms.cpp`
+  - `server/src/ai_gateway_executor.cpp`
+- that Phase-3 boundary currently provides:
+  - `ExecutionPlan` and ordered execution-step contracts
+  - concrete compile-time step types instead of planner-provided registered-call fields
+  - a compile-time `OpenAiLlmStep` signature as the first supported runtime dispatch
+    target
+  - `CreateFakeOpenAiPlan()` as the initial programmer-authored v1 planner entrypoint
+  - `GatewayPlanExecutor` as the generic plan runner
+  - runtime input supplied by the executor when it dispatches a registered step
+  - normalized executor result/failure shapes with final-result-only execution semantics
+- the current planner/executor path is intentionally independent of working-memory prompt shaping,
+  and runtime turn input is provided at execution time while the memory system remains a separate
+  responder concern
 - the emit completion callback currently means transport-executor acceptance/rejection, not remote
   socket flush
 - the async emit path now logs rejected/failed operations at the server boundary, guards callback
@@ -331,35 +350,47 @@ Deferred alternatives:
 
 The planner/executor split is required in v1 even though only one upstream request is performed.
 
+Current implementation note (2026-03-10):
+
+- the planner and executor boundaries are now implemented in `server/src`
+- the current responder path already routes accepted turns through:
+  - `CreateFakeOpenAiPlan(...)`
+  - `GatewayPlanExecutor`
+  - one final execution result mapped back to one client-visible `text.output`
+- the current fake responder path has the planner construct the `OpenAiLlmStep`, and the executor
+  supplies runtime turn input while constructing and dispatching `OpenAiLLMs`
+- live OpenAI Responses API traffic remains deferred to the later adapter/integration phase
+
 Responsibilities:
 
-- planner: normalize a client turn into exactly one executable request
-- executor: perform exactly one OpenAI request and return normalized provider output
+- planner: build an ordered execution plan of external actions
+- executor: execute those plan items in order and return normalized provider output
 - TTS adapter: optionally synthesize audio from executor text output
 
 Illustrative contract:
 
 ```cpp
-struct ClientTurnInput {
-  std::string session_id;
-  std::string turn_id;
-  std::string user_text;
-};
-
-struct PlannedRequest {
-  std::string session_id;
-  std::string turn_id;
+struct OpenAiLlmStep {
+  std::string step_name;
   std::string system_prompt;
-  std::string user_text;
   std::string model;
-  bool should_synthesize;
 };
 
-struct ExecutorResult {
-  std::string session_id;
-  std::string turn_id;
-  std::string model;
-  std::string output_text;
+using ExecutionStep = std::variant<OpenAiLlmStep>;
+
+struct ExecutionPlan {
+  std::vector<ExecutionStep> steps;
+};
+
+struct ExampleItemResult {
+  std::string step_name;
+  std::string payload;
+};
+
+using ExecutionStepResult = std::variant<ExampleItemResult>;
+
+struct ExecutionResult {
+  std::vector<ExecutionStepResult> step_results;
 };
 
 struct SynthesizedAudio {
@@ -368,8 +399,6 @@ struct SynthesizedAudio {
 };
 
 struct TurnResult {
-  std::string session_id;
-  std::string turn_id;
   std::string output_text;
   std::optional<SynthesizedAudio> audio;
 };
@@ -377,11 +406,13 @@ struct TurnResult {
 
 Invariants:
 
-- exactly one planner output per accepted turn in v1
-- exactly one OpenAI request per planner output in v1
-- planner owns request shaping and model-selection policy
-- executor owns provider I/O
+- the current gateway responder adapts one accepted turn into one `ExecutionPlan`
+- the current `ExecutionPlan` contains exactly one OpenAI-backed `OpenAiLlmStep`
+- planner owns plan shaping and step ordering policy
+- concrete step types own provider/service-specific dispatch identity
+- executor owns ordered plan execution and constructs provider operations from concrete steps
 - TTS MUST NOT change planner or executor ownership boundaries
+- item-output dependencies and optional parallel execution are deferred TODOs for later phases
 
 ## Streaming Readiness
 
@@ -393,6 +424,11 @@ Required interpretation:
 - provider adapters SHOULD model logical event streams internally
 - the gateway MAY buffer provider deltas and return only final results in v1
 - later chunked text or audio events MUST be addable without changing session or turn ownership
+
+Current implementation note (2026-03-10):
+
+- the current planner/executor boundary is final-result-only
+- `GatewayStubResponder` maps that final execution result to one final `text.output` in v1
 
 ## Phase 0 Acceptance
 

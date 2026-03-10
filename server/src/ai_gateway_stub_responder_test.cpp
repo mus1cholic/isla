@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -244,6 +245,44 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnEmitsStubTextAndCompletion) {
     EXPECT_EQ(events[0].payload, "stub echo: hello");
     EXPECT_EQ(events[1].op, "turn.completed");
     EXPECT_EQ(events[1].turn_id, "turn_1");
+}
+
+TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecutorBoundary) {
+    std::optional<ExecutionPlan> execution_plan;
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .response_prefix = "stub echo: ",
+        .memory_user_id = "gateway_user",
+        .reply_builder = {},
+        .on_execution_plan = [&](const ExecutionPlan& plan) { execution_plan = plan; },
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+    ASSERT_TRUE(execution_plan.has_value());
+    ASSERT_EQ(execution_plan->steps.size(), 1U);
+    ASSERT_TRUE(std::holds_alternative<OpenAiLlmStep>(execution_plan->steps.front()));
+    const OpenAiLlmStep& openai_step = std::get<OpenAiLlmStep>(execution_plan->steps.front());
+    EXPECT_EQ(openai_step.step_name, "main");
+    EXPECT_EQ(openai_step.model, "gpt-5.2");
+
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].op, "text.output");
+    EXPECT_EQ(events[0].payload, "stub echo: hello");
+    EXPECT_EQ(events[1].op, "turn.completed");
 }
 
 TEST_F(GatewayStubResponderTest, AcceptedTurnUpdatesSessionMemoryPrompt) {

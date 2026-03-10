@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -11,6 +12,8 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
+#include "isla/server/ai_gateway_executor.hpp"
+#include "isla/server/ai_gateway_planner.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 
@@ -22,6 +25,7 @@ struct GatewayStubResponderConfig {
     std::string response_prefix = "stub echo: ";
     std::string memory_user_id = "gateway_user";
     std::function<std::string(std::string_view, std::string_view)> reply_builder;
+    std::function<void(const ExecutionPlan&)> on_execution_plan;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>
         on_user_query_memory_ready;
 };
@@ -92,6 +96,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
                                                            std::string_view reply_text);
 
     GatewayStubResponderConfig config_;
+    GatewayPlanExecutor executor_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::thread worker_;
