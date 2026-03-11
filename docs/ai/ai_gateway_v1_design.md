@@ -59,6 +59,7 @@ As of 2026-03-11:
 - the gateway now enforces concrete v1 size limits:
   - inbound websocket message max: 64 KiB
   - `text.input.text` max: 32 KiB
+  - `text.output.text` max: 32 KiB
 - shutdown now gives queued writes a bounded grace period before force-closing stalled transports,
   so slow clients cannot block server shutdown indefinitely
 - live session transport now uses async Beast accept/read/write on the shared server `io_context`,
@@ -71,15 +72,23 @@ As of 2026-03-11:
   - `server/src/openai_llms.cpp`
   - `server/src/ai_gateway_server_main.cpp`
 - the current OpenAI implementation:
+  - loads and validates the bundled system prompt before the planner propagates it into the
+    `OpenAiLlmStep`
   - loads OpenAI credentials and transport settings at gateway startup
+  - supports process env plus local `.env` lookup for development, with `OPENAI_PROJECT_ID` as the
+    preferred project selector
   - sends streamed Responses API requests through a provider-owned adapter
   - buffers upstream text into one final client-visible `text.output` in v1
+  - enforces the same final-text size bound during provider aggregation and client-visible
+    `text.output` emission
   - keeps provider/network failure detail inside the executor/provider seam so websocket/session
     code remains transport-agnostic
 - current implementation limitation:
   - the OpenAI provider adapter currently uses `curl` for HTTPS/SSE transport because the active
     Windows toolchain in this repository does not expose OpenSSL headers for a direct Beast TLS
     client build
+  - the current `curl` transport still buffers subprocess stdout before full SSE parsing and does
+    not yet provide true incremental upstream cancellation; that refactor is deferred to Phase 3.6
 - no Fish Audio integration exists yet
 
 This document defines the architecture baseline that later code should implement. The current
@@ -314,6 +323,8 @@ Error:
 - `audio.output` MUST carry inline base64 payload data in v1 so the protocol stays JSON-only.
 - `text.input.text` SHOULD remain bounded by implementation-defined limits at the gateway boundary;
   the current implementation rejects text payloads above 32 KiB.
+- `text.output.text` SHOULD remain bounded by implementation-defined limits at the gateway
+  boundary; the current implementation rejects text payloads above 32 KiB.
 - `turn.completed` MUST terminate every successful or failed turn that was not cancelled.
 - `turn.cancelled` MUST terminate a turn after accepted cancellation.
 - `error` MAY omit `turn_id` only for failures that occur before a turn is accepted.
@@ -391,6 +402,8 @@ Current implementation note (2026-03-11):
 - live OpenAI Responses API traffic is now implemented behind a provider-owned adapter; the current
   transport implementation uses `curl` because the active Windows toolchain in this repository does
   not expose OpenSSL headers for a direct Beast TLS client build
+- the planner now loads the bundled system prompt through the memory prompt loader, and prompt
+  validation is enforced before the prompt enters the execution plan
 
 Responsibilities:
 
@@ -464,6 +477,9 @@ Current implementation note (2026-03-11):
 - `GatewayStubResponder` maps that final execution result to one final `text.output` in v1
 - the OpenAI provider adapter now normalizes streamed SSE events through a provider callback
   interface before the gateway buffers them back into that final-result-only contract
+- the current `curl` transport is still only stream-shaped rather than truly incremental because it
+  buffers subprocess stdout before full SSE parsing; early callback-driven abort is deferred to the
+  planned Phase-3.6 transport refactor
 - executor failures now surface stable public error codes/messages rather than raw internal step
   diagnostics
 - the current responder path still has cross-session head-of-line blocking because execution and

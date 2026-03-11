@@ -134,6 +134,7 @@ Sequencing rule for the remaining work:
 > - The gateway now enforces concrete v1 input size limits:
 >   - inbound websocket message max: 64 KiB
 >   - `text.input.text` max: 32 KiB
+>   - `text.output.text` max: 32 KiB
 > - The stub responder now tracks pending and in-progress turns separately, ignores mismatched or
 >   untracked cancel requests, and best-effort terminalizes accepted turns after post-acceptance
 >   emit failures so sessions do not remain wedged.
@@ -161,15 +162,24 @@ Sequencing rule for the remaining work:
 >   - `server/src/ai_gateway_server_main.cpp`
 >   - `server/src/ai_gateway_stub_responder.cpp`
 > - The OpenAI provider path now:
+>   - loads and validates the bundled system prompt before the planner propagates it into the
+>     `OpenAiLlmStep`
 >   - reads OpenAI config from the gateway binary startup path
+>   - supports process env plus local `.env` lookup for development, with `OPENAI_PROJECT_ID` as
+>     the preferred project selector
 >   - issues streamed Responses API requests through a provider-owned adapter
 >   - maps provider/network failures back into the executor-facing status surface
 >   - buffers upstream text into one final client-visible `text.output` in v1
+>   - enforces the same final-text size bound at both provider aggregation time and
+>     client-visible `text.output` emission time
 > - Current implementation limitation:
 >   - the provider adapter currently shells out to `curl` for HTTP/SSE transport because the
 >     repository's current Windows toolchain does not expose OpenSSL headers for a direct Beast TLS
 >     client; the transport remains isolated behind the provider boundary and can be replaced later
 >     without touching websocket/session code
+>   - the current `curl` transport still buffers subprocess stdout before full SSE parsing and does
+>     not yet provide true incremental upstream cancellation; that transport refactor is now
+>     explicitly deferred to Phase 3.6
 > - Known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
 >   slow step execution or slow accepted-turn emit completion can create cross-session head-of-line
 >   blocking. Fixing that isolation is deferred to the next PR rather than Phase 3.
@@ -181,10 +191,12 @@ Sequencing rule for the remaining work:
 
 - 2026-03-11: completed Phase 3.5 with a live OpenAI Responses provider adapter behind the
   executor boundary, gateway startup/config wiring for OpenAI credentials and transport settings,
-  SSE event parsing into normalized provider events, final-text buffering back through the existing
-  live-session seam, and dedicated provider/registry/executor regression coverage; the current
-  transport implementation uses `curl` behind the adapter because the repository's Windows
-  toolchain does not currently expose OpenSSL headers for a direct Beast TLS client.
+  SSE event parsing into normalized provider events, bundled system-prompt loading/validation,
+  final-text buffering back through the existing live-session seam, shared final-output size
+  enforcement, and dedicated provider/registry/executor regression coverage; the current transport
+  implementation uses `curl` behind the adapter because the repository's Windows toolchain does not
+  currently expose OpenSSL headers for a direct Beast TLS client, and truly incremental subprocess
+  SSE parsing is deferred to Phase 3.6.
 - 2026-03-10: completed Phase 3 with explicit execution-plan planner/executor contracts, a
   `CreateOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, an explicit
   `GatewayStepRegistry`, planner-built execution steps with concrete compile-time types like
@@ -793,13 +805,16 @@ Route gateway text requests to OpenAI through the executor boundary established 
 
 - The gateway can produce a final OpenAI-backed text response through the executor boundary.
 - Live OpenAI integration does not leak provider transport details into websocket/session code.
+- Prompt loading, startup config, and final-output bounds are explicit enough that the live OpenAI
+  path fails closed instead of silently degrading.
 
-## Phase 3.6: Remove Legacy Stub Response Path
+## Phase 3.6: Remove Legacy Stub Path and Tighten Provider Streaming
 
 ### Goal
 
 Remove the now-redundant local stub-response behavior from the OpenAI execution path after Phase 3.5
-has proven the end-to-end gateway pipeline.
+has proven the end-to-end gateway pipeline, and tighten the transport so provider streaming behaves
+like a real incremental stream rather than a buffered subprocess result.
 
 ### Scope
 
@@ -809,6 +824,12 @@ has proven the end-to-end gateway pipeline.
   tests, rather than preserving a second non-provider code path inside the production class.
 - Update unit and integration tests to inject fake `OpenAiResponsesClient` implementations where
   deterministic non-network behavior is still needed.
+- Refactor the `curl`-backed transport so SSE stdout is parsed incrementally while the subprocess is
+  still running, rather than buffering the full response before dispatching events.
+- Abort provider transport early when the event callback returns non-OK, when the terminal
+  completion event is observed, or when a hard transport-level stdout byte budget is exceeded.
+- Keep the transport/provider seam aligned with the documented `StreamResponse(...)` callback
+  contract: synchronous, ordered, abortable, and completion-signaling on success.
 - Keep the executor boundary and client-visible final-output contract unchanged.
 
 ### Out of Scope
@@ -817,6 +838,7 @@ has proven the end-to-end gateway pipeline.
 - Removing test doubles or fake provider coverage entirely.
 - Changing websocket/session ownership or client protocol messages.
 - Reworking the current single-worker responder concurrency model.
+- Replacing the current `curl` transport workaround with a direct TLS client in this phase.
 
 ### Rationale
 
@@ -1010,6 +1032,9 @@ self-hosted GPU infrastructure.
 > - The current completion callback on server-owned emits reports transport acceptance/rejection,
 >   not remote socket flush, so later streaming work must decide explicitly whether to preserve or
 >   refine that completion semantic.
+> - After the implemented Phase 3.5 transport, provider callbacks now exist, but the `curl`-backed
+>   transport still buffers subprocess stdout before full SSE parsing; truly incremental provider
+>   cancellation remains Phase-3.6 work rather than current behavior.
 
 ### Goal
 
