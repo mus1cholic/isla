@@ -39,6 +39,34 @@ TEST(PromptLoaderTest, ResolveSystemPromptPreservesExplicitPrompt) {
     EXPECT_EQ(*resolved_prompt, "configured prompt");
 }
 
+TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptWithNulByte) {
+    const std::string configured_prompt("hello\0world", 11U);
+
+    const absl::StatusOr<std::string> resolved_prompt = ResolveSystemPrompt(configured_prompt);
+
+    ASSERT_FALSE(resolved_prompt.ok());
+    EXPECT_EQ(resolved_prompt.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(resolved_prompt.status().message(), "prompt must not contain NUL bytes");
+}
+
+TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptWithControlCharacters) {
+    const absl::StatusOr<std::string> resolved_prompt = ResolveSystemPrompt("hello\x01world");
+
+    ASSERT_FALSE(resolved_prompt.ok());
+    EXPECT_EQ(resolved_prompt.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(resolved_prompt.status().message(),
+              "prompt contains unsupported control characters");
+}
+
+TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptThatIsTooLarge) {
+    const absl::StatusOr<std::string> resolved_prompt =
+        ResolveSystemPrompt(std::string(64U * 1024U + 1U, 'x'));
+
+    ASSERT_FALSE(resolved_prompt.ok());
+    EXPECT_EQ(resolved_prompt.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(resolved_prompt.status().message(), "prompt exceeds maximum length");
+}
+
 TEST(PromptLoaderTest, LoadPromptRejectsUnknownPromptAsset) {
     const absl::StatusOr<std::string> missing_prompt = LoadPrompt(static_cast<PromptAsset>(999));
 

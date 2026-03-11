@@ -221,5 +221,32 @@ TEST(GatewayPlanExecutorTest, MapsPermissionDeniedProviderFailuresToPermissionDe
     EXPECT_FALSE(failure.retryable);
 }
 
+TEST(GatewayPlanExecutorTest, MapsResourceExhaustedProviderFailuresToResponseTooLarge) {
+    GatewayPlanExecutor executor(GatewayStepRegistryConfig{
+        .openai_client = std::make_shared<FailingOpenAiResponsesClient>(
+            absl::ResourceExhaustedError("too much output")),
+    });
+
+    const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
+        .steps =
+            {
+                OpenAiLlmStep{
+                    .step_name = "step_a",
+                    .system_prompt = "",
+                    .model = "model_a",
+                },
+            },
+    },
+                                             ExecutionRuntimeInput{
+                                                 .user_text = "shared input",
+                                             });
+
+    ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
+    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    EXPECT_EQ(failure.code, "response_too_large");
+    EXPECT_EQ(failure.message, "execution step produced too much output");
+    EXPECT_FALSE(failure.retryable);
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway

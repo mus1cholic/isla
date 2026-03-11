@@ -19,6 +19,7 @@
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
+#include "openai_responses_test_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -29,26 +30,6 @@ struct EmittedEvent {
     std::string op;
     std::string turn_id;
     std::string payload;
-};
-
-class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
-  public:
-    explicit FakeOpenAiResponsesClient(absl::Status status) : status_(std::move(status)) {}
-
-    [[nodiscard]] absl::Status Validate() const override {
-        return absl::OkStatus();
-    }
-
-    [[nodiscard]] absl::Status
-    StreamResponse(const OpenAiResponsesRequest& request,
-                   const OpenAiResponsesEventCallback& on_event) const override {
-        static_cast<void>(request);
-        static_cast<void>(on_event);
-        return status_;
-    }
-
-  private:
-    absl::Status status_;
 };
 
 class RecordingLiveSession final : public GatewayLiveSession {
@@ -599,7 +580,7 @@ TEST(GatewayStubResponderStandaloneTest, OpenAiProviderFailureEmitsMappedErrorAn
         .response_delay = 0ms,
         .response_prefix = "stub echo: ",
         .openai_client =
-            std::make_shared<FakeOpenAiResponsesClient>(absl::UnavailableError("provider down")),
+            test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down")),
     });
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");

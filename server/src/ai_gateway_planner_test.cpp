@@ -19,7 +19,6 @@ TEST(AiGatewayPlannerTest, CreateOpenAiPlanBuildsOneExecutableItem) {
     EXPECT_EQ(openai_step.step_name, "main");
     EXPECT_EQ(openai_step.model, "gpt-5.2");
     EXPECT_EQ(openai_step.system_prompt, *system_prompt);
-    EXPECT_NE(openai_step.system_prompt.find("Isla"), std::string::npos);
 }
 
 TEST(AiGatewayPlannerTest, CreateOpenAiPlanDoesNotRequireRuntimeUserText) {

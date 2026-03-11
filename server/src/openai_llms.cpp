@@ -9,12 +9,17 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_session_handler.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
+}
+
+absl::Status resource_exhausted(std::string_view message) {
+    return absl::ResourceExhaustedError(std::string(message));
 }
 
 } // namespace
@@ -118,6 +123,10 @@ absl::StatusOr<std::string> OpenAiLLMs::GenerateProviderResponse(std::size_t ite
                 [&output_text](const auto& concrete_event) -> absl::Status {
                     using Event = std::decay_t<decltype(concrete_event)>;
                     if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        if (output_text.size() + concrete_event.text_delta.size() >
+                            kMaxTextOutputBytes) {
+                            return resource_exhausted("openai llms output exceeds maximum length");
+                        }
                         output_text.append(concrete_event.text_delta);
                     }
                     return absl::OkStatus();

@@ -17,9 +17,21 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_logging_utils",
+        ":ai_gateway_string_utils",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "ai_gateway_string_utils",
+    srcs = ["ai_gateway_string_utils.cpp"],
+    hdrs = ["ai_gateway_string_utils.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
     ],
 )
 
@@ -81,6 +93,7 @@ cc_library(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_utils",
+        ":ai_gateway_string_utils",
         "@boost.beast//:boost.beast",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
@@ -210,12 +223,23 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "openai_responses_test_utils",
+    testonly = True,
+    hdrs = ["openai_responses_test_utils.hpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
+    ],
+)
+
 cc_test(
     name = "ai_gateway_step_registry_test",
     srcs = ["ai_gateway_step_registry_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_step_registry",
+        ":openai_responses_test_utils",
         "@googletest//:gtest_main",
     ],
 )
@@ -261,6 +285,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":openai_llms",
+        ":openai_responses_test_utils",
         "@googletest//:gtest_main",
     ],
 )
@@ -291,6 +316,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_server",
+        ":openai_responses_test_utils",
         ":ai_gateway_stub_responder",
         "@abseil-cpp//absl/status",
         "@googletest//:gtest_main",

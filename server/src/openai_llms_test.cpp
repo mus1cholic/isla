@@ -2,55 +2,15 @@
 
 #include <memory>
 #include <stdexcept>
-#include <type_traits>
 #include <utility>
 
 #include <gtest/gtest.h>
 
+#include "isla/server/ai_gateway_session_handler.hpp"
+#include "openai_responses_test_utils.hpp"
+
 namespace isla::server::ai_gateway {
 namespace {
-
-class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
-  public:
-    explicit FakeOpenAiResponsesClient(absl::Status status = absl::OkStatus(),
-                                       std::string full_text = "")
-        : status_(std::move(status)), full_text_(std::move(full_text)) {}
-
-    [[nodiscard]] absl::Status Validate() const override {
-        return absl::OkStatus();
-    }
-
-    [[nodiscard]] absl::Status
-    StreamResponse(const OpenAiResponsesRequest& request,
-                   const OpenAiResponsesEventCallback& on_event) const override {
-        last_request = request;
-        if (!status_.ok()) {
-            return status_;
-        }
-        const auto midpoint = full_text_.size() / 2U;
-        const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
-            .text_delta = full_text_.substr(0, midpoint),
-        });
-        if (!first_status.ok()) {
-            return first_status;
-        }
-        const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
-            .text_delta = full_text_.substr(midpoint),
-        });
-        if (!second_status.ok()) {
-            return second_status;
-        }
-        return on_event(OpenAiResponsesCompletedEvent{
-            .response_id = "resp_test",
-        });
-    }
-
-    mutable OpenAiResponsesRequest last_request;
-
-  private:
-    absl::Status status_;
-    std::string full_text_;
-};
 
 TEST(OpenAiLlmstest, RejectsMissingStepName) {
     OpenAiLLMs openai_llms("", "", "gpt-4.1-mini");
@@ -120,7 +80,7 @@ TEST(OpenAiLlmstest, ConvertsBuilderExceptionToInternalError) {
 }
 
 TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
-    auto client = std::make_shared<FakeOpenAiResponsesClient>(absl::OkStatus(), "hello world");
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
     OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.2", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
@@ -133,8 +93,7 @@ TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
 }
 
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
-    auto client =
-        std::make_shared<FakeOpenAiResponsesClient>(absl::UnavailableError("rate limited"));
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("rate limited"));
     OpenAiLLMs openai_llms("main", "", "gpt-5.2", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
@@ -142,6 +101,18 @@ TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kUnavailable);
     EXPECT_EQ(result.status().message(), "rate limited");
+}
+
+TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(),
+                                                      std::string(kMaxTextOutputBytes + 1U, 'x'));
+    OpenAiLLMs openai_llms("main", "", "gpt-5.2", client);
+
+    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kResourceExhausted);
+    EXPECT_EQ(result.status().message(), "openai llms output exceeds maximum length");
 }
 
 } // namespace

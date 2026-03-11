@@ -29,7 +29,10 @@ int main(int argc, char** argv) {
     const absl::StatusOr<isla::server::ai_gateway::ParsedStartupConfig> startup_config =
         isla::server::ai_gateway::ParseGatewayStartupConfig(argc, argv, env_lookup);
     if (!startup_config.ok()) {
-        LOG(ERROR) << startup_config.status();
+        LOG(ERROR) << "AI gateway startup config parse failed code="
+                   << static_cast<int>(startup_config.status().code()) << " detail='"
+                   << isla::server::ai_gateway::SanitizeForLog(startup_config.status().message())
+                   << "'";
         return 1;
     }
 
@@ -47,7 +50,9 @@ int main(int argc, char** argv) {
     responder.AttachSessionRegistry(&server.session_registry());
     const absl::Status start_status = server.Start();
     if (!start_status.ok()) {
-        LOG(ERROR) << "AI gateway failed to start: " << start_status;
+        LOG(ERROR) << "AI gateway failed to start code=" << static_cast<int>(start_status.code())
+                   << " detail='"
+                   << isla::server::ai_gateway::SanitizeForLog(start_status.message()) << "'";
         return 1;
     }
 
@@ -63,8 +68,9 @@ int main(int argc, char** argv) {
               << startup_config->openai_config.port << " scheme="
               << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.scheme)
               << " timeout_ms=" << startup_config->openai_config.request_timeout.count();
-    LOG(INFO) << "AI gateway listening on " << startup_config->server_config.bind_host << ":"
-              << server.bound_port();
+    LOG(INFO) << "AI gateway listening on "
+              << isla::server::ai_gateway::SanitizeForLog(startup_config->server_config.bind_host)
+              << ":" << server.bound_port();
     while (g_stop_requested == 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }

@@ -6,34 +6,10 @@
 
 #include <gtest/gtest.h>
 
+#include "openai_responses_test_utils.hpp"
+
 namespace isla::server::ai_gateway {
 namespace {
-
-class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
-  public:
-    [[nodiscard]] absl::Status Validate() const override {
-        return absl::OkStatus();
-    }
-
-    [[nodiscard]] absl::Status
-    StreamResponse(const OpenAiResponsesRequest& request,
-                   const OpenAiResponsesEventCallback& on_event) const override {
-        last_request = request;
-        const absl::Status first_status =
-            on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = "provider " });
-        if (!first_status.ok()) {
-            return first_status;
-        }
-        const absl::Status second_status =
-            on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = "response" });
-        if (!second_status.ok()) {
-            return second_status;
-        }
-        return on_event(OpenAiResponsesCompletedEvent{ .response_id = "resp_test" });
-    }
-
-    mutable OpenAiResponsesRequest last_request;
-};
 
 TEST(GatewayStepRegistryTest, ExecutesOpenAiLlmStep) {
     GatewayStepRegistry registry(GatewayStepRegistryConfig{
@@ -137,7 +113,7 @@ TEST(GatewayStepRegistryTest, ConvertsBuilderExceptionToInternalError) {
 }
 
 TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
-    auto client = std::make_shared<FakeOpenAiResponsesClient>();
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "provider response");
     GatewayStepRegistry registry(GatewayStepRegistryConfig{
         .response_prefix = "stub echo: ",
         .response_builder = {},

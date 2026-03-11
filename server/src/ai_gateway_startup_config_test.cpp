@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -12,6 +14,18 @@
 
 namespace isla::server::ai_gateway {
 namespace {
+
+std::filesystem::path MakeUniqueTestEnvPath(std::string_view stem) {
+    static std::atomic<std::uint64_t> sequence{ 0 };
+
+    const std::filesystem::path root = std::filesystem::temp_directory_path();
+    const std::uint64_t suffix = sequence.fetch_add(1U);
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path directory =
+        root / (std::string(stem) + "_" + std::to_string(now) + "_" + std::to_string(suffix));
+    std::filesystem::create_directory(directory);
+    return directory / ".env";
+}
 
 auto kArg0 = std::to_array("isla_ai_gateway");
 auto kHost = std::to_array("--host=0.0.0.0");
@@ -30,8 +44,7 @@ auto kBadScheme = std::to_array("--openai-scheme=ftp");
 auto kBadPort = std::to_array("--openai-port=70000");
 
 TEST(AiGatewayStartupConfigTest, LoadDotEnvFileParsesBasicAssignments) {
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "isla_ai_gateway_test.env";
+    const std::filesystem::path path = MakeUniqueTestEnvPath("isla_ai_gateway_test");
     {
         std::ofstream output(path);
         output << "# comment\n";
@@ -41,7 +54,7 @@ TEST(AiGatewayStartupConfigTest, LoadDotEnvFileParsesBasicAssignments) {
     }
 
     const absl::StatusOr<StartupEnvMap> parsed = LoadDotEnvFile(path.string());
-    std::filesystem::remove(path);
+    std::filesystem::remove_all(path.parent_path());
 
     ASSERT_TRUE(parsed.ok()) << parsed.status();
     EXPECT_EQ(parsed->at("OPENAI_API_KEY"), "test_key");
@@ -50,8 +63,7 @@ TEST(AiGatewayStartupConfigTest, LoadDotEnvFileParsesBasicAssignments) {
 }
 
 TEST(AiGatewayStartupConfigTest, LoadDotEnvFilePreservesHashesInsideQuotedValues) {
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "isla_ai_gateway_hash.env";
+    const std::filesystem::path path = MakeUniqueTestEnvPath("isla_ai_gateway_hash");
     {
         std::ofstream output(path);
         output << "OPENAI_API_KEY=\"key#with#hashes\"\n";
@@ -60,7 +72,7 @@ TEST(AiGatewayStartupConfigTest, LoadDotEnvFilePreservesHashesInsideQuotedValues
     }
 
     const absl::StatusOr<StartupEnvMap> parsed = LoadDotEnvFile(path.string());
-    std::filesystem::remove(path);
+    std::filesystem::remove_all(path.parent_path());
 
     ASSERT_TRUE(parsed.ok()) << parsed.status();
     EXPECT_EQ(parsed->at("OPENAI_API_KEY"), "key#with#hashes");
@@ -69,15 +81,14 @@ TEST(AiGatewayStartupConfigTest, LoadDotEnvFilePreservesHashesInsideQuotedValues
 }
 
 TEST(AiGatewayStartupConfigTest, LoadDotEnvFileRejectsMalformedLine) {
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "isla_ai_gateway_bad.env";
+    const std::filesystem::path path = MakeUniqueTestEnvPath("isla_ai_gateway_bad");
     {
         std::ofstream output(path);
         output << "NOT_VALID\n";
     }
 
     const absl::StatusOr<StartupEnvMap> parsed = LoadDotEnvFile(path.string());
-    std::filesystem::remove(path);
+    std::filesystem::remove_all(path.parent_path());
 
     ASSERT_FALSE(parsed.ok());
     EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);

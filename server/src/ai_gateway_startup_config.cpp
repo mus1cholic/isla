@@ -19,21 +19,11 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "ai_gateway_string_utils.hpp"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
-
-std::string TrimAscii(std::string_view text) {
-    std::size_t begin = 0;
-    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
-        ++begin;
-    }
-    std::size_t end = text.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1U])) != 0) {
-        --end;
-    }
-    return std::string(text.substr(begin, end - begin));
-}
 
 std::string UnquoteValue(std::string_view value) {
     if (value.size() >= 2U && ((value.front() == '"' && value.back() == '"') ||
@@ -150,7 +140,14 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
     }
     if (const std::optional<std::string> port = env_lookup("OPENAI_PORT"); port.has_value()) {
         const absl::StatusOr<int> parsed_port = ParseIntArgument(*port, "OPENAI_PORT");
-        if (parsed_port.ok() && *parsed_port >= 0 && *parsed_port <= 65535) {
+        if (!parsed_port.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid OPENAI_PORT value='"
+                         << SanitizeForLog(*port) << "' detail='"
+                         << SanitizeForLog(parsed_port.status().message()) << "'";
+        } else if (*parsed_port < 0 || *parsed_port > 65535) {
+            LOG(WARNING) << "AI gateway ignored out-of-range OPENAI_PORT value='"
+                         << SanitizeForLog(*port) << "'";
+        } else {
             config->port = static_cast<std::uint16_t>(*parsed_port);
         }
     }
@@ -158,7 +155,14 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
         timeout_ms.has_value()) {
         const absl::StatusOr<int> parsed_timeout =
             ParseIntArgument(*timeout_ms, "OPENAI_TIMEOUT_MS");
-        if (parsed_timeout.ok() && *parsed_timeout > 0) {
+        if (!parsed_timeout.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid OPENAI_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "' detail='"
+                         << SanitizeForLog(parsed_timeout.status().message()) << "'";
+        } else if (*parsed_timeout <= 0) {
+            LOG(WARNING) << "AI gateway ignored non-positive OPENAI_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "'";
+        } else {
             config->request_timeout = std::chrono::milliseconds(*parsed_timeout);
         }
     }

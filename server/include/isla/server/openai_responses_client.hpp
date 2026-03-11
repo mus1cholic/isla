@@ -48,6 +48,11 @@ class OpenAiResponsesClient {
     virtual ~OpenAiResponsesClient() = default;
 
     [[nodiscard]] virtual absl::Status Validate() const = 0;
+    // Streams response events in upstream order. Implementations must invoke `on_event`
+    // synchronously and non-concurrently on the calling thread. Returning a non-OK status from
+    // `on_event` must abort streaming and be propagated from `StreamResponse(...)`. A successful
+    // return from `StreamResponse(...)` guarantees that the stream reached its terminal completed
+    // event.
     [[nodiscard]] virtual absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const = 0;

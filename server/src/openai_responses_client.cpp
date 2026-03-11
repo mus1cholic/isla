@@ -6,10 +6,6 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
-#ifndef _CRT_RAND_S
-#define _CRT_RAND_S
-#endif
-#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -26,6 +22,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "ai_gateway_string_utils.hpp"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 
 #if defined(_WIN32)
@@ -58,18 +55,6 @@ absl::Status invalid_argument(std::string_view message) {
 
 absl::Status internal_error(std::string_view message) {
     return absl::InternalError(std::string(message));
-}
-
-std::string TrimAscii(std::string_view text) {
-    std::size_t begin = 0;
-    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
-        ++begin;
-    }
-    std::size_t end = text.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1U])) != 0) {
-        --end;
-    }
-    return std::string(text.substr(begin, end - begin));
 }
 
 std::string BuildCurlUrl(const OpenAiResponsesClientConfig& config) {
@@ -206,6 +191,58 @@ class ScopedTempFile final {
 };
 
 #if defined(_WIN32)
+class ScopedWindowsHandle final {
+  public:
+    ScopedWindowsHandle() = default;
+
+    explicit ScopedWindowsHandle(HANDLE handle) : handle_(handle) {}
+
+    ~ScopedWindowsHandle() {
+        reset();
+    }
+
+    ScopedWindowsHandle(const ScopedWindowsHandle&) = delete;
+    ScopedWindowsHandle& operator=(const ScopedWindowsHandle&) = delete;
+
+    ScopedWindowsHandle(ScopedWindowsHandle&& other) noexcept : handle_(other.release()) {}
+
+    ScopedWindowsHandle& operator=(ScopedWindowsHandle&& other) noexcept {
+        if (this != &other) {
+            reset(other.release());
+        }
+        return *this;
+    }
+
+    [[nodiscard]] HANDLE get() const {
+        return handle_;
+    }
+
+    [[nodiscard]] bool valid() const {
+        return handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE;
+    }
+
+    [[nodiscard]] HANDLE* receive() {
+        reset();
+        return &handle_;
+    }
+
+    [[nodiscard]] HANDLE release() {
+        HANDLE released = handle_;
+        handle_ = nullptr;
+        return released;
+    }
+
+    void reset(HANDLE handle = nullptr) {
+        if (valid()) {
+            CloseHandle(handle_);
+        }
+        handle_ = handle;
+    }
+
+  private:
+    HANDLE handle_ = nullptr;
+};
+
 class ScopedWindowsAcl final {
   public:
     ScopedWindowsAcl() = default;
@@ -232,25 +269,22 @@ class ScopedWindowsAcl final {
     }
 
     [[nodiscard]] static absl::StatusOr<ScopedWindowsAcl> CreateOwnerOnly() {
-        HANDLE token_handle = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token_handle)) {
+        ScopedWindowsHandle token_handle;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token_handle.receive())) {
             return absl::UnavailableError("failed to open process token");
         }
 
         DWORD token_info_size = 0;
-        GetTokenInformation(token_handle, TokenUser, nullptr, 0, &token_info_size);
+        GetTokenInformation(token_handle.get(), TokenUser, nullptr, 0, &token_info_size);
         if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || token_info_size == 0) {
-            CloseHandle(token_handle);
             return absl::UnavailableError("failed to size process token information");
         }
 
         std::vector<char> token_info(token_info_size);
-        if (!GetTokenInformation(token_handle, TokenUser, token_info.data(), token_info_size,
+        if (!GetTokenInformation(token_handle.get(), TokenUser, token_info.data(), token_info_size,
                                  &token_info_size)) {
-            CloseHandle(token_handle);
             return absl::UnavailableError("failed to read process token information");
         }
-        CloseHandle(token_handle);
 
         const TOKEN_USER* token_user = reinterpret_cast<const TOKEN_USER*>(token_info.data());
         EXPLICIT_ACCESSA access{};
@@ -339,11 +373,9 @@ absl::StatusOr<std::string> ReadFileToString(const std::filesystem::path& path) 
     return buffer.str();
 }
 
-absl::Status WriteStringToFile(const std::filesystem::path& path, std::string_view contents,
-                               bool private_permissions = false) {
+absl::Status WriteStringToFile(const std::filesystem::path& path, std::string_view contents) {
 #if defined(_WIN32)
-    const DWORD flags =
-        FILE_ATTRIBUTE_TEMPORARY | (private_permissions ? FILE_FLAG_OPEN_REPARSE_POINT : 0);
+    const DWORD flags = FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT;
     HANDLE handle = CreateFileA(path.string().c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                                 flags, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
@@ -1012,13 +1044,12 @@ absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& confi
 
     const std::string curl_config_contents =
         "header = \"Authorization: Bearer " + EscapeCurlConfigValue(config.api_key) + "\"\n";
-    absl::Status write_status =
-        WriteStringToFile(curl_config_file->path(), curl_config_contents, true);
+    absl::Status write_status = WriteStringToFile(curl_config_file->path(), curl_config_contents);
     if (!write_status.ok()) {
         return write_status;
     }
 
-    write_status = WriteStringToFile(request_file->path(), request_json, true);
+    write_status = WriteStringToFile(request_file->path(), request_json);
     if (!write_status.ok()) {
         return write_status;
     }

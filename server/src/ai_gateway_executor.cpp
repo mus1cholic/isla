@@ -35,6 +35,12 @@ PublicFailureMapping MapPublicFailure(const absl::Status& status) {
             .message = "upstream request was not permitted",
             .retryable = false,
         };
+    case absl::StatusCode::kResourceExhausted:
+        return PublicFailureMapping{
+            .code = "response_too_large",
+            .message = "execution step produced too much output",
+            .retryable = false,
+        };
     case absl::StatusCode::kDeadlineExceeded:
         return PublicFailureMapping{
             .code = "upstream_timeout",
