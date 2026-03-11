@@ -89,6 +89,19 @@ absl::Status ValidateCurlConfigOrHeaderValue(std::string_view field_name, std::s
     return absl::OkStatus();
 }
 
+absl::StatusOr<std::optional<std::string>> ReadOptionalStringField(const nlohmann::json& object,
+                                                                   std::string_view field_name) {
+    const auto it = object.find(std::string(field_name));
+    if (it == object.end() || it->is_null()) {
+        return std::nullopt;
+    }
+    if (!it->is_string()) {
+        return internal_error("openai responses event field '" + std::string(field_name) +
+                              "' must be a string");
+    }
+    return it->get<std::string>();
+}
+
 #if defined(_WIN32)
 constexpr std::string_view kCurlCommand = "curl.exe";
 
@@ -140,6 +153,32 @@ absl::StatusOr<std::string> ResolveWindowsCurlExecutablePath() {
 }
 #else
 constexpr std::string_view kCurlCommand = "curl";
+
+absl::StatusOr<std::string> ResolvePosixCurlExecutablePath() {
+    constexpr std::array<std::string_view, 2> kCurlCandidates = {
+        "/usr/bin/curl",
+        "/bin/curl",
+    };
+
+    for (const std::string_view candidate : kCurlCandidates) {
+        const std::filesystem::path path(candidate);
+        std::error_code error;
+        const auto status = std::filesystem::status(path, error);
+        if (error || !std::filesystem::is_regular_file(status)) {
+            continue;
+        }
+        const auto permissions = status.permissions();
+        const bool executable =
+            (permissions & std::filesystem::perms::owner_exec) != std::filesystem::perms::none ||
+            (permissions & std::filesystem::perms::group_exec) != std::filesystem::perms::none ||
+            (permissions & std::filesystem::perms::others_exec) != std::filesystem::perms::none;
+        if (executable) {
+            return path.string();
+        }
+    }
+
+    return absl::NotFoundError("failed to locate trusted curl binary");
+}
 #endif
 
 class ScopedTempFile final {
@@ -395,8 +434,9 @@ std::vector<std::string> BuildCurlArgs(const OpenAiResponsesClientConfig& config
     args.emplace_back("--data-binary");
     args.push_back("@" + request_file.string());
     args.emplace_back("--max-time");
-    args.push_back(
-        std::to_string(std::max<std::int64_t>(1, config.request_timeout.count() / 1000)));
+    const std::int64_t timeout_ms = config.request_timeout.count();
+    const std::int64_t timeout_seconds = std::max<std::int64_t>(1, (timeout_ms + 999) / 1000);
+    args.push_back(std::to_string(timeout_seconds));
     return args;
 }
 
@@ -549,6 +589,10 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
     if (!stderr_file.ok()) {
         return stderr_file.status();
     }
+    const absl::StatusOr<std::string> curl_path = ResolvePosixCurlExecutablePath();
+    if (!curl_path.ok()) {
+        return curl_path.status();
+    }
 
     int stdout_pipe[2] = { -1, -1 };
     if (pipe(stdout_pipe) != 0) {
@@ -578,14 +622,16 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
 
     std::vector<char*> argv;
     argv.reserve(args.size() + 1U);
-    for (const std::string& arg : args) {
-        argv.push_back(const_cast<char*>(arg.c_str()));
+    std::vector<std::string> spawned_args = args;
+    spawned_args.front() = *curl_path;
+    for (std::string& arg : spawned_args) {
+        argv.push_back(arg.data());
     }
     argv.push_back(nullptr);
 
     pid_t pid = 0;
     const int spawn_result =
-        posix_spawnp(&pid, args.front().c_str(), &actions, nullptr, argv.data(), environ);
+        posix_spawn(&pid, curl_path->c_str(), &actions, nullptr, argv.data(), environ);
     posix_spawn_file_actions_destroy(&actions);
     close(stdout_pipe[1]);
     close(stderr_fd);
@@ -689,12 +735,16 @@ absl::Status MapHttpErrorStatus(unsigned int status_code, std::string message) {
 std::string ExtractJsonErrorMessage(const nlohmann::json& json) {
     if (json.contains("error") && json["error"].is_object()) {
         const auto& error = json["error"];
-        if (error.contains("message") && error["message"].is_string()) {
-            return error["message"].get<std::string>();
+        const absl::StatusOr<std::optional<std::string>> message =
+            ReadOptionalStringField(error, "message");
+        if (message.ok() && message->has_value()) {
+            return **message;
         }
     }
-    if (json.contains("message") && json["message"].is_string()) {
-        return json["message"].get<std::string>();
+    const absl::StatusOr<std::optional<std::string>> message =
+        ReadOptionalStringField(json, "message");
+    if (message.ok() && message->has_value()) {
+        return **message;
     }
     return {};
 }
@@ -737,7 +787,9 @@ std::optional<std::string> ExtractCompletedText(const nlohmann::json& event_json
             if (!part.is_object()) {
                 continue;
             }
-            if (part.value("type", "") != "output_text") {
+            const absl::StatusOr<std::optional<std::string>> part_type =
+                ReadOptionalStringField(part, "type");
+            if (!part_type.ok() || part_type->value_or("") != "output_text") {
                 continue;
             }
             if (!part.contains("text") || !part["text"].is_string()) {
@@ -754,7 +806,12 @@ std::optional<std::string> ExtractCompletedText(const nlohmann::json& event_json
 }
 
 absl::Status MapProviderEventError(const nlohmann::json& event_json) {
-    const std::string type = event_json.value("type", "");
+    const absl::StatusOr<std::optional<std::string>> type_field =
+        ReadOptionalStringField(event_json, "type");
+    if (!type_field.ok()) {
+        return type_field.status();
+    }
+    const std::string type = type_field->value_or("");
     if (type == "error") {
         std::string message = ExtractJsonErrorMessage(event_json);
         if (message.empty()) {
@@ -782,9 +839,13 @@ absl::Status MapProviderEventError(const nlohmann::json& event_json) {
             if (response.contains("incomplete_details") &&
                 response["incomplete_details"].is_object()) {
                 const auto& details = response["incomplete_details"];
-                if (details.contains("reason") && details["reason"].is_string()) {
-                    message =
-                        "openai responses incomplete: " + details["reason"].get<std::string>();
+                const absl::StatusOr<std::optional<std::string>> reason =
+                    ReadOptionalStringField(details, "reason");
+                if (!reason.ok()) {
+                    return reason.status();
+                }
+                if (reason->has_value()) {
+                    message = "openai responses incomplete: " + **reason;
                 }
             }
         }
@@ -795,7 +856,12 @@ absl::Status MapProviderEventError(const nlohmann::json& event_json) {
 
 absl::Status DispatchStreamEvent(const nlohmann::json& event_json, SseParseSummary* summary,
                                  const OpenAiResponsesEventCallback& on_event) {
-    const std::string type = event_json.value("type", "");
+    const absl::StatusOr<std::optional<std::string>> type_field =
+        ReadOptionalStringField(event_json, "type");
+    if (!type_field.ok()) {
+        return type_field.status();
+    }
+    const std::string type = type_field->value_or("");
     if (type.empty()) {
         return absl::OkStatus();
     }
@@ -807,9 +873,14 @@ absl::Status DispatchStreamEvent(const nlohmann::json& event_json, SseParseSumma
     }
 
     if (type == "response.output_text.delta") {
+        const absl::StatusOr<std::optional<std::string>> delta =
+            ReadOptionalStringField(event_json, "delta");
+        if (!delta.ok()) {
+            return delta.status();
+        }
         summary->saw_delta = true;
         return on_event(OpenAiResponsesTextDeltaEvent{
-            .text_delta = event_json.value("delta", ""),
+            .text_delta = delta->value_or(""),
         });
     }
     if (type == "response.completed") {
@@ -828,7 +899,12 @@ absl::Status DispatchStreamEvent(const nlohmann::json& event_json, SseParseSumma
         summary->saw_completed = true;
         std::string response_id;
         if (event_json.contains("response") && event_json["response"].is_object()) {
-            response_id = event_json["response"].value("id", "");
+            const absl::StatusOr<std::optional<std::string>> id =
+                ReadOptionalStringField(event_json["response"], "id");
+            if (!id.ok()) {
+                return id.status();
+            }
+            response_id = id->value_or("");
         }
         return on_event(OpenAiResponsesCompletedEvent{
             .response_id = std::move(response_id),

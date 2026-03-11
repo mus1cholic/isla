@@ -63,6 +63,17 @@ bool HasNonEmptyEnvVar(std::string_view name, const StartupEnvLookup& env_lookup
     return value.has_value() && !value->empty();
 }
 
+StartupEnvLookup StartupEnvLookupFromMap(StartupEnvMap values) {
+    const auto shared_values = std::make_shared<const StartupEnvMap>(std::move(values));
+    return [shared_values](std::string_view name) -> std::optional<std::string> {
+        const auto it = shared_values->find(std::string(name));
+        if (it == shared_values->end() || it->second.empty()) {
+            return std::nullopt;
+        }
+        return it->second;
+    };
+}
+
 void AppendIfMissing(std::vector<std::filesystem::path>* paths,
                      const std::filesystem::path& candidate) {
     if (candidate.empty()) {
@@ -200,19 +211,12 @@ absl::StatusOr<StartupEnvMap> LoadDotEnvFile(std::string_view path) {
 StartupEnvLookup DotEnvFileEnvLookup(std::string_view path) {
     const absl::StatusOr<StartupEnvMap> parsed = LoadDotEnvFile(path);
     if (!parsed.ok()) {
-        return [status = parsed.status()](std::string_view name) -> std::optional<std::string> {
+        return [](std::string_view name) -> std::optional<std::string> {
             static_cast<void>(name);
             return std::nullopt;
         };
     }
-    const auto shared_values = std::make_shared<const StartupEnvMap>(*parsed);
-    return [shared_values](std::string_view name) -> std::optional<std::string> {
-        const auto it = shared_values->find(std::string(name));
-        if (it == shared_values->end() || it->second.empty()) {
-            return std::nullopt;
-        }
-        return it->second;
-    };
+    return StartupEnvLookupFromMap(*parsed);
 }
 
 StartupEnvLookup CombinedStartupEnvLookup(StartupEnvLookup primary, StartupEnvLookup fallback) {
@@ -271,8 +275,7 @@ StartupEnvLookup DefaultStartupEnvLookup() {
         }
         if (!parsed->empty()) {
             VLOG(1) << "Using .env file at " << candidate.string();
-            return CombinedStartupEnvLookup(process_env_lookup,
-                                            DotEnvFileEnvLookup(candidate.string()));
+            return CombinedStartupEnvLookup(process_env_lookup, StartupEnvLookupFromMap(*parsed));
         }
     }
 
@@ -440,6 +443,9 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         return absl::InvalidArgumentError("unknown argument: " + argument);
     }
 
+    // NOTICE: Phase 3.5/3.6 runs the gateway only in live OpenAI mode, so startup currently
+    // forces provider enablement and validates that config unconditionally. Remove this field once
+    // the config model stops carrying the legacy optional-provider shape.
     parsed.openai_config.enabled = true;
     absl::Status openai_status = ValidateOpenAiStartupConfig(parsed.openai_config);
     if (!openai_status.ok()) {

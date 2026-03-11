@@ -6,6 +6,7 @@
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "ai_gateway_startup_config.hpp"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
@@ -23,8 +24,10 @@ int main(int argc, char** argv) {
     absl::InitializeLog();
     absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfo);
 
+    const isla::server::ai_gateway::StartupEnvLookup env_lookup =
+        isla::server::ai_gateway::DefaultStartupEnvLookup();
     const absl::StatusOr<isla::server::ai_gateway::ParsedStartupConfig> startup_config =
-        isla::server::ai_gateway::ParseGatewayStartupConfig(argc, argv);
+        isla::server::ai_gateway::ParseGatewayStartupConfig(argc, argv, env_lookup);
     if (!startup_config.ok()) {
         LOG(ERROR) << startup_config.status();
         return 1;
@@ -49,16 +52,16 @@ int main(int argc, char** argv) {
     }
 
     const isla::server::ai_gateway::StartupLogContext log_context =
-        isla::server::ai_gateway::BuildStartupLogContext(
-            argc, argv, isla::server::ai_gateway::DefaultStartupEnvLookup(), *startup_config);
+        isla::server::ai_gateway::BuildStartupLogContext(argc, argv, env_lookup, *startup_config);
 
     LOG(INFO) << "AI gateway OpenAI config source=" << log_context.config_source
               << " api_key_source=" << log_context.api_key_source << " organization_configured="
               << (log_context.organization_configured ? "true" : "false")
               << " project_configured=" << (log_context.project_configured ? "true" : "false");
     LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
-              << startup_config->openai_config.host << ":" << startup_config->openai_config.port
-              << " scheme=" << startup_config->openai_config.scheme
+              << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.host) << ":"
+              << startup_config->openai_config.port << " scheme="
+              << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.scheme)
               << " timeout_ms=" << startup_config->openai_config.request_timeout.count();
     LOG(INFO) << "AI gateway listening on " << startup_config->server_config.bind_host << ":"
               << server.bound_port();

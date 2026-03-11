@@ -489,6 +489,39 @@ TEST(OpenAiResponsesClientTest, RejectsMalformedSseJson) {
     EXPECT_EQ(status.message(), "openai responses stream contained invalid JSON");
 }
 
+TEST(OpenAiResponsesClientTest, RejectsSseEventsWithWrongTypedStringFields) {
+    const std::string body = "data: {\"type\":123}\r\n\r\n"
+                             "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
+    OneShotHttpServer server(response);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.2",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
+    EXPECT_EQ(status.message(), "openai responses event field 'type' must be a string");
+}
+
 TEST(OpenAiResponsesClientTest, PropagatesCallbackFailure) {
     const std::string body =
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\r\n\r\n"
