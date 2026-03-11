@@ -378,6 +378,49 @@ TEST_F(GatewayStubResponderTest, SessionClosedBeforeReplyDropsPendingTurn) {
     EXPECT_TRUE(session_->events().empty());
 }
 
+TEST(GatewayStubResponderStandaloneTest, SessionClosedDuringExecutionDropsLaterEmits) {
+    auto builder_started = std::make_shared<std::promise<void>>();
+    std::future<void> started_future = builder_started->get_future();
+    auto allow_finish = std::make_shared<std::promise<void>>();
+    std::shared_future<void> allow_finish_future = allow_finish->get_future().share();
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .response_prefix = "stub echo: ",
+        .reply_builder = [builder_started, allow_finish_future](
+                             std::string_view prefix, std::string_view text) -> std::string {
+            builder_started->set_value();
+            allow_finish_future.wait();
+            return std::string(prefix) + std::string(text);
+        },
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_EQ(started_future.wait_for(2s), std::future_status::ready);
+    session->MarkClosed();
+    registry.OnSessionClosed(SessionClosedEvent{
+        .session_id = "srv_test",
+        .session_started = true,
+        .inflight_turn_id = std::string("turn_1"),
+        .reason = SessionCloseReason::TransportClosed,
+        .detail = "client closed",
+    });
+    allow_finish->set_value();
+
+    std::this_thread::sleep_for(60ms);
+    EXPECT_TRUE(session->events().empty());
+}
+
 TEST_F(GatewayStubResponderTest, EmitFailureDoesNotBlockLaterTurns) {
     session_->FailNextTextOutput();
 
@@ -509,7 +552,7 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
         ASSERT_EQ(events.size(), 2U);
         EXPECT_EQ(events[0].op, "error");
         EXPECT_EQ(events[0].turn_id, "turn_1");
-        EXPECT_EQ(events[0].payload, "internal_error:stub responder processing failed");
+        EXPECT_EQ(events[0].payload, "internal_error:execution step failed");
         EXPECT_EQ(events[1].op, "turn.completed");
         EXPECT_EQ(events[1].turn_id, "turn_1");
     }

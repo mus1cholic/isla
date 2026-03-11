@@ -75,7 +75,7 @@ TEST(OpenAiLlmstest, ConvertsBuilderExceptionToInternalError) {
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
-    EXPECT_EQ(result.status().message(), "stub responder processing failed");
+    EXPECT_EQ(result.status().message(), "openai llms response building failed");
 }
 
 } // namespace

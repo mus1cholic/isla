@@ -64,11 +64,11 @@ OpenAiLLMs::GenerateContent(std::size_t item_index, const std::string& user_text
         LOG(ERROR) << "AI gateway openai llms response building failed step_name='"
                    << SanitizeForLog(step_name_) << "' detail='"
                    << SanitizeForLog(error.what()) << "'";
-        return absl::InternalError("stub responder processing failed");
+        return absl::InternalError("openai llms response building failed");
     } catch (...) {
         LOG(ERROR) << "AI gateway openai llms response building failed step_name='"
                    << SanitizeForLog(step_name_) << "' detail='unknown exception'";
-        return absl::InternalError("stub responder processing failed");
+        return absl::InternalError("openai llms response building failed");
     }
 
     return ExecutionStepResult(LlmCallResult{

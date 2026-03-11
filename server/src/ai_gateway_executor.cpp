@@ -9,15 +9,54 @@
 namespace isla::server::ai_gateway {
 namespace {
 
+struct PublicFailureMapping {
+    std::string_view code;
+    std::string_view message;
+    bool retryable = false;
+};
+
+PublicFailureMapping MapPublicFailure(const absl::Status& status) {
+    switch (status.code()) {
+    case absl::StatusCode::kInvalidArgument:
+        return PublicFailureMapping{
+            .code = "bad_request",
+            .message = "execution step rejected the request",
+            .retryable = false,
+        };
+    case absl::StatusCode::kDeadlineExceeded:
+        return PublicFailureMapping{
+            .code = "upstream_timeout",
+            .message = "upstream request timed out",
+            .retryable = true,
+        };
+    case absl::StatusCode::kUnavailable:
+        return PublicFailureMapping{
+            .code = "service_unavailable",
+            .message = "upstream service unavailable",
+            .retryable = true,
+        };
+    default:
+        return PublicFailureMapping{
+            .code = "internal_error",
+            .message = "execution step failed",
+            .retryable = false,
+        };
+    }
+}
+
 ExecutionFailure BuildFailure(std::size_t step_index, std::string_view step_name,
                               const absl::Status& status) {
+    const PublicFailureMapping mapping = MapPublicFailure(status);
+    LOG(ERROR) << "AI gateway executor step failed step_index=" << step_index << " step_name='"
+               << SanitizeForLog(step_name) << "' status_code=" << static_cast<int>(status.code())
+               << " public_code='" << mapping.code << "' retryable=" << mapping.retryable
+               << " detail='" << SanitizeForLog(status.message()) << "'";
     return ExecutionFailure{
         .failed_step_index = step_index,
         .step_name = std::string(step_name),
-        .code = status.code() == absl::StatusCode::kInvalidArgument ? "invalid_request"
-                                                                    : "internal_error",
-        .message = std::string(status.message()),
-        .retryable = false,
+        .code = std::string(mapping.code),
+        .message = std::string(mapping.message),
+        .retryable = mapping.retryable,
     };
 }
 
@@ -32,7 +71,7 @@ ExecutionOutcome GatewayPlanExecutor::Execute(const ExecutionPlan& plan,
         return ExecutionFailure{
             .failed_step_index = 0,
             .step_name = "",
-            .code = "invalid_request",
+            .code = "bad_request",
             .message = "execution plan must include at least one step",
             .retryable = false,
         };

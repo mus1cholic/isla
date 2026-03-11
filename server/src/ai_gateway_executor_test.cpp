@@ -1,4 +1,6 @@
 #include "isla/server/ai_gateway_executor.hpp"
+
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -18,8 +20,9 @@ TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
     EXPECT_EQ(failure.failed_step_index, 0U);
     EXPECT_TRUE(failure.step_name.empty());
-    EXPECT_EQ(failure.code, "invalid_request");
+    EXPECT_EQ(failure.code, "bad_request");
     EXPECT_EQ(failure.message, "execution plan must include at least one step");
+    EXPECT_FALSE(failure.retryable);
 }
 
 TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
@@ -102,9 +105,44 @@ TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {
     const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
     EXPECT_EQ(failure.failed_step_index, 0U);
     EXPECT_EQ(failure.step_name, "step_a");
-    EXPECT_EQ(failure.code, "invalid_request");
-    EXPECT_EQ(failure.message, "openai llms must include a model");
+    EXPECT_EQ(failure.code, "bad_request");
+    EXPECT_EQ(failure.message, "execution step rejected the request");
+    EXPECT_FALSE(failure.retryable);
     EXPECT_FALSE(second_ran);
+}
+
+TEST(GatewayPlanExecutorTest, MapsInternalStepFailuresToStablePublicError) {
+    GatewayPlanExecutor executor(GatewayStepRegistryConfig{
+        .response_prefix = "",
+        .response_builder =
+            [](std::string_view prefix, std::string_view user_text) -> std::string {
+            static_cast<void>(prefix);
+            static_cast<void>(user_text);
+            throw std::runtime_error("boom");
+        },
+    });
+
+    const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
+        .steps =
+            {
+                OpenAiLlmStep{
+                    .step_name = "step_a",
+                    .system_prompt = "",
+                    .model = "model_a",
+                },
+            },
+    },
+                                             ExecutionRuntimeInput{
+                                                 .user_text = "shared input",
+                                             });
+
+    ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
+    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    EXPECT_EQ(failure.failed_step_index, 0U);
+    EXPECT_EQ(failure.step_name, "step_a");
+    EXPECT_EQ(failure.code, "internal_error");
+    EXPECT_EQ(failure.message, "execution step failed");
+    EXPECT_FALSE(failure.retryable);
 }
 
 } // namespace

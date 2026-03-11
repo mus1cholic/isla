@@ -474,14 +474,6 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
-    const std::shared_ptr<GatewayLiveSession> live_session = registry->FindSession(turn.session_id);
-    if (live_session == nullptr) {
-        LOG(WARNING) << "AI gateway stub lost live session before reply session="
-                     << SanitizeForLog(turn.session_id)
-                     << " turn_id=" << SanitizeForLog(turn.turn_id);
-        return;
-    }
-
     if (turn.text.size() > kMaxTextInputBytes) {
         LOG(ERROR) << "AI gateway stub rejected oversized accepted turn session="
                    << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
@@ -552,11 +544,18 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         FinishCancelledTurn(turn);
         return;
     }
+    const std::shared_ptr<GatewayLiveSession> reply_session = registry->FindSession(turn.session_id);
+    if (reply_session == nullptr || reply_session->is_closed()) {
+        LOG(WARNING) << "AI gateway stub lost live session before text output session="
+                     << SanitizeForLog(turn.session_id)
+                     << " turn_id=" << SanitizeForLog(turn.turn_id);
+        return;
+    }
     VLOG(1) << "AI gateway stub emitting successful reply session="
             << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id);
     absl::Status status =
         await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
-            live_session->AsyncEmitTextOutput(turn.turn_id, reply, std::move(on_complete));
+            reply_session->AsyncEmitTextOutput(turn.turn_id, reply, std::move(on_complete));
         });
     if (!status.ok()) {
         LOG(WARNING) << "AI gateway stub failed to emit text output session="
@@ -590,9 +589,17 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         FinishCancelledTurn(turn);
         return;
     }
+    const std::shared_ptr<GatewayLiveSession> completion_session =
+        registry->FindSession(turn.session_id);
+    if (completion_session == nullptr || completion_session->is_closed()) {
+        LOG(WARNING) << "AI gateway stub lost live session before completion session="
+                     << SanitizeForLog(turn.session_id)
+                     << " turn_id=" << SanitizeForLog(turn.turn_id);
+        return;
+    }
 
     status = await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
-        live_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
+        completion_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
     });
     if (!status.ok()) {
         LOG(WARNING) << "AI gateway stub failed to emit turn completion session="

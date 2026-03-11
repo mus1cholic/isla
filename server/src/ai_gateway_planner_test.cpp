@@ -34,7 +34,7 @@ TEST(AiGatewayPlannerTest, ExecutorRejectsMissingRuntimeUserText) {
                                                                 });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
-    EXPECT_EQ(std::get<ExecutionFailure>(outcome).code, "invalid_request");
+    EXPECT_EQ(std::get<ExecutionFailure>(outcome).code, "bad_request");
 }
 
 } // namespace
