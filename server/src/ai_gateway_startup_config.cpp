@@ -1,10 +1,12 @@
 #include "ai_gateway_startup_config.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -12,7 +14,9 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 
 namespace isla::server::ai_gateway {
@@ -51,6 +55,34 @@ bool HasArgumentPrefix(int argc, char** argv, std::string_view prefix) {
 bool HasNonEmptyEnvVar(std::string_view name, const StartupEnvLookup& env_lookup) {
     const std::optional<std::string> value = env_lookup(name);
     return value.has_value() && !value->empty();
+}
+
+void AppendIfMissing(std::vector<std::filesystem::path>* paths,
+                     const std::filesystem::path& candidate) {
+    if (candidate.empty()) {
+        return;
+    }
+    const auto it = std::find(paths->begin(), paths->end(), candidate);
+    if (it == paths->end()) {
+        paths->push_back(candidate);
+    }
+}
+
+void AppendAncestorDotEnvCandidates(std::vector<std::filesystem::path>* paths,
+                                    const std::filesystem::path& start) {
+    if (start.empty()) {
+        return;
+    }
+
+    std::filesystem::path current = start;
+    while (true) {
+        AppendIfMissing(paths, current / ".env");
+        const std::filesystem::path parent = current.parent_path();
+        if (parent.empty() || parent == current) {
+            break;
+        }
+        current = parent;
+    }
 }
 
 absl::StatusOr<int> ParseIntArgument(std::string_view value, std::string_view name) {
@@ -186,8 +218,24 @@ StartupEnvLookup CombinedStartupEnvLookup(StartupEnvLookup primary, StartupEnvLo
     };
 }
 
+std::vector<std::filesystem::path>
+DefaultDotEnvCandidatePaths(const StartupEnvLookup& env_lookup,
+                            const std::filesystem::path& current_path) {
+    std::vector<std::filesystem::path> candidates;
+
+    if (const std::optional<std::string> workspace_directory =
+            env_lookup("BUILD_WORKSPACE_DIRECTORY");
+        workspace_directory.has_value() && !workspace_directory->empty()) {
+        AppendIfMissing(&candidates, std::filesystem::path(*workspace_directory) / ".env");
+    }
+
+    AppendAncestorDotEnvCandidates(&candidates, current_path);
+    return candidates;
+}
+
 StartupEnvLookup DefaultStartupEnvLookup() {
-    StartupEnvLookup process_env_lookup = [](std::string_view name) -> std::optional<std::string> {
+    const StartupEnvLookup process_env_lookup =
+        [](std::string_view name) -> std::optional<std::string> {
         const std::string key(name);
         const char* value = std::getenv(key.c_str());
         if (value == nullptr || *value == '\0') {
@@ -195,7 +243,23 @@ StartupEnvLookup DefaultStartupEnvLookup() {
         }
         return std::string(value);
     };
-    return CombinedStartupEnvLookup(std::move(process_env_lookup), DotEnvFileEnvLookup(".env"));
+
+    for (const std::filesystem::path& candidate :
+         DefaultDotEnvCandidatePaths(process_env_lookup, std::filesystem::current_path())) {
+        const absl::StatusOr<StartupEnvMap> parsed = LoadDotEnvFile(candidate.string());
+        if (!parsed.ok()) {
+            LOG(WARNING) << "Ignoring invalid .env file at " << candidate.string() << ": "
+                         << parsed.status();
+            continue;
+        }
+        if (!parsed->empty()) {
+            VLOG(1) << "Using .env file at " << candidate.string();
+            return CombinedStartupEnvLookup(process_env_lookup, DotEnvFileEnvLookup(candidate.string()));
+        }
+    }
+
+    VLOG(1) << "No .env file found in startup search path";
+    return process_env_lookup;
 }
 
 absl::Status ValidateOpenAiStartupConfig(const OpenAiResponsesClientConfig& config) {

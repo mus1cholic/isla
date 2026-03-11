@@ -1,10 +1,12 @@
 #pragma once
 
 #include <functional>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -32,6 +34,10 @@ using StartupEnvMap = std::unordered_map<std::string, std::string>;
 [[nodiscard]] StartupEnvLookup DotEnvFileEnvLookup(std::string_view path);
 [[nodiscard]] StartupEnvLookup CombinedStartupEnvLookup(StartupEnvLookup primary,
                                                         StartupEnvLookup fallback);
+[[nodiscard]] std::vector<std::filesystem::path>
+DefaultDotEnvCandidatePaths(const StartupEnvLookup& env_lookup,
+                            const std::filesystem::path& current_path =
+                                std::filesystem::current_path());
 [[nodiscard]] StartupEnvLookup DefaultStartupEnvLookup();
 [[nodiscard]] absl::Status ValidateOpenAiStartupConfig(
     const OpenAiResponsesClientConfig& config);

@@ -1,5 +1,6 @@
 #include "ai_gateway_startup_config.hpp"
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -80,6 +81,37 @@ TEST(AiGatewayStartupConfigTest, CombinedStartupEnvLookupPrefersPrimaryLookup) {
     const std::optional<std::string> value = combined("OPENAI_API_KEY");
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(*value, "primary_key");
+}
+
+TEST(AiGatewayStartupConfigTest, DefaultDotEnvCandidatePathsPreferWorkspaceDirectory) {
+    const std::filesystem::path current =
+        std::filesystem::path("C:/tmp/isla/bazel-out/x64_windows-fastbuild/bin");
+    const std::vector<std::filesystem::path> candidates = DefaultDotEnvCandidatePaths(
+        [](std::string_view name) -> std::optional<std::string> {
+            if (name == "BUILD_WORKSPACE_DIRECTORY") {
+                return "C:/Users/orion/OneDrive/Desktop/code/isla";
+            }
+            return std::nullopt;
+        },
+        current);
+
+    ASSERT_FALSE(candidates.empty());
+    EXPECT_EQ(candidates.front(),
+              std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/.env"));
+}
+
+TEST(AiGatewayStartupConfigTest, DefaultDotEnvCandidatePathsWalkAncestorDirectories) {
+    const std::filesystem::path current =
+        std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/server/src");
+    const std::vector<std::filesystem::path> candidates = DefaultDotEnvCandidatePaths(
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; },
+        current);
+
+    EXPECT_NE(std::find(candidates.begin(), candidates.end(),
+                        std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/.env")),
+              candidates.end());
+    EXPECT_EQ(candidates.front(),
+              std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/server/src/.env"));
 }
 
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
