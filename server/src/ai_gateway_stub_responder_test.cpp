@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -28,6 +29,26 @@ struct EmittedEvent {
     std::string op;
     std::string turn_id;
     std::string payload;
+};
+
+class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
+  public:
+    explicit FakeOpenAiResponsesClient(absl::Status status) : status_(std::move(status)) {}
+
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const OpenAiResponsesRequest& request,
+                   const OpenAiResponsesEventCallback& on_event) const override {
+        static_cast<void>(request);
+        static_cast<void>(on_event);
+        return status_;
+    }
+
+  private:
+    absl::Status status_;
 };
 
 class RecordingLiveSession final : public GatewayLiveSession {
@@ -571,6 +592,35 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
     EXPECT_EQ(events[2].payload, "stub echo: ok");
     EXPECT_EQ(events[3].op, "turn.completed");
     EXPECT_EQ(events[3].turn_id, "turn_2");
+}
+
+TEST(GatewayStubResponderStandaloneTest, OpenAiProviderFailureEmitsMappedErrorAndCompletion) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .response_prefix = "stub echo: ",
+        .openai_client =
+            std::make_shared<FakeOpenAiResponsesClient>(absl::UnavailableError("provider down")),
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].op, "error");
+    EXPECT_EQ(events[0].turn_id, "turn_1");
+    EXPECT_EQ(events[0].payload, "service_unavailable:upstream service unavailable");
+    EXPECT_EQ(events[1].op, "turn.completed");
+    EXPECT_EQ(events[1].turn_id, "turn_1");
 }
 
 TEST(GatewayStubResponderStandaloneTest, AcceptedTurnWithoutSessionStartFailsClosed) {

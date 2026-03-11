@@ -1,6 +1,18 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
 cc_library(
+    name = "ai_gateway_startup_config",
+    srcs = ["ai_gateway_startup_config.cpp"],
+    hdrs = ["ai_gateway_startup_config.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "ai_gateway_step_registry",
     srcs = ["ai_gateway_step_registry.cpp"],
     visibility = ["//visibility:public"],
@@ -8,6 +20,7 @@ cc_library(
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_utils",
         ":openai_llms",
+        ":openai_responses_client",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -33,9 +46,25 @@ cc_library(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_utils",
+        ":openai_responses_client",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "openai_responses_client",
+    srcs = ["openai_responses_client.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_logging_utils",
+        "@boost.beast//:boost.beast",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 
@@ -47,6 +76,7 @@ cc_library(
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_utils",
         ":openai_llms",
+        ":openai_responses_client",
         ":ai_gateway_step_registry",
         "@abseil-cpp//absl/log:log",
     ],
@@ -138,6 +168,7 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_startup_config",
         ":ai_gateway_logging_utils",
         ":ai_gateway_server",
         ":ai_gateway_stub_responder",
@@ -146,6 +177,15 @@ cc_binary(
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "ai_gateway_startup_config_test",
+    srcs = ["ai_gateway_startup_config_test.cpp"],
+    deps = [
+        ":ai_gateway_startup_config",
+        "@googletest//:gtest_main",
     ],
 )
 
@@ -178,6 +218,17 @@ cc_test(
         "//server/include/isla/server:server_headers",
         ":ai_gateway_executor",
         ":openai_llms",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "openai_responses_client_test",
+    srcs = ["openai_responses_client_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":openai_responses_client",
+        "@boost.beast//:boost.beast",
         "@googletest//:gtest_main",
     ],
 )

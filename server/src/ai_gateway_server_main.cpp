@@ -1,15 +1,11 @@
-#include <charconv>
-#include <chrono>
 #include <csignal>
-#include <cstdint>
-#include <string>
-#include <system_error>
 #include <thread>
 
 #include "absl/log/globals.h"
 #include "absl/log/initialize.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
+#include "ai_gateway_startup_config.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
@@ -21,69 +17,16 @@ void handle_signal(int /*unused*/) {
     g_stop_requested = 1;
 }
 
-absl::StatusOr<int> parse_int_argument(std::string_view value, std::string_view name) {
-    if (value.empty()) {
-        return absl::InvalidArgumentError(std::string(name) + " must not be empty");
-    }
-
-    int parsed = 0;
-    const char* begin = value.data();
-    const char* end = value.data() + value.size();
-    const auto result = std::from_chars(begin, end, parsed);
-    if (result.ec == std::errc::invalid_argument || result.ptr != end) {
-        return absl::InvalidArgumentError(std::string(name) + " must be a base-10 integer");
-    }
-    if (result.ec == std::errc::result_out_of_range) {
-        return absl::InvalidArgumentError(std::string(name) + " is out of range");
-    }
-    return parsed;
-}
-
-absl::StatusOr<isla::server::ai_gateway::GatewayServerConfig> parse_args(int argc, char** argv) {
-    isla::server::ai_gateway::GatewayServerConfig config;
-    for (int i = 1; i < argc; ++i) {
-        const std::string argument = argv[i];
-        if (argument.rfind("--host=", 0) == 0) {
-            config.bind_host = argument.substr(7);
-            continue;
-        }
-        if (argument.rfind("--port=", 0) == 0) {
-            const absl::StatusOr<int> port = parse_int_argument(argument.substr(7), "port");
-            if (!port.ok()) {
-                return port.status();
-            }
-            if (*port < 0 || *port > 65535) {
-                return absl::InvalidArgumentError("port must be between 0 and 65535");
-            }
-            config.port = static_cast<std::uint16_t>(*port);
-            continue;
-        }
-        if (argument.rfind("--backlog=", 0) == 0) {
-            const absl::StatusOr<int> backlog = parse_int_argument(argument.substr(10), "backlog");
-            if (!backlog.ok()) {
-                return backlog.status();
-            }
-            config.listen_backlog = *backlog;
-            if (config.listen_backlog <= 0) {
-                return absl::InvalidArgumentError("backlog must be greater than zero");
-            }
-            continue;
-        }
-        return absl::InvalidArgumentError("unknown argument: " + argument);
-    }
-    return config;
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
     absl::InitializeLog();
     absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfo);
 
-    const absl::StatusOr<isla::server::ai_gateway::GatewayServerConfig> config =
-        parse_args(argc, argv);
-    if (!config.ok()) {
-        LOG(ERROR) << config.status();
+    const absl::StatusOr<isla::server::ai_gateway::ParsedStartupConfig> startup_config =
+        isla::server::ai_gateway::ParseGatewayStartupConfig(argc, argv);
+    if (!startup_config.ok()) {
+        LOG(ERROR) << startup_config.status();
         return 1;
     }
 
@@ -93,8 +36,11 @@ int main(int argc, char** argv) {
     static_cast<void>(previous_sigint_handler);
     static_cast<void>(previous_sigterm_handler);
 
-    isla::server::ai_gateway::GatewayStubResponder responder;
-    isla::server::ai_gateway::GatewayServer server(*config, &responder);
+    isla::server::ai_gateway::GatewayStubResponder responder(
+        isla::server::ai_gateway::GatewayStubResponderConfig{
+            .openai_config = startup_config->openai_config,
+        });
+    isla::server::ai_gateway::GatewayServer server(startup_config->server_config, &responder);
     responder.AttachSessionRegistry(&server.session_registry());
     const absl::Status start_status = server.Start();
     if (!start_status.ok()) {
@@ -102,8 +48,20 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    LOG(INFO) << "AI gateway using local Phase-2.5 stub responder";
-    LOG(INFO) << "AI gateway listening on " << config->bind_host << ":" << server.bound_port();
+    const isla::server::ai_gateway::StartupLogContext log_context =
+        isla::server::ai_gateway::BuildStartupLogContext(
+            argc, argv, isla::server::ai_gateway::DefaultStartupEnvLookup(), *startup_config);
+
+    LOG(INFO) << "AI gateway OpenAI config source=" << log_context.config_source
+              << " api_key_source=" << log_context.api_key_source << " organization_configured="
+              << (log_context.organization_configured ? "true" : "false")
+              << " project_configured=" << (log_context.project_configured ? "true" : "false");
+    LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
+              << startup_config->openai_config.host << ":" << startup_config->openai_config.port
+              << " scheme=" << startup_config->openai_config.scheme
+              << " timeout_ms=" << startup_config->openai_config.request_timeout.count();
+    LOG(INFO) << "AI gateway listening on " << startup_config->server_config.bind_host << ":"
+              << server.bound_port();
     while (g_stop_requested == 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }

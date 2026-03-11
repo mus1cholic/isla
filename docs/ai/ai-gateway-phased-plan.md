@@ -68,12 +68,13 @@ Sequencing rule for the remaining work:
 - `.5` phases add live external integrations only after the preceding boundary is in place.
 
 > [!NOTE]
-> **Current status (2026-03-10):**
+> **Current status (2026-03-11):**
 > - Phase 0 is implemented.
 > - Phase 1 is implemented.
 > - Phase 2 is implemented.
 > - Phase 2.5 is implemented.
 > - Phase 3 is implemented.
+> - Phase 3.5 is implemented.
 > - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
 > - Shared protocol/session scaffolding now exists in:
 >   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
@@ -152,6 +153,23 @@ Sequencing rule for the remaining work:
 > - `GatewayStubResponder` now re-resolves the live session immediately before successful text and
 >   completion emits so a session that closes during execution does not receive late emits through a
 >   stale retained handle.
+> - The gateway now has a live OpenAI Responses integration behind the executor boundary:
+>   - `server/include/isla/server/openai_responses_client.hpp`
+>   - `server/src/openai_responses_client.cpp`
+>   - `server/src/openai_responses_client_test.cpp`
+>   - `server/src/openai_llms.cpp`
+>   - `server/src/ai_gateway_server_main.cpp`
+>   - `server/src/ai_gateway_stub_responder.cpp`
+> - The OpenAI provider path now:
+>   - reads OpenAI config from the gateway binary startup path
+>   - issues streamed Responses API requests through a provider-owned adapter
+>   - maps provider/network failures back into the executor-facing status surface
+>   - buffers upstream text into one final client-visible `text.output` in v1
+> - Current implementation limitation:
+>   - the provider adapter currently shells out to `curl` for HTTP/SSE transport because the
+>     repository's current Windows toolchain does not expose OpenSSL headers for a direct Beast TLS
+>     client; the transport remains isolated behind the provider boundary and can be replaced later
+>     without touching websocket/session code
 > - Known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
 >   slow step execution or slow accepted-turn emit completion can create cross-session head-of-line
 >   blocking. Fixing that isolation is deferred to the next PR rather than Phase 3.
@@ -161,6 +179,12 @@ Sequencing rule for the remaining work:
 
 ### Changelog
 
+- 2026-03-11: completed Phase 3.5 with a live OpenAI Responses provider adapter behind the
+  executor boundary, gateway startup/config wiring for OpenAI credentials and transport settings,
+  SSE event parsing into normalized provider events, final-text buffering back through the existing
+  live-session seam, and dedicated provider/registry/executor regression coverage; the current
+  transport implementation uses `curl` behind the adapter because the repository's Windows
+  toolchain does not currently expose OpenSSL headers for a direct Beast TLS client.
 - 2026-03-10: completed Phase 3 with explicit execution-plan planner/executor contracts, a
   `CreateFakeOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, an explicit
   `GatewayStepRegistry`, planner-built execution steps with concrete compile-time types like
@@ -730,6 +754,28 @@ live provider I/O.
 
 ## Phase 3.5: OpenAI Responses Integration
 
+> [!NOTE]
+> **Status (2026-03-11): Implemented.**
+> - Implemented artifacts:
+>   - `server/include/isla/server/openai_responses_client.hpp`
+>   - `server/src/openai_responses_client.cpp`
+>   - `server/src/openai_responses_client_test.cpp`
+>   - `server/src/openai_llms.cpp`
+>   - `server/src/openai_llms_test.cpp`
+>   - `server/src/ai_gateway_step_registry.cpp`
+>   - `server/src/ai_gateway_step_registry_test.cpp`
+>   - `server/src/ai_gateway_server_main.cpp`
+> - Implemented behavior:
+>   - a provider-owned OpenAI Responses adapter now exists behind the executor boundary
+>   - the gateway binary now reads OpenAI config at startup and wires it into the responder/executor path
+>   - streamed OpenAI SSE output is normalized into provider events and buffered into one final
+>     `text.output` for the existing client contract
+>   - provider and transport failures stay inside the executor/provider seam and continue to map to
+>     stable public gateway error codes through the existing executor failure mapping
+> - Current implementation limitation:
+>   - the OpenAI adapter currently uses `curl` for the HTTPS/SSE transport because the active
+>     Windows toolchain does not expose OpenSSL headers for a direct Beast TLS client build
+
 ### Goal
 
 Route gateway text requests to OpenAI through the executor boundary established in Phase 3.
@@ -747,6 +793,45 @@ Route gateway text requests to OpenAI through the executor boundary established 
 
 - The gateway can produce a final OpenAI-backed text response through the executor boundary.
 - Live OpenAI integration does not leak provider transport details into websocket/session code.
+
+## Phase 3.6: Remove Legacy Stub Response Path
+
+### Goal
+
+Remove the now-redundant local stub-response behavior from the OpenAI execution path after Phase 3.5
+has proven the end-to-end gateway pipeline.
+
+### Scope
+
+- Remove the `OpenAiLLMs` local fallback path that synthesizes responses from `response_prefix` or
+  `response_builder`.
+- Make the OpenAI execution path depend on an explicit provider client or a provider-shaped fake in
+  tests, rather than preserving a second non-provider code path inside the production class.
+- Update unit and integration tests to inject fake `OpenAiResponsesClient` implementations where
+  deterministic non-network behavior is still needed.
+- Keep the executor boundary and client-visible final-output contract unchanged.
+
+### Out of Scope
+
+- Removing the broader application-owned responder seam.
+- Removing test doubles or fake provider coverage entirely.
+- Changing websocket/session ownership or client protocol messages.
+- Reworking the current single-worker responder concurrency model.
+
+### Rationale
+
+- After Phase 3.5, the gateway has a real end-to-end OpenAI-backed execution path.
+- Keeping both a live provider path and a local synthetic reply path inside `OpenAiLLMs` adds
+  branching and test surface that no longer reflects the intended production architecture.
+- Test determinism should come from provider-shaped fakes, not from a separate built-in fake reply
+  implementation in the production class.
+
+### Exit Criteria
+
+- `OpenAiLLMs` no longer contains the local `BuildResponse(...)` stub path.
+- Tests that still need non-network execution use injected fake provider clients.
+- The executor/provider boundary remains explicit, but the production path now represents only the
+  live-provider architecture established in Phase 3.5.
 
 ## Phase 4: Planner/Executor Single-Step Orchestration
 
@@ -1012,7 +1097,8 @@ Revisit the deferred voice/streaming/infrastructure options after the first gate
 4. First local stubbed turn-completion path through the gateway: after Phase 2.5.
 5. First explicit OpenAI executor boundary: after Phase 3.
 6. First OpenAI-backed text response through the gateway: after Phase 3.5.
-7. First explicit TTS adapter boundary: after Phase 5.
-8. First hosted TTS-backed end-to-end response path: after Phase 5.5.
-9. First streaming-ready internal event model without client-visible deltas: after Phase 6.
-10. First evidence-based revisit of streaming/self-hosted alternatives: after Phase 7.
+7. First post-integration cleanup removing the legacy stub response path: after Phase 3.6.
+8. First explicit TTS adapter boundary: after Phase 5.
+9. First hosted TTS-backed end-to-end response path: after Phase 5.5.
+10. First streaming-ready internal event model without client-visible deltas: after Phase 6.
+11. First evidence-based revisit of streaming/self-hosted alternatives: after Phase 7.

@@ -80,8 +80,7 @@ ExecutionOutcome GatewayPlanExecutor::Execute(const ExecutionPlan& plan,
     ExecutionResult result;
     result.step_results.reserve(plan.steps.size());
     for (std::size_t step_index = 0; step_index < plan.steps.size(); ++step_index) {
-        VLOG(1) << "AI gateway executor running step_index=" << step_index
-                << " step_name='"
+        VLOG(1) << "AI gateway executor running step_index=" << step_index << " step_name='"
                 << SanitizeForLog(step_registry_.StepName(plan.steps[step_index])) << "'";
         const absl::StatusOr<ExecutionStepResult> step_result =
             step_registry_.ExecuteStep(step_index, plan.steps[step_index], runtime_input);
