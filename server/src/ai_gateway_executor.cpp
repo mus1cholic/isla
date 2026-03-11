@@ -23,6 +23,18 @@ PublicFailureMapping MapPublicFailure(const absl::Status& status) {
             .message = "execution step rejected the request",
             .retryable = false,
         };
+    case absl::StatusCode::kUnauthenticated:
+        return PublicFailureMapping{
+            .code = "authentication_error",
+            .message = "upstream authentication failed",
+            .retryable = false,
+        };
+    case absl::StatusCode::kPermissionDenied:
+        return PublicFailureMapping{
+            .code = "permission_denied",
+            .message = "upstream request was not permitted",
+            .retryable = false,
+        };
     case absl::StatusCode::kDeadlineExceeded:
         return PublicFailureMapping{
             .code = "upstream_timeout",
