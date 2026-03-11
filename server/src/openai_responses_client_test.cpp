@@ -103,7 +103,8 @@ class OneShotHttpServer {
                 const std::string content_length_prefix = "Content-Length:";
                 const std::size_t content_length_pos = headers.find(content_length_prefix);
                 if (content_length_pos != std::string::npos) {
-                    const std::size_t value_begin = content_length_pos + content_length_prefix.size();
+                    const std::size_t value_begin =
+                        content_length_pos + content_length_prefix.size();
                     const std::size_t value_end = headers.find("\r\n", value_begin);
                     content_length = static_cast<std::size_t>(
                         std::stoul(headers.substr(value_begin, value_end - value_begin)));
@@ -149,13 +150,13 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world\"}\r\n\r\n"
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
         "data: [DONE]\r\n\r\n";
-    const std::string response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n\r\n" + body;
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
     OneShotHttpServer server(response);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -204,13 +205,13 @@ TEST(OpenAiResponsesClientTest, PassesHeaderValuesWithShellMetacharactersLiteral
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\r\n\r\n"
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
         "data: [DONE]\r\n\r\n";
-    const std::string response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n\r\n" + body;
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
     OneShotHttpServer server(response);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -239,15 +240,16 @@ TEST(OpenAiResponsesClientTest, PassesHeaderValuesWithShellMetacharactersLiteral
 TEST(OpenAiResponsesClientTest, ExtractsFinalTextFromCompletedEventWhenNoDeltaArrives) {
     const std::string body =
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":["
-        "{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final only\"}]}]}}\r\n\r\n"
+        "{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final "
+        "only\"}]}]}}\r\n\r\n"
         "data: [DONE]\r\n\r\n";
-    const std::string response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n\r\n" + body;
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
     OneShotHttpServer server(response);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -283,13 +285,13 @@ TEST(OpenAiResponsesClientTest, ExtractsFinalTextFromCompletedEventWhenNoDeltaAr
 
 TEST(OpenAiResponsesClientTest, MapsHttpErrorResponsesToAbslStatus) {
     const std::string body = "{\"error\":{\"message\":\"rate limited\"}}";
-    const std::string response =
-        "HTTP/1.1 429 Too Many Requests\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n\r\n" + body;
+    const std::string response = "HTTP/1.1 429 Too Many Requests\r\n"
+                                 "Content-Type: application/json\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
     OneShotHttpServer server(response);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -313,6 +315,65 @@ TEST(OpenAiResponsesClientTest, MapsHttpErrorResponsesToAbslStatus) {
     EXPECT_EQ(status.message(), "rate limited");
 }
 
+TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeLaunchingCurl) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key\noutput = /tmp/pwned",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 1,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses api_key must not contain carriage return, newline, or NUL");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsHeaderValuesContainingNewlineBeforeLaunchingCurl) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 1,
+        .target = "/v1/responses",
+        .organization = "org_123\r\nX-Injected: yes",
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses organization must not contain carriage return, newline, or NUL");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsUserAgentContainingNulBeforeLaunchingCurl) {
+    std::string user_agent = "agent";
+    user_agent.push_back('\0');
+    user_agent += "suffix";
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 1,
+        .target = "/v1/responses",
+        .user_agent = user_agent,
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses user_agent must not contain carriage return, newline, or NUL");
+}
+
 TEST(OpenAiResponsesClientTest, MapsAdditionalHttpErrorStatuses) {
     struct Case {
         std::string status_line;
@@ -332,10 +393,10 @@ TEST(OpenAiResponsesClientTest, MapsAdditionalHttpErrorStatuses) {
     for (const Case& test_case : cases) {
         const std::string body =
             std::string("{\"error\":{\"message\":\"") + test_case.expected_message + "\"}}";
-        const std::string response = test_case.status_line +
-                                     "\r\nContent-Type: application/json\r\nContent-Length: " +
-                                     std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" +
-                                     body;
+        const std::string response =
+            test_case.status_line +
+            "\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) +
+            "\r\nConnection: close\r\n\r\n" + body;
         OneShotHttpServer server(response);
         auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
             .enabled = true,
@@ -362,15 +423,16 @@ TEST(OpenAiResponsesClientTest, MapsAdditionalHttpErrorStatuses) {
 
 TEST(OpenAiResponsesClientTest, MapsResponseFailedEventToUnavailableStatus) {
     const std::string body =
-        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"provider failed\"}}}\r\n\r\n"
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"provider "
+        "failed\"}}}\r\n\r\n"
         "data: [DONE]\r\n\r\n";
-    const std::string response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n\r\n" + body;
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
     OneShotHttpServer server(response);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -395,16 +457,15 @@ TEST(OpenAiResponsesClientTest, MapsResponseFailedEventToUnavailableStatus) {
 }
 
 TEST(OpenAiResponsesClientTest, RejectsMalformedSseJson) {
-    const std::string body =
-        "data: {not json}\r\n\r\n"
-        "data: [DONE]\r\n\r\n";
-    const std::string response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n\r\n" + body;
+    const std::string body = "data: {not json}\r\n\r\n"
+                             "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
     OneShotHttpServer server(response);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -433,13 +494,13 @@ TEST(OpenAiResponsesClientTest, PropagatesCallbackFailure) {
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\r\n\r\n"
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
         "data: [DONE]\r\n\r\n";
-    const std::string response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n\r\n" + body;
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
     OneShotHttpServer server(response);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -475,15 +536,16 @@ TEST(OpenAiResponsesClientTest, PropagatesCallbackFailure) {
 
 TEST(OpenAiResponsesClientTest, RejectsCompletedEventWithoutRecoverableText) {
     const std::string body =
-        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[]}}\r\n\r\n"
+        "data: "
+        "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[]}}\r\n\r\n"
         "data: [DONE]\r\n\r\n";
-    const std::string response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n\r\n" + body;
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
     OneShotHttpServer server(response);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,

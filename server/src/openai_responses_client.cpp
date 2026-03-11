@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#ifndef _CRT_RAND_S
+#define _CRT_RAND_S
+#endif
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -29,6 +32,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <aclapi.h>
 #include <windows.h>
 #else
 #include <cerrno>
@@ -47,8 +51,6 @@ struct SseParseSummary {
     bool saw_completed = false;
     std::size_t event_count = 0;
 };
-
-std::atomic<std::uint64_t> g_temp_file_counter{ 0 };
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
@@ -72,6 +74,19 @@ std::string TrimAscii(std::string_view text) {
 
 std::string BuildCurlUrl(const OpenAiResponsesClientConfig& config) {
     return config.scheme + "://" + config.host + ":" + std::to_string(config.port) + config.target;
+}
+
+bool ContainsForbiddenCurlConfigOrHeaderChar(std::string_view value) {
+    return std::any_of(value.begin(), value.end(),
+                       [](char ch) { return ch == '\r' || ch == '\n' || ch == '\0'; });
+}
+
+absl::Status ValidateCurlConfigOrHeaderValue(std::string_view field_name, std::string_view value) {
+    if (ContainsForbiddenCurlConfigOrHeaderChar(value)) {
+        return invalid_argument(std::string(field_name) +
+                                " must not contain carriage return, newline, or NUL");
+    }
+    return absl::OkStatus();
 }
 
 #if defined(_WIN32)
@@ -106,21 +121,37 @@ std::string QuoteWindowsCommandArg(std::string_view value) {
     quoted.push_back('"');
     return quoted;
 }
+
+absl::StatusOr<std::string> ResolveWindowsCurlExecutablePath() {
+    std::array<char, MAX_PATH + 1> system_directory{};
+    const UINT system_directory_length =
+        GetSystemDirectoryA(system_directory.data(), static_cast<UINT>(system_directory.size()));
+    if (system_directory_length == 0 || system_directory_length >= system_directory.size()) {
+        return absl::UnavailableError("failed to resolve Windows system directory");
+    }
+
+    const std::filesystem::path curl_path =
+        std::filesystem::path(system_directory.data()) / std::string(kCurlCommand);
+    const DWORD attributes = GetFileAttributesA(curl_path.string().c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return absl::NotFoundError("failed to locate trusted curl.exe");
+    }
+    return curl_path.string();
+}
 #else
 constexpr std::string_view kCurlCommand = "curl";
 #endif
 
-std::filesystem::path MakeTempPath(std::string_view suffix) {
-    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    const std::uint64_t sequence = g_temp_file_counter.fetch_add(1U);
-    const std::filesystem::path directory = std::filesystem::temp_directory_path();
-    return directory / ("isla_openai_" + std::to_string(now) + "_" + std::to_string(sequence) +
-                        std::string(suffix));
-}
-
 class ScopedTempFile final {
   public:
-    explicit ScopedTempFile(std::string_view suffix) : path_(MakeTempPath(suffix)) {}
+    explicit ScopedTempFile(std::filesystem::path path) : path_(std::move(path)) {}
+
+    ScopedTempFile(const ScopedTempFile&) = delete;
+    ScopedTempFile& operator=(const ScopedTempFile&) = delete;
+    ScopedTempFile(ScopedTempFile&&) = default;
+    ScopedTempFile& operator=(ScopedTempFile&&) = default;
+
+    [[nodiscard]] static absl::StatusOr<ScopedTempFile> Create(std::string_view suffix);
 
     ~ScopedTempFile() {
         std::error_code error;
@@ -134,6 +165,126 @@ class ScopedTempFile final {
   private:
     std::filesystem::path path_;
 };
+
+#if defined(_WIN32)
+class ScopedWindowsAcl final {
+  public:
+    ScopedWindowsAcl() = default;
+    ~ScopedWindowsAcl() {
+        if (dacl_ != nullptr) {
+            LocalFree(dacl_);
+        }
+    }
+
+    ScopedWindowsAcl(const ScopedWindowsAcl&) = delete;
+    ScopedWindowsAcl& operator=(const ScopedWindowsAcl&) = delete;
+    ScopedWindowsAcl(ScopedWindowsAcl&& other) noexcept : dacl_(other.dacl_) {
+        other.dacl_ = nullptr;
+    }
+    ScopedWindowsAcl& operator=(ScopedWindowsAcl&& other) noexcept {
+        if (this != &other) {
+            if (dacl_ != nullptr) {
+                LocalFree(dacl_);
+            }
+            dacl_ = other.dacl_;
+            other.dacl_ = nullptr;
+        }
+        return *this;
+    }
+
+    [[nodiscard]] static absl::StatusOr<ScopedWindowsAcl> CreateOwnerOnly() {
+        HANDLE token_handle = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token_handle)) {
+            return absl::UnavailableError("failed to open process token");
+        }
+
+        DWORD token_info_size = 0;
+        GetTokenInformation(token_handle, TokenUser, nullptr, 0, &token_info_size);
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || token_info_size == 0) {
+            CloseHandle(token_handle);
+            return absl::UnavailableError("failed to size process token information");
+        }
+
+        std::vector<char> token_info(token_info_size);
+        if (!GetTokenInformation(token_handle, TokenUser, token_info.data(), token_info_size,
+                                 &token_info_size)) {
+            CloseHandle(token_handle);
+            return absl::UnavailableError("failed to read process token information");
+        }
+        CloseHandle(token_handle);
+
+        const TOKEN_USER* token_user = reinterpret_cast<const TOKEN_USER*>(token_info.data());
+        EXPLICIT_ACCESSA access{};
+        access.grfAccessPermissions = GENERIC_ALL;
+        access.grfAccessMode = SET_ACCESS;
+        access.grfInheritance = NO_INHERITANCE;
+        access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        access.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        access.Trustee.ptstrName = static_cast<LPSTR>(token_user->User.Sid);
+
+        PACL dacl = nullptr;
+        const DWORD acl_status = SetEntriesInAclA(1, &access, nullptr, &dacl);
+        if (acl_status != ERROR_SUCCESS) {
+            return absl::UnavailableError("failed to build owner-only DACL");
+        }
+        ScopedWindowsAcl scoped;
+        scoped.dacl_ = dacl;
+        return scoped;
+    }
+
+    [[nodiscard]] PACL get() const {
+        return dacl_;
+    }
+
+  private:
+    PACL dacl_ = nullptr;
+};
+
+absl::StatusOr<ScopedTempFile> ScopedTempFile::Create(std::string_view suffix) {
+    const std::filesystem::path directory = std::filesystem::temp_directory_path();
+    std::array<char, MAX_PATH + 1> path_buffer{};
+    const UINT result = GetTempFileNameA(directory.string().c_str(), "isl", 0, path_buffer.data());
+    if (result == 0) {
+        return absl::UnavailableError("failed to create secure temp file");
+    }
+
+    static_cast<void>(suffix);
+    const std::filesystem::path path(path_buffer.data());
+    const absl::StatusOr<ScopedWindowsAcl> owner_only_acl = ScopedWindowsAcl::CreateOwnerOnly();
+    if (!owner_only_acl.ok()) {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        return owner_only_acl.status();
+    }
+
+    const DWORD security_status =
+        SetNamedSecurityInfoA(const_cast<char*>(path.string().c_str()), SE_FILE_OBJECT,
+                              DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                              nullptr, nullptr, owner_only_acl->get(), nullptr);
+    if (security_status != ERROR_SUCCESS) {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        return absl::UnavailableError("failed to apply owner-only ACL to secure temp file");
+    }
+
+    return ScopedTempFile(path);
+}
+#else
+absl::StatusOr<ScopedTempFile> ScopedTempFile::Create(std::string_view suffix) {
+    std::string pattern =
+        (std::filesystem::temp_directory_path() / ("isla_openai_XXXXXX" + std::string(suffix)))
+            .string();
+    std::vector<char> mutable_pattern(pattern.begin(), pattern.end());
+    mutable_pattern.push_back('\0');
+
+    const int fd = mkstemps(mutable_pattern.data(), static_cast<int>(suffix.size()));
+    if (fd < 0) {
+        return absl::UnavailableError("failed to create secure temp file");
+    }
+    close(fd);
+    return ScopedTempFile(std::filesystem::path(mutable_pattern.data()));
+}
+#endif
 
 absl::StatusOr<std::string> ReadFileToString(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -152,14 +303,10 @@ absl::StatusOr<std::string> ReadFileToString(const std::filesystem::path& path) 
 absl::Status WriteStringToFile(const std::filesystem::path& path, std::string_view contents,
                                bool private_permissions = false) {
 #if defined(_WIN32)
-    SECURITY_ATTRIBUTES security_attributes{};
-    security_attributes.nLength = sizeof(security_attributes);
-    security_attributes.bInheritHandle = FALSE;
-    SECURITY_ATTRIBUTES* security_attributes_ptr =
-        private_permissions ? &security_attributes : nullptr;
-
-    HANDLE handle = CreateFileA(path.string().c_str(), GENERIC_WRITE, 0, security_attributes_ptr,
-                                CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    const DWORD flags =
+        FILE_ATTRIBUTE_TEMPORARY | (private_permissions ? FILE_FLAG_OPEN_REPARSE_POINT : 0);
+    HANDLE handle = CreateFileA(path.string().c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                flags, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         return absl::NotFoundError("failed to open file for write: " + path.string());
     }
@@ -176,8 +323,12 @@ absl::Status WriteStringToFile(const std::filesystem::path& path, std::string_vi
     }
     return absl::OkStatus();
 #else
-    const int mode = private_permissions ? 0600 : 0644;
-    const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
+    const int open_flags = O_WRONLY | O_TRUNC
+#ifdef O_NOFOLLOW
+                           | O_NOFOLLOW
+#endif
+        ;
+    const int fd = open(path.c_str(), open_flags, 0600);
     if (fd < 0) {
         return absl::NotFoundError("failed to open file for write: " + path.string());
     }
@@ -232,18 +383,18 @@ std::vector<std::string> BuildCurlArgs(const OpenAiResponsesClientConfig& config
         "User-Agent: " + config.user_agent,
     };
     if (config.organization.has_value()) {
-        args.push_back("--header");
+        args.emplace_back("--header");
         args.push_back("OpenAI-Organization: " + *config.organization);
     }
     if (config.project.has_value()) {
-        args.push_back("--header");
+        args.emplace_back("--header");
         args.push_back("OpenAI-Project: " + *config.project);
     }
-    args.push_back("--dump-header");
+    args.emplace_back("--dump-header");
     args.push_back(header_file.string());
-    args.push_back("--data-binary");
+    args.emplace_back("--data-binary");
     args.push_back("@" + request_file.string());
-    args.push_back("--max-time");
+    args.emplace_back("--max-time");
     args.push_back(
         std::to_string(std::max<std::int64_t>(1, config.request_timeout.count() / 1000)));
     return args;
@@ -285,7 +436,14 @@ absl::StatusOr<std::string> ReadHandleToString(HANDLE handle) {
 }
 
 absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::string>& args) {
-    ScopedTempFile stderr_file(".stderr");
+    absl::StatusOr<ScopedTempFile> stderr_file = ScopedTempFile::Create(".stderr");
+    if (!stderr_file.ok()) {
+        return stderr_file.status();
+    }
+    const absl::StatusOr<std::string> curl_path = ResolveWindowsCurlExecutablePath();
+    if (!curl_path.ok()) {
+        return curl_path.status();
+    }
 
     SECURITY_ATTRIBUTES security_attributes{};
     security_attributes.nLength = sizeof(security_attributes);
@@ -302,10 +460,10 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
         return absl::UnavailableError("failed to mark curl stdout pipe non-inheritable");
     }
 
-    HANDLE stderr_handle =
-        CreateFileA(stderr_file.path().string().c_str(), GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security_attributes,
-                    CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    HANDLE stderr_handle = CreateFileA(
+        stderr_file->path().string().c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security_attributes, OPEN_EXISTING,
+        FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (stderr_handle == INVALID_HANDLE_VALUE) {
         CloseHandle(stdout_read);
         CloseHandle(stdout_write);
@@ -317,7 +475,7 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
         if (i > 0U) {
             command_line.push_back(' ');
         }
-        command_line += QuoteWindowsCommandArg(args[i]);
+        command_line += QuoteWindowsCommandArg(i == 0U ? *curl_path : args[i]);
     }
     std::vector<char> mutable_command_line(command_line.begin(), command_line.end());
     mutable_command_line.push_back('\0');
@@ -331,7 +489,7 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
 
     PROCESS_INFORMATION process_info{};
     const BOOL created =
-        CreateProcessA(nullptr, mutable_command_line.data(), nullptr, nullptr, TRUE,
+        CreateProcessA(curl_path->c_str(), mutable_command_line.data(), nullptr, nullptr, TRUE,
                        CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
 
     CloseHandle(stdout_write);
@@ -359,7 +517,7 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
         return stdout_text.status();
     }
 
-    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file.path());
+    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file->path());
     return CurlProcessResult{
         .exit_code = static_cast<int>(exit_code),
         .stdout_text = *stdout_text,
@@ -387,14 +545,23 @@ absl::StatusOr<std::string> ReadFdToString(int fd) {
 }
 
 absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::string>& args) {
-    ScopedTempFile stderr_file(".stderr");
+    absl::StatusOr<ScopedTempFile> stderr_file = ScopedTempFile::Create(".stderr");
+    if (!stderr_file.ok()) {
+        return stderr_file.status();
+    }
 
     int stdout_pipe[2] = { -1, -1 };
     if (pipe(stdout_pipe) != 0) {
         return absl::UnavailableError("failed to create curl stdout pipe");
     }
 
-    const int stderr_fd = open(stderr_file.path().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    const int stderr_fd = open(stderr_file->path().c_str(),
+                               O_WRONLY | O_TRUNC
+#ifdef O_NOFOLLOW
+                                   | O_NOFOLLOW
+#endif
+                               ,
+                               0600);
     if (stderr_fd < 0) {
         close(stdout_pipe[0]);
         close(stdout_pipe[1]);
@@ -446,7 +613,7 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
         exit_code = 128 + WTERMSIG(wait_status);
     }
 
-    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file.path());
+    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file->path());
     return CurlProcessResult{
         .exit_code = exit_code,
         .stdout_text = *stdout_text,
@@ -754,19 +921,28 @@ absl::StatusOr<SseParseSummary> ParseSseBody(std::string_view body,
 
 absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& config,
                                         const std::string& request_json) {
-    ScopedTempFile curl_config_file(".curlrc");
-    ScopedTempFile request_file(".json");
-    ScopedTempFile header_file(".headers");
+    absl::StatusOr<ScopedTempFile> curl_config_file = ScopedTempFile::Create(".curlrc");
+    if (!curl_config_file.ok()) {
+        return curl_config_file.status();
+    }
+    absl::StatusOr<ScopedTempFile> request_file = ScopedTempFile::Create(".json");
+    if (!request_file.ok()) {
+        return request_file.status();
+    }
+    absl::StatusOr<ScopedTempFile> header_file = ScopedTempFile::Create(".headers");
+    if (!header_file.ok()) {
+        return header_file.status();
+    }
 
     const std::string curl_config_contents =
         "header = \"Authorization: Bearer " + EscapeCurlConfigValue(config.api_key) + "\"\n";
     absl::Status write_status =
-        WriteStringToFile(curl_config_file.path(), curl_config_contents, true);
+        WriteStringToFile(curl_config_file->path(), curl_config_contents, true);
     if (!write_status.ok()) {
         return write_status;
     }
 
-    write_status = WriteStringToFile(request_file.path(), request_json, true);
+    write_status = WriteStringToFile(request_file->path(), request_json, true);
     if (!write_status.ok()) {
         return write_status;
     }
@@ -776,7 +952,7 @@ absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& confi
     // the OpenAI HTTP/SSE integration behind the provider boundary until the toolchain grows a
     // first-class TLS client dependency.
     const absl::StatusOr<CurlProcessResult> curl_result = ExecuteCurlProcess(
-        BuildCurlArgs(config, curl_config_file.path(), request_file.path(), header_file.path()));
+        BuildCurlArgs(config, curl_config_file->path(), request_file->path(), header_file->path()));
     if (!curl_result.ok()) {
         LOG(ERROR) << "AI gateway openai responses failed to launch curl host='"
                    << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
@@ -785,7 +961,7 @@ absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& confi
     }
 
     const std::string& body = curl_result->stdout_text;
-    const absl::StatusOr<std::string> header_text = ReadFileToString(header_file.path());
+    const absl::StatusOr<std::string> header_text = ReadFileToString(header_file->path());
     if (!header_text.ok()) {
         LOG(ERROR) << "AI gateway openai responses failed to read curl header dump host='"
                    << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
@@ -824,6 +1000,11 @@ class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
         if (config_.api_key.empty()) {
             return invalid_argument("openai responses api_key must not be empty");
         }
+        if (absl::Status status =
+                ValidateCurlConfigOrHeaderValue("openai responses api_key", config_.api_key);
+            !status.ok()) {
+            return status;
+        }
         if (config_.host.empty()) {
             return invalid_argument("openai responses host must not be empty");
         }
@@ -835,6 +1016,25 @@ class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
         }
         if (config_.request_timeout <= std::chrono::milliseconds::zero()) {
             return invalid_argument("openai responses request_timeout must be positive");
+        }
+        if (absl::Status status =
+                ValidateCurlConfigOrHeaderValue("openai responses user_agent", config_.user_agent);
+            !status.ok()) {
+            return status;
+        }
+        if (config_.organization.has_value()) {
+            if (absl::Status status = ValidateCurlConfigOrHeaderValue(
+                    "openai responses organization", *config_.organization);
+                !status.ok()) {
+                return status;
+            }
+        }
+        if (config_.project.has_value()) {
+            if (absl::Status status =
+                    ValidateCurlConfigOrHeaderValue("openai responses project", *config_.project);
+                !status.ok()) {
+                return status;
+            }
         }
         return absl::OkStatus();
     }

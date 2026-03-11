@@ -49,6 +49,25 @@ TEST(AiGatewayStartupConfigTest, LoadDotEnvFileParsesBasicAssignments) {
     EXPECT_EQ(parsed->at("OPENAI_TARGET"), "/v1/responses");
 }
 
+TEST(AiGatewayStartupConfigTest, LoadDotEnvFilePreservesHashesInsideQuotedValues) {
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / "isla_ai_gateway_hash.env";
+    {
+        std::ofstream output(path);
+        output << "OPENAI_API_KEY=\"key#with#hashes\"\n";
+        output << "OPENAI_PROJECT_ID='proj_#123'\n";
+        output << "OPENAI_HOST=api.openai.com # trailing comment\n";
+    }
+
+    const absl::StatusOr<StartupEnvMap> parsed = LoadDotEnvFile(path.string());
+    std::filesystem::remove(path);
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_EQ(parsed->at("OPENAI_API_KEY"), "key#with#hashes");
+    EXPECT_EQ(parsed->at("OPENAI_PROJECT_ID"), "proj_#123");
+    EXPECT_EQ(parsed->at("OPENAI_HOST"), "api.openai.com");
+}
+
 TEST(AiGatewayStartupConfigTest, LoadDotEnvFileRejectsMalformedLine) {
     const std::filesystem::path path =
         std::filesystem::temp_directory_path() / "isla_ai_gateway_bad.env";
@@ -101,16 +120,14 @@ TEST(AiGatewayStartupConfigTest, DefaultDotEnvCandidatePathsPreferWorkspaceDirec
               std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/.env"));
 }
 
-TEST(AiGatewayStartupConfigTest, DefaultDotEnvCandidatePathsWalkAncestorDirectories) {
+TEST(AiGatewayStartupConfigTest,
+     DefaultDotEnvCandidatePathsUsesOnlyCurrentDirectoryWithoutWorkspaceOverride) {
     const std::filesystem::path current =
         std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/server/src");
     const std::vector<std::filesystem::path> candidates = DefaultDotEnvCandidatePaths(
-        [](std::string_view) -> std::optional<std::string> { return std::nullopt; },
-        current);
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; }, current);
 
-    EXPECT_NE(std::find(candidates.begin(), candidates.end(),
-                        std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/.env")),
-              candidates.end());
+    ASSERT_EQ(candidates.size(), 1U);
     EXPECT_EQ(candidates.front(),
               std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/server/src/.env"));
 }

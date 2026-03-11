@@ -1,5 +1,15 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
+config_setting(
+    name = "windows_gnu",
+    values = {"define": "isla_windows_gnu=true"},
+)
+
+config_setting(
+    name = "windows_msvc",
+    values = {"define": "isla_windows_gnu=false"},
+)
+
 cc_library(
     name = "ai_gateway_startup_config",
     srcs = ["ai_gateway_startup_config.cpp"],
@@ -59,6 +69,15 @@ cc_library(
     name = "openai_responses_client",
     srcs = ["openai_responses_client.cpp"],
     visibility = ["//visibility:public"],
+    linkopts = select({
+        ":windows_gnu": [
+            "-ladvapi32",
+        ],
+        ":windows_msvc": [
+            "Advapi32.lib",
+        ],
+        "//conditions:default": [],
+    }),
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_utils",

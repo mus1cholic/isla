@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "absl/log/log.h"
-#include "absl/status/statusor.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -41,6 +41,11 @@ std::string UnquoteValue(std::string_view value) {
         return std::string(value.substr(1U, value.size() - 2U));
     }
     return std::string(value);
+}
+
+bool IsQuotedValue(std::string_view value) {
+    return value.size() >= 2U && ((value.front() == '"' && value.back() == '"') ||
+                                  (value.front() == '\'' && value.back() == '\''));
 }
 
 bool HasArgumentPrefix(int argc, char** argv, std::string_view prefix) {
@@ -66,23 +71,6 @@ void AppendIfMissing(std::vector<std::filesystem::path>* paths,
     const auto it = std::find(paths->begin(), paths->end(), candidate);
     if (it == paths->end()) {
         paths->push_back(candidate);
-    }
-}
-
-void AppendAncestorDotEnvCandidates(std::vector<std::filesystem::path>* paths,
-                                    const std::filesystem::path& start) {
-    if (start.empty()) {
-        return;
-    }
-
-    std::filesystem::path current = start;
-    while (true) {
-        AppendIfMissing(paths, current / ".env");
-        const std::filesystem::path parent = current.parent_path();
-        if (parent.empty() || parent == current) {
-            break;
-        }
-        current = parent;
     }
 }
 
@@ -196,10 +184,12 @@ absl::StatusOr<StartupEnvMap> LoadDotEnvFile(std::string_view path) {
         }
 
         std::string value = TrimAscii(std::string_view(trimmed).substr(equals + 1U));
-        if (const std::size_t comment = value.find('#'); comment != std::string::npos) {
-            const std::string before_comment =
-                TrimAscii(std::string_view(value).substr(0, comment));
-            value = before_comment;
+        if (!IsQuotedValue(value)) {
+            if (const std::size_t comment = value.find('#'); comment != std::string::npos) {
+                const std::string before_comment =
+                    TrimAscii(std::string_view(value).substr(0, comment));
+                value = before_comment;
+            }
         }
         values.insert_or_assign(key, UnquoteValue(value));
     }
@@ -252,7 +242,7 @@ DefaultDotEnvCandidatePaths(const StartupEnvLookup& env_lookup,
         AppendIfMissing(&candidates, std::filesystem::path(*workspace_directory) / ".env");
     }
 
-    AppendAncestorDotEnvCandidates(&candidates, current_path);
+    AppendIfMissing(&candidates, current_path / ".env");
     return candidates;
 }
 
@@ -281,7 +271,8 @@ StartupEnvLookup DefaultStartupEnvLookup() {
         }
         if (!parsed->empty()) {
             VLOG(1) << "Using .env file at " << candidate.string();
-            return CombinedStartupEnvLookup(process_env_lookup, DotEnvFileEnvLookup(candidate.string()));
+            return CombinedStartupEnvLookup(process_env_lookup,
+                                            DotEnvFileEnvLookup(candidate.string()));
         }
     }
 
@@ -360,7 +351,8 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             continue;
         }
         if (const absl::StatusOr<bool> handled = TryParseIntFlag(
-                argument, "--port=", "port", [&parsed](int port) -> absl::Status {
+                argument, "--port=", "port",
+                [&parsed](int port) -> absl::Status {
                     if (port < 0 || port > 65535) {
                         return absl::InvalidArgumentError("port must be between 0 and 65535");
                     }
@@ -373,7 +365,8 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             continue;
         }
         if (const absl::StatusOr<bool> handled = TryParseIntFlag(
-                argument, "--backlog=", "backlog", [&parsed](int backlog) -> absl::Status {
+                argument, "--backlog=", "backlog",
+                [&parsed](int backlog) -> absl::Status {
                     if (backlog <= 0) {
                         return absl::InvalidArgumentError("backlog must be greater than zero");
                     }
@@ -397,16 +390,16 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             parsed.openai_config.host = argument.substr(14);
             continue;
         }
-        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
-                argument, "--openai-port=", "openai-port",
-                [&parsed](int port) -> absl::Status {
-                    if (port < 0 || port > 65535) {
-                        return absl::InvalidArgumentError(
-                            "openai-port must be between 0 and 65535");
-                    }
-                    parsed.openai_config.port = static_cast<std::uint16_t>(port);
-                    return absl::OkStatus();
-                });
+        if (const absl::StatusOr<bool> handled =
+                TryParseIntFlag(argument, "--openai-port=", "openai-port",
+                                [&parsed](int port) -> absl::Status {
+                                    if (port < 0 || port > 65535) {
+                                        return absl::InvalidArgumentError(
+                                            "openai-port must be between 0 and 65535");
+                                    }
+                                    parsed.openai_config.port = static_cast<std::uint16_t>(port);
+                                    return absl::OkStatus();
+                                });
             !handled.ok()) {
             return handled.status();
         } else if (*handled) {
@@ -428,16 +421,17 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             parsed.openai_config.project = argument.substr(20);
             continue;
         }
-        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
-                argument, "--openai-timeout-ms=", "openai-timeout-ms",
-                [&parsed](int timeout_ms) -> absl::Status {
-                    if (timeout_ms <= 0) {
-                        return absl::InvalidArgumentError(
-                            "openai-timeout-ms must be greater than zero");
-                    }
-                    parsed.openai_config.request_timeout = std::chrono::milliseconds(timeout_ms);
-                    return absl::OkStatus();
-                });
+        if (const absl::StatusOr<bool> handled =
+                TryParseIntFlag(argument, "--openai-timeout-ms=", "openai-timeout-ms",
+                                [&parsed](int timeout_ms) -> absl::Status {
+                                    if (timeout_ms <= 0) {
+                                        return absl::InvalidArgumentError(
+                                            "openai-timeout-ms must be greater than zero");
+                                    }
+                                    parsed.openai_config.request_timeout =
+                                        std::chrono::milliseconds(timeout_ms);
+                                    return absl::OkStatus();
+                                });
             !handled.ok()) {
             return handled.status();
         } else if (*handled) {
