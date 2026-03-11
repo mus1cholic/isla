@@ -122,9 +122,12 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
         organization.has_value()) {
         config->organization = *organization;
     }
-    if (const std::optional<std::string> project = env_lookup("OPENAI_PROJECT");
+    if (const std::optional<std::string> project = env_lookup("OPENAI_PROJECT_ID");
         project.has_value()) {
         config->project = *project;
+    } else if (const std::optional<std::string> legacy_project = env_lookup("OPENAI_PROJECT");
+               legacy_project.has_value()) {
+        config->project = *legacy_project;
     }
     if (const std::optional<std::string> port = env_lookup("OPENAI_PORT"); port.has_value()) {
         const absl::StatusOr<int> parsed_port = ParseIntArgument(*port, "OPENAI_PORT");
@@ -233,6 +236,10 @@ DefaultDotEnvCandidatePaths(const StartupEnvLookup& env_lookup,
     return candidates;
 }
 
+bool LooksLikeOpenAiProjectId(std::string_view value) {
+    return value.starts_with("proj_");
+}
+
 StartupEnvLookup DefaultStartupEnvLookup() {
     const StartupEnvLookup process_env_lookup =
         [](std::string_view name) -> std::optional<std::string> {
@@ -279,6 +286,11 @@ absl::Status ValidateOpenAiStartupConfig(const OpenAiResponsesClientConfig& conf
     if (config.request_timeout <= std::chrono::milliseconds::zero()) {
         return absl::InvalidArgumentError("openai timeout must be positive");
     }
+    if (config.project.has_value() && !config.project->empty() &&
+        !LooksLikeOpenAiProjectId(*config.project)) {
+        LOG(WARNING) << "OpenAI project value does not look like a project ID; expected a value "
+                        "like 'proj_...', not a display name";
+    }
     return absl::OkStatus();
 }
 
@@ -290,6 +302,7 @@ StartupLogContext BuildStartupLogContext(int argc, char** argv, const StartupEnv
                                        HasArgumentPrefix(argc, argv, "--openai-port=") ||
                                        HasArgumentPrefix(argc, argv, "--openai-target=") ||
                                        HasArgumentPrefix(argc, argv, "--openai-organization=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-project-id=") ||
                                        HasArgumentPrefix(argc, argv, "--openai-project=") ||
                                        HasArgumentPrefix(argc, argv, "--openai-timeout-ms=");
     const bool openai_env_configured = HasNonEmptyEnvVar("OPENAI_API_KEY", env_lookup) ||
@@ -298,6 +311,7 @@ StartupLogContext BuildStartupLogContext(int argc, char** argv, const StartupEnv
                                        HasNonEmptyEnvVar("OPENAI_PORT", env_lookup) ||
                                        HasNonEmptyEnvVar("OPENAI_TARGET", env_lookup) ||
                                        HasNonEmptyEnvVar("OPENAI_ORGANIZATION", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_PROJECT_ID", env_lookup) ||
                                        HasNonEmptyEnvVar("OPENAI_PROJECT", env_lookup) ||
                                        HasNonEmptyEnvVar("OPENAI_TIMEOUT_MS", env_lookup);
 
@@ -380,6 +394,10 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         }
         if (argument.starts_with("--openai-project=")) {
             parsed.openai_config.project = argument.substr(17);
+            continue;
+        }
+        if (argument.starts_with("--openai-project-id=")) {
+            parsed.openai_config.project = argument.substr(20);
             continue;
         }
         if (argument.starts_with("--openai-timeout-ms=")) {

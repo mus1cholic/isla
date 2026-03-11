@@ -38,6 +38,7 @@ using StartupEnvMap = std::unordered_map<std::string, std::string>;
 DefaultDotEnvCandidatePaths(const StartupEnvLookup& env_lookup,
                             const std::filesystem::path& current_path =
                                 std::filesystem::current_path());
+[[nodiscard]] bool LooksLikeOpenAiProjectId(std::string_view value);
 [[nodiscard]] StartupEnvLookup DefaultStartupEnvLookup();
 [[nodiscard]] absl::Status ValidateOpenAiStartupConfig(
     const OpenAiResponsesClientConfig& config);

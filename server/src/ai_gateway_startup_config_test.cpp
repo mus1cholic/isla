@@ -24,6 +24,7 @@ auto kOpenAiPort = std::to_array("--openai-port=8081");
 auto kTarget = std::to_array("--openai-target=/custom");
 auto kOrg = std::to_array("--openai-organization=org_123");
 auto kProject = std::to_array("--openai-project=proj_123");
+auto kProjectId = std::to_array("--openai-project-id=proj_456");
 auto kTimeout = std::to_array("--openai-timeout-ms=1500");
 auto kBadScheme = std::to_array("--openai-scheme=ftp");
 auto kBadPort = std::to_array("--openai-port=70000");
@@ -114,6 +115,12 @@ TEST(AiGatewayStartupConfigTest, DefaultDotEnvCandidatePathsWalkAncestorDirector
               std::filesystem::path("C:/Users/orion/OneDrive/Desktop/code/isla/server/src/.env"));
 }
 
+TEST(AiGatewayStartupConfigTest, LooksLikeOpenAiProjectIdRecognizesExpectedPrefix) {
+    EXPECT_TRUE(LooksLikeOpenAiProjectId("proj_123"));
+    EXPECT_FALSE(LooksLikeOpenAiProjectId("isla"));
+    EXPECT_FALSE(LooksLikeOpenAiProjectId(""));
+}
+
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     std::array<char*, 12> argv = { kArg0.data(),       kHost.data(),       kPort.data(),
                                    kBacklog.data(),    kApiKey.data(),     kScheme.data(),
@@ -165,6 +172,9 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
                                       if (name == "OPENAI_TIMEOUT_MS") {
                                           return "2500";
                                       }
+                                      if (name == "OPENAI_PROJECT_ID") {
+                                          return "proj_env_123";
+                                      }
                                       return std::nullopt;
                                   });
 
@@ -174,6 +184,8 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     EXPECT_EQ(parsed->openai_config.port, 4444);
     EXPECT_EQ(parsed->openai_config.target, "/env-target");
     EXPECT_EQ(parsed->openai_config.request_timeout, std::chrono::milliseconds(2500));
+    ASSERT_TRUE(parsed->openai_config.project.has_value());
+    EXPECT_EQ(*parsed->openai_config.project, "proj_env_123");
 }
 
 TEST(AiGatewayStartupConfigTest, ParseGatewayStartupConfigAcceptsDotEnvFallback) {
@@ -212,6 +224,38 @@ TEST(AiGatewayStartupConfigTest, CliOverridesEnvironmentDefaults) {
     ASSERT_TRUE(parsed.ok()) << parsed.status();
     EXPECT_EQ(parsed->openai_config.api_key, "cli_key");
     EXPECT_EQ(parsed->openai_config.host, "localhost");
+}
+
+TEST(AiGatewayStartupConfigTest, UsesPreferredCliProjectIdFlag) {
+    std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), kProjectId.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    ASSERT_TRUE(parsed->openai_config.project.has_value());
+    EXPECT_EQ(*parsed->openai_config.project, "proj_456");
+}
+
+TEST(AiGatewayStartupConfigTest, UsesLegacyProjectEnvWhenPreferredProjectIdEnvMissing) {
+    std::array<char*, 1> argv = { kArg0.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "OPENAI_API_KEY") {
+                                          return "env_key";
+                                      }
+                                      if (name == "OPENAI_PROJECT") {
+                                          return "proj_legacy_123";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    ASSERT_TRUE(parsed->openai_config.project.has_value());
+    EXPECT_EQ(*parsed->openai_config.project, "proj_legacy_123");
 }
 
 TEST(AiGatewayStartupConfigTest, RejectsMissingApiKeyAfterEnvAndCliResolution) {
