@@ -140,12 +140,18 @@ Sequencing rule for the remaining work:
 >   - `ExecutionPlan` and ordered execution steps as the planner-side contract
 >   - `CreateFakeOpenAiPlan()` as the current programmer-authored one-step plan builder
 >   - `GatewayPlanExecutor` as the generic plan runner
+>   - `GatewayStepRegistry` as the explicit compile-time step-to-execution dispatch boundary
 >   - execution result/failure shapes with final-result-only execution semantics
 >   - registered compile-time step types, with `OpenAiLlmStep` as the first runtime
 >     dispatch target
 >   - runtime turn input supplied at executor time instead of being stored in the plan itself
 > - The current planner/executor path is intentionally independent of gateway memory shaping; the
 >   existing memory system remains a separate responder concern.
+> - Executor failures now normalize to stable public gateway codes/messages instead of forwarding raw
+>   internal step/provider detail directly to the client.
+> - `GatewayStubResponder` now re-resolves the live session immediately before successful text and
+>   completion emits so a session that closes during execution does not receive late emits through a
+>   stale retained handle.
 > - Known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
 >   slow step execution or slow accepted-turn emit completion can create cross-session head-of-line
 >   blocking. Fixing that isolation is deferred to the next PR rather than Phase 3.
@@ -156,10 +162,11 @@ Sequencing rule for the remaining work:
 ### Changelog
 
 - 2026-03-10: completed Phase 3 with explicit execution-plan planner/executor contracts, a
-  `CreateFakeOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, planner-built
-  execution steps with concrete compile-time types like `OpenAiLlmStep`, and dedicated
-  planner/executor/responder regression coverage while keeping live OpenAI HTTP/SSE work deferred
-  to Phase 3.5.
+  `CreateFakeOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, an explicit
+  `GatewayStepRegistry`, planner-built execution steps with concrete compile-time types like
+  `OpenAiLlmStep`, stable public executor error mapping, live-session re-resolution before success
+  emits, and dedicated planner/executor/responder regression coverage while keeping live OpenAI
+  HTTP/SSE work deferred to Phase 3.5.
 - 2026-03-07: hardened the implemented Phase-2.5 slice with separate pending/in-progress stub-turn
   tracking, best-effort accepted-turn terminalization after post-acceptance emit failures,
   configurable stub async-emit waits, oversize websocket/text-input guards, non-blocking late
@@ -638,12 +645,16 @@ Close the loop through the same session boundary without introducing provider de
 > - Implemented artifacts:
 >   - `server/include/isla/server/ai_gateway_planner.hpp`
 >   - `server/include/isla/server/ai_gateway_executor.hpp`
+>   - `server/include/isla/server/ai_gateway_step_registry.hpp`
 >   - `server/include/isla/server/openai_llms.hpp`
 >   - `server/src/ai_gateway_planner.cpp`
 >   - `server/src/openai_llms.cpp`
 >   - `server/src/ai_gateway_executor.cpp`
+>   - `server/src/ai_gateway_step_registry.cpp`
 >   - `server/src/ai_gateway_planner_test.cpp`
 >   - `server/src/ai_gateway_executor_test.cpp`
+>   - `server/src/ai_gateway_step_registry_test.cpp`
+>   - `server/src/openai_llms_test.cpp`
 > - Implemented behavior:
 >   - normalized execution-plan and execution-step contracts
 >   - a compile-time `OpenAiLlmStep` signature as the first supported runtime dispatch
@@ -652,9 +663,13 @@ Close the loop through the same session boundary without introducing provider de
 >     inside the planner and wraps it into the ordered plan
 >   - a `GatewayPlanExecutor` that executes planner-built steps in order and supplies runtime input
 >     when dispatching the step type
+>   - a `GatewayStepRegistry` that owns the explicit compile-time `ExecutionStep` dispatch mapping
 >   - explicit executor result/failure shapes with final-result-only execution
+>   - stable public executor error mapping with retryability derived from `absl::StatusCode`
 >   - integration of the new boundary into `GatewayStubResponder` while preserving the existing
 >     live-session emission seam, cancellation handling, and final-output-oriented client contract
+>   - live-session re-resolution immediately before successful emits so a session that closes during
+>     execution does not receive late output through a stale retained handle
 > - Known limitation: `GatewayStubResponder` still processes all sessions through one blocking
 >   worker, so slow step execution or slow accepted-turn emit completion can delay unrelated
 >   sessions until the follow-up concurrency/isolation refactor lands.

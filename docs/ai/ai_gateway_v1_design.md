@@ -189,10 +189,12 @@ Current implementation note (2026-03-06):
 - the repo now also has an explicit Phase-3 planner/executor boundary in:
   - `server/include/isla/server/ai_gateway_planner.hpp`
   - `server/include/isla/server/ai_gateway_executor.hpp`
+  - `server/include/isla/server/ai_gateway_step_registry.hpp`
   - `server/include/isla/server/openai_llms.hpp`
   - `server/src/ai_gateway_planner.cpp`
   - `server/src/openai_llms.cpp`
   - `server/src/ai_gateway_executor.cpp`
+  - `server/src/ai_gateway_step_registry.cpp`
 - that Phase-3 boundary currently provides:
   - `ExecutionPlan` and ordered execution-step contracts
   - concrete compile-time step types instead of planner-provided registered-call fields
@@ -200,13 +202,18 @@ Current implementation note (2026-03-06):
     target
   - `CreateFakeOpenAiPlan()` as the initial programmer-authored v1 planner entrypoint
   - `GatewayPlanExecutor` as the generic plan runner
+  - `GatewayStepRegistry` as the explicit compile-time step dispatch boundary
   - runtime input supplied by the executor when it dispatches a registered step
   - normalized executor result/failure shapes with final-result-only execution semantics
+  - stable public executor error mapping so raw step/provider detail is kept in logs rather than
+    forwarded directly to client-visible `error` payloads
 - the current planner/executor path is intentionally independent of working-memory prompt shaping,
   and runtime turn input is provided at execution time while the memory system remains a separate
   responder concern
 - the emit completion callback currently means transport-executor acceptance/rejection, not remote
   socket flush
+- the responder now re-resolves the live session immediately before successful emits so a session
+  that closes during execution does not receive late output through a stale retained handle
 - the async emit path now logs rejected/failed operations at the server boundary, guards callback
   exceptions, and uses bounded waits in integration tests so dropped callbacks fail deterministically
 - the first local responder path is now implemented, while planner/executor/provider work remains
@@ -358,7 +365,11 @@ Current implementation note (2026-03-10):
   - `GatewayPlanExecutor`
   - one final execution result mapped back to one client-visible `text.output`
 - the current fake responder path has the planner construct the `OpenAiLlmStep`, and the executor
-  supplies runtime turn input while constructing and dispatching `OpenAiLLMs`
+  supplies runtime turn input while `GatewayStepRegistry` dispatches that step to `OpenAiLLMs`
+- executor failures now normalize to stable public gateway codes/messages and derive retryability
+  from `absl::StatusCode` instead of forwarding raw step/provider diagnostics directly to clients
+- the responder now re-resolves the live session immediately before successful emits so a session
+  that closes during execution does not receive late output through a stale retained handle
 - known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
   slow step execution or slow accepted-turn emit completion can delay unrelated sessions until a
   later concurrency/isolation refactor lands
@@ -413,7 +424,9 @@ Invariants:
 - the current `ExecutionPlan` contains exactly one OpenAI-backed `OpenAiLlmStep`
 - planner owns plan shaping and step ordering policy
 - concrete step types own provider/service-specific dispatch identity
-- executor owns ordered plan execution and constructs provider operations from concrete steps
+- the step registry owns compile-time dispatch from concrete step types to provider operations
+- executor owns ordered plan execution and uses the step registry to run provider operations from
+  concrete steps
 - TTS MUST NOT change planner or executor ownership boundaries
 - item-output dependencies and optional parallel execution are deferred TODOs for later phases
 
@@ -432,6 +445,8 @@ Current implementation note (2026-03-10):
 
 - the current planner/executor boundary is final-result-only
 - `GatewayStubResponder` maps that final execution result to one final `text.output` in v1
+- executor failures now surface stable public error codes/messages rather than raw internal step
+  diagnostics
 - the current responder path still has cross-session head-of-line blocking because execution and
   accepted-turn terminalization run on one blocking worker; that isolation fix is intentionally
   deferred beyond this PR
