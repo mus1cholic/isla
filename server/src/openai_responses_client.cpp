@@ -7,7 +7,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -16,12 +16,28 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
+#endif
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -61,53 +77,37 @@ std::string BuildCurlUrl(const OpenAiResponsesClientConfig& config) {
 #if defined(_WIN32)
 constexpr std::string_view kCurlCommand = "curl.exe";
 
-std::string ShellQuote(std::string_view value) {
-    std::string quoted = "\"";
-    for (const char ch : value) {
-        if (ch == '"') {
-            quoted += "\\\"";
-        } else {
-            quoted.push_back(ch);
-        }
+std::string QuoteWindowsCommandArg(std::string_view value) {
+    const bool needs_quotes =
+        value.empty() || value.find_first_of(" \t\"") != std::string_view::npos;
+    if (!needs_quotes) {
+        return std::string(value);
     }
+
+    std::string quoted;
+    quoted.push_back('"');
+    std::size_t backslash_count = 0;
+    for (const char ch : value) {
+        if (ch == '\\') {
+            ++backslash_count;
+            continue;
+        }
+        if (ch == '"') {
+            quoted.append((backslash_count * 2U) + 1U, '\\');
+            quoted.push_back('"');
+            backslash_count = 0;
+            continue;
+        }
+        quoted.append(backslash_count, '\\');
+        backslash_count = 0;
+        quoted.push_back(ch);
+    }
+    quoted.append(backslash_count * 2U, '\\');
     quoted.push_back('"');
     return quoted;
 }
-
-using PipeHandle = FILE*;
-
-PipeHandle OpenPipe(const std::string& command) {
-    return _popen(command.c_str(), "rb");
-}
-
-int ClosePipe(PipeHandle pipe) {
-    return _pclose(pipe);
-}
 #else
 constexpr std::string_view kCurlCommand = "curl";
-
-std::string ShellQuote(std::string_view value) {
-    std::string quoted = "'";
-    for (const char ch : value) {
-        if (ch == '\'') {
-            quoted += "'\\''";
-        } else {
-            quoted.push_back(ch);
-        }
-    }
-    quoted.push_back('\'');
-    return quoted;
-}
-
-using PipeHandle = FILE*;
-
-PipeHandle OpenPipe(const std::string& command) {
-    return popen(command.c_str(), "r");
-}
-
-int ClosePipe(PipeHandle pipe) {
-    return pclose(pipe);
-}
 #endif
 
 std::filesystem::path MakeTempPath(std::string_view suffix) {
@@ -135,12 +135,325 @@ class ScopedTempFile final {
     std::filesystem::path path_;
 };
 
-std::string ReadFileToString(const std::filesystem::path& path) {
+absl::StatusOr<std::string> ReadFileToString(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        return absl::NotFoundError("failed to open file: " + path.string());
+    }
+
     std::ostringstream buffer;
     buffer << input.rdbuf();
+    if (!input.good() && !input.eof()) {
+        return absl::InternalError("failed to read file: " + path.string());
+    }
     return buffer.str();
 }
+
+absl::Status WriteStringToFile(const std::filesystem::path& path, std::string_view contents,
+                               bool private_permissions = false) {
+#if defined(_WIN32)
+    SECURITY_ATTRIBUTES security_attributes{};
+    security_attributes.nLength = sizeof(security_attributes);
+    security_attributes.bInheritHandle = FALSE;
+    SECURITY_ATTRIBUTES* security_attributes_ptr =
+        private_permissions ? &security_attributes : nullptr;
+
+    HANDLE handle = CreateFileA(path.string().c_str(), GENERIC_WRITE, 0, security_attributes_ptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return absl::NotFoundError("failed to open file for write: " + path.string());
+    }
+
+    DWORD bytes_written = 0;
+    const BOOL success = WriteFile(handle, contents.data(), static_cast<DWORD>(contents.size()),
+                                   &bytes_written, nullptr);
+    const DWORD close_success = CloseHandle(handle);
+    if (!success || bytes_written != contents.size()) {
+        return absl::InternalError("failed to write file: " + path.string());
+    }
+    if (close_success == 0) {
+        return absl::InternalError("failed to close file after write: " + path.string());
+    }
+    return absl::OkStatus();
+#else
+    const int mode = private_permissions ? 0600 : 0644;
+    const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd < 0) {
+        return absl::NotFoundError("failed to open file for write: " + path.string());
+    }
+
+    std::size_t total_written = 0;
+    while (total_written < contents.size()) {
+        const ssize_t bytes_written =
+            write(fd, contents.data() + total_written, contents.size() - total_written);
+        if (bytes_written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            return absl::InternalError("failed to write file: " + path.string());
+        }
+        total_written += static_cast<std::size_t>(bytes_written);
+    }
+    if (close(fd) != 0) {
+        return absl::InternalError("failed to close file after write: " + path.string());
+    }
+    return absl::OkStatus();
+#endif
+}
+
+struct CurlProcessResult {
+    int exit_code = 0;
+    std::string stdout_text;
+    std::string stderr_text;
+};
+
+std::vector<std::string> BuildCurlArgs(const OpenAiResponsesClientConfig& config,
+                                       const std::filesystem::path& curl_config_file,
+                                       const std::filesystem::path& request_file,
+                                       const std::filesystem::path& header_file) {
+    std::vector<std::string> args = {
+        std::string(kCurlCommand),
+        "-q",
+        "--config",
+        curl_config_file.string(),
+        "--silent",
+        "--show-error",
+        "--no-buffer",
+        "--http1.1",
+        "--request",
+        "POST",
+        BuildCurlUrl(config),
+        "--header",
+        "Content-Type: application/json",
+        "--header",
+        "Accept: text/event-stream",
+        "--header",
+        "User-Agent: " + config.user_agent,
+    };
+    if (config.organization.has_value()) {
+        args.push_back("--header");
+        args.push_back("OpenAI-Organization: " + *config.organization);
+    }
+    if (config.project.has_value()) {
+        args.push_back("--header");
+        args.push_back("OpenAI-Project: " + *config.project);
+    }
+    args.push_back("--dump-header");
+    args.push_back(header_file.string());
+    args.push_back("--data-binary");
+    args.push_back("@" + request_file.string());
+    args.push_back("--max-time");
+    args.push_back(
+        std::to_string(std::max<std::int64_t>(1, config.request_timeout.count() / 1000)));
+    return args;
+}
+
+std::string EscapeCurlConfigValue(std::string_view value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char ch : value) {
+        if (ch == '\\' || ch == '"') {
+            escaped.push_back('\\');
+        }
+        escaped.push_back(ch);
+    }
+    return escaped;
+}
+
+#if defined(_WIN32)
+absl::StatusOr<std::string> ReadHandleToString(HANDLE handle) {
+    std::string output;
+    std::array<char, 4096> buffer{};
+    for (;;) {
+        DWORD bytes_read = 0;
+        const BOOL success = ReadFile(handle, buffer.data(), static_cast<DWORD>(buffer.size()),
+                                      &bytes_read, nullptr);
+        if (!success) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE) {
+                break;
+            }
+            return absl::UnavailableError("failed to read process pipe");
+        }
+        if (bytes_read == 0) {
+            break;
+        }
+        output.append(buffer.data(), bytes_read);
+    }
+    return output;
+}
+
+absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::string>& args) {
+    ScopedTempFile stderr_file(".stderr");
+
+    SECURITY_ATTRIBUTES security_attributes{};
+    security_attributes.nLength = sizeof(security_attributes);
+    security_attributes.bInheritHandle = TRUE;
+
+    HANDLE stdout_read = nullptr;
+    HANDLE stdout_write = nullptr;
+    if (!CreatePipe(&stdout_read, &stdout_write, &security_attributes, 0)) {
+        return absl::UnavailableError("failed to create curl stdout pipe");
+    }
+    if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(stdout_read);
+        CloseHandle(stdout_write);
+        return absl::UnavailableError("failed to mark curl stdout pipe non-inheritable");
+    }
+
+    HANDLE stderr_handle =
+        CreateFileA(stderr_file.path().string().c_str(), GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security_attributes,
+                    CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (stderr_handle == INVALID_HANDLE_VALUE) {
+        CloseHandle(stdout_read);
+        CloseHandle(stdout_write);
+        return absl::UnavailableError("failed to create curl stderr file");
+    }
+
+    std::string command_line;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (i > 0U) {
+            command_line.push_back(' ');
+        }
+        command_line += QuoteWindowsCommandArg(args[i]);
+    }
+    std::vector<char> mutable_command_line(command_line.begin(), command_line.end());
+    mutable_command_line.push_back('\0');
+
+    STARTUPINFOA startup_info{};
+    startup_info.cb = sizeof(startup_info);
+    startup_info.dwFlags = STARTF_USESTDHANDLES;
+    startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup_info.hStdOutput = stdout_write;
+    startup_info.hStdError = stderr_handle;
+
+    PROCESS_INFORMATION process_info{};
+    const BOOL created =
+        CreateProcessA(nullptr, mutable_command_line.data(), nullptr, nullptr, TRUE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &startup_info, &process_info);
+
+    CloseHandle(stdout_write);
+    CloseHandle(stderr_handle);
+
+    if (!created) {
+        CloseHandle(stdout_read);
+        return absl::UnavailableError("failed to spawn curl process");
+    }
+
+    const absl::StatusOr<std::string> stdout_text = ReadHandleToString(stdout_read);
+    CloseHandle(stdout_read);
+    WaitForSingleObject(process_info.hProcess, INFINITE);
+
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(process_info.hProcess, &exit_code)) {
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        return absl::UnavailableError("failed to read curl exit code");
+    }
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+
+    if (!stdout_text.ok()) {
+        return stdout_text.status();
+    }
+
+    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file.path());
+    return CurlProcessResult{
+        .exit_code = static_cast<int>(exit_code),
+        .stdout_text = *stdout_text,
+        .stderr_text = stderr_text.ok() ? *stderr_text : std::string(),
+    };
+}
+#else
+absl::StatusOr<std::string> ReadFdToString(int fd) {
+    std::string output;
+    std::array<char, 4096> buffer{};
+    for (;;) {
+        const ssize_t bytes_read = read(fd, buffer.data(), buffer.size());
+        if (bytes_read == 0) {
+            break;
+        }
+        if (bytes_read < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return absl::UnavailableError("failed to read process pipe");
+        }
+        output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+    }
+    return output;
+}
+
+absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::string>& args) {
+    ScopedTempFile stderr_file(".stderr");
+
+    int stdout_pipe[2] = { -1, -1 };
+    if (pipe(stdout_pipe) != 0) {
+        return absl::UnavailableError("failed to create curl stdout pipe");
+    }
+
+    const int stderr_fd = open(stderr_file.path().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (stderr_fd < 0) {
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
+        return absl::UnavailableError("failed to create curl stderr file");
+    }
+
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, stdout_pipe[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, stderr_fd, STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
+    posix_spawn_file_actions_addclose(&actions, stdout_pipe[1]);
+    posix_spawn_file_actions_addclose(&actions, stderr_fd);
+
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1U);
+    for (const std::string& arg : args) {
+        argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+
+    pid_t pid = 0;
+    const int spawn_result =
+        posix_spawnp(&pid, args.front().c_str(), &actions, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    close(stdout_pipe[1]);
+    close(stderr_fd);
+
+    if (spawn_result != 0) {
+        close(stdout_pipe[0]);
+        return absl::UnavailableError("failed to spawn curl process");
+    }
+
+    const absl::StatusOr<std::string> stdout_text = ReadFdToString(stdout_pipe[0]);
+    close(stdout_pipe[0]);
+
+    int wait_status = 0;
+    if (waitpid(pid, &wait_status, 0) < 0) {
+        return absl::UnavailableError("failed to wait for curl process");
+    }
+    if (!stdout_text.ok()) {
+        return stdout_text.status();
+    }
+
+    int exit_code = 0;
+    if (WIFEXITED(wait_status)) {
+        exit_code = WEXITSTATUS(wait_status);
+    } else if (WIFSIGNALED(wait_status)) {
+        exit_code = 128 + WTERMSIG(wait_status);
+    }
+
+    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file.path());
+    return CurlProcessResult{
+        .exit_code = exit_code,
+        .stdout_text = *stdout_text,
+        .stderr_text = stderr_text.ok() ? *stderr_text : std::string(),
+    };
+}
+#endif
 
 std::optional<unsigned int> ParseHttpStatusCode(std::string_view header_text) {
     std::optional<unsigned int> status_code;
@@ -358,40 +671,43 @@ absl::Status DispatchStreamEvent(const nlohmann::json& event_json, SseParseSumma
     return absl::OkStatus();
 }
 
+absl::StatusOr<bool> FlushBufferedSseEvent(std::string* event_name, std::string* data,
+                                           SseParseSummary* summary,
+                                           const OpenAiResponsesEventCallback& on_event) {
+    static_cast<void>(event_name);
+    if (data->empty()) {
+        event_name->clear();
+        return false;
+    }
+    if (*data == "[DONE]") {
+        event_name->clear();
+        data->clear();
+        return false;
+    }
+
+    nlohmann::json event_json;
+    try {
+        event_json = nlohmann::json::parse(*data);
+    } catch (const std::exception& error) {
+        LOG(ERROR) << "AI gateway openai responses stream parse failed detail='"
+                   << SanitizeForLog(error.what()) << "'";
+        return internal_error("openai responses stream contained invalid JSON");
+    }
+
+    event_name->clear();
+    data->clear();
+    absl::Status dispatch_status = DispatchStreamEvent(event_json, summary, on_event);
+    if (!dispatch_status.ok()) {
+        return dispatch_status;
+    }
+    return true;
+}
+
 absl::StatusOr<SseParseSummary> ParseSseBody(std::string_view body,
                                              const OpenAiResponsesEventCallback& on_event) {
     SseParseSummary summary;
     std::string event_name;
     std::string data;
-
-    const auto flush_event = [&]() -> absl::StatusOr<bool> {
-        static_cast<void>(event_name);
-        if (data.empty()) {
-            event_name.clear();
-            return false;
-        }
-        if (data == "[DONE]") {
-            event_name.clear();
-            data.clear();
-            return false;
-        }
-
-        nlohmann::json event_json;
-        try {
-            event_json = nlohmann::json::parse(data);
-        } catch (const std::exception& error) {
-            LOG(ERROR) << "AI gateway openai responses stream parse failed detail='"
-                       << SanitizeForLog(error.what()) << "'";
-            return internal_error("openai responses stream contained invalid JSON");
-        }
-        event_name.clear();
-        data.clear();
-        absl::Status dispatch_status = DispatchStreamEvent(event_json, &summary, on_event);
-        if (!dispatch_status.ok()) {
-            return dispatch_status;
-        }
-        return true;
-    };
 
     std::size_t cursor = 0;
     while (cursor <= body.size()) {
@@ -404,7 +720,8 @@ absl::StatusOr<SseParseSummary> ParseSseBody(std::string_view body,
         }
 
         if (line.empty()) {
-            const absl::StatusOr<bool> flushed = flush_event();
+            const absl::StatusOr<bool> flushed =
+                FlushBufferedSseEvent(&event_name, &data, &summary, on_event);
             if (!flushed.ok()) {
                 return flushed.status();
             }
@@ -424,7 +741,8 @@ absl::StatusOr<SseParseSummary> ParseSseBody(std::string_view body,
         cursor = next_newline + 1U;
     }
 
-    const absl::StatusOr<bool> trailing_status = flush_event();
+    const absl::StatusOr<bool> trailing_status =
+        FlushBufferedSseEvent(&event_name, &data, &summary, on_event);
     if (!trailing_status.ok()) {
         return trailing_status.status();
     }
@@ -436,58 +754,53 @@ absl::StatusOr<SseParseSummary> ParseSseBody(std::string_view body,
 
 absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& config,
                                         const std::string& request_json) {
+    ScopedTempFile curl_config_file(".curlrc");
     ScopedTempFile request_file(".json");
     ScopedTempFile header_file(".headers");
 
-    {
-        std::ofstream output(request_file.path(), std::ios::binary);
-        output << request_json;
+    const std::string curl_config_contents =
+        "header = \"Authorization: Bearer " + EscapeCurlConfigValue(config.api_key) + "\"\n";
+    absl::Status write_status =
+        WriteStringToFile(curl_config_file.path(), curl_config_contents, true);
+    if (!write_status.ok()) {
+        return write_status;
+    }
+
+    write_status = WriteStringToFile(request_file.path(), request_json, true);
+    if (!write_status.ok()) {
+        return write_status;
     }
 
     // NOTICE: The current Windows toolchain in this repository does not provide OpenSSL headers,
     // which blocks a direct Boost.Beast HTTPS implementation. This subprocess curl transport keeps
     // the OpenAI HTTP/SSE integration behind the provider boundary until the toolchain grows a
     // first-class TLS client dependency.
-    std::ostringstream command;
-    command << kCurlCommand << " --silent --show-error --no-buffer --http1.1 --request POST "
-            << ShellQuote(BuildCurlUrl(config)) << " --header "
-            << ShellQuote("Authorization: Bearer " + config.api_key) << " --header "
-            << ShellQuote("Content-Type: application/json") << " --header "
-            << ShellQuote("Accept: text/event-stream") << " --header "
-            << ShellQuote("User-Agent: " + config.user_agent);
-    if (config.organization.has_value()) {
-        command << " --header " << ShellQuote("OpenAI-Organization: " + *config.organization);
-    }
-    if (config.project.has_value()) {
-        command << " --header " << ShellQuote("OpenAI-Project: " + *config.project);
-    }
-    command << " --dump-header " << ShellQuote(header_file.path().string()) << " --data-binary "
-            << ShellQuote("@" + request_file.path().string()) << " --max-time "
-            << std::max<std::int64_t>(1, config.request_timeout.count() / 1000);
-
-    PipeHandle pipe = OpenPipe(command.str());
-    if (pipe == nullptr) {
+    const absl::StatusOr<CurlProcessResult> curl_result = ExecuteCurlProcess(
+        BuildCurlArgs(config, curl_config_file.path(), request_file.path(), header_file.path()));
+    if (!curl_result.ok()) {
         LOG(ERROR) << "AI gateway openai responses failed to launch curl host='"
                    << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
-                   << "'";
+                   << "' detail='" << SanitizeForLog(curl_result.status().message()) << "'";
         return absl::UnavailableError("failed to launch curl for openai responses request");
     }
 
-    std::string body;
-    std::array<char, 4096> buffer{};
-    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-        body.append(buffer.data());
+    const std::string& body = curl_result->stdout_text;
+    const absl::StatusOr<std::string> header_text = ReadFileToString(header_file.path());
+    if (!header_text.ok()) {
+        LOG(ERROR) << "AI gateway openai responses failed to read curl header dump host='"
+                   << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
+                   << "' detail='" << SanitizeForLog(header_text.status().message()) << "'";
+        return absl::UnavailableError("failed to read openai responses header dump");
     }
-    const int exit_code = ClosePipe(pipe);
-    const std::string header_text = ReadFileToString(header_file.path());
-    const std::optional<unsigned int> status_code = ParseHttpStatusCode(header_text);
+    const std::optional<unsigned int> status_code = ParseHttpStatusCode(*header_text);
 
-    if (exit_code != 0) {
+    if (curl_result->exit_code != 0) {
         LOG(ERROR) << "AI gateway openai responses curl transport failed host='"
                    << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
-                   << "' exit_code=" << exit_code << " http_status="
+                   << "' exit_code=" << curl_result->exit_code << " http_status="
                    << (status_code.has_value() ? std::to_string(*status_code)
-                                               : std::string("<none>"));
+                                               : std::string("<none>"))
+                   << " stderr='" << SanitizeForLog(curl_result->stderr_text) << "'";
         if (status_code.has_value()) {
             return MapHttpErrorStatus(*status_code, BuildHttpErrorMessage(*status_code, body));
         }

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "absl/log/log.h"
+#include "absl/status/statusor.h"
 #include "absl/status/status.h"
 
 namespace isla::server::ai_gateway {
@@ -101,6 +102,25 @@ absl::StatusOr<int> ParseIntArgument(std::string_view value, std::string_view na
         return absl::InvalidArgumentError(std::string(name) + " is out of range");
     }
     return parsed;
+}
+
+template <typename ApplyFn>
+absl::StatusOr<bool> TryParseIntFlag(std::string_view argument, std::string_view prefix,
+                                     std::string_view value_name, ApplyFn&& apply) {
+    if (!argument.starts_with(prefix)) {
+        return false;
+    }
+
+    const absl::StatusOr<int> parsed = ParseIntArgument(argument.substr(prefix.size()), value_name);
+    if (!parsed.ok()) {
+        return parsed.status();
+    }
+
+    const absl::Status apply_status = apply(*parsed);
+    if (!apply_status.ok()) {
+        return apply_status;
+    }
+    return true;
 }
 
 void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
@@ -339,26 +359,30 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             parsed.server_config.bind_host = argument.substr(7);
             continue;
         }
-        if (argument.starts_with("--port=")) {
-            const absl::StatusOr<int> port = ParseIntArgument(argument.substr(7), "port");
-            if (!port.ok()) {
-                return port.status();
-            }
-            if (*port < 0 || *port > 65535) {
-                return absl::InvalidArgumentError("port must be between 0 and 65535");
-            }
-            parsed.server_config.port = static_cast<std::uint16_t>(*port);
+        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
+                argument, "--port=", "port", [&parsed](int port) -> absl::Status {
+                    if (port < 0 || port > 65535) {
+                        return absl::InvalidArgumentError("port must be between 0 and 65535");
+                    }
+                    parsed.server_config.port = static_cast<std::uint16_t>(port);
+                    return absl::OkStatus();
+                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
             continue;
         }
-        if (argument.starts_with("--backlog=")) {
-            const absl::StatusOr<int> backlog = ParseIntArgument(argument.substr(10), "backlog");
-            if (!backlog.ok()) {
-                return backlog.status();
-            }
-            parsed.server_config.listen_backlog = *backlog;
-            if (parsed.server_config.listen_backlog <= 0) {
-                return absl::InvalidArgumentError("backlog must be greater than zero");
-            }
+        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
+                argument, "--backlog=", "backlog", [&parsed](int backlog) -> absl::Status {
+                    if (backlog <= 0) {
+                        return absl::InvalidArgumentError("backlog must be greater than zero");
+                    }
+                    parsed.server_config.listen_backlog = backlog;
+                    return absl::OkStatus();
+                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
             continue;
         }
         if (argument.starts_with("--openai-api-key=")) {
@@ -373,15 +397,19 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             parsed.openai_config.host = argument.substr(14);
             continue;
         }
-        if (argument.starts_with("--openai-port=")) {
-            const absl::StatusOr<int> port = ParseIntArgument(argument.substr(14), "openai-port");
-            if (!port.ok()) {
-                return port.status();
-            }
-            if (*port < 0 || *port > 65535) {
-                return absl::InvalidArgumentError("openai-port must be between 0 and 65535");
-            }
-            parsed.openai_config.port = static_cast<std::uint16_t>(*port);
+        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
+                argument, "--openai-port=", "openai-port",
+                [&parsed](int port) -> absl::Status {
+                    if (port < 0 || port > 65535) {
+                        return absl::InvalidArgumentError(
+                            "openai-port must be between 0 and 65535");
+                    }
+                    parsed.openai_config.port = static_cast<std::uint16_t>(port);
+                    return absl::OkStatus();
+                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
             continue;
         }
         if (argument.starts_with("--openai-target=")) {
@@ -400,16 +428,19 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             parsed.openai_config.project = argument.substr(20);
             continue;
         }
-        if (argument.starts_with("--openai-timeout-ms=")) {
-            const absl::StatusOr<int> timeout_ms =
-                ParseIntArgument(argument.substr(20), "openai-timeout-ms");
-            if (!timeout_ms.ok()) {
-                return timeout_ms.status();
-            }
-            if (*timeout_ms <= 0) {
-                return absl::InvalidArgumentError("openai-timeout-ms must be greater than zero");
-            }
-            parsed.openai_config.request_timeout = std::chrono::milliseconds(*timeout_ms);
+        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
+                argument, "--openai-timeout-ms=", "openai-timeout-ms",
+                [&parsed](int timeout_ms) -> absl::Status {
+                    if (timeout_ms <= 0) {
+                        return absl::InvalidArgumentError(
+                            "openai-timeout-ms must be greater than zero");
+                    }
+                    parsed.openai_config.request_timeout = std::chrono::milliseconds(timeout_ms);
+                    return absl::OkStatus();
+                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
             continue;
         }
         return absl::InvalidArgumentError("unknown argument: " + argument);

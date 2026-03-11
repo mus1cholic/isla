@@ -71,6 +71,7 @@ OpenAiLLMs::GenerateContent(std::size_t item_index, const std::string& user_text
             }
             output_text = *provider_text;
         } else {
+            // TODO(ai-gateway): Remove this fallback path in Phase 3.6.
             output_text = BuildResponse(user_text, response_prefix_, response_builder_);
         }
     } catch (const std::exception& error) {

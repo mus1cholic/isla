@@ -193,9 +193,47 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     EXPECT_EQ(output_text, "hello world");
     EXPECT_EQ(completed_count, 1);
     EXPECT_NE(server.request_text().find("POST /v1/responses HTTP/1.1"), std::string::npos);
+    EXPECT_NE(server.request_text().find("Authorization: Bearer test_key"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"stream\":true"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.2\""), std::string::npos);
     EXPECT_NE(server.request_text().find("\"instructions\":\"system prompt\""), std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, PassesHeaderValuesWithShellMetacharactersLiterally) {
+    const std::string body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\r\n\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    const std::string response =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Content-Length: " +
+        std::to_string(body.size()) +
+        "\r\n"
+        "Connection: close\r\n\r\n" + body;
+    OneShotHttpServer server(response);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+        .organization = "org&unsafe|value%^name",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.2",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequest());
+    EXPECT_NE(server.request_text().find("OpenAI-Organization: org&unsafe|value%^name"),
+              std::string::npos);
 }
 
 TEST(OpenAiResponsesClientTest, ExtractsFinalTextFromCompletedEventWhenNoDeltaArrives) {
