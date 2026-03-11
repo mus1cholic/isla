@@ -7,7 +7,6 @@
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/memory/conversation.hpp"
-#include "isla/server/memory/working_memory_utils.hpp"
 
 namespace isla::server::memory {
 namespace {
@@ -88,7 +87,8 @@ absl::Status MemoryOrchestrator::AfterUserQueryAppended(const Message& user_mess
     }
     if (flush_candidate->has_value()) {
         // TODO: Queue async flush work when a candidate is returned.
-        VLOG(1) << "MemoryOrchestrator identified a flush candidate session_id=" << session_id_
+        VLOG(1) << "MemoryOrchestrator identified a flush candidate session_id="
+                << SanitizeForLog(session_id_)
                 << " conversation_item_index=" << flush_candidate->value().conversation_item_index;
     }
     return absl::OkStatus();

@@ -68,11 +68,12 @@ Sequencing rule for the remaining work:
 - `.5` phases add live external integrations only after the preceding boundary is in place.
 
 > [!NOTE]
-> **Current status (2026-03-07):**
+> **Current status (2026-03-10):**
 > - Phase 0 is implemented.
 > - Phase 1 is implemented.
 > - Phase 2 is implemented.
 > - Phase 2.5 is implemented.
+> - Phase 3 is implemented.
 > - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
 > - Shared protocol/session scaffolding now exists in:
 >   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
@@ -135,12 +136,37 @@ Sequencing rule for the remaining work:
 > - The stub responder now tracks pending and in-progress turns separately, ignores mismatched or
 >   untracked cancel requests, and best-effort terminalizes accepted turns after post-acceptance
 >   emit failures so sessions do not remain wedged.
+> - A first explicit planner/executor boundary now exists inside the responder path:
+>   - `ExecutionPlan` and ordered execution steps as the planner-side contract
+>   - `CreateFakeOpenAiPlan()` as the current programmer-authored one-step plan builder
+>   - `GatewayPlanExecutor` as the generic plan runner
+>   - `GatewayStepRegistry` as the explicit compile-time step-to-execution dispatch boundary
+>   - execution result/failure shapes with final-result-only execution semantics
+>   - registered compile-time step types, with `OpenAiLlmStep` as the first runtime
+>     dispatch target
+>   - runtime turn input supplied at executor time instead of being stored in the plan itself
+> - The current planner/executor path is intentionally independent of gateway memory shaping; the
+>   existing memory system remains a separate responder concern.
+> - Executor failures now normalize to stable public gateway codes/messages instead of forwarding raw
+>   internal step/provider detail directly to the client.
+> - `GatewayStubResponder` now re-resolves the live session immediately before successful text and
+>   completion emits so a session that closes during execution does not receive late emits through a
+>   stale retained handle.
+> - Known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
+>   slow step execution or slow accepted-turn emit completion can create cross-session head-of-line
+>   blocking. Fixing that isolation is deferred to the next PR rather than Phase 3.
 > - Audio input and transcription are intentionally deferred from the first server slice.
 > - Self-hosted Fish workers, Spot GPU fleets, and OpenAI Realtime transport remain explicitly
 >   deferred alternatives rather than current implementation goals.
 
 ### Changelog
 
+- 2026-03-10: completed Phase 3 with explicit execution-plan planner/executor contracts, a
+  `CreateFakeOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, an explicit
+  `GatewayStepRegistry`, planner-built execution steps with concrete compile-time types like
+  `OpenAiLlmStep`, stable public executor error mapping, live-session re-resolution before success
+  emits, and dedicated planner/executor/responder regression coverage while keeping live OpenAI
+  HTTP/SSE work deferred to Phase 3.5.
 - 2026-03-07: hardened the implemented Phase-2.5 slice with separate pending/in-progress stub-turn
   tracking, best-effort accepted-turn terminalization after post-acceptance emit failures,
   configurable stub async-emit waits, oversize websocket/text-input guards, non-blocking late
@@ -615,6 +641,41 @@ Close the loop through the same session boundary without introducing provider de
 ## Phase 3: OpenAI Executor Boundary
 
 > [!NOTE]
+> **Status (2026-03-10): Implemented.**
+> - Implemented artifacts:
+>   - `server/include/isla/server/ai_gateway_planner.hpp`
+>   - `server/include/isla/server/ai_gateway_executor.hpp`
+>   - `server/include/isla/server/ai_gateway_step_registry.hpp`
+>   - `server/include/isla/server/openai_llms.hpp`
+>   - `server/src/ai_gateway_planner.cpp`
+>   - `server/src/openai_llms.cpp`
+>   - `server/src/ai_gateway_executor.cpp`
+>   - `server/src/ai_gateway_step_registry.cpp`
+>   - `server/src/ai_gateway_planner_test.cpp`
+>   - `server/src/ai_gateway_executor_test.cpp`
+>   - `server/src/ai_gateway_step_registry_test.cpp`
+>   - `server/src/openai_llms_test.cpp`
+> - Implemented behavior:
+>   - normalized execution-plan and execution-step contracts
+>   - a compile-time `OpenAiLlmStep` signature as the first supported runtime dispatch
+>     target
+>   - a `CreateFakeOpenAiPlan()` planner function that hardcodes the current main-model step
+>     inside the planner and wraps it into the ordered plan
+>   - a `GatewayPlanExecutor` that executes planner-built steps in order and supplies runtime input
+>     when dispatching the step type
+>   - a `GatewayStepRegistry` that owns the explicit compile-time `ExecutionStep` dispatch mapping
+>   - explicit executor result/failure shapes with final-result-only execution
+>   - stable public executor error mapping with retryability derived from `absl::StatusCode`
+>   - integration of the new boundary into `GatewayStubResponder` while preserving the existing
+>     live-session emission seam, cancellation handling, and final-output-oriented client contract
+>   - live-session re-resolution immediately before successful emits so a session that closes during
+>     execution does not receive late output through a stale retained handle
+> - Known limitation: `GatewayStubResponder` still processes all sessions through one blocking
+>   worker, so slow step execution or slow accepted-turn emit completion can delay unrelated
+>   sessions until the follow-up concurrency/isolation refactor lands.
+> - Live OpenAI network integration remains intentionally deferred to Phase 3.5.
+>
+> [!NOTE]
 > **Carry-forward from Phases 1/2 (2026-03-06):**
 > - Shared protocol types, session state enforcement, and a transport-facing session handler now
 >   exist.
@@ -642,17 +703,16 @@ live provider I/O.
 
 - Define normalized executor request/result/error shapes for exactly one upstream text request in
   v1.
-- Keep the executor boundary stream-capable internally even if the first product behavior remains
-  final-output-oriented.
+- Keep provider/executor concerns separated from websocket/session ownership even though the current
+  Phase-3 execution contract is final-result-only.
 - Separate provider I/O concerns from websocket/session ownership and planner policy.
 - Define the config/error surface that a later OpenAI adapter must satisfy.
 - Defer actual OpenAI Responses API HTTP/SSE traffic to Phase 3.5.
 
 ### Intended Behavior
 
-- The executor contract still models one OpenAI request per turn in v1.
-- The executor boundary may internally model streamed upstream events.
-- The gateway may buffer upstream chunks and emit only the final text to the client in v1.
+- The executor contract still models one OpenAI-backed execution item in the current v1 slice.
+- The current executor boundary returns final results only.
 - Future partial output can be added later without changing planner or client transport ownership.
 
 ### Deferred Alternatives
@@ -665,7 +725,6 @@ live provider I/O.
 ### Exit Criteria
 
 - The server has a clear OpenAI executor boundary independent of websocket handling.
-- The design preserves future streaming support without requiring v1 to expose deltas.
 - The executor contract is explicit enough to wire to a fake or stub provider before live OpenAI
   integration exists.
 
@@ -721,26 +780,27 @@ Lock down the first planner/executor orchestration contract around the working s
 ### Suggested Data Contracts
 
 ```cpp
-struct ClientTurnInput {
-  std::string session_id;
-  std::string turn_id;
-  std::string user_text;
-};
-
-struct PlannedRequest {
-  std::string session_id;
-  std::string turn_id;
+struct OpenAiLlmStep {
+  std::string step_name;
   std::string system_prompt;
-  std::string user_text;
   std::string model;
-  bool should_synthesize;
 };
 
-struct ExecutorResult {
-  std::string session_id;
-  std::string turn_id;
-  std::string model;
-  std::string output_text;
+using ExecutionStep = std::variant<OpenAiLlmStep>;
+
+struct ExecutionPlan {
+  std::vector<ExecutionStep> steps;
+};
+
+struct ExampleItemResult {
+  std::string step_name;
+  std::string payload;
+};
+
+using ExecutionStepResult = std::variant<ExampleItemResult>;
+
+struct ExecutionResult {
+  std::vector<ExecutionStepResult> step_results;
 };
 
 struct SynthesizedAudio {
@@ -749,8 +809,6 @@ struct SynthesizedAudio {
 };
 
 struct TurnResult {
-  std::string session_id;
-  std::string turn_id;
   std::string output_text;
   std::optional<SynthesizedAudio> audio;
 };
@@ -758,11 +816,13 @@ struct TurnResult {
 
 ### Orchestration Invariants
 
-- Exactly one planner output per turn in v1.
-- Exactly one OpenAI request per planner output in v1.
-- Planner owns request-shaping policy.
-- Executor owns provider I/O.
+- The gateway currently adapts one accepted turn into one `ExecutionPlan`.
+- The current `ExecutionPlan` contains exactly one OpenAI-backed `OpenAiLlmStep`.
+- Planner owns plan shaping and step ordering policy.
+- Concrete step types own compile-time dispatch identity.
+- Executor owns ordered plan execution and constructs the provider operation from the concrete step.
 - TTS consumes executor output; it does not alter planner/executor boundaries.
+- Future item-output dependencies and optional parallel execution remain explicitly deferred TODOs.
 
 ### Exit Criteria
 
