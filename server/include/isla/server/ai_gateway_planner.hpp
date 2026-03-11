@@ -51,6 +51,6 @@ struct ExecutionPlan {
     // TODO(ai-gateway): Support optional parallel execution for independent steps.
 };
 
-[[nodiscard]] absl::StatusOr<ExecutionPlan> CreateFakeOpenAiPlan();
+[[nodiscard]] absl::StatusOr<ExecutionPlan> CreateOpenAiPlan();
 
 } // namespace isla::server::ai_gateway

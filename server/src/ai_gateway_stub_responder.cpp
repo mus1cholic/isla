@@ -485,7 +485,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
-    const absl::StatusOr<ExecutionPlan> execution_plan = CreateFakeOpenAiPlan();
+    const absl::StatusOr<ExecutionPlan> execution_plan = CreateOpenAiPlan();
     if (!execution_plan.ok()) {
         LOG(ERROR) << "AI gateway stub planner rejected accepted turn session="
                    << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)

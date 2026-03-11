@@ -34,6 +34,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:prompt_loader",
         ":openai_llms",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -205,6 +206,7 @@ cc_test(
     srcs = ["ai_gateway_planner_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:prompt_loader",
         ":ai_gateway_executor",
         ":openai_llms",
         ":ai_gateway_planner",

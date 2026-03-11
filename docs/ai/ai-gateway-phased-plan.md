@@ -139,7 +139,7 @@ Sequencing rule for the remaining work:
 >   emit failures so sessions do not remain wedged.
 > - A first explicit planner/executor boundary now exists inside the responder path:
 >   - `ExecutionPlan` and ordered execution steps as the planner-side contract
->   - `CreateFakeOpenAiPlan()` as the current programmer-authored one-step plan builder
+>   - `CreateOpenAiPlan()` as the current programmer-authored one-step plan builder
 >   - `GatewayPlanExecutor` as the generic plan runner
 >   - `GatewayStepRegistry` as the explicit compile-time step-to-execution dispatch boundary
 >   - execution result/failure shapes with final-result-only execution semantics
@@ -186,7 +186,7 @@ Sequencing rule for the remaining work:
   transport implementation uses `curl` behind the adapter because the repository's Windows
   toolchain does not currently expose OpenSSL headers for a direct Beast TLS client.
 - 2026-03-10: completed Phase 3 with explicit execution-plan planner/executor contracts, a
-  `CreateFakeOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, an explicit
+  `CreateOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, an explicit
   `GatewayStepRegistry`, planner-built execution steps with concrete compile-time types like
   `OpenAiLlmStep`, stable public executor error mapping, live-session re-resolution before success
   emits, and dedicated planner/executor/responder regression coverage while keeping live OpenAI
@@ -683,7 +683,7 @@ Close the loop through the same session boundary without introducing provider de
 >   - normalized execution-plan and execution-step contracts
 >   - a compile-time `OpenAiLlmStep` signature as the first supported runtime dispatch
 >     target
->   - a `CreateFakeOpenAiPlan()` planner function that hardcodes the current main-model step
+>   - a `CreateOpenAiPlan()` planner function that hardcodes the current main-model step
 >     inside the planner and wraps it into the ordered plan
 >   - a `GatewayPlanExecutor` that executes planner-built steps in order and supplies runtime input
 >     when dispatching the step type

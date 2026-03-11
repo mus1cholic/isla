@@ -215,7 +215,7 @@ Current implementation note (2026-03-06):
   - concrete compile-time step types instead of planner-provided registered-call fields
   - a compile-time `OpenAiLlmStep` signature as the first supported runtime dispatch
     target
-  - `CreateFakeOpenAiPlan()` as the initial programmer-authored v1 planner entrypoint
+  - `CreateOpenAiPlan()` as the initial programmer-authored v1 planner entrypoint
   - `GatewayPlanExecutor` as the generic plan runner
   - `GatewayStepRegistry` as the explicit compile-time step dispatch boundary
   - runtime input supplied by the executor when it dispatches a registered step
@@ -376,10 +376,10 @@ Current implementation note (2026-03-11):
 
 - the planner and executor boundaries are now implemented in `server/src`
 - the current responder path already routes accepted turns through:
-  - `CreateFakeOpenAiPlan(...)`
+  - `CreateOpenAiPlan(...)`
   - `GatewayPlanExecutor`
   - one final execution result mapped back to one client-visible `text.output`
-- the current fake responder path has the planner construct the `OpenAiLlmStep`, and the executor
+- the current responder path has the planner construct the `OpenAiLlmStep`, and the executor
   supplies runtime turn input while `GatewayStepRegistry` dispatches that step to `OpenAiLLMs`
 - executor failures now normalize to stable public gateway codes/messages and derive retryability
   from `absl::StatusCode` instead of forwarding raw step/provider diagnostics directly to clients
