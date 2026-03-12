@@ -68,6 +68,10 @@ void handle_message(SmokeState& state, const protocol::GatewayMessage& message) 
                        }
                        state.cv.notify_all();
                    },
+                   [](const protocol::SessionEndedMessage& value) {
+                       LOG(INFO) << "Smoke client: session ended session_id='" << value.session_id
+                                 << "'";
+                   },
                    [&state](const protocol::ErrorMessage& value) {
                        const absl::Status status = absl::FailedPreconditionError(
                            "gateway error " + value.code + ": " + value.message);
