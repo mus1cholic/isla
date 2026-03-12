@@ -40,43 +40,14 @@ TEST(OpenAiLlmstest, RejectsMissingUserText) {
     EXPECT_EQ(result.status().message(), "openai llms input must include user_text");
 }
 
-TEST(OpenAiLlmstest, UsesDefaultPrefixResponseWhenBuilderMissing) {
+TEST(OpenAiLlmstest, RejectsMissingConfiguredResponsesClient) {
     OpenAiLLMs openai_llms("main", "", "gpt-4.1-mini");
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hello");
 
-    ASSERT_TRUE(result.ok()) << result.status();
-    const LlmCallResult& llm_result = std::get<LlmCallResult>(*result);
-    EXPECT_EQ(llm_result.step_name, "main");
-    EXPECT_EQ(llm_result.model, "gpt-4.1-mini");
-    EXPECT_EQ(llm_result.output_text, "stub echo: hello");
-}
-
-TEST(OpenAiLlmstest, UsesCustomResponseBuilderWhenProvided) {
-    OpenAiLLMs openai_llms("main", "", "gpt-4.1-mini", nullptr,
-                           "stub echo: ", [](std::string_view prefix, std::string_view user_text) {
-                               return std::string(prefix) + "<" + std::string(user_text) + ">";
-                           });
-
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hello");
-
-    ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "stub echo: <hello>");
-}
-
-TEST(OpenAiLlmstest, ConvertsBuilderExceptionToInternalError) {
-    OpenAiLLMs openai_llms("main", "", "gpt-4.1-mini", nullptr, "stub echo: ",
-                           [](std::string_view prefix, std::string_view user_text) -> std::string {
-                               static_cast<void>(prefix);
-                               static_cast<void>(user_text);
-                               throw std::runtime_error("boom");
-                           });
-
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hello");
-
     ASSERT_FALSE(result.ok());
-    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
-    EXPECT_EQ(result.status().message(), "openai llms response building failed");
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
+    EXPECT_EQ(result.status().message(), "openai llms requires a configured responses client");
 }
 
 TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
@@ -101,6 +72,36 @@ TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kUnavailable);
     EXPECT_EQ(result.status().message(), "rate limited");
+}
+
+TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientValidationFailure) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test",
+                                                      absl::UnauthenticatedError("bad api key"));
+    OpenAiLLMs openai_llms("main", "", "gpt-5.2", client);
+
+    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kUnauthenticated);
+    EXPECT_EQ(result.status().message(), "bad api key");
+}
+
+TEST(OpenAiLlmstest, ConvertsResponsesClientExceptionToInternalError) {
+    auto client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            static_cast<void>(request);
+            static_cast<void>(on_event);
+            throw std::runtime_error("boom");
+        });
+    OpenAiLLMs openai_llms("main", "", "gpt-5.2", client);
+
+    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hello");
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
+    EXPECT_EQ(result.status().message(), "openai llms response building failed");
 }
 
 TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {

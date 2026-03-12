@@ -1,6 +1,6 @@
 # AI Gateway v1 Design Baseline (Phase 0)
 
-Last updated: 2026-03-11
+Last updated: 2026-03-12
 
 ## Purpose
 
@@ -20,7 +20,7 @@ or code comments.
 
 ## Current Repository Status
 
-As of 2026-03-11:
+As of 2026-03-12:
 
 - the v1 architecture baseline is documented
 - shared protocol/session scaffolding exists in:
@@ -53,9 +53,10 @@ As of 2026-03-11:
 - a narrow application-facing live-session emission API now exists for `text.output`,
   `audio.output`, `turn.completed`, `turn.cancelled`, and post-acceptance `error`; it now
   completes through callback-based async completion on the session executor
-- a local `GatewayStubResponder` now consumes accepted-turn/cancel events, emits deterministic
-  stub text completion and cancellation through live sessions, and finalizes accepted in-flight
-  turns during `server.Stop()`
+- a local `GatewayStubResponder` now consumes accepted-turn/cancel events, owns application-facing
+  turn orchestration through live sessions, and finalizes accepted in-flight turns during
+  `server.Stop()`; deterministic local completion in tests now comes from injected fake provider
+  clients rather than a built-in synthetic OpenAI fallback
 - the gateway now enforces concrete v1 size limits:
   - inbound websocket message max: 64 KiB
   - `text.input.text` max: 32 KiB
@@ -78,17 +79,20 @@ As of 2026-03-11:
   - supports process env plus local `.env` lookup for development, with `OPENAI_PROJECT_ID` as the
     preferred project selector
   - sends streamed Responses API requests through a provider-owned adapter
+  - parses SSE incrementally while the subprocess is still running and aborts the provider
+    transport early on callback failure, terminal completion, or stdout byte-budget exhaustion
   - buffers upstream text into one final client-visible `text.output` in v1
   - enforces the same final-text size bound during provider aggregation and client-visible
     `text.output` emission
   - keeps provider/network failure detail inside the executor/provider seam so websocket/session
     code remains transport-agnostic
+  - uses provider-shaped fakes for deterministic non-network execution in tests rather than a
+    built-in synthetic OpenAI fallback path
 - current implementation limitation:
   - the OpenAI provider adapter currently uses `curl` for HTTPS/SSE transport because the active
     Windows toolchain in this repository does not expose OpenSSL headers for a direct Beast TLS
-    client build
-  - the current `curl` transport still buffers subprocess stdout before full SSE parsing and does
-    not yet provide true incremental upstream cancellation; that refactor is deferred to Phase 3.6
+    client build; incremental SSE parsing and early-abort behavior now happen inside that `curl`
+    transport rather than being deferred
 - no Fish Audio integration exists yet
 
 This document defines the architecture baseline that later code should implement. The current
@@ -383,7 +387,7 @@ Deferred alternatives:
 
 The planner/executor split is required in v1 even though only one upstream request is performed.
 
-Current implementation note (2026-03-11):
+Current implementation note (2026-03-12):
 
 - the planner and executor boundaries are now implemented in `server/src`
 - the current responder path already routes accepted turns through:
@@ -402,8 +406,12 @@ Current implementation note (2026-03-11):
 - live OpenAI Responses API traffic is now implemented behind a provider-owned adapter; the current
   transport implementation uses `curl` because the active Windows toolchain in this repository does
   not expose OpenSSL headers for a direct Beast TLS client build
+- the legacy synthetic fallback path has been removed from `OpenAiLLMs`, so provider execution now
+  fails closed unless an explicit provider client or provider-shaped fake is configured
 - the planner now loads the bundled system prompt through the memory prompt loader, and prompt
   validation is enforced before the prompt enters the execution plan
+- provider-oriented regression coverage now includes provider `Validate()` failure and live-gateway
+  multi-delta aggregation back into one final `text.output`
 
 Responsibilities:
 
@@ -471,15 +479,17 @@ Required interpretation:
 - the gateway MAY buffer provider deltas and return only final results in v1
 - later chunked text or audio events MUST be addable without changing session or turn ownership
 
-Current implementation note (2026-03-11):
+Current implementation note (2026-03-12):
 
 - the current planner/executor boundary is final-result-only at the executor/client contract
 - `GatewayStubResponder` maps that final execution result to one final `text.output` in v1
 - the OpenAI provider adapter now normalizes streamed SSE events through a provider callback
   interface before the gateway buffers them back into that final-result-only contract
-- the current `curl` transport is still only stream-shaped rather than truly incremental because it
-  buffers subprocess stdout before full SSE parsing; early callback-driven abort is deferred to the
-  planned Phase-3.6 transport refactor
+- the current `curl` transport now parses stdout incrementally and honors early callback-driven
+  abort, terminal completion, and a hard stdout byte budget without changing the final-output
+  contract
+- transport regression coverage now includes split-read SSE payloads and verifies that provider
+  work can complete before trailing transport bytes are released
 - executor failures now surface stable public error codes/messages rather than raw internal step
   diagnostics
 - the current responder path still has cross-session head-of-line blocking because execution and

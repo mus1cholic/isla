@@ -68,13 +68,14 @@ Sequencing rule for the remaining work:
 - `.5` phases add live external integrations only after the preceding boundary is in place.
 
 > [!NOTE]
-> **Current status (2026-03-11):**
+> **Current status (2026-03-12):**
 > - Phase 0 is implemented.
 > - Phase 1 is implemented.
 > - Phase 2 is implemented.
 > - Phase 2.5 is implemented.
 > - Phase 3 is implemented.
 > - Phase 3.5 is implemented.
+> - Phase 3.6 is implemented.
 > - The v1 architecture baseline is now published in `docs/ai/ai_gateway_v1_design.md`.
 > - Shared protocol/session scaffolding now exists in:
 >   - `shared/include/isla/shared/ai_gateway_protocol.hpp`
@@ -177,9 +178,6 @@ Sequencing rule for the remaining work:
 >     repository's current Windows toolchain does not expose OpenSSL headers for a direct Beast TLS
 >     client; the transport remains isolated behind the provider boundary and can be replaced later
 >     without touching websocket/session code
->   - the current `curl` transport still buffers subprocess stdout before full SSE parsing and does
->     not yet provide true incremental upstream cancellation; that transport refactor is now
->     explicitly deferred to Phase 3.6
 > - Known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
 >   slow step execution or slow accepted-turn emit completion can create cross-session head-of-line
 >   blocking. Fixing that isolation is deferred to the next PR rather than Phase 3.
@@ -189,6 +187,11 @@ Sequencing rule for the remaining work:
 
 ### Changelog
 
+- 2026-03-12: completed Phase 3.6 by removing the legacy `OpenAiLLMs` synthetic fallback path,
+  requiring the OpenAI execution path to use an explicit provider client or fake provider in tests,
+  refactoring the `curl` transport to parse SSE incrementally while the subprocess is still
+  running, and aborting the provider transport early on callback failure, terminal completion, or
+  a hard stdout byte budget with dedicated regression coverage.
 - 2026-03-11: completed Phase 3.5 with a live OpenAI Responses provider adapter behind the
   executor boundary, gateway startup/config wiring for OpenAI credentials and transport settings,
   SSE event parsing into normalized provider events, bundled system-prompt loading/validation,
@@ -786,7 +789,9 @@ live provider I/O.
 >     stable public gateway error codes through the existing executor failure mapping
 > - Current implementation limitation:
 >   - the OpenAI adapter currently uses `curl` for the HTTPS/SSE transport because the active
->     Windows toolchain does not expose OpenSSL headers for a direct Beast TLS client build
+>     Windows toolchain does not expose OpenSSL headers for a direct Beast TLS client build; the
+>     follow-on Phase 3.6 work removed the earlier buffered-subprocess limitation, so the remaining
+>     transport limitation is the `curl` dependency itself rather than non-incremental SSE parsing
 
 ### Goal
 
@@ -809,6 +814,22 @@ Route gateway text requests to OpenAI through the executor boundary established 
   path fails closed instead of silently degrading.
 
 ## Phase 3.6: Remove Legacy Stub Path and Tighten Provider Streaming
+
+> [!NOTE]
+> **Status (2026-03-12): Implemented.**
+> - Implemented behavior:
+>   - `OpenAiLLMs` no longer synthesizes local fallback text from `response_prefix` or
+>     `response_builder`
+>   - production execution now depends on an explicit OpenAI provider client, while tests inject
+>     provider-shaped fakes through the same seam
+>   - the `curl` transport now parses SSE stdout incrementally and aborts early on callback
+>     failure, terminal completion, or stdout byte-budget exhaustion
+>   - regression coverage now includes chunk-boundary SSE parsing, provider `Validate()` failure,
+>     live gateway multi-delta aggregation into one final `text.output`, and teardown-safe
+>     early-abort transport waits
+> - Remaining limitation:
+>   - the provider transport still relies on `curl` because the repository's active Windows
+>     toolchain does not yet expose the headers needed for a direct TLS client implementation
 
 ### Goal
 
@@ -1032,9 +1053,12 @@ self-hosted GPU infrastructure.
 > - The current completion callback on server-owned emits reports transport acceptance/rejection,
 >   not remote socket flush, so later streaming work must decide explicitly whether to preserve or
 >   refine that completion semantic.
-> - After the implemented Phase 3.5 transport, provider callbacks now exist, but the `curl`-backed
->   transport still buffers subprocess stdout before full SSE parsing; truly incremental provider
->   cancellation remains Phase-3.6 work rather than current behavior.
+> - After the implemented Phase 3.6 transport, provider callbacks now execute against an
+>   incrementally parsed `curl` stdout stream and can now abort provider work early on callback
+>   failure, terminal completion, or the hard stdout byte budget.
+> - Current transport coverage now explicitly exercises split-read SSE parsing and "finish before
+>   trailing bytes are released" behavior, so later client-visible streaming work should preserve
+>   those callback-ordering and early-abort guarantees rather than reintroducing buffered semantics.
 
 ### Goal
 

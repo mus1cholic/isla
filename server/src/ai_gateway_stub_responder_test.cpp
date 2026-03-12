@@ -32,6 +32,32 @@ struct EmittedEvent {
     std::string payload;
 };
 
+std::shared_ptr<test::FakeOpenAiResponsesClient> MakeEchoOpenAiResponsesClient(
+    std::string prefix = "stub echo: ") {
+    return test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [prefix = std::move(prefix)](const OpenAiResponsesRequest& request,
+                                     const OpenAiResponsesEventCallback& on_event) {
+            const std::string text = prefix + request.user_text;
+            const std::size_t midpoint = text.size() / 2U;
+            const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
+                .text_delta = text.substr(0, midpoint),
+            });
+            if (!first_status.ok()) {
+                return first_status;
+            }
+            const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
+                .text_delta = text.substr(midpoint),
+            });
+            if (!second_status.ok()) {
+                return second_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        });
+}
+
 class RecordingLiveSession final : public GatewayLiveSession {
   public:
     explicit RecordingLiveSession(std::string session_id) : session_id_(std::move(session_id)) {}
@@ -200,7 +226,7 @@ class GatewayStubResponderTest : public ::testing::Test {
     GatewayStubResponderTest()
         : responder_(GatewayStubResponderConfig{
               .response_delay = 20ms,
-              .response_prefix = "stub echo: ",
+              .openai_client = MakeEchoOpenAiResponsesClient(),
           }),
           registry_(&responder_), session_(std::make_shared<RecordingLiveSession>("srv_test")) {
         responder_.AttachSessionRegistry(&registry_);
@@ -255,9 +281,8 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecu
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
         .async_emit_timeout = 2s,
-        .response_prefix = "stub echo: ",
         .memory_user_id = "gateway_user",
-        .reply_builder = {},
+        .openai_client = MakeEchoOpenAiResponsesClient(),
         .on_execution_plan = [&](const ExecutionPlan& plan) { execution_plan = plan; },
     });
     GatewaySessionRegistry registry(&responder);
@@ -388,13 +413,23 @@ TEST(GatewayStubResponderStandaloneTest, SessionClosedDuringExecutionDropsLaterE
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
-        .reply_builder = [builder_started, allow_finish_future](
-                             std::string_view prefix, std::string_view text) -> std::string {
+        .openai_client = test::MakeFakeOpenAiResponsesClient(
+            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+            [builder_started, allow_finish_future](
+                const OpenAiResponsesRequest& request,
+                const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             builder_started->set_value();
             allow_finish_future.wait();
-            return std::string(prefix) + std::string(text);
-        },
+            const std::string text = std::string("stub echo: ") + request.user_text;
+            const absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        }),
     });
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
@@ -527,14 +562,23 @@ TEST_F(GatewayStubResponderTest, OversizedTurnStillCompletesWhenErrorEmitFails) 
 TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndWorkerContinues) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
-        .reply_builder = [](std::string_view prefix, std::string_view text) -> std::string {
-            static_cast<void>(prefix);
-            if (text == "explode") {
+        .openai_client = test::MakeFakeOpenAiResponsesClient(
+            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+            [](const OpenAiResponsesRequest& request,
+               const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            if (request.user_text == "explode") {
                 throw std::runtime_error("synthetic reply builder failure");
             }
-            return std::string("stub echo: ") + std::string(text);
-        },
+            const std::string text = std::string("stub echo: ") + request.user_text;
+            const absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        }),
     });
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
@@ -578,7 +622,6 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
 TEST(GatewayStubResponderStandaloneTest, OpenAiProviderFailureEmitsMappedErrorAndCompletion) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
         .openai_client =
             test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down")),
     });
@@ -607,7 +650,7 @@ TEST(GatewayStubResponderStandaloneTest, OpenAiProviderFailureEmitsMappedErrorAn
 TEST(GatewayStubResponderStandaloneTest, AcceptedTurnWithoutSessionStartFailsClosed) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
+        .openai_client = MakeEchoOpenAiResponsesClient(),
     });
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
@@ -638,13 +681,23 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
-        .reply_builder = [builder_started, allow_finish_future](
-                             std::string_view prefix, std::string_view text) -> std::string {
+        .openai_client = test::MakeFakeOpenAiResponsesClient(
+            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+            [builder_started, allow_finish_future](
+                const OpenAiResponsesRequest& request,
+                const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             builder_started->set_value();
             allow_finish_future.wait();
-            return std::string(prefix) + std::string(text);
-        },
+            const std::string text = std::string("stub echo: ") + request.user_text;
+            const absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        }),
     });
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
@@ -675,7 +728,7 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
 TEST(GatewayStubResponderStandaloneTest, SessionCloseAfterSessionStartRemovesEmptyMemory) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
+        .openai_client = MakeEchoOpenAiResponsesClient(),
     });
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
@@ -701,7 +754,7 @@ TEST(GatewayStubResponderStandaloneTest, SessionCloseAfterSessionStartRemovesEmp
 TEST(GatewayStubResponderStandaloneTest, AcceptedTurnDuringShutdownDoesNotBlockOnDelayedEmit) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
+        .openai_client = MakeEchoOpenAiResponsesClient(),
     });
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
@@ -748,7 +801,7 @@ TEST(GatewayStubResponderStandaloneTest,
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
+        .openai_client = MakeEchoOpenAiResponsesClient(),
         .on_user_query_memory_ready =
             [user_query_started, allow_user_query_finish_future](
                 std::string_view session_id,
@@ -801,7 +854,7 @@ TEST(GatewayStubResponderStandaloneTest, SameSessionRenderWaitsForOngoingMemoryM
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
+        .openai_client = MakeEchoOpenAiResponsesClient(),
         .on_user_query_memory_ready =
             [user_query_started, allow_user_query_finish_future](
                 std::string_view session_id,
@@ -847,7 +900,7 @@ TEST(GatewayStubResponderStandaloneTest, SameSessionRenderWaitsForOngoingMemoryM
 TEST(GatewayStubResponderStandaloneTest, ConcurrentMultiSessionTurnsKeepMemoryIsolated) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .response_prefix = "stub echo: ",
+        .openai_client = MakeEchoOpenAiResponsesClient(),
     });
     GatewaySessionRegistry registry(&responder);
     auto session_one = std::make_shared<RecordingLiveSession>("srv_one");

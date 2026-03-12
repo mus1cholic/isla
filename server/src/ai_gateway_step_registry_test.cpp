@@ -1,8 +1,6 @@
 #include "isla/server/ai_gateway_step_registry.hpp"
 
 #include <memory>
-#include <stdexcept>
-#include <type_traits>
 
 #include <gtest/gtest.h>
 
@@ -11,11 +9,8 @@
 namespace isla::server::ai_gateway {
 namespace {
 
-TEST(GatewayStepRegistryTest, ExecutesOpenAiLlmStep) {
-    GatewayStepRegistry registry(GatewayStepRegistryConfig{
-        .response_prefix = "stub echo: ",
-        .response_builder = {},
-    });
+TEST(GatewayStepRegistryTest, RejectsMissingConfiguredResponsesClient) {
+    GatewayStepRegistry registry;
 
     const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
         0,
@@ -28,9 +23,9 @@ TEST(GatewayStepRegistryTest, ExecutesOpenAiLlmStep) {
             .user_text = "hello",
         });
 
-    ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(std::get<LlmCallResult>(*result).step_name, "main");
-    EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "stub echo: hello");
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
+    EXPECT_EQ(result.status().message(), "openai llms requires a configured responses client");
 }
 
 TEST(GatewayStepRegistryTest, ReportsStepNameForOpenAiStep) {
@@ -44,31 +39,11 @@ TEST(GatewayStepRegistryTest, ReportsStepNameForOpenAiStep) {
               "main");
 }
 
-TEST(GatewayStepRegistryTest, ForwardsConfiguredResponseBuilder) {
-    GatewayStepRegistry registry(GatewayStepRegistryConfig{
-        .response_prefix = "stub prefix: ",
-        .response_builder = [](std::string_view prefix, std::string_view user_text) {
-            return std::string(prefix) + "[" + std::string(user_text) + "]";
-        },
-    });
-
-    const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
-        0,
-        ExecutionStep(OpenAiLlmStep{
-            .step_name = "main",
-            .system_prompt = "",
-            .model = "gpt-4.1-mini",
-        }),
-        ExecutionRuntimeInput{
-            .user_text = "hello",
-        });
-
-    ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "stub prefix: [hello]");
-}
-
 TEST(GatewayStepRegistryTest, RejectsMissingRuntimeUserText) {
-    GatewayStepRegistry registry;
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "ignored");
+    GatewayStepRegistry registry(GatewayStepRegistryConfig{
+        .openai_client = client,
+    });
 
     const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
         0,
@@ -86,38 +61,9 @@ TEST(GatewayStepRegistryTest, RejectsMissingRuntimeUserText) {
     EXPECT_EQ(result.status().message(), "openai llms input must include user_text");
 }
 
-TEST(GatewayStepRegistryTest, ConvertsBuilderExceptionToInternalError) {
-    GatewayStepRegistry registry(GatewayStepRegistryConfig{
-        .response_prefix = "stub echo: ",
-        .response_builder = [](std::string_view prefix, std::string_view user_text) -> std::string {
-            static_cast<void>(prefix);
-            static_cast<void>(user_text);
-            throw std::runtime_error("boom");
-        },
-    });
-
-    const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
-        0,
-        ExecutionStep(OpenAiLlmStep{
-            .step_name = "main",
-            .system_prompt = "",
-            .model = "gpt-4.1-mini",
-        }),
-        ExecutionRuntimeInput{
-            .user_text = "hello",
-        });
-
-    ASSERT_FALSE(result.ok());
-    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
-    EXPECT_EQ(result.status().message(), "openai llms response building failed");
-}
-
 TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "provider response");
     GatewayStepRegistry registry(GatewayStepRegistryConfig{
-        .response_prefix = "stub echo: ",
-        .response_builder = {},
-        .openai_config = OpenAiResponsesClientConfig{},
         .openai_client = client,
     });
 

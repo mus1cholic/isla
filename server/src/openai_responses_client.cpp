@@ -34,6 +34,7 @@
 #else
 #include <cerrno>
 #include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -48,6 +49,8 @@ struct SseParseSummary {
     bool saw_completed = false;
     std::size_t event_count = 0;
 };
+
+constexpr std::size_t kMaxOpenAiTransportStdoutBytes = 256U * 1024U;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
@@ -424,12 +427,6 @@ absl::Status WriteStringToFile(const std::filesystem::path& path, std::string_vi
 #endif
 }
 
-struct CurlProcessResult {
-    int exit_code = 0;
-    std::string stdout_text;
-    std::string stderr_text;
-};
-
 std::vector<std::string> BuildCurlArgs(const OpenAiResponsesClientConfig& config,
                                        const std::filesystem::path& curl_config_file,
                                        const std::filesystem::path& request_file,
@@ -485,33 +482,14 @@ std::string EscapeCurlConfigValue(std::string_view value) {
 }
 
 #if defined(_WIN32)
-absl::StatusOr<std::string> ReadHandleToString(HANDLE handle) {
-    std::string output;
-    std::array<char, 4096> buffer{};
-    for (;;) {
-        DWORD bytes_read = 0;
-        const BOOL success = ReadFile(handle, buffer.data(), static_cast<DWORD>(buffer.size()),
-                                      &bytes_read, nullptr);
-        if (!success) {
-            const DWORD error = GetLastError();
-            if (error == ERROR_BROKEN_PIPE) {
-                break;
-            }
-            return absl::UnavailableError("failed to read process pipe");
-        }
-        if (bytes_read == 0) {
-            break;
-        }
-        output.append(buffer.data(), bytes_read);
-    }
-    return output;
-}
+struct CurlProcess {
+    ScopedWindowsHandle process_handle;
+    ScopedWindowsHandle thread_handle;
+    ScopedWindowsHandle stdout_read;
+};
 
-absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::string>& args) {
-    absl::StatusOr<ScopedTempFile> stderr_file = ScopedTempFile::Create(".stderr");
-    if (!stderr_file.ok()) {
-        return stderr_file.status();
-    }
+absl::StatusOr<CurlProcess> StartCurlProcess(const std::vector<std::string>& args,
+                                             const std::filesystem::path& stderr_path) {
     const absl::StatusOr<std::string> curl_path = ResolveWindowsCurlExecutablePath();
     if (!curl_path.ok()) {
         return curl_path.status();
@@ -533,7 +511,7 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
     }
 
     HANDLE stderr_handle = CreateFileA(
-        stderr_file->path().string().c_str(), GENERIC_WRITE,
+        stderr_path.string().c_str(), GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &security_attributes, OPEN_EXISTING,
         FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (stderr_handle == INVALID_HANDLE_VALUE) {
@@ -572,55 +550,63 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
         return absl::UnavailableError("failed to spawn curl process");
     }
 
-    const absl::StatusOr<std::string> stdout_text = ReadHandleToString(stdout_read);
-    CloseHandle(stdout_read);
-    WaitForSingleObject(process_info.hProcess, INFINITE);
-
-    DWORD exit_code = 0;
-    if (!GetExitCodeProcess(process_info.hProcess, &exit_code)) {
-        CloseHandle(process_info.hThread);
-        CloseHandle(process_info.hProcess);
-        return absl::UnavailableError("failed to read curl exit code");
-    }
-    CloseHandle(process_info.hThread);
-    CloseHandle(process_info.hProcess);
-
-    if (!stdout_text.ok()) {
-        return stdout_text.status();
-    }
-
-    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file->path());
-    return CurlProcessResult{
-        .exit_code = static_cast<int>(exit_code),
-        .stdout_text = *stdout_text,
-        .stderr_text = stderr_text.ok() ? *stderr_text : std::string(),
+    return CurlProcess{
+        .process_handle = ScopedWindowsHandle(process_info.hProcess),
+        .thread_handle = ScopedWindowsHandle(process_info.hThread),
+        .stdout_read = ScopedWindowsHandle(stdout_read),
     };
 }
 #else
-absl::StatusOr<std::string> ReadFdToString(int fd) {
-    std::string output;
-    std::array<char, 4096> buffer{};
-    for (;;) {
-        const ssize_t bytes_read = read(fd, buffer.data(), buffer.size());
-        if (bytes_read == 0) {
-            break;
-        }
-        if (bytes_read < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return absl::UnavailableError("failed to read process pipe");
-        }
-        output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+class ScopedPosixFd final {
+  public:
+    ScopedPosixFd() = default;
+    explicit ScopedPosixFd(int fd) : fd_(fd) {}
+    ~ScopedPosixFd() {
+        reset();
     }
-    return output;
-}
 
-absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::string>& args) {
-    absl::StatusOr<ScopedTempFile> stderr_file = ScopedTempFile::Create(".stderr");
-    if (!stderr_file.ok()) {
-        return stderr_file.status();
+    ScopedPosixFd(const ScopedPosixFd&) = delete;
+    ScopedPosixFd& operator=(const ScopedPosixFd&) = delete;
+    ScopedPosixFd(ScopedPosixFd&& other) noexcept : fd_(other.release()) {}
+    ScopedPosixFd& operator=(ScopedPosixFd&& other) noexcept {
+        if (this != &other) {
+            reset(other.release());
+        }
+        return *this;
     }
+
+    [[nodiscard]] int get() const {
+        return fd_;
+    }
+
+    [[nodiscard]] bool valid() const {
+        return fd_ >= 0;
+    }
+
+    [[nodiscard]] int release() {
+        const int released = fd_;
+        fd_ = -1;
+        return released;
+    }
+
+    void reset(int fd = -1) {
+        if (fd_ >= 0) {
+            close(fd_);
+        }
+        fd_ = fd;
+    }
+
+  private:
+    int fd_ = -1;
+};
+
+struct CurlProcess {
+    pid_t pid = -1;
+    ScopedPosixFd stdout_fd;
+};
+
+absl::StatusOr<CurlProcess> StartCurlProcess(const std::vector<std::string>& args,
+                                             const std::filesystem::path& stderr_path) {
     const absl::StatusOr<std::string> curl_path = ResolvePosixCurlExecutablePath();
     if (!curl_path.ok()) {
         return curl_path.status();
@@ -631,7 +617,7 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
         return absl::UnavailableError("failed to create curl stdout pipe");
     }
 
-    const int stderr_fd = open(stderr_file->path().c_str(),
+    const int stderr_fd = open(stderr_path.c_str(),
                                O_WRONLY | O_TRUNC
 #ifdef O_NOFOLLOW
                                    | O_NOFOLLOW
@@ -673,30 +659,217 @@ absl::StatusOr<CurlProcessResult> ExecuteCurlProcess(const std::vector<std::stri
         return absl::UnavailableError("failed to spawn curl process");
     }
 
-    const absl::StatusOr<std::string> stdout_text = ReadFdToString(stdout_pipe[0]);
-    close(stdout_pipe[0]);
-
-    int wait_status = 0;
-    if (waitpid(pid, &wait_status, 0) < 0) {
-        return absl::UnavailableError("failed to wait for curl process");
-    }
-    if (!stdout_text.ok()) {
-        return stdout_text.status();
-    }
-
-    int exit_code = 0;
-    if (WIFEXITED(wait_status)) {
-        exit_code = WEXITSTATUS(wait_status);
-    } else if (WIFSIGNALED(wait_status)) {
-        exit_code = 128 + WTERMSIG(wait_status);
-    }
-
-    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file->path());
-    return CurlProcessResult{
-        .exit_code = exit_code,
-        .stdout_text = *stdout_text,
-        .stderr_text = stderr_text.ok() ? *stderr_text : std::string(),
+    return CurlProcess{
+        .pid = pid,
+        .stdout_fd = ScopedPosixFd(stdout_pipe[0]),
     };
+}
+#endif
+
+absl::Status DispatchStreamEvent(const nlohmann::json& event_json, SseParseSummary* summary,
+                                 const OpenAiResponsesEventCallback& on_event);
+
+enum class SseFeedDisposition {
+    kContinue,
+    kCompleted,
+};
+
+class IncrementalSseParser final {
+  public:
+    [[nodiscard]] absl::StatusOr<SseFeedDisposition>
+    Feed(std::string_view chunk, const OpenAiResponsesEventCallback& on_event) {
+        line_buffer_.append(chunk.data(), chunk.size());
+        for (;;) {
+            const std::size_t newline = line_buffer_.find('\n');
+            if (newline == std::string::npos) {
+                return SseFeedDisposition::kContinue;
+            }
+
+            std::string line = line_buffer_.substr(0, newline);
+            line_buffer_.erase(0, newline + 1U);
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+
+            const absl::StatusOr<SseFeedDisposition> disposition = ProcessLine(line, on_event);
+            if (!disposition.ok()) {
+                return disposition.status();
+            }
+            if (*disposition == SseFeedDisposition::kCompleted) {
+                line_buffer_.clear();
+                return disposition;
+            }
+        }
+    }
+
+    [[nodiscard]] absl::StatusOr<SseParseSummary>
+    Finish(const OpenAiResponsesEventCallback& on_event) {
+        if (!line_buffer_.empty()) {
+            std::string trailing_line = std::move(line_buffer_);
+            line_buffer_.clear();
+            if (!trailing_line.empty() && trailing_line.back() == '\r') {
+                trailing_line.pop_back();
+            }
+            const absl::StatusOr<SseFeedDisposition> disposition =
+                ProcessLine(trailing_line, on_event);
+            if (!disposition.ok()) {
+                return disposition.status();
+            }
+        }
+
+        const absl::StatusOr<SseFeedDisposition> trailing_flush = FlushBufferedEvent(on_event);
+        if (!trailing_flush.ok()) {
+            return trailing_flush.status();
+        }
+        if (!summary_.saw_completed) {
+            return internal_error("openai responses stream ended before completion");
+        }
+        return summary_;
+    }
+
+  private:
+    [[nodiscard]] absl::StatusOr<SseFeedDisposition>
+    ProcessLine(const std::string& line, const OpenAiResponsesEventCallback& on_event) {
+        if (line.empty()) {
+            return FlushBufferedEvent(on_event);
+        }
+        if (line.starts_with("data:")) {
+            const std::string payload = TrimAscii(std::string_view(line).substr(5));
+            if (!data_.empty()) {
+                data_.push_back('\n');
+            }
+            data_.append(payload);
+        } else if (line.starts_with("event:")) {
+            event_name_ = TrimAscii(std::string_view(line).substr(6));
+        }
+        return SseFeedDisposition::kContinue;
+    }
+
+    [[nodiscard]] absl::StatusOr<SseFeedDisposition>
+    FlushBufferedEvent(const OpenAiResponsesEventCallback& on_event) {
+        static_cast<void>(event_name_);
+        if (data_.empty()) {
+            event_name_.clear();
+            return SseFeedDisposition::kContinue;
+        }
+        if (data_ == "[DONE]") {
+            event_name_.clear();
+            data_.clear();
+            return SseFeedDisposition::kContinue;
+        }
+
+        nlohmann::json event_json;
+        try {
+            event_json = nlohmann::json::parse(data_);
+        } catch (const std::exception& error) {
+            LOG(ERROR) << "AI gateway openai responses stream parse failed detail='"
+                       << SanitizeForLog(error.what()) << "'";
+            return internal_error("openai responses stream contained invalid JSON");
+        }
+
+        event_name_.clear();
+        data_.clear();
+        absl::Status dispatch_status = DispatchStreamEvent(event_json, &summary_, on_event);
+        if (!dispatch_status.ok()) {
+            return dispatch_status;
+        }
+        if (summary_.saw_completed) {
+            return SseFeedDisposition::kCompleted;
+        }
+        return SseFeedDisposition::kContinue;
+    }
+
+    std::string line_buffer_;
+    std::string event_name_;
+    std::string data_;
+    SseParseSummary summary_;
+};
+
+#if defined(_WIN32)
+absl::StatusOr<std::size_t> ReadCurlStdoutChunk(CurlProcess* process, char* buffer,
+                                                std::size_t buffer_size, bool* eof) {
+    DWORD bytes_read = 0;
+    const BOOL success = ReadFile(process->stdout_read.get(), buffer,
+                                  static_cast<DWORD>(buffer_size), &bytes_read, nullptr);
+    if (!success) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_BROKEN_PIPE) {
+            *eof = true;
+            return 0U;
+        }
+        return absl::UnavailableError("failed to read process pipe");
+    }
+    *eof = bytes_read == 0;
+    return static_cast<std::size_t>(bytes_read);
+}
+
+void CloseCurlStdoutPipe(CurlProcess* process) {
+    process->stdout_read.reset();
+}
+
+void TerminateCurlProcess(CurlProcess* process) {
+    if (process->process_handle.valid()) {
+        static_cast<void>(TerminateProcess(process->process_handle.get(), 1));
+    }
+}
+
+absl::StatusOr<int> WaitForCurlProcess(CurlProcess* process) {
+    WaitForSingleObject(process->process_handle.get(), INFINITE);
+
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(process->process_handle.get(), &exit_code)) {
+        return absl::UnavailableError("failed to read curl exit code");
+    }
+    return static_cast<int>(exit_code);
+}
+#else
+absl::StatusOr<std::size_t> ReadCurlStdoutChunk(CurlProcess* process, char* buffer,
+                                                std::size_t buffer_size, bool* eof) {
+    for (;;) {
+        const ssize_t bytes_read = read(process->stdout_fd.get(), buffer, buffer_size);
+        if (bytes_read == 0) {
+            *eof = true;
+            return 0U;
+        }
+        if (bytes_read < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return absl::UnavailableError("failed to read process pipe");
+        }
+        *eof = false;
+        return static_cast<std::size_t>(bytes_read);
+    }
+}
+
+void CloseCurlStdoutPipe(CurlProcess* process) {
+    process->stdout_fd.reset();
+}
+
+void TerminateCurlProcess(CurlProcess* process) {
+    if (process->pid > 0) {
+        static_cast<void>(kill(process->pid, SIGKILL));
+    }
+}
+
+absl::StatusOr<int> WaitForCurlProcess(CurlProcess* process) {
+    int wait_status = 0;
+    for (;;) {
+        if (waitpid(process->pid, &wait_status, 0) >= 0) {
+            break;
+        }
+        if (errno != EINTR) {
+            return absl::UnavailableError("failed to wait for curl process");
+        }
+    }
+
+    if (WIFEXITED(wait_status)) {
+        return WEXITSTATUS(wait_status);
+    }
+    if (WIFSIGNALED(wait_status)) {
+        return 128 + WTERMSIG(wait_status);
+    }
+    return 1;
 }
 #endif
 
@@ -946,89 +1119,24 @@ absl::Status DispatchStreamEvent(const nlohmann::json& event_json, SseParseSumma
     return absl::OkStatus();
 }
 
-absl::StatusOr<bool> FlushBufferedSseEvent(std::string* event_name, std::string* data,
-                                           SseParseSummary* summary,
-                                           const OpenAiResponsesEventCallback& on_event) {
-    static_cast<void>(event_name);
-    if (data->empty()) {
-        event_name->clear();
-        return false;
-    }
-    if (*data == "[DONE]") {
-        event_name->clear();
-        data->clear();
-        return false;
-    }
-
-    nlohmann::json event_json;
-    try {
-        event_json = nlohmann::json::parse(*data);
-    } catch (const std::exception& error) {
-        LOG(ERROR) << "AI gateway openai responses stream parse failed detail='"
-                   << SanitizeForLog(error.what()) << "'";
-        return internal_error("openai responses stream contained invalid JSON");
-    }
-
-    event_name->clear();
-    data->clear();
-    absl::Status dispatch_status = DispatchStreamEvent(event_json, summary, on_event);
-    if (!dispatch_status.ok()) {
-        return dispatch_status;
-    }
-    return true;
-}
-
 absl::StatusOr<SseParseSummary> ParseSseBody(std::string_view body,
                                              const OpenAiResponsesEventCallback& on_event) {
-    SseParseSummary summary;
-    std::string event_name;
-    std::string data;
-
-    std::size_t cursor = 0;
-    while (cursor <= body.size()) {
-        const std::size_t next_newline = body.find('\n', cursor);
-        const std::size_t line_end =
-            next_newline == std::string_view::npos ? body.size() : next_newline;
-        std::string line(body.substr(cursor, line_end - cursor));
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-
-        if (line.empty()) {
-            const absl::StatusOr<bool> flushed =
-                FlushBufferedSseEvent(&event_name, &data, &summary, on_event);
-            if (!flushed.ok()) {
-                return flushed.status();
-            }
-        } else if (line.starts_with("data:")) {
-            const std::string payload = TrimAscii(std::string_view(line).substr(5));
-            if (!data.empty()) {
-                data.push_back('\n');
-            }
-            data.append(payload);
-        } else if (line.starts_with("event:")) {
-            event_name = TrimAscii(std::string_view(line).substr(6));
-        }
-
-        if (next_newline == std::string_view::npos) {
-            break;
-        }
-        cursor = next_newline + 1U;
+    IncrementalSseParser parser;
+    const absl::StatusOr<SseFeedDisposition> disposition = parser.Feed(body, on_event);
+    if (!disposition.ok()) {
+        return disposition.status();
     }
-
-    const absl::StatusOr<bool> trailing_status =
-        FlushBufferedSseEvent(&event_name, &data, &summary, on_event);
-    if (!trailing_status.ok()) {
-        return trailing_status.status();
-    }
-    if (!summary.saw_completed) {
-        return internal_error("openai responses stream ended before completion");
-    }
-    return summary;
+    return parser.Finish(on_event);
 }
 
-absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& config,
-                                        const std::string& request_json) {
+struct CurlStreamResult {
+    SseParseSummary parse_summary;
+    std::size_t stdout_bytes = 0;
+};
+
+absl::StatusOr<CurlStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& config,
+                                             const std::string& request_json,
+                                             const OpenAiResponsesEventCallback& on_event) {
     absl::StatusOr<ScopedTempFile> curl_config_file = ScopedTempFile::Create(".curlrc");
     if (!curl_config_file.ok()) {
         return curl_config_file.status();
@@ -1040,6 +1148,10 @@ absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& confi
     absl::StatusOr<ScopedTempFile> header_file = ScopedTempFile::Create(".headers");
     if (!header_file.ok()) {
         return header_file.status();
+    }
+    absl::StatusOr<ScopedTempFile> stderr_file = ScopedTempFile::Create(".stderr");
+    if (!stderr_file.ok()) {
+        return stderr_file.status();
     }
 
     const std::string curl_config_contents =
@@ -1058,16 +1170,98 @@ absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& confi
     // which blocks a direct Boost.Beast HTTPS implementation. This subprocess curl transport keeps
     // the OpenAI HTTP/SSE integration behind the provider boundary until the toolchain grows a
     // first-class TLS client dependency.
-    const absl::StatusOr<CurlProcessResult> curl_result = ExecuteCurlProcess(
-        BuildCurlArgs(config, curl_config_file->path(), request_file->path(), header_file->path()));
-    if (!curl_result.ok()) {
+    absl::StatusOr<CurlProcess> curl_process = StartCurlProcess(
+        BuildCurlArgs(config, curl_config_file->path(), request_file->path(), header_file->path()),
+        stderr_file->path());
+    if (!curl_process.ok()) {
         LOG(ERROR) << "AI gateway openai responses failed to launch curl host='"
                    << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
-                   << "' detail='" << SanitizeForLog(curl_result.status().message()) << "'";
+                   << "' detail='" << SanitizeForLog(curl_process.status().message()) << "'";
         return absl::UnavailableError("failed to launch curl for openai responses request");
     }
 
-    const std::string& body = curl_result->stdout_text;
+    CurlProcess process = std::move(*curl_process);
+    IncrementalSseParser parser;
+    std::array<char, 4096> chunk_buffer{};
+    std::string stdout_text;
+    bool completed_early = false;
+    bool aborted_early = false;
+    absl::Status early_status;
+
+    for (;;) {
+        bool eof = false;
+        const absl::StatusOr<std::size_t> bytes_read =
+            ReadCurlStdoutChunk(&process, chunk_buffer.data(), chunk_buffer.size(), &eof);
+        if (!bytes_read.ok()) {
+            CloseCurlStdoutPipe(&process);
+            TerminateCurlProcess(&process);
+            static_cast<void>(WaitForCurlProcess(&process));
+            return bytes_read.status();
+        }
+
+        if (*bytes_read > 0U) {
+            stdout_text.append(chunk_buffer.data(), *bytes_read);
+            if (stdout_text.size() > kMaxOpenAiTransportStdoutBytes) {
+                LOG(ERROR) << "AI gateway openai responses stdout budget exceeded host='"
+                           << SanitizeForLog(config.host) << "' target='"
+                           << SanitizeForLog(config.target) << "' stdout_bytes="
+                           << stdout_text.size() << " budget_bytes="
+                           << kMaxOpenAiTransportStdoutBytes;
+                early_status = absl::ResourceExhaustedError(
+                    "openai responses transport stdout exceeds maximum length");
+                aborted_early = true;
+                break;
+            }
+
+            const absl::StatusOr<SseFeedDisposition> disposition =
+                parser.Feed(std::string_view(chunk_buffer.data(), *bytes_read), on_event);
+            if (!disposition.ok()) {
+                VLOG(1) << "AI gateway openai responses aborting stream on callback/parser status "
+                        << "host='" << SanitizeForLog(config.host) << "' target='"
+                        << SanitizeForLog(config.target) << "' status_code="
+                        << static_cast<int>(disposition.status().code()) << " detail='"
+                        << SanitizeForLog(disposition.status().message()) << "'";
+                early_status = disposition.status();
+                aborted_early = true;
+                break;
+            }
+            if (*disposition == SseFeedDisposition::kCompleted) {
+                VLOG(1) << "AI gateway openai responses observed terminal completion early host='"
+                        << SanitizeForLog(config.host) << "' target='"
+                        << SanitizeForLog(config.target) << "' stdout_bytes="
+                        << stdout_text.size();
+                completed_early = true;
+                break;
+            }
+        }
+
+        if (eof) {
+            break;
+        }
+    }
+
+    CloseCurlStdoutPipe(&process);
+    if (aborted_early || completed_early) {
+        TerminateCurlProcess(&process);
+        static_cast<void>(WaitForCurlProcess(&process));
+        if (aborted_early) {
+            return early_status;
+        }
+        const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
+        if (!parse_summary.ok()) {
+            return parse_summary.status();
+        }
+        return CurlStreamResult{
+            .parse_summary = *parse_summary,
+            .stdout_bytes = stdout_text.size(),
+        };
+    }
+
+    const absl::StatusOr<int> exit_code = WaitForCurlProcess(&process);
+    if (!exit_code.ok()) {
+        return exit_code.status();
+    }
+
     const absl::StatusOr<std::string> header_text = ReadFileToString(header_file->path());
     if (!header_text.ok()) {
         LOG(ERROR) << "AI gateway openai responses failed to read curl header dump host='"
@@ -1076,23 +1270,34 @@ absl::StatusOr<std::string> ExecuteCurl(const OpenAiResponsesClientConfig& confi
         return absl::UnavailableError("failed to read openai responses header dump");
     }
     const std::optional<unsigned int> status_code = ParseHttpStatusCode(*header_text);
+    const absl::StatusOr<std::string> stderr_text = ReadFileToString(stderr_file->path());
 
-    if (curl_result->exit_code != 0) {
+    if (*exit_code != 0) {
         LOG(ERROR) << "AI gateway openai responses curl transport failed host='"
                    << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
-                   << "' exit_code=" << curl_result->exit_code << " http_status="
+                   << "' exit_code=" << *exit_code << " http_status="
                    << (status_code.has_value() ? std::to_string(*status_code)
                                                : std::string("<none>"))
-                   << " stderr='" << SanitizeForLog(curl_result->stderr_text) << "'";
+                   << " stderr='"
+                   << SanitizeForLog(stderr_text.ok() ? *stderr_text : std::string()) << "'";
         if (status_code.has_value()) {
-            return MapHttpErrorStatus(*status_code, BuildHttpErrorMessage(*status_code, body));
+            return MapHttpErrorStatus(*status_code,
+                                      BuildHttpErrorMessage(*status_code, stdout_text));
         }
         return absl::UnavailableError("openai responses transport command failed");
     }
     if (status_code.has_value() && *status_code != 200U) {
-        return MapHttpErrorStatus(*status_code, BuildHttpErrorMessage(*status_code, body));
+        return MapHttpErrorStatus(*status_code, BuildHttpErrorMessage(*status_code, stdout_text));
     }
-    return body;
+
+    const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
+    if (!parse_summary.ok()) {
+        return parse_summary.status();
+    }
+    return CurlStreamResult{
+        .parse_summary = *parse_summary,
+        .stdout_bytes = stdout_text.size(),
+    };
 }
 
 class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
@@ -1176,25 +1381,22 @@ class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
                 << " user_text_bytes=" << request.user_text.size()
                 << " system_prompt_present=" << (!request.system_prompt.empty() ? "true" : "false");
 
-        const absl::StatusOr<std::string> response_body = ExecuteCurl(config_, body.dump());
-        if (!response_body.ok()) {
+        const absl::StatusOr<CurlStreamResult> stream_result =
+            ExecuteCurl(config_, body.dump(), on_event);
+        if (!stream_result.ok()) {
             LOG(ERROR) << "AI gateway openai responses request failed host='"
                        << SanitizeForLog(config_.host) << "' target='"
                        << SanitizeForLog(config_.target) << "' detail='"
-                       << SanitizeForLog(response_body.status().message()) << "'";
-            return response_body.status();
-        }
-        const absl::StatusOr<SseParseSummary> parse_summary =
-            ParseSseBody(*response_body, on_event);
-        if (!parse_summary.ok()) {
-            return parse_summary.status();
+                       << SanitizeForLog(stream_result.status().message()) << "'";
+            return stream_result.status();
         }
         VLOG(1) << "AI gateway openai responses completed host='" << SanitizeForLog(config_.host)
                 << "' target='" << SanitizeForLog(config_.target)
-                << "' body_bytes=" << response_body->size()
-                << " saw_delta=" << (parse_summary->saw_delta ? "true" : "false")
-                << " saw_completed=" << (parse_summary->saw_completed ? "true" : "false")
-                << " event_count=" << parse_summary->event_count;
+                << "' body_bytes=" << stream_result->stdout_bytes
+                << " saw_delta=" << (stream_result->parse_summary.saw_delta ? "true" : "false")
+                << " saw_completed="
+                << (stream_result->parse_summary.saw_completed ? "true" : "false")
+                << " event_count=" << stream_result->parse_summary.event_count;
         return absl::OkStatus();
     }
 

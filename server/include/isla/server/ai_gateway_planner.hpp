@@ -1,17 +1,13 @@
 #pragma once
 
 #include <cstddef>
-#include <functional>
 #include <string>
-#include <string_view>
 #include <variant>
 #include <vector>
 
 #include "absl/status/statusor.h"
 
 namespace isla::server::ai_gateway {
-
-using OpenAiResponseBuilder = std::function<std::string(std::string_view, std::string_view)>;
 
 struct ExecutionRuntimeInput {
     std::string user_text;

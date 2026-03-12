@@ -1,6 +1,5 @@
 #pragma once
 
-#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -15,9 +14,7 @@ namespace isla::server::ai_gateway {
 class OpenAiLLMs final {
   public:
     OpenAiLLMs(std::string step_name, std::string system_prompt, std::string model,
-               std::shared_ptr<const OpenAiResponsesClient> responses_client = nullptr,
-               std::string response_prefix = "stub echo: ",
-               OpenAiResponseBuilder response_builder = {});
+               std::shared_ptr<const OpenAiResponsesClient> responses_client = nullptr);
 
     [[nodiscard]] const std::string& step_name() const;
     [[nodiscard]] absl::Status Validate() const;
@@ -29,16 +26,11 @@ class OpenAiLLMs final {
     [[nodiscard]] absl::Status ValidateInput(std::string_view user_text) const;
     [[nodiscard]] absl::StatusOr<std::string>
     GenerateProviderResponse(std::size_t item_index, std::string_view user_text) const;
-    [[nodiscard]] std::string BuildResponse(std::string_view user_text,
-                                            std::string_view response_prefix,
-                                            const OpenAiResponseBuilder& response_builder) const;
 
     std::string step_name_;
     std::string system_prompt_;
     std::string model_;
     std::shared_ptr<const OpenAiResponsesClient> responses_client_;
-    std::string response_prefix_;
-    OpenAiResponseBuilder response_builder_;
 };
 
 } // namespace isla::server::ai_gateway

@@ -22,9 +22,7 @@ namespace isla::server::ai_gateway {
 struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
-    std::string response_prefix = "stub echo: ";
     std::string memory_user_id = "gateway_user";
-    std::function<std::string(std::string_view, std::string_view)> reply_builder;
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
     std::function<void(const ExecutionPlan&)> on_execution_plan;
