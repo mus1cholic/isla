@@ -33,6 +33,8 @@ namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 using namespace std::chrono_literals;
 
+constexpr auto kEarlyAbortTimeout = 2s;
+
 class OneShotHttpServer {
   public:
     explicit OneShotHttpServer(std::string response)
@@ -206,7 +208,11 @@ class PausingHttpServer {
                     break;
                 }
                 if (i == 0U && continue_future_.valid()) {
-                    continue_future_.wait();
+                    while (!stopped_.load()) {
+                        if (continue_future_.wait_for(10ms) == std::future_status::ready) {
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -788,7 +794,10 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenCallbackReturnsNonOk) {
     });
 
     ASSERT_TRUE(server.WaitForFirstChunkSent());
-    EXPECT_EQ(response_future.wait_for(200ms), std::future_status::ready);
+    // This is intentionally generous for loaded CI runners. The assertion is
+    // about early termination before the remaining bytes are released, not
+    // about measuring transport latency.
+    ASSERT_EQ(response_future.wait_for(kEarlyAbortTimeout), std::future_status::ready);
 
     continue_promise->set_value();
     const absl::Status status = response_future.get();
@@ -842,7 +851,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportAfterCompletedEventWithoutWaiting
     });
 
     ASSERT_TRUE(server.WaitForFirstChunkSent());
-    EXPECT_EQ(response_future.wait_for(200ms), std::future_status::ready);
+    ASSERT_EQ(response_future.wait_for(kEarlyAbortTimeout), std::future_status::ready);
 
     continue_promise->set_value();
     const absl::Status status = response_future.get();
@@ -880,7 +889,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenStdoutBudgetIsExceeded) {
     });
 
     ASSERT_TRUE(server.WaitForFirstChunkSent());
-    EXPECT_EQ(response_future.wait_for(200ms), std::future_status::ready);
+    ASSERT_EQ(response_future.wait_for(kEarlyAbortTimeout), std::future_status::ready);
 
     continue_promise->set_value();
     const absl::Status status = response_future.get();

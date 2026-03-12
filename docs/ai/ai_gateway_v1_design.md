@@ -86,10 +86,13 @@ As of 2026-03-12:
     `text.output` emission
   - keeps provider/network failure detail inside the executor/provider seam so websocket/session
     code remains transport-agnostic
+  - uses provider-shaped fakes for deterministic non-network execution in tests rather than a
+    built-in synthetic OpenAI fallback path
 - current implementation limitation:
   - the OpenAI provider adapter currently uses `curl` for HTTPS/SSE transport because the active
     Windows toolchain in this repository does not expose OpenSSL headers for a direct Beast TLS
-    client build
+    client build; incremental SSE parsing and early-abort behavior now happen inside that `curl`
+    transport rather than being deferred
 - no Fish Audio integration exists yet
 
 This document defines the architecture baseline that later code should implement. The current
@@ -407,6 +410,8 @@ Current implementation note (2026-03-12):
   fails closed unless an explicit provider client or provider-shaped fake is configured
 - the planner now loads the bundled system prompt through the memory prompt loader, and prompt
   validation is enforced before the prompt enters the execution plan
+- provider-oriented regression coverage now includes provider `Validate()` failure and live-gateway
+  multi-delta aggregation back into one final `text.output`
 
 Responsibilities:
 
@@ -483,6 +488,8 @@ Current implementation note (2026-03-12):
 - the current `curl` transport now parses stdout incrementally and honors early callback-driven
   abort, terminal completion, and a hard stdout byte budget without changing the final-output
   contract
+- transport regression coverage now includes split-read SSE payloads and verifies that provider
+  work can complete before trailing transport bytes are released
 - executor failures now surface stable public error codes/messages rather than raw internal step
   diagnostics
 - the current responder path still has cross-session head-of-line blocking because execution and
