@@ -7,6 +7,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <variant>
@@ -177,18 +178,42 @@ class RealWebSocketClient {
         return protocol::parse_json_message(beast::buffers_to_string(buffer.data()));
     }
 
-    [[nodiscard]] absl::StatusOr<websocket::close_reason> ReadCloseReason() {
+    [[nodiscard]] absl::StatusOr<websocket::close_reason>
+    ReadCloseReason(std::chrono::milliseconds timeout = 2s) {
         beast::flat_buffer buffer;
-        boost::system::error_code error;
-        const std::size_t bytes_read = websocket_.read(buffer, error);
-        static_cast<void>(bytes_read);
-        if (error != websocket::error::closed) {
-            if (error) {
-                return absl::UnavailableError(error.message());
+        std::optional<absl::StatusOr<websocket::close_reason>> result;
+
+        websocket::stream_base::timeout timeout_options =
+            websocket::stream_base::timeout::suggested(beast::role_type::client);
+        timeout_options.idle_timeout = timeout;
+        timeout_options.keep_alive_pings = false;
+        websocket_.set_option(timeout_options);
+
+        websocket_.async_read(buffer, [this, &result](const boost::system::error_code& error,
+                                                      std::size_t bytes_read) {
+            static_cast<void>(bytes_read);
+            if (error == websocket::error::closed) {
+                result.emplace(websocket_.reason());
+                return;
             }
-            return absl::InternalError("expected websocket close frame");
+            if (error == beast::error::timeout) {
+                result.emplace(
+                    absl::DeadlineExceededError("timed out waiting for websocket close frame"));
+                return;
+            }
+            if (error) {
+                result.emplace(absl::UnavailableError(error.message()));
+                return;
+            }
+            result.emplace(absl::InternalError("expected websocket close frame"));
+        });
+
+        io_context_.restart();
+        io_context_.run();
+        if (!result.has_value()) {
+            return absl::InternalError("websocket close read completed without a result");
         }
-        return websocket_.reason();
+        return *result;
     }
 
     void CloseTransport() {
