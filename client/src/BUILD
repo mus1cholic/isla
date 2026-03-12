@@ -167,7 +167,9 @@ cc_library(
     hdrs = ["client_app.hpp"],
     visibility = ["//visibility:public"],
     deps = [
+        "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/log:log",
+        ":ai_gateway_client_session",
         ":client_app_animation_world",
         ":client_app_geometry_utils",
         ":client_app_internal_types",
@@ -207,6 +209,21 @@ cc_test(
     ],
     deps = [
         ":client_app",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "client_app_gateway_test",
+    srcs = [
+        "client_app_gateway_test.cpp",
+        "client_app_test_hooks.hpp",
+    ],
+    deps = [
+        ":client_app",
+        "//server/include/isla/server:server_headers",
+        "//server/src:ai_gateway_server",
+        "//server/src:ai_gateway_stub_responder",
         "@googletest//:gtest_main",
     ],
 )

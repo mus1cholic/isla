@@ -2,6 +2,8 @@
 
 #include "client_app.hpp"
 
+#include "absl/status/status.h"
+
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -71,6 +73,39 @@ class ClientAppTestHooks {
 
     static bool has_animated_asset(const ClientApp& app) {
         return app.animated_asset_.has_value();
+    }
+
+    static absl::Status start_ai_gateway_session(ClientApp& app, AiGatewayClientConfig config,
+                                                 std::string canned_prompt) {
+        return app.start_ai_gateway_session(std::move(config), std::move(canned_prompt));
+    }
+
+    static void initialize_ai_gateway_from_environment(ClientApp& app) {
+        app.initialize_ai_gateway_from_environment();
+    }
+
+    static void shutdown_ai_gateway(ClientApp& app) {
+        app.shutdown_ai_gateway();
+    }
+
+    static bool gateway_connected(const ClientApp& app) {
+        return app.gateway_state_.connected;
+    }
+
+    static std::optional<std::string> gateway_session_id(const ClientApp& app) {
+        return app.gateway_state_.session_id;
+    }
+
+    static std::optional<std::string> gateway_inflight_turn_id(const ClientApp& app) {
+        return app.gateway_state_.inflight_turn_id;
+    }
+
+    static std::optional<std::string> gateway_last_reply_text(const ClientApp& app) {
+        return app.gateway_state_.last_reply_text;
+    }
+
+    static std::optional<std::string> gateway_last_error(const ClientApp& app) {
+        return app.gateway_state_.last_error;
     }
 };
 
