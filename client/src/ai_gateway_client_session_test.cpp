@@ -47,7 +47,7 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
-        const absl::Status delta_status = on_event(OpenAiResponsesTextDeltaEvent{
+        absl::Status delta_status = on_event(OpenAiResponsesTextDeltaEvent{
             .text_delta = "stub echo: " + request.user_text,
         });
         if (!delta_status.ok()) {
