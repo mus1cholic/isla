@@ -11,6 +11,7 @@ desktop.ini
 *.log
 *.tmp
 *.temp
+.env
 
 # Tool caches
 .cache/

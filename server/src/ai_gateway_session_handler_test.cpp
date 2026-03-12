@@ -172,6 +172,22 @@ TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
     EXPECT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*completed_frame));
 }
 
+TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextOutput) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok);
+
+    const absl::StatusOr<EmitResult> result =
+        handler.EmitTextOutput("turn_1", std::string(kMaxTextOutputBytes + 1U, 'x'));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kResourceExhausted);
+    EXPECT_EQ(result.status().message(), "text output exceeds maximum length");
+}
+
 TEST(AiGatewaySessionHandlerTest, RejectsAudioBeforeText) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);

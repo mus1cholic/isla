@@ -1,12 +1,34 @@
 #include "isla/server/ai_gateway_executor.hpp"
 
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
+#include "absl/status/status.h"
 #include <gtest/gtest.h>
 
 namespace isla::server::ai_gateway {
 namespace {
+
+class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {
+  public:
+    explicit FailingOpenAiResponsesClient(absl::Status status) : status_(std::move(status)) {}
+
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const OpenAiResponsesRequest& request,
+                   const OpenAiResponsesEventCallback& on_event) const override {
+        static_cast<void>(request);
+        static_cast<void>(on_event);
+        return status_;
+    }
+
+  private:
+    absl::Status status_;
+};
 
 TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     GatewayPlanExecutor executor;
@@ -142,6 +164,87 @@ TEST(GatewayPlanExecutorTest, MapsInternalStepFailuresToStablePublicError) {
     EXPECT_EQ(failure.step_name, "step_a");
     EXPECT_EQ(failure.code, "internal_error");
     EXPECT_EQ(failure.message, "execution step failed");
+    EXPECT_FALSE(failure.retryable);
+}
+
+TEST(GatewayPlanExecutorTest, MapsUnauthenticatedProviderFailuresToAuthenticationError) {
+    GatewayPlanExecutor executor(GatewayStepRegistryConfig{
+        .openai_client = std::make_shared<FailingOpenAiResponsesClient>(
+            absl::UnauthenticatedError("bad api key")),
+    });
+
+    const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
+        .steps =
+            {
+                OpenAiLlmStep{
+                    .step_name = "step_a",
+                    .system_prompt = "",
+                    .model = "model_a",
+                },
+            },
+    },
+                                             ExecutionRuntimeInput{
+                                                 .user_text = "shared input",
+                                             });
+
+    ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
+    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    EXPECT_EQ(failure.code, "authentication_error");
+    EXPECT_EQ(failure.message, "upstream authentication failed");
+    EXPECT_FALSE(failure.retryable);
+}
+
+TEST(GatewayPlanExecutorTest, MapsPermissionDeniedProviderFailuresToPermissionDenied) {
+    GatewayPlanExecutor executor(GatewayStepRegistryConfig{
+        .openai_client = std::make_shared<FailingOpenAiResponsesClient>(
+            absl::PermissionDeniedError("project mismatch")),
+    });
+
+    const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
+        .steps =
+            {
+                OpenAiLlmStep{
+                    .step_name = "step_a",
+                    .system_prompt = "",
+                    .model = "model_a",
+                },
+            },
+    },
+                                             ExecutionRuntimeInput{
+                                                 .user_text = "shared input",
+                                             });
+
+    ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
+    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    EXPECT_EQ(failure.code, "permission_denied");
+    EXPECT_EQ(failure.message, "upstream request was not permitted");
+    EXPECT_FALSE(failure.retryable);
+}
+
+TEST(GatewayPlanExecutorTest, MapsResourceExhaustedProviderFailuresToResponseTooLarge) {
+    GatewayPlanExecutor executor(GatewayStepRegistryConfig{
+        .openai_client = std::make_shared<FailingOpenAiResponsesClient>(
+            absl::ResourceExhaustedError("too much output")),
+    });
+
+    const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
+        .steps =
+            {
+                OpenAiLlmStep{
+                    .step_name = "step_a",
+                    .system_prompt = "",
+                    .model = "model_a",
+                },
+            },
+    },
+                                             ExecutionRuntimeInput{
+                                                 .user_text = "shared input",
+                                             });
+
+    ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
+    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    EXPECT_EQ(failure.code, "response_too_large");
+    EXPECT_EQ(failure.message, "execution step produced too much output");
     EXPECT_FALSE(failure.retryable);
 }
 

@@ -23,6 +23,24 @@ PublicFailureMapping MapPublicFailure(const absl::Status& status) {
             .message = "execution step rejected the request",
             .retryable = false,
         };
+    case absl::StatusCode::kUnauthenticated:
+        return PublicFailureMapping{
+            .code = "authentication_error",
+            .message = "upstream authentication failed",
+            .retryable = false,
+        };
+    case absl::StatusCode::kPermissionDenied:
+        return PublicFailureMapping{
+            .code = "permission_denied",
+            .message = "upstream request was not permitted",
+            .retryable = false,
+        };
+    case absl::StatusCode::kResourceExhausted:
+        return PublicFailureMapping{
+            .code = "response_too_large",
+            .message = "execution step produced too much output",
+            .retryable = false,
+        };
     case absl::StatusCode::kDeadlineExceeded:
         return PublicFailureMapping{
             .code = "upstream_timeout",
@@ -80,8 +98,7 @@ ExecutionOutcome GatewayPlanExecutor::Execute(const ExecutionPlan& plan,
     ExecutionResult result;
     result.step_results.reserve(plan.steps.size());
     for (std::size_t step_index = 0; step_index < plan.steps.size(); ++step_index) {
-        VLOG(1) << "AI gateway executor running step_index=" << step_index
-                << " step_name='"
+        VLOG(1) << "AI gateway executor running step_index=" << step_index << " step_name='"
                 << SanitizeForLog(step_registry_.StepName(plan.steps[step_index])) << "'";
         const absl::StatusOr<ExecutionStepResult> step_result =
             step_registry_.ExecuteStep(step_index, plan.steps[step_index], runtime_input);

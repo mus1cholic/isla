@@ -11,6 +11,8 @@ namespace {
 
 using isla::server::ai_gateway::SanitizeForLog;
 
+inline constexpr std::size_t kMaxPromptBytes = 64U * 1024U;
+
 struct EmbeddedPromptAsset {
     std::string_view runfile_path;
     std::string_view contents;
@@ -43,6 +45,27 @@ const EmbeddedPromptAsset* FindEmbeddedPrompt(std::string_view runfile_path) {
     return nullptr;
 }
 
+absl::Status ValidatePromptContents(std::string_view prompt, std::string_view source_name) {
+    if (prompt.empty()) {
+        return absl::InvalidArgumentError("prompt must not be empty");
+    }
+    if (prompt.size() > kMaxPromptBytes) {
+        return absl::InvalidArgumentError("prompt exceeds maximum length");
+    }
+    for (const unsigned char ch : prompt) {
+        if (ch == '\0') {
+            return absl::InvalidArgumentError("prompt must not contain NUL bytes");
+        }
+        const bool is_allowed_whitespace = (ch == '\n' || ch == '\r' || ch == '\t');
+        if (ch < 0x20 && !is_allowed_whitespace) {
+            return absl::InvalidArgumentError("prompt contains unsupported control characters");
+        }
+    }
+    VLOG(2) << "PromptLoader validated prompt source='" << SanitizeForLog(source_name)
+            << "' bytes=" << prompt.size();
+    return absl::OkStatus();
+}
+
 } // namespace
 
 absl::StatusOr<std::string> LoadPrompt(PromptAsset prompt_asset) {
@@ -60,6 +83,14 @@ absl::StatusOr<std::string> LoadPrompt(PromptAsset prompt_asset) {
     VLOG(1) << "PromptLoader loaded embedded prompt runfile_path='"
             << SanitizeForLog(*runfile_path)
             << "' bytes=" << prompt->contents.size();
+    const absl::Status validation_status =
+        ValidatePromptContents(prompt->contents, *runfile_path);
+    if (!validation_status.ok()) {
+        VLOG(1) << "PromptLoader rejected embedded prompt runfile_path='"
+                << SanitizeForLog(*runfile_path) << "' detail='"
+                << SanitizeForLog(validation_status.message()) << "'";
+        return validation_status;
+    }
     return std::string(prompt->contents);
 }
 
@@ -69,6 +100,13 @@ absl::StatusOr<std::string> LoadSystemPrompt() {
 
 absl::StatusOr<std::string> ResolveSystemPrompt(std::string_view configured_prompt) {
     if (!configured_prompt.empty()) {
+        const absl::Status validation_status =
+            ValidatePromptContents(configured_prompt, "configured system prompt");
+        if (!validation_status.ok()) {
+            VLOG(1) << "PromptLoader rejected configured system prompt detail='"
+                    << SanitizeForLog(validation_status.message()) << "'";
+            return validation_status;
+        }
         return std::string(configured_prompt);
     }
 

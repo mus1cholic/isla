@@ -1,12 +1,11 @@
 #pragma once
 
 #include <chrono>
-#include <cstddef>
 #include <condition_variable>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <thread>
 
@@ -16,6 +15,7 @@
 #include "isla/server/ai_gateway_planner.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
+#include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
 
@@ -25,6 +25,8 @@ struct GatewayStubResponderConfig {
     std::string response_prefix = "stub echo: ";
     std::string memory_user_id = "gateway_user";
     std::function<std::string(std::string_view, std::string_view)> reply_builder;
+    OpenAiResponsesClientConfig openai_config;
+    std::shared_ptr<const OpenAiResponsesClient> openai_client;
     std::function<void(const ExecutionPlan&)> on_execution_plan;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>
         on_user_query_memory_ready;

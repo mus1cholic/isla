@@ -635,15 +635,26 @@ TEST_F(GatewayServerShortShutdownGraceTest, StopReturnsPromptlyWhenPendingWriteD
         server_.session_registry().FindSession(session_id);
     ASSERT_NE(live_session, nullptr);
 
+    std::promise<absl::Status> text_emit_promise;
+    std::future<absl::Status> text_emit_future = text_emit_promise.get_future();
+    live_session->AsyncEmitTextOutput(std::string("turn_1"), std::string("seed"),
+                                      [&text_emit_promise](absl::Status status) mutable {
+                                          text_emit_promise.set_value(std::move(status));
+                                      });
+    ASSERT_EQ(text_emit_future.wait_for(2s), std::future_status::ready);
+    ASSERT_TRUE(text_emit_future.get().ok());
+
     // This uses a large pending socket write to exercise the shutdown grace-period fallback
     // because the current integration harness does not provide a fully synthetic stalled-write
-    // path.
+    // path. Use audio.output here so the test still stresses the websocket send queue without
+    // violating the bounded text.output contract.
     std::promise<absl::Status> emit_promise;
     std::future<absl::Status> emit_future = emit_promise.get_future();
-    live_session->AsyncEmitTextOutput(std::string("turn_1"), std::string(8U * 1024U * 1024U, 'x'),
-                                      [&emit_promise](absl::Status status) mutable {
-                                          emit_promise.set_value(std::move(status));
-                                      });
+    live_session->AsyncEmitAudioOutput(
+        std::string("turn_1"), std::string("audio/pcm"),
+        std::string(8U * 1024U * 1024U, 'x'), [&emit_promise](absl::Status status) mutable {
+            emit_promise.set_value(std::move(status));
+        });
     ASSERT_EQ(emit_future.wait_for(2s), std::future_status::ready);
     ASSERT_TRUE(emit_future.get().ok());
 

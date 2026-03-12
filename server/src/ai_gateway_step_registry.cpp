@@ -3,11 +3,16 @@
 #include "absl/log/log.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/openai_llms.hpp"
+#include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
 
 GatewayStepRegistry::GatewayStepRegistry(GatewayStepRegistryConfig config)
-    : config_(std::move(config)) {}
+    : config_(std::move(config)) {
+    if (config_.openai_client == nullptr && config_.openai_config.enabled) {
+        config_.openai_client = CreateOpenAiResponsesClient(config_.openai_config);
+    }
+}
 
 std::string GatewayStepRegistry::StepName(const OpenAiLlmStep& step) const {
     return step.step_name;
@@ -23,9 +28,9 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
     VLOG(1) << "AI gateway step registry dispatching openai llm step_index=" << step_index
             << " step_name='" << SanitizeForLog(step.step_name) << "' model='"
             << SanitizeForLog(step.model) << "'";
-    OpenAiLLMs openai_llms(step.step_name, step.system_prompt, step.model);
-    return openai_llms.GenerateContent(step_index, runtime_input.user_text, config_.response_prefix,
-                                       config_.response_builder);
+    OpenAiLLMs openai_llms(step.step_name, step.system_prompt, step.model, config_.openai_client,
+                           config_.response_prefix, config_.response_builder);
+    return openai_llms.GenerateContent(step_index, runtime_input.user_text);
 }
 
 absl::StatusOr<ExecutionStepResult>

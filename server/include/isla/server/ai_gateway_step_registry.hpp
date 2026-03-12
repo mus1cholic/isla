@@ -1,16 +1,20 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <string>
 
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_planner.hpp"
+#include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
 
 struct GatewayStepRegistryConfig {
     std::string response_prefix = "stub echo: ";
     OpenAiResponseBuilder response_builder;
+    OpenAiResponsesClientConfig openai_config;
+    std::shared_ptr<const OpenAiResponsesClient> openai_client;
 };
 
 class GatewayStepRegistry final {

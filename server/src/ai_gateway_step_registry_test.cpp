@@ -1,8 +1,12 @@
 #include "isla/server/ai_gateway_step_registry.hpp"
 
+#include <memory>
 #include <stdexcept>
+#include <type_traits>
 
 #include <gtest/gtest.h>
+
+#include "openai_responses_test_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -106,6 +110,33 @@ TEST(GatewayStepRegistryTest, ConvertsBuilderExceptionToInternalError) {
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
     EXPECT_EQ(result.status().message(), "openai llms response building failed");
+}
+
+TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "provider response");
+    GatewayStepRegistry registry(GatewayStepRegistryConfig{
+        .response_prefix = "stub echo: ",
+        .response_builder = {},
+        .openai_config = OpenAiResponsesClientConfig{},
+        .openai_client = client,
+    });
+
+    const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
+        0,
+        ExecutionStep(OpenAiLlmStep{
+            .step_name = "main",
+            .system_prompt = "system",
+            .model = "gpt-5.2",
+        }),
+        ExecutionRuntimeInput{
+            .user_text = "hello",
+        });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(client->last_request.model, "gpt-5.2");
+    EXPECT_EQ(client->last_request.system_prompt, "system");
+    EXPECT_EQ(client->last_request.user_text, "hello");
+    EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
 }
 
 } // namespace

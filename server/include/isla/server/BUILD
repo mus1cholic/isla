@@ -8,6 +8,7 @@ cc_library(
         "ai_gateway_planner.hpp",
         "ai_gateway_step_registry.hpp",
         "openai_llms.hpp",
+        "openai_responses_client.hpp",
         "ai_gateway_server.hpp",
         "ai_gateway_session_handler.hpp",
         "ai_gateway_stub_responder.hpp",

@@ -37,6 +37,8 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
     : config_(std::move(config)), executor_(GatewayStepRegistryConfig{
                                       .response_prefix = config_.response_prefix,
                                       .response_builder = config_.reply_builder,
+                                      .openai_config = config_.openai_config,
+                                      .openai_client = config_.openai_client,
                                   }) {
     worker_ = std::thread([this] {
         try {
@@ -483,7 +485,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
-    const absl::StatusOr<ExecutionPlan> execution_plan = CreateFakeOpenAiPlan();
+    const absl::StatusOr<ExecutionPlan> execution_plan = CreateOpenAiPlan();
     if (!execution_plan.ok()) {
         LOG(ERROR) << "AI gateway stub planner rejected accepted turn session="
                    << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
@@ -516,7 +518,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         LOG(ERROR) << "AI gateway stub executor failed session=" << SanitizeForLog(turn.session_id)
                    << " turn_id=" << SanitizeForLog(turn.turn_id)
                    << " step_name=" << SanitizeForLog(failure->step_name)
-                   << " code=" << SanitizeForLog(failure->code) << " detail='"
+                   << " code=" << SanitizeForLog(failure->code)
+                   << " retryable=" << (failure->retryable ? "true" : "false") << " detail='"
                    << SanitizeForLog(failure->message) << "'";
         BestEffortTerminateAcceptedTurn(turn, failure->code, failure->message, "executor failure");
         return;
@@ -544,7 +547,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         FinishCancelledTurn(turn);
         return;
     }
-    const std::shared_ptr<GatewayLiveSession> reply_session = registry->FindSession(turn.session_id);
+    const std::shared_ptr<GatewayLiveSession> reply_session =
+        registry->FindSession(turn.session_id);
     if (reply_session == nullptr || reply_session->is_closed()) {
         LOG(WARNING) << "AI gateway stub lost live session before text output session="
                      << SanitizeForLog(turn.session_id)

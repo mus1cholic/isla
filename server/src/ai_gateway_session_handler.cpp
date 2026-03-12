@@ -114,6 +114,9 @@ absl::StatusOr<EmitResult> GatewaySessionHandler::EmitTextOutput(std::string_vie
     if (text.empty()) {
         return invalid_argument("text output must be non-empty");
     }
+    if (text.size() > kMaxTextOutputBytes) {
+        return absl::ResourceExhaustedError("text output exceeds maximum length");
+    }
 
     const absl::Status status = session_state_.mark_text_output(turn_id);
     if (!status.ok()) {
