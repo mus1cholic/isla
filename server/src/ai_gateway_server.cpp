@@ -477,25 +477,19 @@ class LiveGatewaySession final : public GatewayLiveSession,
             MaybeFinish();
             return;
         }
-        if (error) {
-            if (error == websocket::error::closed) {
-                transport_closed_ = true;
-                MaybeFinish();
-                return;
-            }
-            if (transport_force_closed_.load() || error == asio::error::operation_aborted) {
-                MaybeFinish();
-                return;
-            }
-
-            VLOG(1) << "AI gateway websocket close handshake failed detail='"
-                    << SanitizeForLog(error.message()) << "'";
-            DoCloseTransport();
+        if (!error || error == websocket::error::closed) {
+            transport_closed_ = true;
+            MaybeFinish();
+            return;
+        }
+        if (transport_force_closed_.load() || error == asio::error::operation_aborted) {
+            MaybeFinish();
             return;
         }
 
-        transport_closed_ = true;
-        MaybeFinish();
+        VLOG(1) << "AI gateway websocket close handshake failed detail='"
+                << SanitizeForLog(error.message()) << "'";
+        DoCloseTransport();
     }
 
     void DoForceCloseTransport() {
