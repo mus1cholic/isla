@@ -2,6 +2,7 @@ $workspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
 $logPath = Join-Path $workspace "clang-tidy.log"
 $reportPath = Join-Path $workspace "clang-tidy-warnings.md"
 $bazelFlags = @(& "$workspace/.github/scripts/get-bazel-remote-flags.ps1")
+. "$PSScriptRoot/ci-helpers.ps1"
 $compileCommandsPath = Join-Path $workspace "compile_commands.json"
 if (-not (Test-Path $compileCommandsPath)) {
   throw "Missing compile_commands.json at $compileCommandsPath. Ensure //tools:refresh_compile_commands_editor ran successfully."
@@ -29,12 +30,14 @@ if (-not [string]::IsNullOrWhiteSpace($prBaseSha) -and -not [string]::IsNullOrWh
   $head = $prHeadSha
   $diffRange = "$base...$head"
   Write-Host "Computing clang-tidy candidates for PR diff (caller-provided SHAs): $diffRange"
-} elseif ($env:GITHUB_EVENT_NAME -eq "pull_request") {
+}
+elseif ($env:GITHUB_EVENT_NAME -eq "pull_request") {
   $base = $env:EVENT_PR_BASE_SHA
   $head = $env:EVENT_PR_HEAD_SHA
   $diffRange = "$base...$head"
   Write-Host "Computing clang-tidy candidates for PR diff (event payload): $diffRange"
-} else {
+}
+else {
   $base = $env:EVENT_BEFORE_SHA
   if (-not $base -or $base -match '^0+$') {
     $base = "HEAD~1"
@@ -42,35 +45,6 @@ if (-not [string]::IsNullOrWhiteSpace($prBaseSha) -and -not [string]::IsNullOrWh
   $head = $env:EVENT_SHA
   $diffRange = "$base..$head"
   Write-Host "Computing clang-tidy candidates for push diff: $diffRange"
-}
-
-function Convert-ToNormalizedRepoPath([string]$path) {
-  return ($path -replace '\\', '/').Trim()
-}
-
-function Test-IsExcludedCiPath([string]$path) {
-  $normalized = Convert-ToNormalizedRepoPath $path
-  return (
-    $normalized -like "third_party/*" -or
-    $normalized -like "external/*" -or
-    $normalized -like "tools/*" -or
-    $normalized -like "bazel-*" -or
-    $normalized -like ".git/*" -or
-    $normalized -like ".github/*"
-  )
-}
-
-function Test-IsFirstPartyCppPath([string]$path) {
-  $normalized = Convert-ToNormalizedRepoPath $path
-  if ([string]::IsNullOrWhiteSpace($normalized) -or (Test-IsExcludedCiPath $normalized)) {
-    return $false
-  }
-
-  return (
-    $normalized -like "*.cpp" -or
-    $normalized -like "*.hpp" -or
-    $normalized -like "*.h"
-  )
 }
 
 $changedLinesByFile = @{}
@@ -81,13 +55,15 @@ foreach ($diffLine in $diffLines) {
     $path = $diffLine.Substring(4).Trim()
     if ($path -eq "/dev/null") {
       $currentFile = $null
-    } else {
+    }
+    else {
       $currentFile = Convert-ToNormalizedRepoPath $path
       if (Test-IsFirstPartyCppPath $currentFile) {
         if (-not $changedLinesByFile.ContainsKey($currentFile)) {
           $changedLinesByFile[$currentFile] = [System.Collections.Generic.HashSet[int]]::new()
         }
-      } else {
+      }
+      else {
         $currentFile = $null
       }
     }
@@ -109,8 +85,8 @@ foreach ($diffLine in $diffLines) {
 
 $allChangedFiles = @(
   & git diff --name-only --diff-filter=ACMR $diffRange |
-    Where-Object { Test-IsFirstPartyCppPath $_ } |
-    Sort-Object -Unique
+  Where-Object { Test-IsFirstPartyCppPath $_ } |
+  Sort-Object -Unique
 )
 Write-Host ("clang-tidy debug: changed files in scope: {0}" -f $allChangedFiles.Count)
 $allChangedFiles | ForEach-Object { Write-Host " - changed: $_" }
@@ -124,14 +100,14 @@ foreach ($changedKey in ($changedLinesByFile.Keys | Sort-Object)) {
 # bgfx_renderer_bgfx.cpp is Windows-only (#error on other platforms); skip on Linux CI.
 $files = @(
   & git diff --name-only --diff-filter=ACMR $diffRange |
-    Where-Object {
-      (Test-IsFirstPartyCppPath $_) -and
-      # TODO: Re-introduce changed .hpp lint coverage via generated
-      # translation-unit wrappers instead of direct header-mode runs.
-      ($_ -like "*.cpp") -and
-      $_ -notlike "*bgfx_renderer_bgfx.cpp"
-    } |
-    Sort-Object -Unique
+  Where-Object {
+    (Test-IsFirstPartyCppPath $_) -and
+    # TODO: Re-introduce changed .hpp lint coverage via generated
+    # translation-unit wrappers instead of direct header-mode runs.
+    ($_ -like "*.cpp") -and
+    $_ -notlike "*bgfx_renderer_bgfx.cpp"
+  } |
+  Sort-Object -Unique
 )
 
 Write-Host ("clang-tidy candidate files: {0}" -f $files.Count)
@@ -169,8 +145,8 @@ $externalRoots = @(
 function Find-ExternalRepo([string]$pattern) {
   foreach ($root in $externalRoots) {
     $match = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -like $pattern } |
-      Select-Object -First 1
+    Where-Object { $_.Name -like $pattern } |
+    Select-Object -First 1
     if ($match) { return $match }
   }
   return $null
@@ -259,7 +235,7 @@ $gtestRepoPath = if ($gtestRepo) { $gtestRepo.FullName } else { "" }
 $bgfxRepoPath = if ($bgfxRepo) { $bgfxRepo.FullName } else { "" }
 $bxRepoPath = if ($bxRepo) { $bxRepo.FullName } else { "" }
 $rulesCcRepoPath = if ($rulesCcRepo) { $rulesCcRepo.FullName } else { "" }
-$workspaceHeaderFilter = "^(?:" + [regex]::Escape(($workspace -replace '\\', '/')) + "/)?(?!external/|third_party/|tools/|bazel-|\\.git/|\\.github/).+"
+$workspaceHeaderFilter = New-FirstPartyHeaderFilter $workspace
 
 $hadErrors = $false
 Write-Host "clang-tidy debug: begin clang-tidy execution"
@@ -310,7 +286,8 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
       $clangArgs += "--extra-arg=-isystem$gtestPath/googletest/include"
       $clangArgs += "--extra-arg=-isystem$gtestPath/googlemock/include"
     }
-  } else {
+  }
+  else {
     $clangArgs += @(
       "--"
       "-std=c++20"
@@ -346,11 +323,12 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
   $output = & clang-tidy @clangArgs 2>&1
   $outputStrings = if ($null -ne $output) {
     $output | ForEach-Object { $_.ToString() }
-  } else { @() }
+  }
+  else { @() }
 
   return [pscustomobject]@{
-    File = $file
-    Output = $outputStrings
+    File     = $file
+    Output   = $outputStrings
     ExitCode = $LASTEXITCODE
   }
 }
@@ -404,152 +382,163 @@ try {
     if ($cleanLine -match $diagnosticPattern) {
       try {
         $parsedDiagnosticsCount += 1
-      $rawFile = $Matches.file
-      $rawFileNorm = ($rawFile -replace '\\', '/').Trim()
-      $rawFilePath = $rawFileNorm.Replace('/', '\')
-      $file = $rawFileNorm
-      $fullFile = $null
+        $rawFile = $Matches.file
+        $rawFileNorm = ($rawFile -replace '\\', '/').Trim()
+        $rawFilePath = $rawFileNorm.Replace('/', '\')
+        $file = $rawFileNorm
+        $fullFile = $null
 
-    if ([System.IO.Path]::IsPathRooted($rawFilePath)) {
-      $fullFile = [System.IO.Path]::GetFullPath($rawFilePath)
-      $fullFileNorm = $fullFile -replace '\\', '/'
+        if ([System.IO.Path]::IsPathRooted($rawFilePath)) {
+          $fullFile = [System.IO.Path]::GetFullPath($rawFilePath)
+          $fullFileNorm = $fullFile -replace '\\', '/'
 
-      # Prefer changed-file keys (same style as format report: repo-relative paths).
-      $matchedChanged = $null
-      foreach ($candidate in $changedFiles) {
-        if ($fullFileNorm.EndsWith("/$candidate", [System.StringComparison]::OrdinalIgnoreCase) -or
-            $fullFileNorm.Equals($candidate, [System.StringComparison]::OrdinalIgnoreCase)) {
-          $matchedChanged = $candidate
-          break
-        }
-
-        # Bazel virtual include paths often look like:
-        # .../_virtual_includes/<target>/isla/engine/.../file.hpp
-        # Map those back to changed workspace headers such as:
-        # engine/include/isla/engine/.../file.hpp
-        $candidateIncludeMarker = "/include/"
-        $candidateNorm = $candidate -replace '\\', '/'
-        $includeIndex = $candidateNorm.IndexOf($candidateIncludeMarker, [System.StringComparison]::OrdinalIgnoreCase)
-        if ($includeIndex -ge 0) {
-          $includeSuffixStart = $includeIndex + $candidateIncludeMarker.Length
-          if ($includeSuffixStart -lt $candidateNorm.Length) {
-            $includeSuffix = $candidateNorm.Substring($includeSuffixStart)
-            if ($fullFileNorm.EndsWith("/$includeSuffix", [System.StringComparison]::OrdinalIgnoreCase)) {
+          # Prefer changed-file keys (same style as format report: repo-relative paths).
+          $matchedChanged = $null
+          foreach ($candidate in $changedFiles) {
+            if ($fullFileNorm.EndsWith("/$candidate", [System.StringComparison]::OrdinalIgnoreCase) -or
+              $fullFileNorm.Equals($candidate, [System.StringComparison]::OrdinalIgnoreCase)) {
               $matchedChanged = $candidate
               break
             }
+
+            # Bazel virtual include paths often look like:
+            # .../_virtual_includes/<target>/isla/engine/.../file.hpp
+            # Map those back to changed workspace headers such as:
+            # engine/include/isla/engine/.../file.hpp
+            $candidateIncludeMarker = "/include/"
+            $candidateNorm = $candidate -replace '\\', '/'
+            $includeIndex = $candidateNorm.IndexOf($candidateIncludeMarker, [System.StringComparison]::OrdinalIgnoreCase)
+            if ($includeIndex -ge 0) {
+              $includeSuffixStart = $includeIndex + $candidateIncludeMarker.Length
+              if ($includeSuffixStart -lt $candidateNorm.Length) {
+                $includeSuffix = $candidateNorm.Substring($includeSuffixStart)
+                if ($fullFileNorm.EndsWith("/$includeSuffix", [System.StringComparison]::OrdinalIgnoreCase)) {
+                  $matchedChanged = $candidate
+                  break
+                }
+              }
+            }
+          }
+
+          if ($matchedChanged) {
+            $file = $matchedChanged
+          }
+          else {
+            $workspaceNormUnix = $workspaceNorm -replace '\\', '/'
+            if (
+              $fullFileNorm.Equals($workspaceNormUnix, [System.StringComparison]::OrdinalIgnoreCase) -or
+              $fullFileNorm.StartsWith($workspaceNormUnix + "/", [System.StringComparison]::OrdinalIgnoreCase)
+            ) {
+              $file = $fullFileNorm.Substring($workspaceNormUnix.Length).TrimStart([char[]]@('\', '/'))
+            }
+            else {
+              $file = $fullFileNorm
+            }
           }
         }
-      }
 
-      if ($matchedChanged) {
-        $file = $matchedChanged
-      } else {
-        $workspaceNormUnix = $workspaceNorm -replace '\\', '/'
-        if (
-          $fullFileNorm.Equals($workspaceNormUnix, [System.StringComparison]::OrdinalIgnoreCase) -or
-          $fullFileNorm.StartsWith($workspaceNormUnix + "/", [System.StringComparison]::OrdinalIgnoreCase)
-        ) {
-          $file = $fullFileNorm.Substring($workspaceNormUnix.Length).TrimStart([char[]]@('\', '/'))
-        } else {
-          $file = $fullFileNorm
+        $line = $Matches.line
+        $col = if ($Matches.col) { $Matches.col } else { "1" }
+        $severity = if ($Matches.severity) { $Matches.severity.Trim().ToLowerInvariant() } else { "warning" }
+        $check = if ($Matches.check) { $Matches.check.Trim() } else { "" }
+        $checkLabel = if ($check) { $check } else { "clang-diagnostic" }
+        $rawReason = if ($Matches.msg) { $Matches.msg.Trim() } else { "" }
+
+        $file = ($file -replace '\\', '/')
+        $pathMatch = [regex]::Match($file, '(?<rel>(?:client|engine|server|shared)/.+)$')
+        if ($pathMatch.Success) {
+          $file = $pathMatch.Groups['rel'].Value
+        }
+        $null = $diagnosticFilesSeen.Add($file)
+        if ([string]::IsNullOrWhiteSpace($rawReason)) {
+          $rawReason = "No diagnostic message provided by clang output."
+        }
+        $isTidyWarning = (
+          -not [string]::IsNullOrWhiteSpace($check) -and
+          -not $check.StartsWith("-W") -and
+          -not $check.StartsWith("clang-diagnostic-")
+        )
+        $isTestFile = $file -match '(_test|_tests|\.spec)\.cpp$'
+        if ($isTestFile -and ($check -eq 'cppcoreguidelines-avoid-non-const-global-variables' -or $check -eq 'readability-magic-numbers')) {
+          continue
+        }
+        $msg = "$rawReason [$checkLabel]"
+        $safeMsg = $msg -replace '%', '%25' -replace '\r', '%0D' -replace '\n', '%0A'
+        $reportItem = @(
+          "<details>",
+          ('<summary><code>{0}:{1}:{2}</code> [{3}]</summary>' -f $file, $line, $col, $checkLabel),
+          "",
+          ('**reason:** `{0}`' -f $rawReason),
+          "",
+          "</details>",
+          ""
+        )
+
+        $lineNumber = [int]$line
+        $isChangedLine = $changedLinesByFile.ContainsKey($file) -and $changedLinesByFile[$file].Contains($lineNumber)
+        # Intentionally report warnings only on changed lines to keep PR feedback
+        # tightly scoped; include all errors regardless of line ownership.
+        $includeDiagnostic = $isChangedLine -or ($severity -eq "error")
+        if ($includeDiagnostic) {
+          $includedDiagnosticsCount += 1
+          if ($severity -eq "error") {
+            if ($isTidyWarning) {
+              Write-Host ("clang-tidy diag error: {0}:{1}:{2} {3}" -f $file, $line, $col, $checkLabel)
+              $tidyErrors += $reportItem
+              $tidyErrorCount += 1
+            }
+            else {
+              Write-Host ("clang compiler error: {0}:{1}:{2} {3}" -f $file, $line, $col, $checkLabel)
+              $compilerErrors += $reportItem
+              $compilerErrorCount += 1
+            }
+          }
+          elseif ($isChangedLine) {
+            if ($isTidyWarning) {
+              Write-Host ("clang-tidy diag warning: {0}:{1}:{2} {3}" -f $file, $line, $col, $checkLabel)
+              $tidyWarnings += $reportItem
+              $tidyWarningCount += 1
+            }
+            else {
+              Write-Host ("clang compiler warning: {0}:{1}:{2} {3}" -f $file, $line, $col, $checkLabel)
+              $compilerWarnings += $reportItem
+              $compilerWarningCount += 1
+            }
+          }
+        }
+        else {
+          $excludedDiagnosticsCount += 1
+          if (-not $isChangedLine -and $severity -ne "error") {
+            $excludedMissingChangedLineCount += 1
+          }
+          $null = $excludedFilesSeen.Add($file)
         }
       }
-    }
-
-    $line = $Matches.line
-    $col = if ($Matches.col) { $Matches.col } else { "1" }
-    $severity = if ($Matches.severity) { $Matches.severity.Trim().ToLowerInvariant() } else { "warning" }
-    $check = if ($Matches.check) { $Matches.check.Trim() } else { "" }
-    $checkLabel = if ($check) { $check } else { "clang-diagnostic" }
-    $rawReason = if ($Matches.msg) { $Matches.msg.Trim() } else { "" }
-
-    $file = ($file -replace '\\', '/')
-    $pathMatch = [regex]::Match($file, '(?<rel>(?:client|engine|server|shared)/.+)$')
-    if ($pathMatch.Success) {
-      $file = $pathMatch.Groups['rel'].Value
-    }
-    $null = $diagnosticFilesSeen.Add($file)
-    if ([string]::IsNullOrWhiteSpace($rawReason)) {
-      $rawReason = "No diagnostic message provided by clang output."
-    }
-    $isTidyWarning = (
-      -not [string]::IsNullOrWhiteSpace($check) -and
-      -not $check.StartsWith("-W") -and
-      -not $check.StartsWith("clang-diagnostic-")
-    )
-    $isTestFile = $file -match '(_test|_tests|\.spec)\.cpp$'
-    if ($isTestFile -and ($check -eq 'cppcoreguidelines-avoid-non-const-global-variables' -or $check -eq 'readability-magic-numbers')) {
-      continue
-    }
-    $msg = "$rawReason [$checkLabel]"
-    $safeMsg = $msg -replace '%', '%25' -replace '\r', '%0D' -replace '\n', '%0A'
-    $reportItem = @(
-      "<details>",
-      ('<summary><code>{0}:{1}:{2}</code> [{3}]</summary>' -f $file, $line, $col, $checkLabel),
-      "",
-      ('**reason:** `{0}`' -f $rawReason),
-      "",
-      "</details>",
-      ""
-    )
-
-    $lineNumber = [int]$line
-    $isChangedLine = $changedLinesByFile.ContainsKey($file) -and $changedLinesByFile[$file].Contains($lineNumber)
-    # Intentionally report warnings only on changed lines to keep PR feedback
-    # tightly scoped; include all errors regardless of line ownership.
-    $includeDiagnostic = $isChangedLine -or ($severity -eq "error")
-      if ($includeDiagnostic) {
-        $includedDiagnosticsCount += 1
-        if ($severity -eq "error") {
-          if ($isTidyWarning) {
-          Write-Host ("clang-tidy diag error: {0}:{1}:{2} {3}" -f $file, $line, $col, $checkLabel)
-          $tidyErrors += $reportItem
-          $tidyErrorCount += 1
-        } else {
-          Write-Host ("clang compiler error: {0}:{1}:{2} {3}" -f $file, $line, $col, $checkLabel)
-          $compilerErrors += $reportItem
-          $compilerErrorCount += 1
-        }
-      } elseif ($isChangedLine) {
-        if ($isTidyWarning) {
-          Write-Host ("clang-tidy diag warning: {0}:{1}:{2} {3}" -f $file, $line, $col, $checkLabel)
-          $tidyWarnings += $reportItem
-          $tidyWarningCount += 1
-        } else {
-          Write-Host ("clang compiler warning: {0}:{1}:{2} {3}" -f $file, $line, $col, $checkLabel)
-          $compilerWarnings += $reportItem
-          $compilerWarningCount += 1
-        }
-      }
-    } else {
-      $excludedDiagnosticsCount += 1
-      if (-not $isChangedLine -and $severity -ne "error") {
-        $excludedMissingChangedLineCount += 1
-      }
-      $null = $excludedFilesSeen.Add($file)
-    }
-      } catch {
+      catch {
         $lineParseError = $_
         $lineParseMessage = if ($lineParseError -and $lineParseError.Exception) {
           $lineParseError.Exception.Message
-        } else {
+        }
+        else {
           "unknown per-line parse failure"
         }
         Write-Host ("clang-tidy debug: per-line parse failure: {0}" -f $lineParseMessage)
       }
-    } elseif ($cleanLine -match ':\s*(warning|error):') {
+    }
+    elseif ($cleanLine -match ':\s*(warning|error):') {
       $unparsedWarningErrorLineCount += 1
       if ($unparsedWarningErrorSamples.Count -lt 10) {
         $unparsedWarningErrorSamples.Add($cleanLine)
       }
     }
   }
-} catch {
+}
+catch {
   $parseError = $_
   $parseErrorMessage = if ($parseError -and $parseError.Exception) {
     $parseError.Exception.Message
-  } else {
+  }
+  else {
     "unknown parse/report phase failure"
   }
   @(
@@ -592,7 +581,8 @@ $summaryLines = @(
 if ($tidyDiagnosticCount -gt 0) {
   $summaryLines += $tidyWarnings
   $summaryLines += $tidyErrors
-} else {
+}
+else {
   $summaryLines += "No clang-tidy warnings or errors."
 }
 $summaryLines += @(
@@ -606,7 +596,8 @@ $summaryLines += @(
 if ($compilerDiagnosticCount -gt 0) {
   $summaryLines += $compilerWarnings
   $summaryLines += $compilerErrors
-} else {
+}
+else {
   $summaryLines += "No compiler warnings or errors."
 }
 $summaryLines += @(
@@ -621,7 +612,8 @@ $prReportLines = @(
 if ($tidyDiagnosticCount -gt 0) {
   $prReportLines += $tidyWarnings
   $prReportLines += $tidyErrors
-} else {
+}
+else {
   $prReportLines += "No clang-tidy warnings or errors."
 }
 $prReportLines += @(
@@ -632,7 +624,8 @@ $prReportLines += @(
 if ($compilerDiagnosticCount -gt 0) {
   $prReportLines += $compilerWarnings
   $prReportLines += $compilerErrors
-} else {
+}
+else {
   $prReportLines += "No compiler warnings or errors."
 }
 
@@ -645,7 +638,8 @@ Write-Host ("clang-tidy debug: wrote report file to {0}" -f $reportPath)
 if (Test-Path $reportPath) {
   Write-Host "clang-tidy debug: report preview (first 20 lines)"
   Get-Content -Path $reportPath | Select-Object -First 20 | ForEach-Object { Write-Host $_ }
-} else {
+}
+else {
   Write-Host "::error::clang-tidy debug: expected report file missing at $reportPath"
 }
 Write-Host ("clang-tidy debug: final counts warnings={0} errors={1} total={2}" -f $totalWarnings, $totalErrors, $totalDiagnostics)

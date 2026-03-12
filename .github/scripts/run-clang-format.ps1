@@ -1,6 +1,7 @@
 Write-Host "Checking clang-format policy..."
 $workspace = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
 $reportPath = Join-Path $workspace "format-check-warnings.md"
+. "$PSScriptRoot/ci-helpers.ps1"
 if (Test-Path $reportPath) {
   Remove-Item $reportPath -Force
 }
@@ -24,42 +25,14 @@ if ($newlineCount -gt 0 -and $newlineReportPath -and (Test-Path $newlineReportPa
       if ($line -match '^- `(?<file>.+)` \((?<reason>.+)\)$') {
         $summary = "<code>$($Matches.file)</code> (newline policy)"
         $details = "$($Matches.reason)"
-      } else {
+      }
+      else {
         $summary = "newline policy violation"
         $details = $line
       }
       Add-CollapsibleViolation $summary $details
     }
   }
-}
-
-function Convert-ToNormalizedRepoPath([string]$path) {
-  return ($path -replace '\\', '/').Trim()
-}
-
-function Test-IsExcludedCiPath([string]$path) {
-  $normalized = Convert-ToNormalizedRepoPath $path
-  return (
-    $normalized -like "third_party/*" -or
-    $normalized -like "external/*" -or
-    $normalized -like "tools/*" -or
-    $normalized -like "bazel-*" -or
-    $normalized -like ".git/*" -or
-    $normalized -like ".github/*"
-  )
-}
-
-function Test-IsFirstPartyCppPath([string]$path) {
-  $normalized = Convert-ToNormalizedRepoPath $path
-  if ([string]::IsNullOrWhiteSpace($normalized) -or (Test-IsExcludedCiPath $normalized)) {
-    return $false
-  }
-
-  return (
-    $normalized -like "*.cpp" -or
-    $normalized -like "*.hpp" -or
-    $normalized -like "*.h"
-  )
 }
 
 $changedLinesByFile = @{}
@@ -71,13 +44,15 @@ if ($env:DIFF_BASE -and $env:DIFF_HEAD) {
       $path = $diffLine.Substring(4).Trim()
       if ($path -eq "/dev/null") {
         $currentFile = $null
-      } else {
+      }
+      else {
         $currentFile = Convert-ToNormalizedRepoPath $path
         if (Test-IsFirstPartyCppPath $currentFile) {
           if (-not $changedLinesByFile.ContainsKey($currentFile)) {
             $changedLinesByFile[$currentFile] = [System.Collections.Generic.HashSet[int]]::new()
           }
-        } else {
+        }
+        else {
           $currentFile = $null
         }
       }
@@ -99,15 +74,16 @@ if ($env:DIFF_BASE -and $env:DIFF_HEAD) {
 }
 
 $files = @(Get-Content -Path $env:CHANGED_FILES_FILE | Where-Object {
-  Test-IsFirstPartyCppPath $_
-})
+    Test-IsFirstPartyCppPath $_
+  })
 Write-Host ("clang-format candidate files: {0}" -f $files.Count)
 if (-not $files) {
   Write-Host "No C++ source files found."
   if ($combinedViolations.Count -gt 0) {
     "Formatting changes required in the following files:" | Out-File -FilePath $reportPath -Encoding utf8
     $combinedViolations | Out-File -FilePath $reportPath -Append -Encoding utf8
-  } else {
+  }
+  else {
     "No format violations." | Out-File -FilePath $reportPath -Encoding utf8
   }
   "violations_count=$totalViolationCount" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -141,7 +117,8 @@ $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount) -Parallel
           if ($cbByFile[$file].Contains($line)) {
             $lineNumbers += $line
           }
-        } else {
+        }
+        else {
           $lineNumbers += $line
         }
       }
@@ -150,7 +127,8 @@ $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount) -Parallel
     $uniqueLines = @($lineNumbers | Sort-Object -Unique)
     if ($uniqueLines.Count -eq 0) {
       $lineSummary = "unknown"
-    } else {
+    }
+    else {
       $lineSummary = ($uniqueLines | ForEach-Object { $_.ToString() }) -join ", "
     }
 
@@ -161,15 +139,16 @@ $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount) -Parallel
       $rawDiff = & git --no-pager diff --no-index --unified=2 -- $file $tmpFormatted 2>&1
       if ($LASTEXITCODE -eq 1) {
         $diffBody = @($rawDiff | Where-Object {
-          $_ -notmatch '^(diff --git |index |--- |\+\+\+ )'
-        })
+            $_ -notmatch '^(diff --git |index |--- |\+\+\+ )'
+          })
         if ($diffBody.Count -gt 60) {
           $diffBody = $diffBody[0..59] + @("... (truncated)")
         }
         $joinedDiff = $diffBody -join "`n"
         $diffSnippet = '```diff' + "`n" + $joinedDiff + "`n" + '```'
       }
-    } finally {
+    }
+    finally {
       if (Test-Path $tmpFormatted) {
         Remove-Item $tmpFormatted -Force
       }
@@ -216,7 +195,8 @@ if ($formatViolations.Count -gt 0) {
 if ($combinedViolations.Count -gt 0) {
   "Formatting changes required in the following files:" | Out-File -FilePath $reportPath -Encoding utf8
   $combinedViolations | Out-File -FilePath $reportPath -Append -Encoding utf8
-} else {
+}
+else {
   "No format violations." | Out-File -FilePath $reportPath -Encoding utf8
 }
 "violations_count=$totalViolationCount" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
