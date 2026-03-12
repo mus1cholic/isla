@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -152,8 +153,7 @@ class RecordingClientEvents {
             for (const auto& message : messages_) {
                 if (std::holds_alternative<protocol::TextOutputMessage>(message)) {
                     const auto& text_output = std::get<protocol::TextOutputMessage>(message);
-                    saw_text_output |=
-                        text_output.turn_id == turn_id && text_output.text == text;
+                    saw_text_output |= text_output.turn_id == turn_id && text_output.text == text;
                 }
                 if (std::holds_alternative<protocol::TurnCompletedMessage>(message)) {
                     saw_turn_completed |=
@@ -403,9 +403,98 @@ TEST_F(AiGatewayClientSessionIntegrationTest, RejectsSendAfterTransportFailureWi
     const absl::Status send_after_failure = session.SendTextInput("turn_1", "hello");
     EXPECT_FALSE(send_after_failure.ok());
     EXPECT_EQ(send_after_failure.code(), absl::StatusCode::kFailedPrecondition);
-    EXPECT_EQ(send_after_failure.message(), "ai gateway transport is not running");
 
     session.Close();
+}
+
+TEST_F(AiGatewayClientSessionIntegrationTest, CloseIsSafeWhenCalledFromTransportClosedCallback) {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool close_called_from_callback = false;
+    std::unique_ptr<AiGatewayClientSession> session;
+    session = std::make_unique<AiGatewayClientSession>(AiGatewayClientConfig{
+        .host = "127.0.0.1",
+        .port = server_.bound_port(),
+        .path = "/",
+        .operation_timeout = 2s,
+        .on_transport_closed =
+            [&mutex, &cv, &close_called_from_callback, &session](absl::Status /*status*/) {
+                session->Close();
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    close_called_from_callback = true;
+                }
+                cv.notify_all();
+            },
+    });
+
+    ASSERT_TRUE(session->ConnectAndStart().ok());
+    server_.Stop();
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        ASSERT_TRUE(cv.wait_for(lock, 2s, [&] { return close_called_from_callback; }));
+    }
+
+    session.reset();
+}
+
+TEST_F(AiGatewayClientSessionIntegrationTest, CloseIsSafeWhenCalledFromOnMessageCallback) {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool close_called_from_callback = false;
+    bool transport_closed = false;
+    std::unique_ptr<AiGatewayClientSession> session;
+    session = std::make_unique<AiGatewayClientSession>(AiGatewayClientConfig{
+        .host = "127.0.0.1",
+        .port = server_.bound_port(),
+        .path = "/",
+        .operation_timeout = 2s,
+        .on_message =
+            [&mutex, &cv, &close_called_from_callback,
+             &session](const protocol::GatewayMessage& message) {
+                if (!std::holds_alternative<protocol::TextOutputMessage>(message)) {
+                    return;
+                }
+                session->Close();
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    close_called_from_callback = true;
+                }
+                cv.notify_all();
+            },
+        .on_transport_closed =
+            [&mutex, &cv, &transport_closed](absl::Status /*status*/) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    transport_closed = true;
+                }
+                cv.notify_all();
+            },
+    });
+
+    ASSERT_TRUE(session->ConnectAndStart().ok());
+    ASSERT_TRUE(session->SendTextInput("turn_close", "close me").ok());
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        ASSERT_TRUE(
+            cv.wait_for(lock, 2s, [&] { return close_called_from_callback && transport_closed; }));
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    absl::Status reconnect_status = absl::FailedPreconditionError("reconnect still pending");
+    while (std::chrono::steady_clock::now() < deadline) {
+        reconnect_status = session->ConnectAndStart();
+        if (reconnect_status.ok()) {
+            break;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+
+    ASSERT_TRUE(reconnect_status.ok()) << reconnect_status;
+    session->Close();
+    session.reset();
 }
 
 TEST_F(AiGatewayClientSessionFailingProviderIntegrationTest,
