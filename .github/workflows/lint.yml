@@ -50,7 +50,7 @@ jobs:
         shell: pwsh
         run: |
           $bazelFlags = @(& "$env:GITHUB_WORKSPACE/.github/scripts/get-bazel-remote-flags.ps1")
-          & bazel fetch @bazelFlags //client/src:client_app
+          & bazel fetch @bazelFlags //client/src:client_app //server/src:isla_ai_gateway
 
       - name: Generate compile_commands.json
         shell: pwsh
