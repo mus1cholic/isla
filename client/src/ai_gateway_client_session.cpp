@@ -33,6 +33,8 @@ namespace protocol = isla::shared::ai_gateway;
 namespace websocket = beast::websocket;
 using tcp = asio::ip::tcp;
 
+constexpr std::size_t kMaxInboundWebSocketMessageBytes = 64U * 1024U;
+
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
 }
@@ -151,6 +153,10 @@ class AiGatewayClientSession::Impl {
             if (session_ended_) {
                 return absl::OkStatus();
             }
+            if (session_end_requested_) {
+                return failed_precondition("ai gateway session end already requested");
+            }
+            session_end_requested_ = true;
             active_session_id = session_id_;
         }
         if (!active_session_id.has_value()) {
@@ -208,7 +214,9 @@ class AiGatewayClientSession::Impl {
         thread_started_ = false;
         websocket_open_ = false;
         session_started_ = false;
+        session_end_requested_ = false;
         session_ended_ = false;
+        transport_failed_ = false;
         session_id_.reset();
         closing_.store(false);
         transport_closed_notified_ = false;
@@ -240,6 +248,12 @@ class AiGatewayClientSession::Impl {
             std::lock_guard<std::mutex> lock(state_mutex_);
             if (!session_started_) {
                 return failed_precondition("ai gateway session is not started");
+            }
+            if (transport_failed_) {
+                return failed_precondition("ai gateway transport is not running");
+            }
+            if (session_end_requested_ || session_ended_) {
+                return failed_precondition("ai gateway session is ending or ended");
             }
             if (closing_.load()) {
                 return failed_precondition("ai gateway session is closing");
@@ -297,6 +311,8 @@ class AiGatewayClientSession::Impl {
     }
 
     void DoHandshake(std::optional<std::string> client_session_id) {
+        websocket_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
+        websocket_.read_message_max(kMaxInboundWebSocketMessageBytes);
         websocket_.async_handshake(
             config_.host + ":" + std::to_string(config_.port), config_.path,
             [this, client_session_id = std::move(client_session_id)](
@@ -382,6 +398,7 @@ class AiGatewayClientSession::Impl {
         }
         case protocol::MessageType::SessionEnded: {
             std::lock_guard<std::mutex> lock(state_mutex_);
+            session_end_requested_ = true;
             session_ended_ = true;
         }
             resolve_promise(end_promise_, absl::OkStatus());
@@ -498,6 +515,7 @@ class AiGatewayClientSession::Impl {
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             websocket_open_ = false;
+            transport_failed_ = !status.ok();
         }
 
         if (!transport_closed_notified_ && config_.on_transport_closed) {
@@ -562,7 +580,9 @@ class AiGatewayClientSession::Impl {
     bool thread_started_ = false;
     bool websocket_open_ = false;
     bool session_started_ = false;
+    bool session_end_requested_ = false;
     bool session_ended_ = false;
+    bool transport_failed_ = false;
     bool write_in_progress_ = false;
     std::atomic<bool> closing_{ false };
     bool transport_closed_notified_ = false;

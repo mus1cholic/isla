@@ -152,10 +152,11 @@ class RecordingClientEvents {
             for (const auto& message : messages_) {
                 if (std::holds_alternative<protocol::TextOutputMessage>(message)) {
                     const auto& text_output = std::get<protocol::TextOutputMessage>(message);
-                    saw_text_output = text_output.turn_id == turn_id && text_output.text == text;
+                    saw_text_output |=
+                        text_output.turn_id == turn_id && text_output.text == text;
                 }
                 if (std::holds_alternative<protocol::TurnCompletedMessage>(message)) {
-                    saw_turn_completed =
+                    saw_turn_completed |=
                         std::get<protocol::TurnCompletedMessage>(message).turn_id == turn_id;
                 }
             }
@@ -189,6 +190,11 @@ class RecordingClientEvents {
         });
     }
 
+    bool WaitForTransportClosed() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, 2s, [&] { return transport_closed_status_.has_value(); });
+    }
+
     bool WaitForErrorAndCompletion(std::string_view turn_id, std::string_view code,
                                    std::string_view message) {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -198,12 +204,12 @@ class RecordingClientEvents {
             for (const auto& gateway_message : messages_) {
                 if (std::holds_alternative<protocol::ErrorMessage>(gateway_message)) {
                     const auto& error_message = std::get<protocol::ErrorMessage>(gateway_message);
-                    saw_error = error_message.turn_id.has_value() &&
-                                *error_message.turn_id == turn_id && error_message.code == code &&
-                                error_message.message == message;
+                    saw_error |= error_message.turn_id.has_value() &&
+                                 *error_message.turn_id == turn_id && error_message.code == code &&
+                                 error_message.message == message;
                 }
                 if (std::holds_alternative<protocol::TurnCompletedMessage>(gateway_message)) {
-                    saw_turn_completed =
+                    saw_turn_completed |=
                         std::get<protocol::TurnCompletedMessage>(gateway_message).turn_id ==
                         turn_id;
                 }
@@ -352,6 +358,9 @@ TEST_F(AiGatewayClientSessionIntegrationTest, ConnectsSendsTurnReceivesReplyAndE
 
     ASSERT_TRUE(session.EndSession().ok());
     ASSERT_TRUE(events.WaitForSessionEnded("cli_test_1"));
+    const absl::Status send_after_end = session.SendTextInput("turn_2", "after end");
+    EXPECT_FALSE(send_after_end.ok());
+    EXPECT_EQ(send_after_end.code(), absl::StatusCode::kFailedPrecondition);
 
     session.Close();
 }
@@ -372,6 +381,29 @@ TEST_F(AiGatewayClientSessionIntegrationTest, RequestsCancellationAndReceivesTur
     ASSERT_TRUE(session.RequestTurnCancel("turn_cancel").ok());
 
     ASSERT_TRUE(events.WaitForTurnCancelled("turn_cancel"));
+
+    session.Close();
+}
+
+TEST_F(AiGatewayClientSessionIntegrationTest, RejectsSendAfterTransportFailureWithoutTimingOut) {
+    RecordingClientEvents events;
+    AiGatewayClientSession session(AiGatewayClientConfig{
+        .host = "127.0.0.1",
+        .port = server_.bound_port(),
+        .path = "/",
+        .operation_timeout = 2s,
+        .on_transport_closed =
+            [&events](absl::Status status) { events.RecordTransportClosed(std::move(status)); },
+    });
+
+    ASSERT_TRUE(session.ConnectAndStart().ok());
+    server_.Stop();
+    ASSERT_TRUE(events.WaitForTransportClosed());
+
+    const absl::Status send_after_failure = session.SendTextInput("turn_1", "hello");
+    EXPECT_FALSE(send_after_failure.ok());
+    EXPECT_EQ(send_after_failure.code(), absl::StatusCode::kFailedPrecondition);
+    EXPECT_EQ(send_after_failure.message(), "ai gateway transport is not running");
 
     session.Close();
 }
