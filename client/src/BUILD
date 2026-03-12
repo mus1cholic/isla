@@ -13,6 +13,20 @@ config_setting(
 )
 
 cc_library(
+    name = "ai_gateway_client_session",
+    srcs = ["ai_gateway_client_session.cpp"],
+    hdrs = ["ai_gateway_client_session.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//shared/src:ai_gateway_protocol",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@boost.beast//:boost.beast",
+    ],
+)
+
+cc_library(
     name = "client_sdl_runtime",
     srcs = ["client_sdl_runtime.cpp"],
     hdrs = ["client_sdl_runtime.hpp"],
@@ -198,6 +212,19 @@ cc_test(
 )
 
 cc_binary(
+    name = "isla_ai_gateway_smoke_client",
+    srcs = ["ai_gateway_smoke_client_main.cpp"],
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@abseil-cpp//absl/log:globals",
+        "@abseil-cpp//absl/log:initialize",
+        "@abseil-cpp//absl/log:log",
+        ":ai_gateway_client_session",
+    ],
+)
+
+cc_binary(
     name = "isla_client",
     srcs = ["main.cpp"],
     tags = ["manual"],
@@ -207,6 +234,18 @@ cc_binary(
         "@abseil-cpp//absl/log:log",
         ":client_app",
         "//engine/src:engine",
+    ],
+)
+
+cc_test(
+    name = "ai_gateway_client_session_test",
+    srcs = ["ai_gateway_client_session_test.cpp"],
+    deps = [
+        ":ai_gateway_client_session",
+        "//server/include/isla/server:server_headers",
+        "//server/src:ai_gateway_server",
+        "//server/src:ai_gateway_stub_responder",
+        "@googletest//:gtest_main",
     ],
 )
 
