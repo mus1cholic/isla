@@ -22,6 +22,11 @@ enum class SessionCloseReason {
     ServerStopping,
 };
 
+enum class GatewayTransportCloseMode {
+    Graceful = 0,
+    Force,
+};
+
 struct SessionClosedEvent {
     std::string session_id;
     bool session_started = false;
@@ -35,7 +40,7 @@ class GatewayWebSocketConnection {
     virtual ~GatewayWebSocketConnection() = default;
 
     [[nodiscard]] virtual absl::Status SendTextFrame(std::string_view frame) = 0;
-    virtual void Close() = 0;
+    virtual void Close(GatewayTransportCloseMode mode) = 0;
 };
 
 class GatewaySessionEventSink {
