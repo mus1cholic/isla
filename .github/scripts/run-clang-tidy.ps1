@@ -44,18 +44,51 @@ if (-not [string]::IsNullOrWhiteSpace($prBaseSha) -and -not [string]::IsNullOrWh
   Write-Host "Computing clang-tidy candidates for push diff: $diffRange"
 }
 
+function Convert-ToNormalizedRepoPath([string]$path) {
+  return ($path -replace '\\', '/').Trim()
+}
+
+function Test-IsExcludedCiPath([string]$path) {
+  $normalized = Convert-ToNormalizedRepoPath $path
+  return (
+    $normalized -like "third_party/*" -or
+    $normalized -like "external/*" -or
+    $normalized -like "tools/*" -or
+    $normalized -like "bazel-*" -or
+    $normalized -like ".git/*" -or
+    $normalized -like ".github/*"
+  )
+}
+
+function Test-IsFirstPartyCppPath([string]$path) {
+  $normalized = Convert-ToNormalizedRepoPath $path
+  if ([string]::IsNullOrWhiteSpace($normalized) -or (Test-IsExcludedCiPath $normalized)) {
+    return $false
+  }
+
+  return (
+    $normalized -like "*.cpp" -or
+    $normalized -like "*.hpp" -or
+    $normalized -like "*.h"
+  )
+}
+
 $changedLinesByFile = @{}
 $currentFile = $null
-$diffLines = & git diff --unified=0 --no-color --no-prefix --diff-filter=ACMR $diffRange -- client engine shared
+$diffLines = & git diff --unified=0 --no-color --no-prefix --diff-filter=ACMR $diffRange
 foreach ($diffLine in $diffLines) {
   if ($diffLine -like "+++ *") {
     $path = $diffLine.Substring(4).Trim()
     if ($path -eq "/dev/null") {
       $currentFile = $null
     } else {
-      $currentFile = $path -replace '\\', '/'
-      if (-not $changedLinesByFile.ContainsKey($currentFile)) {
-        $changedLinesByFile[$currentFile] = [System.Collections.Generic.HashSet[int]]::new()
+      $currentFile = Convert-ToNormalizedRepoPath $path
+      if (Test-IsFirstPartyCppPath $currentFile) {
+        if (-not $changedLinesByFile.ContainsKey($currentFile)) {
+          $changedLinesByFile[$currentFile] = [System.Collections.Generic.HashSet[int]]::new()
+        }
+      } else {
+        $currentFile = $null
       }
     }
     continue
@@ -75,7 +108,8 @@ foreach ($diffLine in $diffLines) {
 }
 
 $allChangedFiles = @(
-  & git diff --name-only --diff-filter=ACMR $diffRange -- client engine shared |
+  & git diff --name-only --diff-filter=ACMR $diffRange |
+    Where-Object { Test-IsFirstPartyCppPath $_ } |
     Sort-Object -Unique
 )
 Write-Host ("clang-tidy debug: changed files in scope: {0}" -f $allChangedFiles.Count)
@@ -89,8 +123,9 @@ foreach ($changedKey in ($changedLinesByFile.Keys | Sort-Object)) {
 # the file supports cross-platform compilation.
 # bgfx_renderer_bgfx.cpp is Windows-only (#error on other platforms); skip on Linux CI.
 $files = @(
-  & git diff --name-only --diff-filter=ACMR $diffRange -- client engine shared |
+  & git diff --name-only --diff-filter=ACMR $diffRange |
     Where-Object {
+      (Test-IsFirstPartyCppPath $_) -and
       # TODO: Re-introduce changed .hpp lint coverage via generated
       # translation-unit wrappers instead of direct header-mode runs.
       ($_ -like "*.cpp") -and
@@ -224,6 +259,7 @@ $gtestRepoPath = if ($gtestRepo) { $gtestRepo.FullName } else { "" }
 $bgfxRepoPath = if ($bgfxRepo) { $bgfxRepo.FullName } else { "" }
 $bxRepoPath = if ($bxRepo) { $bxRepo.FullName } else { "" }
 $rulesCcRepoPath = if ($rulesCcRepo) { $rulesCcRepo.FullName } else { "" }
+$workspaceHeaderFilter = "^(?:" + [regex]::Escape(($workspace -replace '\\', '/')) + "/)?(?!external/|third_party/|tools/|bazel-|\\.git/|\\.github/).+"
 
 $hadErrors = $false
 Write-Host "clang-tidy debug: begin clang-tidy execution"
@@ -237,13 +273,16 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
   $bgfxPath = $using:bgfxRepoPath
   $bxPath = $using:bxRepoPath
   $rulesCcPath = $using:rulesCcRepoPath
+  $headerFilter = $using:workspaceHeaderFilter
 
-  $clangArgs = @("--quiet", "--header-filter=^(client|engine|shared)/", $fullFile)
+  $clangArgs = @("--quiet", "--header-filter=$headerFilter", $fullFile)
   if ($file -like "*.cpp") {
     $clangArgs += @(
       "-p", $w,
       "--extra-arg=-I$w",
       "--extra-arg=-I$w/engine/include",
+      "--extra-arg=-I$w/server/include",
+      "--extra-arg=-I$w/server/memory/include",
       "--extra-arg=-I$w/shared/include"
     )
     if ($sdlPath) {
@@ -277,6 +316,8 @@ $results = $files | ForEach-Object -ThrottleLimit ([Environment]::ProcessorCount
       "-std=c++20"
       "-I$w"
       "-I$w/engine/include"
+      "-I$w/server/include"
+      "-I$w/server/memory/include"
       "-I$w/shared/include"
       "-isystem$sdlPath/include"
       "-isystem$abslPath"
@@ -424,7 +465,7 @@ try {
     $rawReason = if ($Matches.msg) { $Matches.msg.Trim() } else { "" }
 
     $file = ($file -replace '\\', '/')
-    $pathMatch = [regex]::Match($file, '(?<rel>(?:client|engine|shared)/.+)$')
+    $pathMatch = [regex]::Match($file, '(?<rel>(?:client|engine|server|shared)/.+)$')
     if ($pathMatch.Success) {
       $file = $pathMatch.Groups['rel'].Value
     }

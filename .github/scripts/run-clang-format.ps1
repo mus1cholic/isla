@@ -33,19 +33,52 @@ if ($newlineCount -gt 0 -and $newlineReportPath -and (Test-Path $newlineReportPa
   }
 }
 
+function Convert-ToNormalizedRepoPath([string]$path) {
+  return ($path -replace '\\', '/').Trim()
+}
+
+function Test-IsExcludedCiPath([string]$path) {
+  $normalized = Convert-ToNormalizedRepoPath $path
+  return (
+    $normalized -like "third_party/*" -or
+    $normalized -like "external/*" -or
+    $normalized -like "tools/*" -or
+    $normalized -like "bazel-*" -or
+    $normalized -like ".git/*" -or
+    $normalized -like ".github/*"
+  )
+}
+
+function Test-IsFirstPartyCppPath([string]$path) {
+  $normalized = Convert-ToNormalizedRepoPath $path
+  if ([string]::IsNullOrWhiteSpace($normalized) -or (Test-IsExcludedCiPath $normalized)) {
+    return $false
+  }
+
+  return (
+    $normalized -like "*.cpp" -or
+    $normalized -like "*.hpp" -or
+    $normalized -like "*.h"
+  )
+}
+
 $changedLinesByFile = @{}
 if ($env:DIFF_BASE -and $env:DIFF_HEAD) {
   $currentFile = $null
-  $diffLines = & git diff --unified=0 --no-color --no-prefix --diff-filter=ACMR $env:DIFF_BASE $env:DIFF_HEAD -- client engine shared
+  $diffLines = & git diff --unified=0 --no-color --no-prefix --diff-filter=ACMR $env:DIFF_BASE $env:DIFF_HEAD
   foreach ($diffLine in $diffLines) {
     if ($diffLine -like "+++ *") {
       $path = $diffLine.Substring(4).Trim()
       if ($path -eq "/dev/null") {
         $currentFile = $null
       } else {
-        $currentFile = $path -replace '\\', '/'
-        if (-not $changedLinesByFile.ContainsKey($currentFile)) {
-          $changedLinesByFile[$currentFile] = [System.Collections.Generic.HashSet[int]]::new()
+        $currentFile = Convert-ToNormalizedRepoPath $path
+        if (Test-IsFirstPartyCppPath $currentFile) {
+          if (-not $changedLinesByFile.ContainsKey($currentFile)) {
+            $changedLinesByFile[$currentFile] = [System.Collections.Generic.HashSet[int]]::new()
+          }
+        } else {
+          $currentFile = $null
         }
       }
       continue
@@ -66,10 +99,7 @@ if ($env:DIFF_BASE -and $env:DIFF_HEAD) {
 }
 
 $files = @(Get-Content -Path $env:CHANGED_FILES_FILE | Where-Object {
-  $_ -and
-  ($_ -like "client/*" -or $_ -like "engine/*" -or $_ -like "shared/*") -and
-  ($_ -like "*.cpp" -or $_ -like "*.hpp" -or $_ -like "*.h") -and
-  ($_ -notlike "third_party/*")
+  Test-IsFirstPartyCppPath $_
 })
 Write-Host ("clang-format candidate files: {0}" -f $files.Count)
 if (-not $files) {
