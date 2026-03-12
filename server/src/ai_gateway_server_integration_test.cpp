@@ -7,6 +7,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <variant>
@@ -175,6 +176,44 @@ class RealWebSocketClient {
         }
         static_cast<void>(bytes_read);
         return protocol::parse_json_message(beast::buffers_to_string(buffer.data()));
+    }
+
+    [[nodiscard]] absl::StatusOr<websocket::close_reason>
+    ReadCloseReason(std::chrono::milliseconds timeout = 2s) {
+        beast::flat_buffer buffer;
+        std::optional<absl::StatusOr<websocket::close_reason>> result;
+
+        websocket::stream_base::timeout timeout_options =
+            websocket::stream_base::timeout::suggested(beast::role_type::client);
+        timeout_options.idle_timeout = timeout;
+        timeout_options.keep_alive_pings = false;
+        websocket_.set_option(timeout_options);
+
+        websocket_.async_read(buffer, [this, &result](const boost::system::error_code& error,
+                                                      std::size_t bytes_read) {
+            static_cast<void>(bytes_read);
+            if (error == websocket::error::closed) {
+                result.emplace(websocket_.reason());
+                return;
+            }
+            if (error == beast::error::timeout) {
+                result.emplace(
+                    absl::DeadlineExceededError("timed out waiting for websocket close frame"));
+                return;
+            }
+            if (error) {
+                result.emplace(absl::UnavailableError(error.message()));
+                return;
+            }
+            result.emplace(absl::InternalError("expected websocket close frame"));
+        });
+
+        io_context_.restart();
+        io_context_.run();
+        if (!result.has_value()) {
+            return absl::InternalError("websocket close read completed without a result");
+        }
+        return *result;
     }
 
     void CloseTransport() {
@@ -382,6 +421,9 @@ TEST_F(GatewayServerTest, RealSocketTurnIngressReachesTypedApplicationSink) {
         ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
         ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*ended_frame));
         EXPECT_EQ(std::get<protocol::SessionEndedMessage>(*ended_frame).session_id, session_id);
+        const absl::StatusOr<websocket::close_reason> close_reason = client.ReadCloseReason();
+        ASSERT_TRUE(close_reason.ok()) << close_reason.status().ToString();
+        EXPECT_EQ(close_reason->code, websocket::close_code::normal);
 
         ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 2U; }));
         EXPECT_EQ(sink_.closed_sessions.back().session_id, session_id);
@@ -668,11 +710,11 @@ TEST_F(GatewayServerShortShutdownGraceTest, StopReturnsPromptlyWhenPendingWriteD
     // violating the bounded text.output contract.
     std::promise<absl::Status> emit_promise;
     std::future<absl::Status> emit_future = emit_promise.get_future();
-    live_session->AsyncEmitAudioOutput(
-        std::string("turn_1"), std::string("audio/pcm"),
-        std::string(8U * 1024U * 1024U, 'x'), [&emit_promise](absl::Status status) mutable {
-            emit_promise.set_value(std::move(status));
-        });
+    live_session->AsyncEmitAudioOutput(std::string("turn_1"), std::string("audio/pcm"),
+                                       std::string(8U * 1024U * 1024U, 'x'),
+                                       [&emit_promise](absl::Status status) mutable {
+                                           emit_promise.set_value(std::move(status));
+                                       });
     ASSERT_EQ(emit_future.wait_for(2s), std::future_status::ready);
     ASSERT_TRUE(emit_future.get().ok());
 
@@ -748,7 +790,8 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
     ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
 
     ASSERT_TRUE(
-        client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
             .ok());
 
     const absl::StatusOr<protocol::GatewayMessage> first_frame = client.ReadJsonFrame();
@@ -893,6 +936,30 @@ TEST_F(GatewayStubResponderServerTest, StopEmitsServerStoppingErrorAndCompletion
     EXPECT_FALSE(server_.is_running());
 }
 
+TEST_F(GatewayServerTest, ServerStopClosesIdleWebSocketWithGoingAway) {
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    std::thread stop_thread([this] { server_.Stop(); });
+
+    const absl::StatusOr<websocket::close_reason> close_reason = client.ReadCloseReason();
+    ASSERT_TRUE(close_reason.ok()) << close_reason.status().ToString();
+    EXPECT_EQ(close_reason->code, websocket::close_code::going_away);
+
+    stop_thread.join();
+    EXPECT_FALSE(server_.is_running());
+    ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
+    EXPECT_EQ(sink_.closed_sessions.front().session_id, session_id);
+    EXPECT_EQ(sink_.closed_sessions.front().reason, SessionCloseReason::ServerStopping);
+}
+
 TEST_F(GatewayServerTest, StopWhileIdleSucceedsWithoutSessions) {
     EXPECT_TRUE(sink_.closed_sessions.empty());
     EXPECT_EQ(server_.session_registry().SessionCount(), 0U);
@@ -934,6 +1001,9 @@ TEST_F(GatewayServerTest, ReapsSessionAfterProtocolEndedClose) {
     const absl::StatusOr<protocol::GatewayMessage> ended_frame = client.ReadJsonFrame();
     ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*ended_frame));
+    const absl::StatusOr<websocket::close_reason> close_reason = client.ReadCloseReason();
+    ASSERT_TRUE(close_reason.ok()) << close_reason.status().ToString();
+    EXPECT_EQ(close_reason->code, websocket::close_code::normal);
 
     ASSERT_TRUE(sink_.WaitFor([&] { return sink_.closed_sessions.size() == 1U; }));
     EXPECT_EQ(sink_.closed_sessions.front().reason, SessionCloseReason::ProtocolEnded);
@@ -977,6 +1047,9 @@ TEST_F(GatewayServerTest, ReapsManyShortLivedSessionsWithoutAccumulatingState) {
             const absl::StatusOr<protocol::GatewayMessage> ended_frame = client.ReadJsonFrame();
             ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
             ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*ended_frame));
+            const absl::StatusOr<websocket::close_reason> close_reason = client.ReadCloseReason();
+            ASSERT_TRUE(close_reason.ok()) << close_reason.status().ToString();
+            EXPECT_EQ(close_reason->code, websocket::close_code::normal);
         } else {
             client.CloseTransport();
         }

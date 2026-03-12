@@ -234,17 +234,18 @@ void GatewayWebSocketSessionAdapter::HandleTransportClosed() {
         return;
     }
 
+    const bool session_started =
+        handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted;
     const std::optional<std::string> inflight_turn_id = active_turn_id();
-    LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_) << " transport closed"
-                 << " session_started="
-                 << (handler_.snapshot().status !=
-                             isla::shared::ai_gateway::SessionStatus::NotStarted
-                         ? "true"
-                         : "false")
-                 << " inflight_turn_id='"
-                 << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
-                                                  : std::string("<none>"))
-                 << "'";
+    if (inflight_turn_id.has_value()) {
+        LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_) << " transport closed"
+                     << " session_started=" << (session_started ? "true" : "false")
+                     << " inflight_turn_id='" << SanitizeForLog(*inflight_turn_id) << "'";
+    } else {
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " transport closed"
+                << " session_started=" << (session_started ? "true" : "false")
+                << " inflight_turn_id='<none>'";
+    }
     CloseSession(SessionCloseReason::TransportClosed, "", inflight_turn_id, false);
 }
 
@@ -289,7 +290,10 @@ void GatewayWebSocketSessionAdapter::CloseSession(SessionCloseReason reason,
 
     closed_ = true;
     if (close_transport) {
-        connection_.Close();
+        const GatewayTransportCloseMode close_mode = reason == SessionCloseReason::ProtocolEnded
+                                                         ? GatewayTransportCloseMode::Graceful
+                                                         : GatewayTransportCloseMode::Force;
+        connection_.Close(close_mode);
     }
     VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
             << " closed reason=" << close_reason_name(reason) << " session_started="

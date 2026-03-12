@@ -178,9 +178,15 @@ class LiveGatewaySession final : public GatewayLiveSession,
         return EnqueueWrite(std::string(frame));
     }
 
-    void Close() override {
+    void Close(GatewayTransportCloseMode mode) override {
         auto self = shared_from_this();
-        asio::dispatch(websocket_.get_executor(), [self] { self->RequestGracefulClose(); });
+        asio::dispatch(websocket_.get_executor(), [self, mode] {
+            if (mode == GatewayTransportCloseMode::Graceful) {
+                self->RequestGracefulClose();
+                return;
+            }
+            self->DoForceCloseTransport();
+        });
     }
 
   private:
@@ -286,6 +292,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
             return;
         }
 
+        websocket_established_ = true;
         adapter_ = factory_.CreateSession(*this, &registry_);
         if (adapter_ == nullptr) {
             LOG(ERROR) << "AI gateway could not create a websocket session adapter";
@@ -426,7 +433,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
         }
 
         if (close_after_writes_) {
-            DoCloseTransport();
+            BeginGracefulCloseHandshake();
             return;
         }
         MaybeFinish();
@@ -435,13 +442,54 @@ class LiveGatewaySession final : public GatewayLiveSession,
     void RequestGracefulClose() {
         close_after_writes_ = true;
         if (!write_in_progress_ && pending_writes_.empty()) {
-            DoCloseTransport();
+            BeginGracefulCloseHandshake();
             return;
         }
         VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
                 << " deferring graceful close until pending writes flush pending_writes="
                 << pending_writes_.size()
                 << " write_in_progress=" << (write_in_progress_ ? "true" : "false");
+    }
+
+    void BeginGracefulCloseHandshake() {
+        if (transport_closed_ || close_handshake_in_progress_) {
+            MaybeFinish();
+            return;
+        }
+
+        if (!websocket_established_) {
+            DoCloseTransport();
+            return;
+        }
+
+        close_handshake_in_progress_ = true;
+        const websocket::close_code close_code = server_shutdown_requested_.load()
+                                                     ? websocket::close_code::going_away
+                                                     : websocket::close_code::normal;
+        auto self = shared_from_this();
+        websocket_.async_close(
+            close_code, [self](const boost::system::error_code& error) { self->OnClose(error); });
+    }
+
+    void OnClose(const boost::system::error_code& error) {
+        close_handshake_in_progress_ = false;
+        if (transport_closed_) {
+            MaybeFinish();
+            return;
+        }
+        if (!error || error == websocket::error::closed) {
+            transport_closed_ = true;
+            MaybeFinish();
+            return;
+        }
+        if (transport_force_closed_.load() || error == asio::error::operation_aborted) {
+            MaybeFinish();
+            return;
+        }
+
+        VLOG(1) << "AI gateway websocket close handshake failed detail='"
+                << SanitizeForLog(error.message()) << "'";
+        DoCloseTransport();
     }
 
     void DoForceCloseTransport() {
@@ -477,7 +525,7 @@ class LiveGatewaySession final : public GatewayLiveSession,
 
     void MaybeFinish() {
         if (finished_.load() || accept_in_progress_ || read_in_progress_ || write_in_progress_ ||
-            !transport_closed_) {
+            close_handshake_in_progress_ || !transport_closed_) {
             return;
         }
         FinishSession();
@@ -548,7 +596,9 @@ class LiveGatewaySession final : public GatewayLiveSession,
     bool read_in_progress_ = false;
     bool write_in_progress_ = false;
     bool close_after_writes_ = false;
+    bool close_handshake_in_progress_ = false;
     bool transport_closed_ = false;
+    bool websocket_established_ = false;
     bool shutdown_timer_armed_ = false;
 };
 

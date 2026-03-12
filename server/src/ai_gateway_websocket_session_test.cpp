@@ -30,12 +30,14 @@ class FakeWebSocketConnection final : public GatewayWebSocketConnection {
         return absl::OkStatus();
     }
 
-    void Close() override {
+    void Close(GatewayTransportCloseMode mode) override {
         ++close_calls;
+        close_modes.push_back(mode);
     }
 
     bool fail_next_send_ = false;
     int close_calls = 0;
+    std::vector<GatewayTransportCloseMode> close_modes;
     std::vector<std::string> sent_frames;
 };
 
@@ -221,6 +223,8 @@ TEST(AiGatewayWebSocketSessionTest, EmitTextOutputSendFailureClosesSession) {
 
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(connection.sent_frames.size(), 1U);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
@@ -292,6 +296,8 @@ TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendFailureClosesSession) {
 
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(connection.sent_frames.size(), 2U);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
@@ -364,6 +370,8 @@ TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendFailureClosesSession) {
 
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(connection.sent_frames.size(), 1U);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
@@ -423,6 +431,8 @@ TEST(AiGatewayWebSocketSessionTest, EmitErrorSendFailureClosesSession) {
 
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(connection.sent_frames.size(), 1U);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
@@ -442,6 +452,8 @@ TEST(AiGatewayWebSocketSessionTest, SessionEndClosesTransportAfterReply) {
 
     ASSERT_EQ(connection.sent_frames.size(), 2U);
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Graceful);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_TRUE(session.is_closed());
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::ProtocolEnded);
@@ -471,6 +483,8 @@ TEST(AiGatewayWebSocketSessionTest, TransportErrorTerminatesActiveTurnBeforeClos
 
     ASSERT_EQ(connection.sent_frames.size(), 3U);
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::TransportError);
     EXPECT_TRUE(sink.closed_sessions.front().session_started);
@@ -524,6 +538,8 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureClosesConnectionAndReturnsError) 
 
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);
     EXPECT_TRUE(sink.closed_sessions.front().session_started);
@@ -548,6 +564,8 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAft
     EXPECT_FALSE(incoming.ok());
     EXPECT_FALSE(transport_error.ok());
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Graceful);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(connection.sent_frames.size(), 2U);
 }
@@ -585,6 +603,8 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAft
     EXPECT_FALSE(incoming.ok());
     EXPECT_FALSE(second_error.ok());
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(connection.sent_frames.size(), 3U);
 }
@@ -597,6 +617,8 @@ TEST(AiGatewayWebSocketSessionTest, TransportErrorBeforeSessionStartClosesWithou
     ASSERT_TRUE(session.HandleTransportError("socket failed").ok());
 
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     EXPECT_TRUE(connection.sent_frames.empty());
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_FALSE(sink.closed_sessions.front().session_started);
@@ -614,6 +636,8 @@ TEST(AiGatewayWebSocketSessionTest,
     ASSERT_TRUE(session.HandleTransportError("socket failed").ok());
 
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(connection.sent_frames.size(), 1U);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_TRUE(sink.closed_sessions.front().session_started);
@@ -637,6 +661,8 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureDuringTransportErrorStopsFurtherF
 
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(connection.close_calls, 1);
+    ASSERT_EQ(connection.close_modes.size(), 1U);
+    EXPECT_EQ(connection.close_modes.front(), GatewayTransportCloseMode::Force);
     ASSERT_EQ(connection.sent_frames.size(), 1U);
     ASSERT_EQ(sink.closed_sessions.size(), 1U);
     EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::SendFailed);

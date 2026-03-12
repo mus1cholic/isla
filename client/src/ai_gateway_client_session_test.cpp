@@ -358,9 +358,41 @@ TEST_F(AiGatewayClientSessionIntegrationTest, ConnectsSendsTurnReceivesReplyAndE
 
     ASSERT_TRUE(session.EndSession().ok());
     ASSERT_TRUE(events.WaitForSessionEnded("cli_test_1"));
+    ASSERT_TRUE(events.WaitForTransportClosed());
+    ASSERT_TRUE(events.transport_closed_status().has_value());
+    EXPECT_TRUE(events.transport_closed_status()->ok())
+        << events.transport_closed_status()->ToString();
     const absl::Status send_after_end = session.SendTextInput("turn_2", "after end");
     EXPECT_FALSE(send_after_end.ok());
     EXPECT_EQ(send_after_end.code(), absl::StatusCode::kFailedPrecondition);
+
+    session.Close();
+}
+
+TEST_F(AiGatewayClientSessionIntegrationTest, EndSessionReportsCleanTransportClosure) {
+    RecordingClientEvents events;
+    AiGatewayClientSession session(AiGatewayClientConfig{
+        .host = "127.0.0.1",
+        .port = server_.bound_port(),
+        .path = "/",
+        .operation_timeout = 2s,
+        .on_message =
+            [&events](const protocol::GatewayMessage& message) { events.RecordMessage(message); },
+        .on_transport_closed =
+            [&events](absl::Status status) { events.RecordTransportClosed(std::move(status)); },
+    });
+
+    ASSERT_TRUE(session.ConnectAndStart().ok());
+    ASSERT_TRUE(session.session_id().has_value());
+    const std::string session_id = *session.session_id();
+
+    ASSERT_TRUE(session.EndSession().ok());
+    ASSERT_TRUE(events.WaitForSessionEnded(session_id));
+    ASSERT_TRUE(events.WaitForTransportClosed());
+    ASSERT_TRUE(events.transport_closed_status().has_value());
+    EXPECT_TRUE(events.transport_closed_status()->ok())
+        << events.transport_closed_status()->ToString();
+    EXPECT_FALSE(session.is_open());
 
     session.Close();
 }
