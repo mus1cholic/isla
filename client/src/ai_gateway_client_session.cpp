@@ -66,7 +66,8 @@ class AiGatewayClientSession::Impl
     : public std::enable_shared_from_this<AiGatewayClientSession::Impl> {
   public:
     explicit Impl(AiGatewayClientConfig config)
-        : config_(std::move(config)), resolver_(io_context_), websocket_(io_context_) {}
+        : config_(std::move(config)), resolver_(std::make_unique<tcp::resolver>(io_context_)),
+          websocket_(std::make_unique<websocket::stream<tcp::socket>>(io_context_)) {}
 
     absl::Status ConnectAndStart(std::optional<std::string> client_session_id) {
         if (config_.host.empty()) {
@@ -84,7 +85,7 @@ class AiGatewayClientSession::Impl
 
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            if (thread_started_) {
+            if (thread_started_ || io_thread_.joinable()) {
                 return failed_precondition("ai gateway session is already connecting or running");
             }
             if (closing_.load()) {
@@ -94,9 +95,14 @@ class AiGatewayClientSession::Impl
         }
 
         io_context_.restart();
+        resolver_ = std::make_unique<tcp::resolver>(io_context_);
+        websocket_ = std::make_unique<websocket::stream<tcp::socket>>(io_context_);
         work_guard_.emplace(asio::make_work_guard(io_context_));
-        io_thread_ = std::thread([self = shared_from_this()] { self->io_context_.run(); });
-        io_thread_id_ = io_thread_.get_id();
+        io_thread_ = std::thread([self = shared_from_this()] { self->RunEventLoop(); });
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            io_thread_id_ = io_thread_.get_id();
+        }
 
         auto promise = std::make_shared<std::promise<absl::Status>>();
         std::future<absl::Status> future = promise->get_future();
@@ -194,7 +200,7 @@ class AiGatewayClientSession::Impl
             should_join = thread_started_;
             called_from_io_thread = thread_started_ && std::this_thread::get_id() == io_thread_id_;
         }
-        if (!should_join) {
+        if (!should_join && !io_thread_.joinable()) {
             return;
         }
 
@@ -206,31 +212,14 @@ class AiGatewayClientSession::Impl
             return;
         }
 
-        if (!io_context_.stopped()) {
-            asio::post(io_context_, [this] {
-                DoClose(failed_precondition("ai gateway client closed by local shutdown"));
+        if (should_join && !io_context_.stopped()) {
+            asio::post(io_context_, [self = shared_from_this()] {
+                self->DoClose(failed_precondition("ai gateway client closed by local shutdown"));
             });
         }
         if (io_thread_.joinable()) {
             io_thread_.join();
         }
-
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        thread_started_ = false;
-        io_thread_id_ = std::thread::id{};
-        websocket_open_ = false;
-        session_started_ = false;
-        session_end_requested_ = false;
-        session_ended_ = false;
-        transport_failed_ = false;
-        session_id_.reset();
-        closing_.store(false);
-        transport_closed_notified_ = false;
-        write_in_progress_ = false;
-        pending_writes_.clear();
-        start_promise_.reset();
-        end_promise_.reset();
-        work_guard_.reset();
     }
 
     [[nodiscard]] bool is_open() const {
@@ -248,6 +237,31 @@ class AiGatewayClientSession::Impl
         std::string frame;
         std::shared_ptr<std::promise<absl::Status>> completion;
     };
+
+    void RunEventLoop() {
+        io_context_.run();
+        FinalizeClosedState();
+    }
+
+    void FinalizeClosedState() {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        thread_started_ = false;
+        io_thread_id_ = std::thread::id{};
+        websocket_open_ = false;
+        session_started_ = false;
+        session_end_requested_ = false;
+        session_ended_ = false;
+        transport_failed_ = false;
+        session_id_.reset();
+        read_buffer_.consume(read_buffer_.size());
+        closing_.store(false);
+        transport_closed_notified_ = false;
+        write_in_progress_ = false;
+        pending_writes_.clear();
+        start_promise_.reset();
+        end_promise_.reset();
+        work_guard_.reset();
+    }
 
     absl::Status SendMessage(const protocol::GatewayMessage& message) {
         {
@@ -289,7 +303,7 @@ class AiGatewayClientSession::Impl
     }
 
     void DoResolve(std::optional<std::string> client_session_id) {
-        resolver_.async_resolve(
+        resolver_->async_resolve(
             config_.host, std::to_string(config_.port),
             [self = shared_from_this(), client_session_id = std::move(client_session_id)](
                 const boost::system::error_code& error,
@@ -306,7 +320,7 @@ class AiGatewayClientSession::Impl
     void DoConnect(const tcp::resolver::results_type& results,
                    std::optional<std::string> client_session_id) {
         asio::async_connect(
-            websocket_.next_layer(), results,
+            websocket_->next_layer(), results,
             [self = shared_from_this(), client_session_id = std::move(client_session_id)](
                 const boost::system::error_code& error, const tcp::endpoint& /*unused*/) mutable {
                 if (error) {
@@ -319,9 +333,10 @@ class AiGatewayClientSession::Impl
     }
 
     void DoHandshake(std::optional<std::string> client_session_id) {
-        websocket_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
-        websocket_.read_message_max(kMaxInboundWebSocketMessageBytes);
-        websocket_.async_handshake(
+        websocket_->set_option(
+            websocket::stream_base::timeout::suggested(beast::role_type::client));
+        websocket_->read_message_max(kMaxInboundWebSocketMessageBytes);
+        websocket_->async_handshake(
             config_.host + ":" + std::to_string(config_.port), config_.path,
             [self = shared_from_this(), client_session_id = std::move(client_session_id)](
                 const boost::system::error_code& error) mutable {
@@ -345,11 +360,11 @@ class AiGatewayClientSession::Impl
     }
 
     void StartRead() {
-        websocket_.async_read(read_buffer_,
-                              [self = shared_from_this()](const boost::system::error_code& error,
-                                                          std::size_t bytes_read) {
-                                  self->OnRead(error, bytes_read);
-                              });
+        websocket_->async_read(read_buffer_,
+                               [self = shared_from_this()](const boost::system::error_code& error,
+                                                           std::size_t bytes_read) {
+                                   self->OnRead(error, bytes_read);
+                               });
     }
 
     void OnRead(const boost::system::error_code& error, std::size_t bytes_read) {
@@ -369,7 +384,7 @@ class AiGatewayClientSession::Impl
             }
             return;
         }
-        if (!websocket_.got_text()) {
+        if (!websocket_->got_text()) {
             HandleIoFailure(invalid_argument("ai gateway sent a non-text websocket frame"));
             return;
         }
@@ -469,13 +484,13 @@ class AiGatewayClientSession::Impl
         }
 
         write_in_progress_ = true;
-        websocket_.text(true);
-        websocket_.async_write(asio::buffer(pending_writes_.front().frame.data(),
-                                            pending_writes_.front().frame.size()),
-                               [self = shared_from_this()](const boost::system::error_code& error,
-                                                           std::size_t bytes_written) {
-                                   self->OnWrite(error, bytes_written);
-                               });
+        websocket_->text(true);
+        websocket_->async_write(asio::buffer(pending_writes_.front().frame.data(),
+                                             pending_writes_.front().frame.size()),
+                                [self = shared_from_this()](const boost::system::error_code& error,
+                                                            std::size_t bytes_written) {
+                                    self->OnWrite(error, bytes_written);
+                                });
     }
 
     void OnWrite(const boost::system::error_code& error, std::size_t bytes_written) {
@@ -542,10 +557,10 @@ class AiGatewayClientSession::Impl
         }
 
         boost::system::error_code ignored;
-        resolver_.cancel();
-        websocket_.next_layer().cancel(ignored);
-        websocket_.next_layer().shutdown(tcp::socket::shutdown_both, ignored);
-        websocket_.next_layer().close(ignored);
+        resolver_->cancel();
+        websocket_->next_layer().cancel(ignored);
+        websocket_->next_layer().shutdown(tcp::socket::shutdown_both, ignored);
+        websocket_->next_layer().close(ignored);
         work_guard_.reset();
         io_context_.stop();
     }
@@ -578,8 +593,8 @@ class AiGatewayClientSession::Impl
     AiGatewayClientConfig config_;
     asio::io_context io_context_;
     std::optional<asio::executor_work_guard<asio::io_context::executor_type>> work_guard_;
-    tcp::resolver resolver_;
-    websocket::stream<tcp::socket> websocket_;
+    std::unique_ptr<tcp::resolver> resolver_;
+    std::unique_ptr<websocket::stream<tcp::socket>> websocket_;
     beast::flat_buffer read_buffer_;
     std::thread io_thread_;
     std::thread::id io_thread_id_{};

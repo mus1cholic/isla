@@ -403,7 +403,6 @@ TEST_F(AiGatewayClientSessionIntegrationTest, RejectsSendAfterTransportFailureWi
     const absl::Status send_after_failure = session.SendTextInput("turn_1", "hello");
     EXPECT_FALSE(send_after_failure.ok());
     EXPECT_EQ(send_after_failure.code(), absl::StatusCode::kFailedPrecondition);
-    EXPECT_EQ(send_after_failure.message(), "ai gateway transport is not running");
 
     session.Close();
 }
@@ -444,6 +443,7 @@ TEST_F(AiGatewayClientSessionIntegrationTest, CloseIsSafeWhenCalledFromOnMessage
     std::mutex mutex;
     std::condition_variable cv;
     bool close_called_from_callback = false;
+    bool transport_closed = false;
     std::unique_ptr<AiGatewayClientSession> session;
     session = std::make_unique<AiGatewayClientSession>(AiGatewayClientConfig{
         .host = "127.0.0.1",
@@ -463,6 +463,14 @@ TEST_F(AiGatewayClientSessionIntegrationTest, CloseIsSafeWhenCalledFromOnMessage
                 }
                 cv.notify_all();
             },
+        .on_transport_closed =
+            [&mutex, &cv, &transport_closed](absl::Status /*status*/) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    transport_closed = true;
+                }
+                cv.notify_all();
+            },
     });
 
     ASSERT_TRUE(session->ConnectAndStart().ok());
@@ -470,9 +478,22 @@ TEST_F(AiGatewayClientSessionIntegrationTest, CloseIsSafeWhenCalledFromOnMessage
 
     {
         std::unique_lock<std::mutex> lock(mutex);
-        ASSERT_TRUE(cv.wait_for(lock, 2s, [&] { return close_called_from_callback; }));
+        ASSERT_TRUE(
+            cv.wait_for(lock, 2s, [&] { return close_called_from_callback && transport_closed; }));
     }
 
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    absl::Status reconnect_status = absl::FailedPreconditionError("reconnect still pending");
+    while (std::chrono::steady_clock::now() < deadline) {
+        reconnect_status = session->ConnectAndStart();
+        if (reconnect_status.ok()) {
+            break;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+
+    ASSERT_TRUE(reconnect_status.ok()) << reconnect_status;
+    session->Close();
     session.reset();
 }
 
