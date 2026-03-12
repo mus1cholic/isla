@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -11,21 +12,31 @@ namespace isla::server::ai_gateway::test {
 
 class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
+    using StreamHandler = std::function<absl::Status(const OpenAiResponsesRequest&,
+                                                     const OpenAiResponsesEventCallback&)>;
+
     explicit FakeOpenAiResponsesClient(absl::Status status = absl::OkStatus(),
                                        std::string full_text = "",
-                                       std::string response_id = "resp_test")
+                                       std::string response_id = "resp_test",
+                                       absl::Status validate_status = absl::OkStatus(),
+                                       StreamHandler stream_handler = {})
         : status_(std::move(status)),
           full_text_(std::move(full_text)),
-          response_id_(std::move(response_id)) {}
+          response_id_(std::move(response_id)),
+          validate_status_(std::move(validate_status)),
+          stream_handler_(std::move(stream_handler)) {}
 
     [[nodiscard]] absl::Status Validate() const override {
-        return absl::OkStatus();
+        return validate_status_;
     }
 
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
         last_request = request;
+        if (stream_handler_) {
+            return stream_handler_(request, on_event);
+        }
         if (!status_.ok()) {
             return status_;
         }
@@ -53,13 +64,17 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     absl::Status status_;
     std::string full_text_;
     std::string response_id_;
+    absl::Status validate_status_;
+    StreamHandler stream_handler_;
 };
 
 [[nodiscard]] inline std::shared_ptr<FakeOpenAiResponsesClient> MakeFakeOpenAiResponsesClient(
     absl::Status status = absl::OkStatus(), std::string full_text = "",
-    std::string response_id = "resp_test") {
-    return std::make_shared<FakeOpenAiResponsesClient>(std::move(status), std::move(full_text),
-                                                       std::move(response_id));
+    std::string response_id = "resp_test", absl::Status validate_status = absl::OkStatus(),
+    FakeOpenAiResponsesClient::StreamHandler stream_handler = {}) {
+    return std::make_shared<FakeOpenAiResponsesClient>(
+        std::move(status), std::move(full_text), std::move(response_id),
+        std::move(validate_status), std::move(stream_handler));
 }
 
 } // namespace isla::server::ai_gateway::test

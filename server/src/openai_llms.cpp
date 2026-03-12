@@ -18,6 +18,10 @@ absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
 }
 
+absl::Status failed_precondition(std::string_view message) {
+    return absl::FailedPreconditionError(std::string(message));
+}
+
 absl::Status resource_exhausted(std::string_view message) {
     return absl::ResourceExhaustedError(std::string(message));
 }
@@ -25,12 +29,9 @@ absl::Status resource_exhausted(std::string_view message) {
 } // namespace
 
 OpenAiLLMs::OpenAiLLMs(std::string step_name, std::string system_prompt, std::string model,
-                       std::shared_ptr<const OpenAiResponsesClient> responses_client,
-                       std::string response_prefix, OpenAiResponseBuilder response_builder)
+                       std::shared_ptr<const OpenAiResponsesClient> responses_client)
     : step_name_(std::move(step_name)), system_prompt_(std::move(system_prompt)),
-      model_(std::move(model)), responses_client_(std::move(responses_client)),
-      response_prefix_(std::move(response_prefix)), response_builder_(std::move(response_builder)) {
-}
+      model_(std::move(model)), responses_client_(std::move(responses_client)) {}
 
 const std::string& OpenAiLLMs::step_name() const {
     return step_name_;
@@ -68,17 +69,12 @@ OpenAiLLMs::GenerateContent(std::size_t item_index, const std::string& user_text
 
     std::string output_text;
     try {
-        if (responses_client_ != nullptr) {
-            const absl::StatusOr<std::string> provider_text =
-                GenerateProviderResponse(item_index, user_text);
-            if (!provider_text.ok()) {
-                return provider_text.status();
-            }
-            output_text = *provider_text;
-        } else {
-            // TODO(ai-gateway): Remove this fallback path in Phase 3.6.
-            output_text = BuildResponse(user_text, response_prefix_, response_builder_);
+        const absl::StatusOr<std::string> provider_text =
+            GenerateProviderResponse(item_index, user_text);
+        if (!provider_text.ok()) {
+            return provider_text.status();
         }
+        output_text = *provider_text;
     } catch (const std::exception& error) {
         LOG(ERROR) << "AI gateway openai llms response building failed step_name='"
                    << SanitizeForLog(step_name_) << "' detail='" << SanitizeForLog(error.what())
@@ -100,6 +96,12 @@ OpenAiLLMs::GenerateContent(std::size_t item_index, const std::string& user_text
 absl::StatusOr<std::string> OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
                                                                  std::string_view user_text) const {
     static_cast<void>(item_index);
+
+    if (responses_client_ == nullptr) {
+        LOG(ERROR) << "AI gateway openai llms missing responses client step_name='"
+                   << SanitizeForLog(step_name_) << "' model='" << SanitizeForLog(model_) << "'";
+        return failed_precondition("openai llms requires a configured responses client");
+    }
 
     absl::Status client_status = responses_client_->Validate();
     if (!client_status.ok()) {
@@ -140,16 +142,6 @@ absl::StatusOr<std::string> OpenAiLLMs::GenerateProviderResponse(std::size_t ite
         return stream_status;
     }
     return output_text;
-}
-
-std::string OpenAiLLMs::BuildResponse(std::string_view user_text, std::string_view response_prefix,
-                                      const OpenAiResponseBuilder& response_builder) const {
-    if (response_builder) {
-        return response_builder(response_prefix, user_text);
-    }
-
-    static_cast<void>(system_prompt_);
-    return std::string(response_prefix) + std::string(user_text);
 }
 
 } // namespace isla::server::ai_gateway

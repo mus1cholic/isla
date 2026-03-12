@@ -27,6 +27,7 @@
 
 #include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/shared/ai_gateway_protocol.hpp"
+#include "openai_responses_test_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -46,6 +47,23 @@ template <typename StartFn> absl::Status await_emit(StartFn&& start) {
         return absl::DeadlineExceededError("timed out waiting for async emit completion");
     }
     return future.get();
+}
+
+std::shared_ptr<test::FakeOpenAiResponsesClient> MakeEchoOpenAiResponsesClient() {
+    return test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            const std::string text = std::string("stub echo: ") + request.user_text;
+            const absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        });
 }
 
 class RecordingApplicationSink final : public GatewayApplicationEventSink {
@@ -250,7 +268,7 @@ class GatewayStubResponderServerTest : public ::testing::Test {
     GatewayStubResponderServerTest()
         : responder_(GatewayStubResponderConfig{
               .response_delay = 100ms,
-              .response_prefix = "stub echo: ",
+              .openai_client = MakeEchoOpenAiResponsesClient(),
           }),
           server_(GatewayServerConfig{ .bind_host = "127.0.0.1", .port = 0, .listen_backlog = 4 },
                   &responder_, std::make_unique<SequentialSessionIdGenerator>("srv_stub_")) {
@@ -687,6 +705,65 @@ TEST_F(GatewayStubResponderServerTest, StubResponderReturnsFinalTextAndCompletio
     ASSERT_TRUE(turn_completed.ok()) << turn_completed.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*turn_completed));
     EXPECT_EQ(std::get<protocol::TurnCompletedMessage>(*turn_completed).turn_id, "turn_1");
+}
+
+TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalTextOutput) {
+    auto multi_delta_client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
+                .text_delta = "stub ",
+            });
+            if (!first_status.ok()) {
+                return first_status;
+            }
+            const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
+                .text_delta = "echo: " + request.user_text,
+            });
+            if (!second_status.ok()) {
+                return second_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        });
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = multi_delta_client,
+    });
+    GatewayServer server(
+        GatewayServerConfig{ .bind_host = "127.0.0.1", .port = 0, .listen_backlog = 4 }, &responder,
+        std::make_unique<SequentialSessionIdGenerator>("srv_multi_"));
+    responder.AttachSessionRegistry(&server.session_registry());
+
+    ASSERT_TRUE(server.Start().ok());
+
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+
+    ASSERT_TRUE(
+        client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+            .ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> first_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(first_frame.ok()) << first_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(*first_frame));
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*first_frame).turn_id, "turn_1");
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*first_frame).text, "stub echo: hello gateway");
+
+    const absl::StatusOr<protocol::GatewayMessage> second_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(second_frame.ok()) << second_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*second_frame));
+    EXPECT_EQ(std::get<protocol::TurnCompletedMessage>(*second_frame).turn_id, "turn_1");
+
+    client.CloseTransport();
+    server.Stop();
 }
 
 TEST_F(GatewayStubResponderServerTest, StubResponderTerminatesAcceptedCancellation) {

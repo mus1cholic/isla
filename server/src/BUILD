@@ -338,6 +338,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_server",
+        ":openai_responses_test_utils",
         ":ai_gateway_stub_responder",
         "//shared/src:ai_gateway_protocol",
         "@boost.beast//:boost.beast",

@@ -2,6 +2,8 @@
 
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -30,6 +32,55 @@ class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {
     absl::Status status_;
 };
 
+class SequencedOpenAiResponsesClient final : public OpenAiResponsesClient {
+  public:
+    explicit SequencedOpenAiResponsesClient(std::vector<std::string> outputs)
+        : outputs_(std::move(outputs)) {}
+
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const OpenAiResponsesRequest& request,
+                   const OpenAiResponsesEventCallback& on_event) const override {
+        call_order.push_back(request.model);
+        if (next_index_ >= outputs_.size()) {
+            return absl::InternalError("unexpected extra provider call");
+        }
+        const std::string& output = outputs_[next_index_++];
+        const absl::Status delta_status =
+            on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = output });
+        if (!delta_status.ok()) {
+            return delta_status;
+        }
+        return on_event(OpenAiResponsesCompletedEvent{
+            .response_id = "resp_" + std::to_string(next_index_),
+        });
+    }
+
+    mutable std::vector<std::string> call_order;
+
+  private:
+    std::vector<std::string> outputs_;
+    mutable std::size_t next_index_ = 0;
+};
+
+class ThrowingOpenAiResponsesClient final : public OpenAiResponsesClient {
+  public:
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const OpenAiResponsesRequest& request,
+                   const OpenAiResponsesEventCallback& on_event) const override {
+        static_cast<void>(request);
+        static_cast<void>(on_event);
+        throw std::runtime_error("boom");
+    }
+};
+
 TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     GatewayPlanExecutor executor;
 
@@ -48,20 +99,10 @@ TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
 }
 
 TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
-    std::vector<std::string> execution_order;
+    auto client = std::make_shared<SequencedOpenAiResponsesClient>(
+        std::vector<std::string>{ "alpha", "beta" });
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
-        .response_prefix = "",
-        .response_builder =
-            [&](std::string_view prefix, std::string_view user_text) -> std::string {
-            static_cast<void>(prefix);
-            if (execution_order.empty()) {
-                execution_order.push_back("item_a");
-                return std::string("alpha");
-            }
-            execution_order.push_back("item_b");
-            static_cast<void>(user_text);
-            return std::string("beta");
-        },
+        .openai_client = client,
     });
 
     const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
@@ -84,7 +125,7 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
                                              });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionResult>(outcome));
-    EXPECT_EQ(execution_order, std::vector<std::string>({ "item_a", "item_b" }));
+    EXPECT_EQ(client->call_order, std::vector<std::string>({ "model_a", "model_b" }));
 
     const ExecutionResult& result = std::get<ExecutionResult>(outcome);
     ASSERT_EQ(result.step_results.size(), 2U);
@@ -93,15 +134,10 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
 }
 
 TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {
-    bool second_ran = false;
+    auto client = std::make_shared<SequencedOpenAiResponsesClient>(
+        std::vector<std::string>{ "alpha", "beta" });
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
-        .response_prefix = "",
-        .response_builder =
-            [&](std::string_view prefix, std::string_view user_text) -> std::string {
-            static_cast<void>(prefix);
-            second_ran = true;
-            return std::string(user_text);
-        },
+        .openai_client = client,
     });
 
     const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
@@ -130,18 +166,36 @@ TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {
     EXPECT_EQ(failure.code, "bad_request");
     EXPECT_EQ(failure.message, "execution step rejected the request");
     EXPECT_FALSE(failure.retryable);
-    EXPECT_FALSE(second_ran);
+    EXPECT_TRUE(client->call_order.empty());
+}
+
+TEST(GatewayPlanExecutorTest, MapsMissingProviderConfigurationToInternalError) {
+    GatewayPlanExecutor executor;
+
+    const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
+        .steps =
+            {
+                OpenAiLlmStep{
+                    .step_name = "step_a",
+                    .system_prompt = "",
+                    .model = "model_a",
+                },
+            },
+    },
+                                             ExecutionRuntimeInput{
+                                                 .user_text = "shared input",
+                                             });
+
+    ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
+    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    EXPECT_EQ(failure.code, "internal_error");
+    EXPECT_EQ(failure.message, "execution step failed");
+    EXPECT_FALSE(failure.retryable);
 }
 
 TEST(GatewayPlanExecutorTest, MapsInternalStepFailuresToStablePublicError) {
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
-        .response_prefix = "",
-        .response_builder =
-            [](std::string_view prefix, std::string_view user_text) -> std::string {
-            static_cast<void>(prefix);
-            static_cast<void>(user_text);
-            throw std::runtime_error("boom");
-        },
+        .openai_client = std::make_shared<ThrowingOpenAiResponsesClient>(),
     });
 
     const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{

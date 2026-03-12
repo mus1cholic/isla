@@ -143,6 +143,90 @@ class OneShotHttpServer {
     std::uint16_t port_ = 0;
 };
 
+class PausingHttpServer {
+  public:
+    explicit PausingHttpServer(std::vector<std::string> response_chunks,
+                               std::shared_future<void> continue_future = {})
+        : response_chunks_(std::move(response_chunks)),
+          continue_future_(std::move(continue_future)),
+          acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
+        port_ = acceptor_.local_endpoint().port();
+        thread_ = std::thread([this] { Run(); });
+    }
+
+    ~PausingHttpServer() {
+        Stop();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return port_;
+    }
+
+    [[nodiscard]] bool WaitForFirstChunkSent() {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (first_chunk_sent_.load()) {
+                return true;
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    }
+
+  private:
+    void Stop() {
+        if (stopped_.exchange(true)) {
+            return;
+        }
+        boost::system::error_code error;
+        acceptor_.close(error);
+        io_context_.stop();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void Run() {
+        try {
+            tcp::socket socket(io_context_);
+            acceptor_.accept(socket);
+
+            asio::streambuf buffer;
+            asio::read_until(socket, buffer, "\r\n\r\n");
+
+            for (std::size_t i = 0; i < response_chunks_.size(); ++i) {
+                boost::system::error_code write_error;
+                asio::write(socket,
+                            asio::buffer(response_chunks_[i].data(), response_chunks_[i].size()),
+                            write_error);
+                if (i == 0U) {
+                    first_chunk_sent_.store(true);
+                }
+                if (write_error) {
+                    break;
+                }
+                if (i == 0U && continue_future_.valid()) {
+                    continue_future_.wait();
+                }
+            }
+
+            boost::system::error_code error;
+            socket.shutdown(tcp::socket::shutdown_both, error);
+            socket.close(error);
+        } catch (...) {
+        }
+    }
+
+    std::vector<std::string> response_chunks_;
+    std::shared_future<void> continue_future_;
+    asio::io_context io_context_;
+    tcp::acceptor acceptor_;
+    std::thread thread_;
+    std::atomic<bool> stopped_{ false };
+    std::atomic<bool> first_chunk_sent_{ false };
+    std::uint16_t port_ = 0;
+};
+
 TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     const std::string body =
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
@@ -198,6 +282,54 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     EXPECT_NE(server.request_text().find("\"stream\":true"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.2\""), std::string::npos);
     EXPECT_NE(server.request_text().find("\"instructions\":\"system prompt\""), std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, StreamsSseWhenEventPayloadIsSplitAcrossReadChunks) {
+    const std::string first_chunk =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Connection: close\r\n\r\n"
+        "data: {\"type\":\"response.output_text.del";
+    const std::string second_chunk = "ta\",\"delta\":\"hello ";
+    const std::string third_chunk =
+        "world\"}\r\n\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    PausingHttpServer server({ first_chunk, second_chunk, third_chunk });
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    std::string output_text;
+    int completed_count = 0;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.2",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            return std::visit(
+                [&](const auto& concrete_event) -> absl::Status {
+                    using Event = std::decay_t<decltype(concrete_event)>;
+                    if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += concrete_event.text_delta;
+                    } else if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
+                        ++completed_count;
+                    }
+                    return absl::OkStatus();
+                },
+                event);
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_EQ(output_text, "hello world");
+    EXPECT_EQ(completed_count, 1);
 }
 
 TEST(OpenAiResponsesClientTest, PassesHeaderValuesWithShellMetacharactersLiterally) {
@@ -612,6 +744,149 @@ TEST(OpenAiResponsesClientTest, RejectsCompletedEventWithoutRecoverableText) {
     EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
     EXPECT_EQ(status.message(), "openai responses completed without any recoverable output text");
     EXPECT_TRUE(output_text.empty());
+}
+
+TEST(OpenAiResponsesClientTest, AbortsTransportWhenCallbackReturnsNonOk) {
+    auto continue_promise = std::make_shared<std::promise<void>>();
+    const std::string first_chunk =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Connection: close\r\n\r\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\r\n\r\n";
+    const std::string second_chunk =
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    PausingHttpServer server(
+        { first_chunk, second_chunk }, continue_promise->get_future().share());
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    auto response_future = std::async(std::launch::async, [&] {
+        return client->StreamResponse(
+            OpenAiResponsesRequest{
+                .model = "gpt-5.2",
+                .system_prompt = "",
+                .user_text = "hello",
+            },
+            [](const OpenAiResponsesEvent& event) {
+                return std::visit(
+                    [](const auto& concrete_event) -> absl::Status {
+                        using Event = std::decay_t<decltype(concrete_event)>;
+                        if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                            return absl::CancelledError("stop streaming");
+                        }
+                        return absl::OkStatus();
+                    },
+                    event);
+            });
+    });
+
+    ASSERT_TRUE(server.WaitForFirstChunkSent());
+    EXPECT_EQ(response_future.wait_for(200ms), std::future_status::ready);
+
+    continue_promise->set_value();
+    const absl::Status status = response_future.get();
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kCancelled);
+    EXPECT_EQ(status.message(), "stop streaming");
+}
+
+TEST(OpenAiResponsesClientTest, AbortsTransportAfterCompletedEventWithoutWaitingForDone) {
+    auto continue_promise = std::make_shared<std::promise<void>>();
+    const std::string first_chunk =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Connection: close\r\n\r\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\r\n\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n";
+    const std::string second_chunk = "data: [DONE]\r\n\r\n";
+    PausingHttpServer server(
+        { first_chunk, second_chunk }, continue_promise->get_future().share());
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    std::string output_text;
+    int completed_count = 0;
+    auto response_future = std::async(std::launch::async, [&] {
+        return client->StreamResponse(
+            OpenAiResponsesRequest{
+                .model = "gpt-5.2",
+                .system_prompt = "",
+                .user_text = "hello",
+            },
+            [&](const OpenAiResponsesEvent& event) -> absl::Status {
+                return std::visit(
+                    [&](const auto& concrete_event) -> absl::Status {
+                        using Event = std::decay_t<decltype(concrete_event)>;
+                        if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                            output_text += concrete_event.text_delta;
+                        } else if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
+                            ++completed_count;
+                        }
+                        return absl::OkStatus();
+                    },
+                    event);
+            });
+    });
+
+    ASSERT_TRUE(server.WaitForFirstChunkSent());
+    EXPECT_EQ(response_future.wait_for(200ms), std::future_status::ready);
+
+    continue_promise->set_value();
+    const absl::Status status = response_future.get();
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_EQ(output_text, "hello");
+    EXPECT_EQ(completed_count, 1);
+}
+
+TEST(OpenAiResponsesClientTest, AbortsTransportWhenStdoutBudgetIsExceeded) {
+    auto continue_promise = std::make_shared<std::promise<void>>();
+    const std::string oversized_body(300U * 1024U, 'x');
+    const std::string first_chunk =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Connection: close\r\n\r\n" +
+        oversized_body;
+    PausingHttpServer server({ first_chunk }, continue_promise->get_future().share());
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    auto response_future = std::async(std::launch::async, [&] {
+        return client->StreamResponse(
+            OpenAiResponsesRequest{
+                .model = "gpt-5.2",
+                .system_prompt = "",
+                .user_text = "hello",
+            },
+            [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+    });
+
+    ASSERT_TRUE(server.WaitForFirstChunkSent());
+    EXPECT_EQ(response_future.wait_for(200ms), std::future_status::ready);
+
+    continue_promise->set_value();
+    const absl::Status status = response_future.get();
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kResourceExhausted);
+    EXPECT_EQ(status.message(), "openai responses transport stdout exceeds maximum length");
 }
 
 } // namespace
