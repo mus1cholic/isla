@@ -1,5 +1,6 @@
 #include "ai_gateway_client_session.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <future>
@@ -87,7 +88,7 @@ class AiGatewayClientSession::Impl {
             if (thread_started_) {
                 return failed_precondition("ai gateway session is already connecting or running");
             }
-            if (closing_) {
+            if (closing_.load()) {
                 return failed_precondition("ai gateway session is closing");
             }
             thread_started_ = true;
@@ -100,7 +101,7 @@ class AiGatewayClientSession::Impl {
         auto promise = std::make_shared<std::promise<absl::Status>>();
         std::future<absl::Status> future = promise->get_future();
         asio::post(io_context_, [this, promise, client_session_id = std::move(client_session_id)] {
-            if (closing_) {
+            if (closing_.load()) {
                 resolve_promise(promise, failed_precondition("ai gateway session is closing"));
                 return;
             }
@@ -161,7 +162,7 @@ class AiGatewayClientSession::Impl {
         const std::string frame =
             protocol::to_json_string(protocol::SessionEndMessage{ *active_session_id });
         asio::post(io_context_, [this, promise, frame] {
-            if (closing_) {
+            if (closing_.load()) {
                 resolve_promise(promise, failed_precondition("ai gateway session is closing"));
                 return;
             }
@@ -209,7 +210,7 @@ class AiGatewayClientSession::Impl {
         session_started_ = false;
         session_ended_ = false;
         session_id_.reset();
-        closing_ = false;
+        closing_.store(false);
         transport_closed_notified_ = false;
         write_in_progress_ = false;
         pending_writes_.clear();
@@ -240,7 +241,7 @@ class AiGatewayClientSession::Impl {
             if (!session_started_) {
                 return failed_precondition("ai gateway session is not started");
             }
-            if (closing_) {
+            if (closing_.load()) {
                 return failed_precondition("ai gateway session is closing");
             }
         }
@@ -249,7 +250,7 @@ class AiGatewayClientSession::Impl {
         std::future<absl::Status> future = promise->get_future();
         const std::string frame = protocol::to_json_string(message);
         asio::post(io_context_, [this, promise, frame] {
-            if (closing_) {
+            if (closing_.load()) {
                 resolve_promise(promise, failed_precondition("ai gateway session is closing"));
                 return;
             }
@@ -360,7 +361,7 @@ class AiGatewayClientSession::Impl {
         bool keep_reading = false;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
-            keep_reading = websocket_open_ && !closing_;
+            keep_reading = websocket_open_ && !closing_.load();
         }
         if (keep_reading) {
             StartRead();
@@ -522,10 +523,9 @@ class AiGatewayClientSession::Impl {
     }
 
     void DoClose(const absl::Status& status) {
-        if (closing_) {
+        if (closing_.exchange(true)) {
             return;
         }
-        closing_ = true;
         HandleIoFailure(status);
     }
 
@@ -564,7 +564,7 @@ class AiGatewayClientSession::Impl {
     bool session_started_ = false;
     bool session_ended_ = false;
     bool write_in_progress_ = false;
-    bool closing_ = false;
+    std::atomic<bool> closing_{ false };
     bool transport_closed_notified_ = false;
 };
 

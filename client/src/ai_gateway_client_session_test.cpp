@@ -228,7 +228,7 @@ class AiGatewayClientSessionIntegrationTest : public ::testing::Test {
   protected:
     AiGatewayClientSessionIntegrationTest()
         : responder_(GatewayStubResponderConfig{
-              .response_delay = 0ms,
+              .response_delay = 100ms,
               .openai_client = MakeEchoOpenAiResponsesClient(),
           }),
           server_(
