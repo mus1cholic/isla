@@ -12,16 +12,16 @@ namespace {
 TEST(GatewayStepRegistryTest, RejectsMissingConfiguredResponsesClient) {
     GatewayStepRegistry registry;
 
-    const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
-        0,
-        ExecutionStep(OpenAiLlmStep{
-            .step_name = "main",
-            .system_prompt = "",
-            .model = "gpt-4.1-mini",
-        }),
-        ExecutionRuntimeInput{
-            .user_text = "hello",
-        });
+    const absl::StatusOr<ExecutionStepResult> result =
+        registry.ExecuteStep(0,
+                             ExecutionStep(OpenAiLlmStep{
+                                 .step_name = "main",
+                                 .system_prompt = "",
+                                 .model = "gpt-4.1-mini",
+                             }),
+                             ExecutionRuntimeInput{
+                                 .user_text = "hello",
+                             });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
@@ -45,16 +45,16 @@ TEST(GatewayStepRegistryTest, RejectsMissingRuntimeUserText) {
         .openai_client = client,
     });
 
-    const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
-        0,
-        ExecutionStep(OpenAiLlmStep{
-            .step_name = "main",
-            .system_prompt = "",
-            .model = "gpt-4.1-mini",
-        }),
-        ExecutionRuntimeInput{
-            .user_text = "",
-        });
+    const absl::StatusOr<ExecutionStepResult> result =
+        registry.ExecuteStep(0,
+                             ExecutionStep(OpenAiLlmStep{
+                                 .step_name = "main",
+                                 .system_prompt = "",
+                                 .model = "gpt-4.1-mini",
+                             }),
+                             ExecutionRuntimeInput{
+                                 .user_text = "",
+                             });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
@@ -67,19 +67,19 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
         .openai_client = client,
     });
 
-    const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
-        0,
-        ExecutionStep(OpenAiLlmStep{
-            .step_name = "main",
-            .system_prompt = "system",
-            .model = "gpt-5.2",
-        }),
-        ExecutionRuntimeInput{
-            .user_text = "hello",
-        });
+    const absl::StatusOr<ExecutionStepResult> result =
+        registry.ExecuteStep(0,
+                             ExecutionStep(OpenAiLlmStep{
+                                 .step_name = "main",
+                                 .system_prompt = "system",
+                                 .model = "gpt-5.4",
+                             }),
+                             ExecutionRuntimeInput{
+                                 .user_text = "hello",
+                             });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(client->last_request.model, "gpt-5.2");
+    EXPECT_EQ(client->last_request.model, "gpt-5.4");
     EXPECT_EQ(client->last_request.system_prompt, "system");
     EXPECT_EQ(client->last_request.user_text, "hello");
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");

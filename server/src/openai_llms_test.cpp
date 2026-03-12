@@ -52,12 +52,12 @@ TEST(OpenAiLlmstest, RejectsMissingConfiguredResponsesClient) {
 
 TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
-    OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.2", client);
+    OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.4", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
 
     ASSERT_TRUE(result.ok()) << result.status();
-    ASSERT_EQ(client->last_request.model, "gpt-5.2");
+    ASSERT_EQ(client->last_request.model, "gpt-5.4");
     ASSERT_EQ(client->last_request.system_prompt, "system prompt");
     ASSERT_EQ(client->last_request.user_text, "hi");
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "hello world");
@@ -65,7 +65,7 @@ TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
 
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("rate limited"));
-    OpenAiLLMs openai_llms("main", "", "gpt-5.2", client);
+    OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
 
@@ -77,7 +77,7 @@ TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientValidationFailure) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test",
                                                       absl::UnauthenticatedError("bad api key"));
-    OpenAiLLMs openai_llms("main", "", "gpt-5.2", client);
+    OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
 
@@ -95,7 +95,7 @@ TEST(OpenAiLlmstest, ConvertsResponsesClientExceptionToInternalError) {
             static_cast<void>(on_event);
             throw std::runtime_error("boom");
         });
-    OpenAiLLMs openai_llms("main", "", "gpt-5.2", client);
+    OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hello");
 
@@ -107,7 +107,7 @@ TEST(OpenAiLlmstest, ConvertsResponsesClientExceptionToInternalError) {
 TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(),
                                                       std::string(kMaxTextOutputBytes + 1U, 'x'));
-    OpenAiLLMs openai_llms("main", "", "gpt-5.2", client);
+    OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
 

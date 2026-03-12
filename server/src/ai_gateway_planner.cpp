@@ -7,7 +7,7 @@ namespace isla::server::ai_gateway {
 namespace {
 
 constexpr std::string_view kMainStepName = "main";
-constexpr std::string_view kMainModel = "gpt-5.2";
+constexpr std::string_view kMainModel = "gpt-5.4";
 
 } // namespace
 

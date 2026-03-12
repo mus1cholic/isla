@@ -261,7 +261,7 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     int completed_count = 0;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "system prompt",
             .user_text = "hello",
         },
@@ -286,16 +286,15 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     EXPECT_NE(server.request_text().find("POST /v1/responses HTTP/1.1"), std::string::npos);
     EXPECT_NE(server.request_text().find("Authorization: Bearer test_key"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"stream\":true"), std::string::npos);
-    EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.2\""), std::string::npos);
+    EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.4\""), std::string::npos);
     EXPECT_NE(server.request_text().find("\"instructions\":\"system prompt\""), std::string::npos);
 }
 
 TEST(OpenAiResponsesClientTest, StreamsSseWhenEventPayloadIsSplitAcrossReadChunks) {
-    const std::string first_chunk =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Connection: close\r\n\r\n"
-        "data: {\"type\":\"response.output_text.del";
+    const std::string first_chunk = "HTTP/1.1 200 OK\r\n"
+                                    "Content-Type: text/event-stream\r\n"
+                                    "Connection: close\r\n\r\n"
+                                    "data: {\"type\":\"response.output_text.del";
     const std::string second_chunk = "ta\",\"delta\":\"hello ";
     const std::string third_chunk =
         "world\"}\r\n\r\n"
@@ -315,7 +314,7 @@ TEST(OpenAiResponsesClientTest, StreamsSseWhenEventPayloadIsSplitAcrossReadChunk
     int completed_count = 0;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -363,7 +362,7 @@ TEST(OpenAiResponsesClientTest, PassesHeaderValuesWithShellMetacharactersLiteral
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -401,7 +400,7 @@ TEST(OpenAiResponsesClientTest, ExtractsFinalTextFromCompletedEventWhenNoDeltaAr
     std::string output_text;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -442,7 +441,7 @@ TEST(OpenAiResponsesClientTest, MapsHttpErrorResponsesToAbslStatus) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -547,7 +546,7 @@ TEST(OpenAiResponsesClientTest, MapsAdditionalHttpErrorStatuses) {
 
         const absl::Status status = client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.2",
+                .model = "gpt-5.4",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -583,7 +582,7 @@ TEST(OpenAiResponsesClientTest, MapsResponseFailedEventToUnavailableStatus) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -616,7 +615,7 @@ TEST(OpenAiResponsesClientTest, RejectsMalformedSseJson) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -649,7 +648,7 @@ TEST(OpenAiResponsesClientTest, RejectsSseEventsWithWrongTypedStringFields) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -684,7 +683,7 @@ TEST(OpenAiResponsesClientTest, PropagatesCallbackFailure) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -730,7 +729,7 @@ TEST(OpenAiResponsesClientTest, RejectsCompletedEventWithoutRecoverableText) {
     std::string output_text;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.2",
+            .model = "gpt-5.4",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -762,8 +761,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenCallbackReturnsNonOk) {
     const std::string second_chunk =
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
         "data: [DONE]\r\n\r\n";
-    PausingHttpServer server(
-        { first_chunk, second_chunk }, continue_promise->get_future().share());
+    PausingHttpServer server({ first_chunk, second_chunk }, continue_promise->get_future().share());
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
         .api_key = "test_key",
@@ -776,7 +774,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenCallbackReturnsNonOk) {
     auto response_future = std::async(std::launch::async, [&] {
         return client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.2",
+                .model = "gpt-5.4",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -815,8 +813,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportAfterCompletedEventWithoutWaiting
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\r\n\r\n"
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n";
     const std::string second_chunk = "data: [DONE]\r\n\r\n";
-    PausingHttpServer server(
-        { first_chunk, second_chunk }, continue_promise->get_future().share());
+    PausingHttpServer server({ first_chunk, second_chunk }, continue_promise->get_future().share());
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
         .api_key = "test_key",
@@ -831,7 +828,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportAfterCompletedEventWithoutWaiting
     auto response_future = std::async(std::launch::async, [&] {
         return client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.2",
+                .model = "gpt-5.4",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -863,11 +860,10 @@ TEST(OpenAiResponsesClientTest, AbortsTransportAfterCompletedEventWithoutWaiting
 TEST(OpenAiResponsesClientTest, AbortsTransportWhenStdoutBudgetIsExceeded) {
     auto continue_promise = std::make_shared<std::promise<void>>();
     const std::string oversized_body(300U * 1024U, 'x');
-    const std::string first_chunk =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Connection: close\r\n\r\n" +
-        oversized_body;
+    const std::string first_chunk = "HTTP/1.1 200 OK\r\n"
+                                    "Content-Type: text/event-stream\r\n"
+                                    "Connection: close\r\n\r\n" +
+                                    oversized_body;
     PausingHttpServer server({ first_chunk }, continue_promise->get_future().share());
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -881,7 +877,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenStdoutBudgetIsExceeded) {
     auto response_future = std::async(std::launch::async, [&] {
         return client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.2",
+                .model = "gpt-5.4",
                 .system_prompt = "",
                 .user_text = "hello",
             },
