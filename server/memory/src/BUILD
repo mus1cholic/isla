@@ -31,6 +31,18 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "memory_store",
+    srcs = ["memory_store.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":memory_types",
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
 cc_test(
     name = "memory_types_test",
     srcs = ["memory_types_test.cpp"],
@@ -81,6 +93,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":working_memory",
+        ":memory_store",
         "//server/memory/include/isla/server/memory:memory_headers",
         "//server/src:ai_gateway_logging_utils",
         "@abseil-cpp//absl/log:log",
@@ -123,6 +136,16 @@ cc_test(
     srcs = ["memory_orchestrator_test.cpp"],
     deps = [
         ":memory_orchestrator",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "memory_store_test",
+    srcs = ["memory_store_test.cpp"],
+    deps = [
+        ":memory_store",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],

@@ -1,11 +1,13 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
@@ -47,6 +49,7 @@ struct UserQueryMemoryResult {
 
 struct MemoryOrchestratorInit {
     std::string user_id;
+    MemoryStorePtr store;
 };
 
 // Central entry point for gateway-delivered user turns. The gateway only forwards the raw user
@@ -54,7 +57,8 @@ struct MemoryOrchestratorInit {
 // coordinating future mid/long-term memory hooks.
 class MemoryOrchestrator {
   public:
-    MemoryOrchestrator(std::string session_id, WorkingMemory memory);
+    MemoryOrchestrator(std::string session_id, WorkingMemory memory,
+                       MemoryStorePtr store = nullptr);
 
     [[nodiscard]] static absl::StatusOr<MemoryOrchestrator>
     Create(std::string session_id, const MemoryOrchestratorInit& init);
@@ -82,6 +86,11 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status ValidateTurnText(std::string_view session_id,
                                                 std::string_view turn_id,
                                                 std::string_view role_label) const;
+    [[nodiscard]] absl::Status PersistSessionIfNeeded(Timestamp create_time);
+    [[nodiscard]] absl::Status PersistConversationMessage(std::string_view turn_id,
+                                                          const Message& message);
+    [[nodiscard]] absl::Status
+    PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
     [[nodiscard]] absl::Status HandleConversationMessage(std::string_view session_id,
                                                          std::string_view turn_id,
                                                          std::string_view text,
@@ -95,6 +104,8 @@ class MemoryOrchestrator {
 
     std::string session_id_;
     WorkingMemory memory_;
+    MemoryStorePtr store_;
+    bool session_persisted_ = false;
 };
 
 } // namespace isla::server::memory

@@ -4,6 +4,7 @@ cc_library(
     name = "memory_headers",
     hdrs = [
         "conversation.hpp",
+        "memory_store.hpp",
         "memory_timestamp_utils.hpp",
         "memory_types.hpp",
         "memory_orchestrator.hpp",
