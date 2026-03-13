@@ -4,6 +4,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -202,8 +203,8 @@ std::optional<std::uint16_t> parse_gateway_env_port(std::string_view name,
     const char* end = value.value->data() + value.value->size();
     const auto parsed = std::from_chars(begin, end, port);
     if (parsed.ec != std::errc{} || parsed.ptr != end || port == 0U || port > 65535U) {
-        LOG(WARNING) << "ClientApp: ignoring invalid AI gateway port in " << kAiGatewayPortEnvVar
-                     << " value='" << *value.value << "'";
+        LOG(WARNING) << "ClientApp: ignoring invalid AI gateway port in " << name << " value='"
+                     << *value.value << "'";
         return std::nullopt;
     }
 

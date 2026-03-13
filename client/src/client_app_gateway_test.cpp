@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include "absl/status/status.h"
 #include <SDL3/SDL.h>
 
 #include <boost/asio/connect.hpp>
