@@ -1,5 +1,6 @@
 #include "isla/server/memory/memory_orchestrator.hpp"
 
+#include <cstdint>
 #include <string_view>
 #include <utility>
 
@@ -19,8 +20,10 @@ absl::Status invalid_argument(std::string_view message) {
 
 } // namespace
 
-MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory memory)
-    : session_id_(std::move(session_id)), memory_(std::move(memory)) {}
+MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory memory,
+                                       MemoryStorePtr store)
+    : session_id_(std::move(session_id)), memory_(std::move(memory)), store_(std::move(store)),
+      session_persisted_(false) {}
 
 absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
                                                               const MemoryOrchestratorInit& init) {
@@ -35,7 +38,7 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
     if (!memory.ok()) {
         return memory.status();
     }
-    return MemoryOrchestrator(std::move(session_id), std::move(*memory));
+    return MemoryOrchestrator(std::move(session_id), std::move(*memory), init.store);
 }
 
 absl::Status MemoryOrchestrator::ValidateTurnText(std::string_view session_id,
@@ -54,6 +57,123 @@ absl::Status MemoryOrchestrator::ValidateTurnText(std::string_view session_id,
                      << " expected_session_id=" << SanitizeForLog(session_id_)
                      << " received_session_id=" << SanitizeForLog(session_id);
         return invalid_argument("gateway turn text session_id does not match orchestrator session");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status MemoryOrchestrator::PersistSessionIfNeeded(Timestamp create_time) {
+    if (!store_ || session_persisted_) {
+        return absl::OkStatus();
+    }
+
+    const WorkingMemoryState& state = memory_.snapshot();
+    const MemorySessionRecord session_record{
+        .session_id = session_id_,
+        .user_id = state.conversation.user_id,
+        .system_prompt = state.system_prompt,
+        .created_at = create_time,
+        .ended_at = std::nullopt,
+    };
+    if (absl::Status status = ValidateMemorySessionRecord(session_record); !status.ok()) {
+        return status;
+    }
+    if (absl::Status status = store_->UpsertSession(session_record); !status.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to persist session session_id="
+                     << SanitizeForLog(session_id_)
+                     << " user_id=" << SanitizeForLog(state.conversation.user_id) << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
+        return status;
+    }
+    session_persisted_ = true;
+    return absl::OkStatus();
+}
+
+absl::Status MemoryOrchestrator::PersistConversationMessage(std::string_view turn_id,
+                                                            const Message& message) {
+    if (!store_) {
+        return absl::OkStatus();
+    }
+
+    const Conversation& conversation = memory_.conversation();
+    if (conversation.items.empty()) {
+        return invalid_argument(
+            "cannot persist a conversation message without a conversation item");
+    }
+    const ConversationItem& current_item = conversation.items.back();
+    if (current_item.type != ConversationItemType::OngoingEpisode ||
+        !current_item.ongoing_episode.has_value() ||
+        current_item.ongoing_episode->messages.empty()) {
+        return invalid_argument("cannot persist a conversation message without an ongoing episode");
+    }
+
+    const std::int64_t conversation_item_index =
+        static_cast<std::int64_t>(conversation.items.size() - 1U);
+    const std::int64_t message_index =
+        static_cast<std::int64_t>(current_item.ongoing_episode->messages.size() - 1U);
+    const ConversationMessageWrite write{
+        .session_id = session_id_,
+        .conversation_item_index = conversation_item_index,
+        .message_index = message_index,
+        .turn_id = std::string(turn_id),
+        .role = message.role,
+        .content = message.content,
+        .create_time = message.create_time,
+    };
+    if (absl::Status status = ValidateConversationMessageWrite(write); !status.ok()) {
+        return status;
+    }
+    if (absl::Status status = store_->AppendConversationMessage(write); !status.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to persist conversation message session_id="
+                     << SanitizeForLog(session_id_) << " turn_id=" << SanitizeForLog(turn_id)
+                     << " conversation_item_index=" << conversation_item_index
+                     << " message_index=" << message_index << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
+        return status;
+    }
+    return absl::OkStatus();
+}
+
+absl::Status
+MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush) {
+    if (!store_) {
+        return absl::OkStatus();
+    }
+
+    const MidTermEpisodeWrite episode_write{
+        .session_id = session_id_,
+        .source_conversation_item_index = static_cast<std::int64_t>(flush.conversation_item_index),
+        .episode = flush.episode,
+    };
+    if (absl::Status status = ValidateMidTermEpisodeWrite(episode_write); !status.ok()) {
+        return status;
+    }
+    if (absl::Status status = store_->UpsertMidTermEpisode(episode_write); !status.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to persist mid-term episode session_id="
+                     << SanitizeForLog(session_id_)
+                     << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
+                     << " conversation_item_index=" << flush.conversation_item_index << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
+        return status;
+    }
+
+    const EpisodeStubWrite stub_write{
+        .session_id = session_id_,
+        .conversation_item_index = static_cast<std::int64_t>(flush.conversation_item_index),
+        .episode_id = flush.episode.episode_id,
+        .episode_stub_content = flush.episode.tier3_ref,
+        .episode_stub_create_time = flush.stub_timestamp,
+    };
+    if (absl::Status status = ValidateEpisodeStubWrite(stub_write); !status.ok()) {
+        return status;
+    }
+    if (absl::Status status = store_->ReplaceConversationItemWithEpisodeStub(stub_write);
+        !status.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to persist episode stub session_id="
+                     << SanitizeForLog(session_id_)
+                     << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
+                     << " conversation_item_index=" << flush.conversation_item_index << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
+        return status;
     }
     return absl::OkStatus();
 }
@@ -111,10 +231,19 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
         return validation_status;
     }
 
+    if (absl::Status persistence_status = PersistSessionIfNeeded(create_time);
+        !persistence_status.ok()) {
+        return persistence_status;
+    }
+
     if (role == MessageRole::User) {
         AppendUserMessage(memory_.mutable_conversation(), std::string(text), create_time);
         const Message& user_message =
             memory_.conversation().items.back().ongoing_episode->messages.back();
+        if (absl::Status persistence_status = PersistConversationMessage(turn_id, user_message);
+            !persistence_status.ok()) {
+            return persistence_status;
+        }
         if (absl::Status post_status = AfterUserQueryAppended(user_message); !post_status.ok()) {
             return post_status;
         }
@@ -122,6 +251,11 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
         AppendAssistantMessage(memory_.mutable_conversation(), std::string(text), create_time);
         const Message& assistant_message =
             memory_.conversation().items.back().ongoing_episode->messages.back();
+        if (absl::Status persistence_status =
+                PersistConversationMessage(turn_id, assistant_message);
+            !persistence_status.ok()) {
+            return persistence_status;
+        }
         if (absl::Status post_status = AfterAssistantReplyAppended(assistant_message);
             !post_status.ok()) {
             return post_status;
@@ -157,6 +291,15 @@ absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantRepl
 
 absl::Status
 MemoryOrchestrator::ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush) {
+    const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
+        memory_.CaptureOngoingEpisodeForFlush(flush.conversation_item_index);
+    if (!captured.ok()) {
+        return captured.status();
+    }
+    if (absl::Status persistence_status = PersistCompletedEpisodeFlush(flush);
+        !persistence_status.ok()) {
+        return persistence_status;
+    }
     return memory_.ApplyCompletedOngoingEpisodeFlush(flush);
 }
 

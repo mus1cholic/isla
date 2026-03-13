@@ -8,10 +8,6 @@
 namespace isla::server::memory {
 namespace {
 
-absl::Status invalid_argument(std::string_view message) {
-    return absl::InvalidArgumentError(std::string(message));
-}
-
 OngoingEpisode& CurrentOngoingEpisode(Conversation& conversation) {
     if (conversation.items.empty() ||
         conversation.items.back().type != ConversationItemType::OngoingEpisode ||
@@ -71,24 +67,24 @@ absl::Status ReplaceOngoingEpisodeWithStub(Conversation& conversation,
     if (conversation_item_index >= conversation.items.size()) {
         LOG(WARNING) << "Conversation flush rejected: item index out of range index="
                      << conversation_item_index << " item_count=" << conversation.items.size();
-        return invalid_argument("flush target exceeds conversation size");
+        return absl::InvalidArgumentError("flush target exceeds conversation size");
     }
     if (stub_text.empty()) {
         LOG(WARNING) << "Conversation flush rejected: empty stub text index="
                      << conversation_item_index;
-        return invalid_argument("flush stub text must be non-empty");
+        return absl::InvalidArgumentError("flush stub text must be non-empty");
     }
 
     auto& item = conversation.items[conversation_item_index];
     if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
         LOG(WARNING) << "Conversation flush rejected: target is not an ongoing episode index="
                      << conversation_item_index;
-        return invalid_argument("flush target must be an ongoing episode");
+        return absl::InvalidArgumentError("flush target must be an ongoing episode");
     }
     if (item.ongoing_episode->messages.empty()) {
         LOG(WARNING) << "Conversation flush rejected: target ongoing episode is empty index="
                      << conversation_item_index;
-        return invalid_argument("flush target must contain at least one message");
+        return absl::InvalidArgumentError("flush target must contain at least one message");
     }
 
     const std::size_t message_count = item.ongoing_episode->messages.size();
