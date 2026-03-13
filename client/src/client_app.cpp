@@ -4,12 +4,18 @@
 
 #include <SDL3/SDL.h>
 
+#include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "client_app_animation_world.hpp"
@@ -28,6 +34,182 @@ constexpr std::uint64_t kNanosecondsPerSecond = 1000000000ULL;
 constexpr std::uint32_t kAnimatedBoundsRecomputeIntervalTicks = 30U;
 constexpr std::string_view kAnimationClipEnvVar = "ISLA_ANIM_CLIP";
 constexpr std::string_view kAnimationPlaybackModeEnvVar = "ISLA_ANIM_PLAYBACK_MODE";
+constexpr std::string_view kAiGatewayEnabledEnvVar = "ISLA_AI_GATEWAY_ENABLED";
+constexpr std::string_view kAiGatewayHostEnvVar = "ISLA_AI_GATEWAY_HOST";
+constexpr std::string_view kAiGatewayPortEnvVar = "ISLA_AI_GATEWAY_PORT";
+constexpr std::string_view kAiGatewayPathEnvVar = "ISLA_AI_GATEWAY_PATH";
+constexpr std::string_view kAiGatewayPromptEnvVar = "ISLA_AI_GATEWAY_PROMPT";
+constexpr std::string_view kAiGatewaySendHotkey = "G";
+
+enum class GatewayEnvValueSource {
+    Unset = 0,
+    ProcessEnv,
+    DotEnv,
+    DefaultValue,
+};
+
+struct GatewayEnvValue {
+    std::optional<std::string> value;
+    GatewayEnvValueSource source = GatewayEnvValueSource::Unset;
+};
+
+bool env_var_is_truthy(std::string_view value) {
+    return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES" ||
+           value == "on" || value == "ON";
+}
+
+const char* gateway_env_value_source_name(GatewayEnvValueSource source) {
+    switch (source) {
+    case GatewayEnvValueSource::Unset:
+        return "unset";
+    case GatewayEnvValueSource::ProcessEnv:
+        return "process_env";
+    case GatewayEnvValueSource::DotEnv:
+        return "dotenv";
+    case GatewayEnvValueSource::DefaultValue:
+        return "default";
+    }
+    return "unknown";
+}
+
+std::string trim_ascii(std::string_view text) {
+    std::size_t begin = 0U;
+    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+        ++begin;
+    }
+
+    std::size_t end = text.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1U])) != 0) {
+        --end;
+    }
+    return std::string(text.substr(begin, end - begin));
+}
+
+bool is_quoted_value(std::string_view value) {
+    return value.size() >= 2U && ((value.front() == '"' && value.back() == '"') ||
+                                  (value.front() == '\'' && value.back() == '\''));
+}
+
+std::string unquote_value(std::string_view value) {
+    if (is_quoted_value(value)) {
+        return std::string(value.substr(1U, value.size() - 2U));
+    }
+    return std::string(value);
+}
+
+using DotEnvMap = std::unordered_map<std::string, std::string>;
+
+DotEnvMap load_dotenv_file(std::string_view path) {
+    std::ifstream input{ std::string(path) };
+    if (!input.is_open()) {
+        return {};
+    }
+
+    DotEnvMap values;
+    std::string line;
+    while (std::getline(input, line)) {
+        std::string trimmed = trim_ascii(line);
+        if (trimmed.empty() || trimmed.front() == '#') {
+            continue;
+        }
+
+        const std::size_t equals = trimmed.find('=');
+        if (equals == std::string::npos) {
+            continue;
+        }
+
+        const std::string key = trim_ascii(std::string_view(trimmed).substr(0U, equals));
+        if (key.empty()) {
+            continue;
+        }
+
+        std::string value = trim_ascii(std::string_view(trimmed).substr(equals + 1U));
+        if (!is_quoted_value(value)) {
+            if (const std::size_t comment = value.find('#'); comment != std::string::npos) {
+                value = trim_ascii(std::string_view(value).substr(0U, comment));
+            }
+        }
+        values.insert_or_assign(key, unquote_value(value));
+    }
+
+    return values;
+}
+
+std::vector<std::filesystem::path> dotenv_candidate_paths() {
+    std::vector<std::filesystem::path> candidates;
+    if (const char* workspace_dir = std::getenv("BUILD_WORKSPACE_DIRECTORY");
+        workspace_dir != nullptr && workspace_dir[0] != '\0') {
+        candidates.emplace_back(std::filesystem::path(workspace_dir) / ".env");
+    }
+
+    std::error_code current_path_error;
+    const std::filesystem::path current_path = std::filesystem::current_path(current_path_error);
+    if (!current_path_error) {
+        if (candidates.empty() || candidates.back() != (current_path / ".env")) {
+            candidates.emplace_back(current_path / ".env");
+        }
+    }
+    return candidates;
+}
+
+DotEnvMap lookup_dotenv_values() {
+    for (const std::filesystem::path& candidate : dotenv_candidate_paths()) {
+        const DotEnvMap loaded = load_dotenv_file(candidate.string());
+        if (!loaded.empty()) {
+            VLOG(1) << "ClientApp: using .env file at " << candidate.string()
+                    << " for local gateway defaults";
+            return loaded;
+        }
+    }
+    return {};
+}
+
+std::optional<std::string> read_process_env_string(std::string_view name) {
+    const std::string env_name(name);
+    const char* value = std::getenv(env_name.c_str());
+    if (value == nullptr || value[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::string(value);
+}
+
+GatewayEnvValue read_gateway_env_value(std::string_view name, const DotEnvMap& dotenv_values) {
+    if (const std::optional<std::string> process_value = read_process_env_string(name);
+        process_value.has_value()) {
+        return GatewayEnvValue{
+            .value = process_value,
+            .source = GatewayEnvValueSource::ProcessEnv,
+        };
+    }
+
+    const auto it = dotenv_values.find(std::string(name));
+    if (it == dotenv_values.end() || it->second.empty()) {
+        return GatewayEnvValue{};
+    }
+    return GatewayEnvValue{
+        .value = it->second,
+        .source = GatewayEnvValueSource::DotEnv,
+    };
+}
+
+std::optional<std::uint16_t> parse_gateway_env_port(std::string_view name,
+                                                    const GatewayEnvValue& value) {
+    if (!value.value.has_value()) {
+        return std::nullopt;
+    }
+
+    std::uint32_t port = 0U;
+    const char* begin = value.value->data();
+    const char* end = value.value->data() + value.value->size();
+    const auto parsed = std::from_chars(begin, end, port);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || port == 0U || port > 65535U) {
+        LOG(WARNING) << "ClientApp: ignoring invalid AI gateway port in " << name << " value='"
+                     << *value.value << "'";
+        return std::nullopt;
+    }
+
+    return static_cast<std::uint16_t>(port);
+}
 
 } // namespace
 
@@ -83,6 +265,7 @@ bool ClientApp::initialize() {
         return false;
     }
     load_startup_mesh();
+    initialize_ai_gateway_from_environment();
     last_tick_ns_ = sdl_runtime_.get_ticks_ns();
     is_running_ = true;
     return true;
@@ -215,6 +398,8 @@ void ClientApp::tick_physics_proxies(bool recompute_bounds) {
 }
 
 void ClientApp::tick() {
+    drain_gateway_events();
+
     const std::uint64_t now_ns = sdl_runtime_.get_ticks_ns();
     float dt_seconds = 0.0F;
     if (now_ns < last_tick_ns_) {
@@ -239,6 +424,12 @@ void ClientApp::tick() {
             continue;
         }
 
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+            event.key.scancode == SDL_SCANCODE_G) {
+            send_gateway_canned_prompt();
+            continue;
+        }
+
         if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
             event.type == SDL_EVENT_WINDOW_RESIZED) {
             int width = window_width_;
@@ -258,6 +449,7 @@ void ClientApp::tick() {
     }
 
     tick_animation(dt_seconds);
+    drain_gateway_events();
 }
 
 void ClientApp::tick_animation(float dt_seconds) {
@@ -303,6 +495,7 @@ void ClientApp::render() const {
 }
 
 void ClientApp::shutdown() {
+    shutdown_ai_gateway();
     model_renderer_.shutdown();
 
     if (renderer_ != nullptr) {
@@ -316,6 +509,295 @@ void ClientApp::shutdown() {
 
     sdl_runtime_.quit();
     is_running_ = false;
+}
+
+void ClientApp::initialize_ai_gateway_from_environment() {
+    const DotEnvMap dotenv_values = lookup_dotenv_values();
+    const GatewayEnvValue enabled = read_gateway_env_value(kAiGatewayEnabledEnvVar, dotenv_values);
+    if (!enabled.value.has_value() || !env_var_is_truthy(*enabled.value)) {
+        LOG(INFO) << "ClientApp: AI gateway startup skipped because " << kAiGatewayEnabledEnvVar
+                  << " is not enabled"
+                  << " source=" << gateway_env_value_source_name(enabled.source);
+        return;
+    }
+
+    AiGatewayClientConfig config{};
+    const GatewayEnvValue host = read_gateway_env_value(kAiGatewayHostEnvVar, dotenv_values);
+    if (host.value.has_value()) {
+        config.host = *host.value;
+    }
+    const GatewayEnvValue port_value = read_gateway_env_value(kAiGatewayPortEnvVar, dotenv_values);
+    if (const std::optional<std::uint16_t> port =
+            parse_gateway_env_port(kAiGatewayPortEnvVar, port_value);
+        port.has_value()) {
+        config.port = *port;
+    }
+    const GatewayEnvValue path = read_gateway_env_value(kAiGatewayPathEnvVar, dotenv_values);
+    if (path.value.has_value()) {
+        config.path = *path.value;
+    }
+
+    GatewayEnvValue prompt = read_gateway_env_value(kAiGatewayPromptEnvVar, dotenv_values);
+    if (!prompt.value.has_value()) {
+        prompt = GatewayEnvValue{
+            .value = std::string("hello!"),
+            .source = GatewayEnvValueSource::DefaultValue,
+        };
+    }
+    const GatewayEnvValueSource host_source =
+        host.value.has_value() ? host.source : GatewayEnvValueSource::DefaultValue;
+    const GatewayEnvValueSource resolved_port_source =
+        port_value.value.has_value() ? port_value.source : GatewayEnvValueSource::DefaultValue;
+    const GatewayEnvValueSource path_source =
+        path.value.has_value() ? path.source : GatewayEnvValueSource::DefaultValue;
+    const std::string host_for_log = config.host;
+    const std::uint16_t port_for_log = config.port;
+    const std::string path_for_log = config.path;
+    LOG(INFO) << "ClientApp: AI gateway startup requested host='" << config.host
+              << "' host_source=" << gateway_env_value_source_name(host_source)
+              << " port=" << config.port
+              << " port_source=" << gateway_env_value_source_name(resolved_port_source) << " path='"
+              << config.path << "' path_source=" << gateway_env_value_source_name(path_source)
+              << " prompt_source=" << gateway_env_value_source_name(prompt.source);
+    const absl::Status status = start_ai_gateway_session(std::move(config), *prompt.value);
+    if (!status.ok()) {
+        LOG(WARNING) << "ClientApp: AI gateway session unavailable: " << status << " host='"
+                     << host_for_log << "' port=" << port_for_log << " path='" << path_for_log
+                     << "' detail='is isla_ai_gateway running and reachable?'";
+        return;
+    }
+
+    LOG(INFO) << "ClientApp: AI gateway connected; press " << kAiGatewaySendHotkey
+              << " to send the canned prompt";
+}
+
+absl::Status ClientApp::start_ai_gateway_session(AiGatewayClientConfig config,
+                                                 std::string canned_prompt) {
+    shutdown_ai_gateway();
+    {
+        std::lock_guard<std::mutex> lock(gateway_event_mutex_);
+        gateway_event_queue_.clear();
+    }
+    gateway_state_.enabled = false;
+    gateway_state_.connected = false;
+    gateway_state_.session_id.reset();
+    gateway_state_.inflight_turn_id.reset();
+    gateway_state_.last_reply_text.reset();
+    gateway_state_.last_error.reset();
+
+    config.on_message = [this](const shared::ai_gateway::GatewayMessage& message) {
+        enqueue_gateway_message(message);
+    };
+    config.on_transport_closed = [this](absl::Status status) {
+        enqueue_gateway_transport_closed(std::move(status));
+    };
+
+    auto session = std::make_unique<AiGatewayClientSession>(std::move(config));
+    const absl::Status status = session->ConnectAndStart();
+    if (!status.ok()) {
+        session->Close();
+        return status;
+    }
+
+    ai_gateway_session_ = std::move(session);
+    gateway_state_.enabled = true;
+    gateway_state_.connected = true;
+    gateway_state_.next_turn_sequence = 1U;
+    gateway_state_.canned_prompt = std::move(canned_prompt);
+    gateway_state_.session_id = ai_gateway_session_->session_id();
+    gateway_state_.inflight_turn_id.reset();
+    gateway_state_.last_reply_text.reset();
+    gateway_state_.last_error.reset();
+    return absl::OkStatus();
+}
+
+void ClientApp::shutdown_ai_gateway() {
+    if (ai_gateway_session_ == nullptr) {
+        VLOG(1) << "ClientApp: AI gateway shutdown skipped because no session was created";
+        return;
+    }
+
+    const std::string session_id_for_log = gateway_state_.session_id.value_or("<unknown>");
+    const std::string inflight_turn_id_for_log = gateway_state_.inflight_turn_id.value_or("<none>");
+
+    if (gateway_state_.connected && !gateway_state_.inflight_turn_id.has_value()) {
+        LOG(INFO) << "ClientApp: requesting graceful AI gateway session end session_id='"
+                  << session_id_for_log << "'";
+        const absl::Status end_status = ai_gateway_session_->EndSession();
+        if (!end_status.ok()) {
+            LOG(WARNING) << "ClientApp: AI gateway session end failed session_id='"
+                         << session_id_for_log << "' detail='" << end_status.message() << "'";
+        } else {
+            LOG(INFO) << "ClientApp: AI gateway session end request accepted session_id='"
+                      << session_id_for_log << "'";
+        }
+    } else if (!gateway_state_.connected) {
+        LOG(INFO) << "ClientApp: AI gateway shutdown closing transport without session end because"
+                  << " the session is already disconnected";
+    } else {
+        LOG(INFO) << "ClientApp: AI gateway shutdown closing transport without session end because"
+                  << " turn_id='" << inflight_turn_id_for_log << "' is still in flight";
+    }
+
+    ai_gateway_session_->Close();
+    ai_gateway_session_.reset();
+    gateway_state_.connected = false;
+    gateway_state_.session_id.reset();
+    gateway_state_.inflight_turn_id.reset();
+}
+
+void ClientApp::drain_gateway_events() {
+    std::deque<GatewayQueuedEvent> queued_events;
+    {
+        std::lock_guard<std::mutex> lock(gateway_event_mutex_);
+        queued_events.swap(gateway_event_queue_);
+    }
+
+    // Gateway callbacks run on the websocket I/O thread, so the SDL/main thread applies all
+    // resulting state changes here before the frame continues.
+    for (const GatewayQueuedEvent& event : queued_events) {
+        if (event.kind == GatewayQueuedEvent::Kind::Message && event.message.has_value()) {
+            process_gateway_message(*event.message);
+            continue;
+        }
+        process_gateway_transport_closed(event.transport_status);
+    }
+}
+
+void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage& message) {
+    namespace protocol = shared::ai_gateway;
+
+    switch (protocol::message_type(message)) {
+    case protocol::MessageType::SessionStarted: {
+        const auto& session_started = std::get<protocol::SessionStartedMessage>(message);
+        gateway_state_.connected = true;
+        gateway_state_.session_id = session_started.session_id;
+        gateway_state_.last_error.reset();
+        LOG(INFO) << "ClientApp: AI gateway session started session_id='"
+                  << session_started.session_id << "'";
+        return;
+    }
+    case protocol::MessageType::TextOutput: {
+        const auto& text_output = std::get<protocol::TextOutputMessage>(message);
+        gateway_state_.last_reply_text = text_output.text;
+        LOG(INFO) << "ClientApp: AI gateway reply turn_id='" << text_output.turn_id << "' text='"
+                  << text_output.text << "'";
+        return;
+    }
+    case protocol::MessageType::AudioOutput: {
+        const auto& audio_output = std::get<protocol::AudioOutputMessage>(message);
+        LOG(INFO) << "ClientApp: AI gateway audio output received turn_id='" << audio_output.turn_id
+                  << "' mime_type='" << audio_output.mime_type << "'";
+        return;
+    }
+    case protocol::MessageType::TurnCompleted: {
+        const auto& completed = std::get<protocol::TurnCompletedMessage>(message);
+        if (gateway_state_.inflight_turn_id == completed.turn_id) {
+            gateway_state_.inflight_turn_id.reset();
+        }
+        LOG(INFO) << "ClientApp: AI gateway turn completed turn_id='" << completed.turn_id << "'";
+        return;
+    }
+    case protocol::MessageType::TurnCancelled: {
+        const auto& cancelled = std::get<protocol::TurnCancelledMessage>(message);
+        if (gateway_state_.inflight_turn_id == cancelled.turn_id) {
+            gateway_state_.inflight_turn_id.reset();
+        }
+        gateway_state_.last_error = "turn cancelled";
+        LOG(INFO) << "ClientApp: AI gateway turn cancelled turn_id='" << cancelled.turn_id << "'";
+        return;
+    }
+    case protocol::MessageType::SessionEnded: {
+        const auto& ended = std::get<protocol::SessionEndedMessage>(message);
+        gateway_state_.connected = false;
+        gateway_state_.session_id = ended.session_id;
+        gateway_state_.inflight_turn_id.reset();
+        LOG(INFO) << "ClientApp: AI gateway session ended session_id='" << ended.session_id << "'";
+        return;
+    }
+    case protocol::MessageType::Error: {
+        const auto& error_message = std::get<protocol::ErrorMessage>(message);
+        const std::string session_id_for_log = error_message.session_id.value_or("<none>");
+        const std::string turn_id_for_log = error_message.turn_id.value_or("<none>");
+        gateway_state_.last_error =
+            "ai gateway error " + error_message.code + ": " + error_message.message;
+        LOG(WARNING) << "ClientApp: AI gateway error code='" << error_message.code << "' message='"
+                     << error_message.message << "' session_id='" << session_id_for_log
+                     << "' turn_id='" << turn_id_for_log << "'";
+        return;
+    }
+    case protocol::MessageType::SessionStart:
+    case protocol::MessageType::SessionEnd:
+    case protocol::MessageType::TextInput:
+    case protocol::MessageType::TurnCancel:
+        return;
+    }
+}
+
+void ClientApp::process_gateway_transport_closed(const absl::Status& status) {
+    gateway_state_.connected = false;
+    gateway_state_.session_id.reset();
+    gateway_state_.inflight_turn_id.reset();
+    if (status.ok()) {
+        LOG(INFO) << "ClientApp: AI gateway transport closed cleanly";
+        return;
+    }
+
+    gateway_state_.last_error = std::string(status.message());
+    LOG(WARNING) << "ClientApp: AI gateway transport closed: " << status;
+}
+
+void ClientApp::enqueue_gateway_message(const shared::ai_gateway::GatewayMessage& message) {
+    std::lock_guard<std::mutex> lock(gateway_event_mutex_);
+    gateway_event_queue_.push_back(GatewayQueuedEvent{
+        .kind = GatewayQueuedEvent::Kind::Message,
+        .message = message,
+    });
+}
+
+void ClientApp::enqueue_gateway_transport_closed(absl::Status status) {
+    std::lock_guard<std::mutex> lock(gateway_event_mutex_);
+    gateway_event_queue_.push_back(GatewayQueuedEvent{
+        .kind = GatewayQueuedEvent::Kind::TransportClosed,
+        .transport_status = std::move(status),
+    });
+}
+
+void ClientApp::send_gateway_canned_prompt() {
+    const std::string session_id_for_log = gateway_state_.session_id.value_or("<none>");
+    if (ai_gateway_session_ == nullptr || !gateway_state_.connected) {
+        LOG_EVERY_N_SEC(WARNING, 2.0)
+            << "ClientApp: AI gateway send skipped because the session is not connected"
+            << " session_id='" << session_id_for_log
+            << "' prompt_bytes=" << gateway_state_.canned_prompt.size();
+        return;
+    }
+    if (gateway_state_.inflight_turn_id.has_value()) {
+        LOG_EVERY_N_SEC(WARNING, 2.0)
+            << "ClientApp: AI gateway send skipped while turn_id='"
+            << *gateway_state_.inflight_turn_id << "' is still in flight session_id='"
+            << session_id_for_log << "' prompt_bytes=" << gateway_state_.canned_prompt.size();
+        return;
+    }
+
+    const std::string turn_id = "client_turn_" + std::to_string(gateway_state_.next_turn_sequence);
+    ++gateway_state_.next_turn_sequence;
+
+    const absl::Status status =
+        ai_gateway_session_->SendTextInput(turn_id, gateway_state_.canned_prompt);
+    if (!status.ok()) {
+        gateway_state_.last_error = std::string(status.message());
+        LOG(WARNING) << "ClientApp: AI gateway send failed turn_id='" << turn_id << "' session_id='"
+                     << session_id_for_log
+                     << "' prompt_bytes=" << gateway_state_.canned_prompt.size() << " detail='"
+                     << status.message() << "'";
+        return;
+    }
+
+    gateway_state_.inflight_turn_id = turn_id;
+    gateway_state_.last_error.reset();
+    LOG(INFO) << "ClientApp: AI gateway sent canned prompt turn_id='" << turn_id << "' session_id='"
+              << session_id_for_log << "' prompt_bytes=" << gateway_state_.canned_prompt.size();
 }
 
 } // namespace isla::client

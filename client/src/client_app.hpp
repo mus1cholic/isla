@@ -1,5 +1,7 @@
 #pragma once
 
+#include "absl/status/status.h"
+#include "ai_gateway_client_session.hpp"
 #include "client_app_internal_types.hpp"
 #include "client_sdl_runtime.hpp"
 #include "isla/engine/render/animated_gltf.hpp"
@@ -9,7 +11,11 @@
 #include "isla/engine/render/render_world.hpp"
 
 #include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -42,6 +48,38 @@ class ClientApp {
     void load_physics_sidecar_for_asset(std::string_view asset_path);
     void append_physics_proxy_meshes();
     void tick_physics_proxies(bool recompute_bounds);
+    void initialize_ai_gateway_from_environment();
+    [[nodiscard]] absl::Status start_ai_gateway_session(AiGatewayClientConfig config,
+                                                        std::string canned_prompt);
+    void shutdown_ai_gateway();
+    void drain_gateway_events();
+    void process_gateway_message(const shared::ai_gateway::GatewayMessage& message);
+    void process_gateway_transport_closed(const absl::Status& status);
+    void enqueue_gateway_message(const shared::ai_gateway::GatewayMessage& message);
+    void enqueue_gateway_transport_closed(absl::Status status);
+    void send_gateway_canned_prompt();
+
+    struct GatewayQueuedEvent {
+        enum class Kind {
+            Message = 0,
+            TransportClosed,
+        };
+
+        Kind kind = Kind::Message;
+        std::optional<shared::ai_gateway::GatewayMessage> message;
+        absl::Status transport_status = absl::OkStatus();
+    };
+
+    struct GatewayState {
+        bool enabled = false;
+        bool connected = false;
+        std::uint64_t next_turn_sequence = 1U;
+        std::string canned_prompt = "hello!";
+        std::optional<std::string> session_id;
+        std::optional<std::string> inflight_turn_id;
+        std::optional<std::string> last_reply_text;
+        std::optional<std::string> last_error;
+    };
 
     bool is_running_ = false;
     SDL_Window* window_ = nullptr;
@@ -59,6 +97,10 @@ class ClientApp {
     std::uint32_t animation_tick_count_ = 0U;
     bool gpu_skinning_authoritative_ = false;
     std::optional<std::size_t> physics_proxy_material_id_;
+    std::unique_ptr<AiGatewayClientSession> ai_gateway_session_;
+    mutable std::mutex gateway_event_mutex_;
+    std::deque<GatewayQueuedEvent> gateway_event_queue_;
+    GatewayState gateway_state_{};
     const ISdlRuntime& sdl_runtime_;
 };
 
