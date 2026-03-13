@@ -3,11 +3,15 @@
 #include "absl/log/log.h"
 #include <SDL3/SDL.h>
 
+#include "engine/src/render/model_renderer_test_hooks.hpp"
+
 #if defined(_WIN32)
 
+#include "backends/imgui_impl_dx11.h"
 #include "engine/src/render/include/bgfx_mesh_manager.hpp"
 #include "engine/src/render/include/bgfx_shader_manager.hpp"
 #include "engine/src/render/include/bgfx_texture_manager.hpp"
+#include "imgui.h"
 #include "isla/engine/math/mat4.hpp"
 #include "isla/engine/render/model_renderer_skinning_utils.hpp"
 #include "isla/engine/render/overlay_transparency.hpp"
@@ -81,6 +85,8 @@ struct DirectCompositionPresenter {
     ComPtr<IDCompositionTarget> dcomp_target;
     ComPtr<IDCompositionVisual> dcomp_visual;
 };
+
+constexpr const char* kDebugHudTitle = "Isla Debug HUD";
 
 bool vec3_is_finite(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
@@ -351,6 +357,10 @@ class ModelRenderer::Impl {
     std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
     std::vector<Mat4> joint_palette_upload;
     DirectCompositionPresenter presenter;
+    ImGuiContext* imgui_context = nullptr;
+    bool imgui_initialized = false;
+    bool debug_overlay_enabled = false;
+    std::vector<std::string> debug_overlay_lines;
 };
 
 namespace {
@@ -373,6 +383,80 @@ void destroy_renderer_uniforms(ModelRenderer::Impl& impl) {
     destroy_uniform_if_valid(impl.alpha_params_uniform);
     destroy_uniform_if_valid(impl.joint_palette_uniform);
     destroy_uniform_if_valid(impl.tex_color_uniform);
+}
+
+bool initialize_imgui_overlay(ModelRenderer::Impl& impl) {
+    IMGUI_CHECKVERSION();
+    impl.imgui_context = ImGui::CreateContext();
+    if (impl.imgui_context == nullptr) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: ImGui context creation failed";
+        return false;
+    }
+
+    ImGui::SetCurrentContext(impl.imgui_context);
+    ImGui::StyleColorsDark();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize =
+        ImVec2(static_cast<float>(impl.window_width), static_cast<float>(impl.window_height));
+    io.DeltaTime = 1.0F / 60.0F;
+
+    if (!ImGui_ImplDX11_Init(impl.presenter.device.Get(), impl.presenter.device_context.Get())) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: ImGui DX11 backend init failed";
+        ImGui::DestroyContext(impl.imgui_context);
+        impl.imgui_context = nullptr;
+        return false;
+    }
+
+    impl.imgui_initialized = true;
+    LOG(INFO) << "ModelRenderer: ImGui DX11 debug overlay initialized width=" << impl.window_width
+              << " height=" << impl.window_height;
+    return true;
+}
+
+void shutdown_imgui_overlay(ModelRenderer::Impl& impl) {
+    if (impl.imgui_initialized) {
+        VLOG(1) << "ModelRenderer: shutting down ImGui DX11 debug overlay";
+        ImGui::SetCurrentContext(impl.imgui_context);
+        ImGui_ImplDX11_Shutdown();
+        impl.imgui_initialized = false;
+    }
+    if (impl.imgui_context != nullptr) {
+        ImGui::DestroyContext(impl.imgui_context);
+        impl.imgui_context = nullptr;
+    }
+    impl.debug_overlay_lines.clear();
+}
+
+void render_imgui_overlay(ModelRenderer::Impl& impl) {
+    if (!impl.imgui_initialized || !impl.debug_overlay_enabled || impl.imgui_context == nullptr) {
+        return;
+    }
+
+    ImGui::SetCurrentContext(impl.imgui_context);
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize =
+        ImVec2(static_cast<float>(impl.window_width), static_cast<float>(impl.window_height));
+    io.DeltaTime = 1.0F / 60.0F;
+
+    ImGui_ImplDX11_NewFrame();
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(16.0F, 16.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.75F);
+    constexpr ImGuiWindowFlags kHudWindowFlags = ImGuiWindowFlags_AlwaysAutoResize |
+                                                 ImGuiWindowFlags_NoCollapse |
+                                                 ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin(kDebugHudTitle, nullptr, kHudWindowFlags)) {
+        for (const std::string& line : impl.debug_overlay_lines) {
+            ImGui::TextUnformatted(line.c_str());
+        }
+    }
+    ImGui::End();
+    ImGui::Render();
+
+    ID3D11RenderTargetView* render_target_view = impl.presenter.render_target_view.Get();
+    ID3D11DepthStencilView* depth_stencil_view = impl.presenter.depth_stencil_view.Get();
+    impl.presenter.device_context->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 }
 
 } // namespace
@@ -473,6 +557,15 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
         bgfx::shutdown();
         shutdown_direct_composition_presenter(impl_->presenter);
         LOG(ERROR) << "ModelRenderer: initialize failed: renderer managers could not initialize";
+        return false;
+    }
+    if (!initialize_imgui_overlay(*impl_)) {
+        impl_->mesh_manager.shutdown();
+        impl_->texture_manager.shutdown();
+        impl_->shader_manager.shutdown();
+        destroy_renderer_uniforms(*impl_);
+        bgfx::shutdown();
+        shutdown_direct_composition_presenter(impl_->presenter);
         return false;
     }
 
@@ -724,6 +817,7 @@ void ModelRenderer::render(const RenderWorld& world) const {
     }
     bgfx::frame();
     if (impl_->presenter.swap_chain) {
+        render_imgui_overlay(*impl_);
         const HRESULT present_hr = impl_->presenter.swap_chain->Present(1, 0);
         if (FAILED(present_hr)) {
             LOG_EVERY_N_SEC(ERROR, 2.0)
@@ -734,17 +828,24 @@ void ModelRenderer::render(const RenderWorld& world) const {
 }
 
 void ModelRenderer::set_debug_overlay_enabled(bool enabled) {
-    (void)enabled;
+    if (!impl_) {
+        return;
+    }
+    impl_->debug_overlay_enabled = enabled;
 }
 
 void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) {
-    (void)lines;
+    if (!impl_) {
+        return;
+    }
+    impl_->debug_overlay_lines.assign(lines.begin(), lines.end());
 }
 
 void ModelRenderer::shutdown() {
     if (!impl_->initialized) {
         return;
     }
+    shutdown_imgui_overlay(*impl_);
     impl_->mesh_manager.shutdown();
     impl_->texture_manager.shutdown();
     impl_->shader_manager.shutdown();
@@ -753,6 +854,18 @@ void ModelRenderer::shutdown() {
     shutdown_direct_composition_presenter(impl_->presenter);
     impl_->initialized = false;
     impl_->window = nullptr;
+}
+
+bool internal::ModelRendererTestHooks::debug_overlay_enabled(const ModelRenderer& renderer) {
+    return renderer.impl_ != nullptr && renderer.impl_->debug_overlay_enabled;
+}
+
+std::vector<std::string>
+internal::ModelRendererTestHooks::debug_overlay_lines(const ModelRenderer& renderer) {
+    if (renderer.impl_ == nullptr) {
+        return {};
+    }
+    return renderer.impl_->debug_overlay_lines;
 }
 
 } // namespace isla::client
@@ -803,6 +916,17 @@ void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) 
 }
 
 void ModelRenderer::shutdown() {}
+
+bool internal::ModelRendererTestHooks::debug_overlay_enabled(const ModelRenderer& renderer) {
+    (void)renderer;
+    return false;
+}
+
+std::vector<std::string>
+internal::ModelRendererTestHooks::debug_overlay_lines(const ModelRenderer& renderer) {
+    (void)renderer;
+    return {};
+}
 
 } // namespace isla::client
 

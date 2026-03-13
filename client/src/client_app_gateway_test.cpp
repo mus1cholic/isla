@@ -381,6 +381,53 @@ TEST_F(ClientAppGatewayIntegrationTest, HotkeySendsCannedPromptAndReceivesReply)
     internal::ClientAppTestHooks::shutdown_ai_gateway(app);
 }
 
+TEST_F(ClientAppGatewayIntegrationTest, GatewayHudLinesReflectLatestReplyState) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+
+    ASSERT_TRUE(
+        internal::ClientAppTestHooks::start_ai_gateway_session(app,
+                                                               AiGatewayClientConfig{
+                                                                   .host = "127.0.0.1",
+                                                                   .port = server_.bound_port(),
+                                                                   .path = "/",
+                                                                   .operation_timeout = 2s,
+                                                               },
+                                                               "hello from hud")
+            .ok());
+
+    SDL_Event send_event{};
+    send_event.type = SDL_EVENT_KEY_DOWN;
+    send_event.key.scancode = SDL_SCANCODE_G;
+    send_event.key.repeat = false;
+    runtime.queued_events.push_back(send_event);
+
+    ASSERT_TRUE(PumpUntil(app, 2s, [&] {
+        return internal::ClientAppTestHooks::gateway_last_reply_text(app) ==
+                   std::optional<std::string>("stub echo: hello from hud") &&
+               !internal::ClientAppTestHooks::gateway_inflight_turn_id(app).has_value();
+    }));
+
+    internal::ClientAppTestHooks::update_debug_overlay(app);
+    const std::optional<std::string> session_id =
+        internal::ClientAppTestHooks::gateway_session_id(app);
+    ASSERT_TRUE(session_id.has_value());
+
+    const std::vector<std::string> expected_lines = {
+        "Gateway Debug HUD",
+        "Press G to send the canned prompt",
+        "Enabled: yes",
+        "Connected: yes",
+        "Session: " + *session_id,
+        "Inflight: <none>",
+        "Reply: stub echo: hello from hud",
+    };
+
+    EXPECT_EQ(internal::ClientAppTestHooks::debug_overlay_lines(app), expected_lines);
+
+    internal::ClientAppTestHooks::shutdown_ai_gateway(app);
+}
+
 TEST_F(ClientAppGatewayIntegrationTest, StartupSkipsGatewayWhenDisabled) {
     ScopedTempDir workspace_dir = ScopedTempDir::Create("isla_client_gateway_disabled");
     ASSERT_TRUE(workspace_dir.is_valid());

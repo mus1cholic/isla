@@ -8,6 +8,10 @@
 
 namespace isla::client {
 
+namespace internal {
+class ModelRendererTestHooks;
+}
+
 class ModelRenderer final : public IRendererBackend {
   public:
     class Impl;
@@ -26,6 +30,8 @@ class ModelRenderer final : public IRendererBackend {
     void shutdown() override;
 
   private:
+    friend class internal::ModelRendererTestHooks;
+
     std::unique_ptr<Impl> impl_;
 };
 
