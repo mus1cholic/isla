@@ -83,8 +83,8 @@ absl::Status MemoryOrchestrator::PersistSessionIfNeeded(Timestamp create_time) {
                "record for the first observed turn"
             << " session_id=" << SanitizeForLog(session_id_)
             << " user_id=" << SanitizeForLog(state.conversation.user_id)
-            << " session_created_at=" << SanitizeForLog(FormatTimestamp(create_time))
-            << " detail='" << SanitizeForLog(status.message()) << "'";
+            << " session_created_at=" << SanitizeForLog(FormatTimestamp(create_time)) << " detail='"
+            << SanitizeForLog(status.message()) << "'";
         return status;
     }
     session_persisted_ = true;
@@ -185,8 +185,7 @@ MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFl
             << " session_id=" << SanitizeForLog(session_id_)
             << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
             << " conversation_item_index=" << flush.conversation_item_index
-            << " episode_stub_created_at="
-            << SanitizeForLog(FormatTimestamp(flush.stub_timestamp))
+            << " episode_stub_created_at=" << SanitizeForLog(FormatTimestamp(flush.stub_timestamp))
             << " detail='" << SanitizeForLog(status.message()) << "'";
         return status;
     }

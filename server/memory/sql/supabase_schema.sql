@@ -13,6 +13,19 @@ create table if not exists public.conversation_items (
     episode_id text,
     episode_stub_content text,
     episode_stub_created_at timestamptz,
+    check (
+        (
+            item_type = 'ongoing_episode'
+            and episode_id is null
+            and episode_stub_content is null
+            and episode_stub_created_at is null
+        ) or (
+            item_type = 'episode_stub'
+            and episode_id is not null
+            and episode_stub_content is not null
+            and episode_stub_created_at is not null
+        )
+    ),
     primary key (session_id, item_index)
 );
 
@@ -42,6 +55,14 @@ create table if not exists public.mid_term_episodes (
     embedding jsonb not null default '[]'::jsonb,
     created_at timestamptz not null
 );
+
+alter table public.conversation_items
+    drop constraint if exists conversation_items_episode_id_fkey;
+
+alter table public.conversation_items
+    add constraint conversation_items_episode_id_fkey
+    foreign key (episode_id)
+    references public.mid_term_episodes(episode_id);
 
 create index if not exists conversation_items_session_order_idx
     on public.conversation_items (session_id, item_index);

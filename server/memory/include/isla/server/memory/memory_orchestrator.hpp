@@ -57,7 +57,8 @@ struct MemoryOrchestratorInit {
 // coordinating future mid/long-term memory hooks.
 class MemoryOrchestrator {
   public:
-    MemoryOrchestrator(std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr);
+    MemoryOrchestrator(std::string session_id, WorkingMemory memory,
+                       MemoryStorePtr store = nullptr);
 
     [[nodiscard]] static absl::StatusOr<MemoryOrchestrator>
     Create(std::string session_id, const MemoryOrchestratorInit& init);
@@ -88,8 +89,8 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status PersistSessionIfNeeded(Timestamp create_time);
     [[nodiscard]] absl::Status PersistConversationMessage(std::string_view turn_id,
                                                           const Message& message);
-    [[nodiscard]] absl::Status PersistCompletedEpisodeFlush(
-        const CompletedOngoingEpisodeFlush& flush);
+    [[nodiscard]] absl::Status
+    PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
     [[nodiscard]] absl::Status HandleConversationMessage(std::string_view session_id,
                                                          std::string_view turn_id,
                                                          std::string_view text,

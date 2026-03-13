@@ -96,6 +96,78 @@ TEST(MemoryStoreTest, SnapshotValidationRequiresContiguousConversationItemIndexe
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(MemoryStoreTest, SnapshotValidationRejectsOngoingEpisodeWithContradictoryStubFields) {
+    const absl::Status status = ValidateMemoryStoreSnapshot(MemoryStoreSnapshot{
+        .session =
+            MemorySessionRecord{
+                .session_id = "session_001",
+                .user_id = "user_001",
+                .system_prompt = "You are Isla.",
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+                .ended_at = std::nullopt,
+            },
+        .conversation_items =
+            {
+                PersistedConversationItem{
+                    .conversation_item_index = 0,
+                    .type = ConversationItemType::OngoingEpisode,
+                    .ongoing_episode = OngoingEpisode{
+                        .messages = { Message{
+                            .role = MessageRole::User,
+                            .content = "hello",
+                            .create_time = Ts("2026-03-08T14:00:01Z"),
+                        } },
+                    },
+                    .episode_stub = EpisodeStub{
+                        .content = "ref",
+                        .create_time = Ts("2026-03-08T14:00:02Z"),
+                    },
+                    .episode_id = std::string("ep_001"),
+                },
+            },
+        .mid_term_episodes = {},
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, SnapshotValidationRejectsEpisodeStubWithContradictoryOngoingPayload) {
+    const absl::Status status = ValidateMemoryStoreSnapshot(MemoryStoreSnapshot{
+        .session =
+            MemorySessionRecord{
+                .session_id = "session_001",
+                .user_id = "user_001",
+                .system_prompt = "You are Isla.",
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+                .ended_at = std::nullopt,
+            },
+        .conversation_items =
+            {
+                PersistedConversationItem{
+                    .conversation_item_index = 0,
+                    .type = ConversationItemType::EpisodeStub,
+                    .ongoing_episode = OngoingEpisode{
+                        .messages = { Message{
+                            .role = MessageRole::User,
+                            .content = "hello",
+                            .create_time = Ts("2026-03-08T14:00:01Z"),
+                        } },
+                    },
+                    .episode_stub = EpisodeStub{
+                        .content = "ref",
+                        .create_time = Ts("2026-03-08T14:00:02Z"),
+                    },
+                    .episode_id = std::string("ep_001"),
+                },
+            },
+        .mid_term_episodes = {},
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(MemoryStoreTest, SnapshotValidationAcceptsOrderedConversationAndEpisodes) {
     const absl::Status status = ValidateMemoryStoreSnapshot(MemoryStoreSnapshot{
         .session =

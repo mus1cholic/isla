@@ -46,13 +46,17 @@ Suggested columns:
 - `episode_id text null`
 - `episode_stub_content text null`
 - `episode_stub_created_at timestamptz null`
+- `check (...)` enforcing:
+  - `ongoing_episode` rows must leave episode stub columns null
+  - `episode_stub` rows must populate `episode_id`, `episode_stub_content`, and `episode_stub_created_at`
 - `primary key (session_id, item_index)`
 
 Notes:
 
 - `item_index` preserves the exact timeline order used by the working-memory prompt.
 - `episode_id` is nullable until an ongoing episode is flushed.
-- For `ongoing_episode`, the stub columns stay null.
+- The schema should enforce the same tagged-union contract as the C++ validator.
+- `episode_id` should also reference `mid_term_episodes(episode_id)` once both tables exist.
 
 ### `conversation_messages`
 

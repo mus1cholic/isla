@@ -114,11 +114,26 @@ absl::Status ValidateMemoryStoreSnapshot(const MemoryStoreSnapshot& snapshot) {
                     "ValidateMemoryStoreSnapshot requires an ongoing_episode payload when "
                     "conversation_items.type is ongoing_episode");
             }
+            if (item.episode_stub.has_value()) {
+                return absl::InvalidArgumentError(
+                    "ValidateMemoryStoreSnapshot requires episode_stub to be unset when "
+                    "conversation_items.type is ongoing_episode");
+            }
+            if (item.episode_id.has_value()) {
+                return absl::InvalidArgumentError(
+                    "ValidateMemoryStoreSnapshot requires episode_id to be unset when "
+                    "conversation_items.type is ongoing_episode");
+            }
             break;
         case ConversationItemType::EpisodeStub:
             if (!item.episode_stub.has_value()) {
                 return absl::InvalidArgumentError(
                     "ValidateMemoryStoreSnapshot requires an episode_stub payload when "
+                    "conversation_items.type is episode_stub");
+            }
+            if (item.ongoing_episode.has_value()) {
+                return absl::InvalidArgumentError(
+                    "ValidateMemoryStoreSnapshot requires ongoing_episode to be unset when "
                     "conversation_items.type is episode_stub");
             }
             if (!item.episode_id.has_value() || item.episode_id->empty()) {

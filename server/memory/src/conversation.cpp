@@ -65,11 +65,10 @@ absl::Status ReplaceOngoingEpisodeWithStub(Conversation& conversation,
                                            std::size_t conversation_item_index,
                                            std::string stub_text, Timestamp stub_timestamp) {
     if (conversation_item_index >= conversation.items.size()) {
-        LOG(WARNING)
-            << "Conversation ReplaceOngoingEpisodeWithStub rejected because the requested "
-               "conversation item index is outside the current conversation"
-            << " conversation_item_index=" << conversation_item_index
-            << " conversation_item_count=" << conversation.items.size();
+        LOG(WARNING) << "Conversation ReplaceOngoingEpisodeWithStub rejected because the requested "
+                        "conversation item index is outside the current conversation"
+                     << " conversation_item_index=" << conversation_item_index
+                     << " conversation_item_count=" << conversation.items.size();
         return absl::InvalidArgumentError(
             "ReplaceOngoingEpisodeWithStub requires conversation_item_index to reference an "
             "existing conversation item");
@@ -85,13 +84,12 @@ absl::Status ReplaceOngoingEpisodeWithStub(Conversation& conversation,
 
     auto& item = conversation.items[conversation_item_index];
     if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
-        LOG(WARNING)
-            << "Conversation ReplaceOngoingEpisodeWithStub rejected because the target "
-               "conversation item is not an ongoing episode"
-            << " conversation_item_index=" << conversation_item_index
-            << " conversation_item_type="
-            << (item.type == ConversationItemType::OngoingEpisode ? "ongoing_episode"
-                                                                  : "episode_stub");
+        LOG(WARNING) << "Conversation ReplaceOngoingEpisodeWithStub rejected because the target "
+                        "conversation item is not an ongoing episode"
+                     << " conversation_item_index=" << conversation_item_index
+                     << " conversation_item_type="
+                     << (item.type == ConversationItemType::OngoingEpisode ? "ongoing_episode"
+                                                                           : "episode_stub");
         return absl::InvalidArgumentError(
             "ReplaceOngoingEpisodeWithStub requires the target conversation item to be an "
             "ongoing episode");
