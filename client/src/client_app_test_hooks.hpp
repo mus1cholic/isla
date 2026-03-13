@@ -94,6 +94,24 @@ class ClientAppTestHooks {
         app.send_gateway_chat_message(std::move(text));
     }
 
+    static void prime_gateway_chat_turn(ClientApp& app, std::string session_id,
+                                        std::string turn_id) {
+        app.gateway_state_.enabled = true;
+        app.gateway_state_.connected = true;
+        app.gateway_state_.session_id = std::move(session_id);
+        app.gateway_state_.inflight_turn_id = std::move(turn_id);
+        app.mark_gateway_chat_panel_dirty();
+    }
+
+    static void process_gateway_message(ClientApp& app,
+                                        const shared::ai_gateway::GatewayMessage& message) {
+        app.process_gateway_message(message);
+    }
+
+    static void process_gateway_transport_closed(ClientApp& app, const absl::Status& status) {
+        app.process_gateway_transport_closed(status);
+    }
+
     static bool gateway_connected(const ClientApp& app) {
         return app.gateway_state_.connected;
     }

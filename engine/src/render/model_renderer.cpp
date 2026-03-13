@@ -693,7 +693,7 @@ void render_chat_panel(ModelRenderer::Impl& impl) {
 }
 
 void render_imgui_overlay(ModelRenderer::Impl& impl, float dt_seconds) {
-    if (!impl.imgui_initialized || !impl.debug_overlay_enabled || impl.imgui_context == nullptr) {
+    if (!impl.imgui_initialized || impl.imgui_context == nullptr) {
         return;
     }
 
@@ -710,12 +710,14 @@ void render_imgui_overlay(ModelRenderer::Impl& impl, float dt_seconds) {
     constexpr ImGuiWindowFlags kHudWindowFlags = ImGuiWindowFlags_AlwaysAutoResize |
                                                  ImGuiWindowFlags_NoCollapse |
                                                  ImGuiWindowFlags_NoSavedSettings;
-    if (ImGui::Begin(kDebugHudTitle, nullptr, kHudWindowFlags)) {
-        for (const std::string& line : impl.debug_overlay_lines) {
-            ImGui::TextUnformatted(line.c_str());
+    if (impl.debug_overlay_enabled) {
+        if (ImGui::Begin(kDebugHudTitle, nullptr, kHudWindowFlags)) {
+            for (const std::string& line : impl.debug_overlay_lines) {
+                ImGui::TextUnformatted(line.c_str());
+            }
         }
+        ImGui::End();
     }
-    ImGui::End();
     render_chat_panel(impl);
     ImGui::Render();
 

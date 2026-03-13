@@ -50,8 +50,9 @@ class ClientApp {
     void tick_physics_proxies(bool recompute_bounds);
     void update_debug_overlay();
     void update_gateway_chat_panel();
-    void append_or_create_assistant_transcript_entry(std::string_view output_turn_id,
-                                                     std::string_view text);
+    void set_assistant_transcript_entry_for_turn(std::string_view output_turn_id,
+                                                 std::string_view text);
+    void mark_gateway_chat_panel_dirty();
     void initialize_ai_gateway_from_environment();
     [[nodiscard]] absl::Status start_ai_gateway_session(AiGatewayClientConfig config,
                                                         std::string canned_prompt);
@@ -113,6 +114,8 @@ class ClientApp {
     GatewayState gateway_state_{};
     std::vector<GatewayChatEntry> gateway_chat_transcript_;
     std::optional<std::size_t> gateway_inflight_assistant_entry_index_;
+    ChatPanelState gateway_chat_panel_state_cache_{};
+    bool gateway_chat_panel_dirty_ = true;
     std::string last_gateway_hud_state_ = "uninitialized";
     const ISdlRuntime& sdl_runtime_;
 };

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include "absl/status/status.h"
+#include "absl/strings/match.h"
 #include <SDL3/SDL.h>
 
 #include <boost/asio/connect.hpp>
@@ -472,6 +473,28 @@ TEST_F(ClientAppGatewayIntegrationTest, RendererChatSubmitAddsTranscriptAndAssis
     internal::ClientAppTestHooks::shutdown_ai_gateway(app);
 }
 
+TEST(ClientAppGatewayStandaloneTest, RepeatedTextOutputForTurnReplacesAssistantTranscriptEntry) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+
+    internal::ClientAppTestHooks::prime_gateway_chat_turn(app, "session_replace", "turn_replace");
+    internal::ClientAppTestHooks::process_gateway_message(app,
+                                                          shared::ai_gateway::TextOutputMessage{
+                                                              .turn_id = "turn_replace",
+                                                              .text = "first reply",
+                                                          });
+    internal::ClientAppTestHooks::process_gateway_message(app,
+                                                          shared::ai_gateway::TextOutputMessage{
+                                                              .turn_id = "turn_replace",
+                                                              .text = "second reply",
+                                                          });
+
+    EXPECT_EQ(internal::ClientAppTestHooks::gateway_last_reply_text(app),
+              std::optional<std::string>("second reply"));
+    EXPECT_EQ(internal::ClientAppTestHooks::gateway_chat_transcript_lines(app),
+              std::vector<std::string>{ "assistant: second reply" });
+}
+
 TEST_F(ClientAppGatewayIntegrationTest, StartupSkipsGatewayWhenDisabled) {
     ScopedTempDir workspace_dir = ScopedTempDir::Create("isla_client_gateway_disabled");
     ASSERT_TRUE(workspace_dir.is_valid());
@@ -638,6 +661,30 @@ TEST_F(ClientAppGatewayIntegrationTest, StartupFailureLeavesGatewayDisconnected)
     internal::ClientAppTestHooks::tick(app);
 
     EXPECT_FALSE(internal::ClientAppTestHooks::gateway_last_reply_text(app).has_value());
+    EXPECT_FALSE(internal::ClientAppTestHooks::gateway_inflight_turn_id(app).has_value());
+}
+
+TEST(ClientAppGatewayStandaloneTest,
+     InflightTransportCloseAppendsSystemTranscriptEntryAndClearsTurn) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+
+    internal::ClientAppTestHooks::prime_gateway_chat_turn(app, "session_close", "turn_close");
+    internal::ClientAppTestHooks::process_gateway_message(app,
+                                                          shared::ai_gateway::TextOutputMessage{
+                                                              .turn_id = "turn_close",
+                                                              .text = "reply before close",
+                                                          });
+
+    internal::ClientAppTestHooks::process_gateway_transport_closed(
+        app, absl::FailedPreconditionError("ai gateway websocket closed"));
+
+    const std::vector<std::string> lines =
+        internal::ClientAppTestHooks::gateway_chat_transcript_lines(app);
+    ASSERT_EQ(lines.size(), 2U);
+    EXPECT_EQ(lines[0], "assistant: reply before close");
+    EXPECT_TRUE(absl::StartsWith(lines[1], "system: Transport closed: "));
+    EXPECT_FALSE(internal::ClientAppTestHooks::gateway_connected(app));
     EXPECT_FALSE(internal::ClientAppTestHooks::gateway_inflight_turn_id(app).has_value());
 }
 

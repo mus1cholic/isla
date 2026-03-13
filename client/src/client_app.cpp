@@ -567,38 +567,46 @@ void ClientApp::update_debug_overlay() {
 }
 
 void ClientApp::update_gateway_chat_panel() {
-    ChatPanelState chat_panel_state{};
-    chat_panel_state.enabled = true;
-    chat_panel_state.connected = gateway_state_.connected;
-    chat_panel_state.turn_in_flight = gateway_state_.inflight_turn_id.has_value();
-    if (gateway_state_.last_error.has_value()) {
-        chat_panel_state.status_line = "Error: " + *gateway_state_.last_error;
-    } else if (chat_panel_state.turn_in_flight) {
-        chat_panel_state.status_line = "Assistant is responding...";
-    } else if (gateway_state_.connected) {
-        chat_panel_state.status_line = "Connected";
-    } else if (gateway_state_.enabled) {
-        chat_panel_state.status_line = "Disconnected";
-    } else {
-        chat_panel_state.status_line = "Gateway disabled";
+    if (!gateway_chat_panel_dirty_) {
+        return;
     }
-    chat_panel_state.transcript.reserve(gateway_chat_transcript_.size());
+
+    gateway_chat_panel_state_cache_ = ChatPanelState{};
+    gateway_chat_panel_state_cache_.enabled = true;
+    gateway_chat_panel_state_cache_.connected = gateway_state_.connected;
+    gateway_chat_panel_state_cache_.turn_in_flight = gateway_state_.inflight_turn_id.has_value();
+    if (gateway_state_.last_error.has_value()) {
+        gateway_chat_panel_state_cache_.status_line = "Error: " + *gateway_state_.last_error;
+    } else if (gateway_chat_panel_state_cache_.turn_in_flight) {
+        gateway_chat_panel_state_cache_.status_line = "Assistant is responding...";
+    } else if (gateway_state_.connected) {
+        gateway_chat_panel_state_cache_.status_line = "Connected";
+    } else if (gateway_state_.enabled) {
+        gateway_chat_panel_state_cache_.status_line = "Disconnected";
+    } else {
+        gateway_chat_panel_state_cache_.status_line = "Gateway disabled";
+    }
+    gateway_chat_panel_state_cache_.transcript.clear();
+    gateway_chat_panel_state_cache_.transcript.reserve(gateway_chat_transcript_.size());
     for (const GatewayChatEntry& entry : gateway_chat_transcript_) {
-        chat_panel_state.transcript.push_back(ChatPanelEntry{
+        gateway_chat_panel_state_cache_.transcript.push_back(ChatPanelEntry{
             .role = entry.role,
             .text = entry.text,
         });
     }
-    model_renderer_.set_chat_panel_state(chat_panel_state);
+    model_renderer_.set_chat_panel_state(gateway_chat_panel_state_cache_);
+    gateway_chat_panel_dirty_ = false;
 }
 
-void ClientApp::append_or_create_assistant_transcript_entry(std::string_view output_turn_id,
-                                                            std::string_view text) {
+void ClientApp::set_assistant_transcript_entry_for_turn(std::string_view output_turn_id,
+                                                        std::string_view text) {
     if (gateway_state_.inflight_turn_id.has_value() &&
         *gateway_state_.inflight_turn_id == output_turn_id &&
         gateway_inflight_assistant_entry_index_.has_value() &&
         *gateway_inflight_assistant_entry_index_ < gateway_chat_transcript_.size()) {
-        gateway_chat_transcript_.at(*gateway_inflight_assistant_entry_index_).text += text;
+        gateway_chat_transcript_.at(*gateway_inflight_assistant_entry_index_).text =
+            std::string(text);
+        mark_gateway_chat_panel_dirty();
         return;
     }
 
@@ -607,6 +615,11 @@ void ClientApp::append_or_create_assistant_transcript_entry(std::string_view out
         .text = std::string(text),
     });
     gateway_inflight_assistant_entry_index_ = gateway_chat_transcript_.size() - 1U;
+    mark_gateway_chat_panel_dirty();
+}
+
+void ClientApp::mark_gateway_chat_panel_dirty() {
+    gateway_chat_panel_dirty_ = true;
 }
 
 void ClientApp::shutdown() {
@@ -704,6 +717,7 @@ absl::Status ClientApp::start_ai_gateway_session(AiGatewayClientConfig config,
     gateway_state_.last_error.reset();
     gateway_chat_transcript_.clear();
     gateway_inflight_assistant_entry_index_.reset();
+    mark_gateway_chat_panel_dirty();
 
     config.on_message = [this](const shared::ai_gateway::GatewayMessage& message) {
         enqueue_gateway_message(message);
@@ -730,6 +744,7 @@ absl::Status ClientApp::start_ai_gateway_session(AiGatewayClientConfig config,
     gateway_state_.last_error.reset();
     gateway_chat_transcript_.clear();
     gateway_inflight_assistant_entry_index_.reset();
+    mark_gateway_chat_panel_dirty();
     return absl::OkStatus();
 }
 
@@ -767,6 +782,7 @@ void ClientApp::shutdown_ai_gateway() {
     gateway_state_.session_id.reset();
     gateway_state_.inflight_turn_id.reset();
     gateway_inflight_assistant_entry_index_.reset();
+    mark_gateway_chat_panel_dirty();
 }
 
 void ClientApp::drain_gateway_events() {
@@ -796,6 +812,7 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
         gateway_state_.connected = true;
         gateway_state_.session_id = session_started.session_id;
         gateway_state_.last_error.reset();
+        mark_gateway_chat_panel_dirty();
         LOG(INFO) << "ClientApp: AI gateway session started session_id='"
                   << session_started.session_id << "'";
         return;
@@ -803,7 +820,7 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
     case protocol::MessageType::TextOutput: {
         const auto& text_output = std::get<protocol::TextOutputMessage>(message);
         gateway_state_.last_reply_text = text_output.text;
-        append_or_create_assistant_transcript_entry(text_output.turn_id, text_output.text);
+        set_assistant_transcript_entry_for_turn(text_output.turn_id, text_output.text);
         LOG(INFO) << "ClientApp: AI gateway reply turn_id='" << text_output.turn_id << "' text='"
                   << text_output.text << "'";
         return;
@@ -820,6 +837,7 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
             gateway_state_.inflight_turn_id.reset();
         }
         gateway_inflight_assistant_entry_index_.reset();
+        mark_gateway_chat_panel_dirty();
         LOG(INFO) << "ClientApp: AI gateway turn completed turn_id='" << completed.turn_id << "'";
         return;
     }
@@ -834,6 +852,7 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
             .role = ChatPanelEntryRole::System,
             .text = "Turn cancelled.",
         });
+        mark_gateway_chat_panel_dirty();
         LOG(INFO) << "ClientApp: AI gateway turn cancelled turn_id='" << cancelled.turn_id << "'";
         return;
     }
@@ -843,6 +862,7 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
         gateway_state_.session_id = ended.session_id;
         gateway_state_.inflight_turn_id.reset();
         gateway_inflight_assistant_entry_index_.reset();
+        mark_gateway_chat_panel_dirty();
         LOG(INFO) << "ClientApp: AI gateway session ended session_id='" << ended.session_id << "'";
         return;
     }
@@ -861,6 +881,7 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
             gateway_state_.inflight_turn_id.reset();
             gateway_inflight_assistant_entry_index_.reset();
         }
+        mark_gateway_chat_panel_dirty();
         LOG(WARNING) << "ClientApp: AI gateway error code='" << error_message.code << "' message='"
                      << error_message.message << "' session_id='" << session_id_for_log
                      << "' turn_id='" << turn_id_for_log << "'";
@@ -884,6 +905,7 @@ void ClientApp::process_gateway_transport_closed(const absl::Status& status) {
             .role = ChatPanelEntryRole::System,
             .text = "Transport closed.",
         });
+        mark_gateway_chat_panel_dirty();
         LOG(INFO) << "ClientApp: AI gateway transport closed cleanly";
         return;
     }
@@ -893,6 +915,7 @@ void ClientApp::process_gateway_transport_closed(const absl::Status& status) {
         .role = ChatPanelEntryRole::System,
         .text = "Transport closed: " + std::string(status.message()),
     });
+    mark_gateway_chat_panel_dirty();
     LOG(WARNING) << "ClientApp: AI gateway transport closed: " << status;
 }
 
@@ -929,6 +952,7 @@ void ClientApp::send_gateway_chat_message(std::string text) {
             .role = ChatPanelEntryRole::System,
             .text = "Send skipped because the AI gateway session is not connected.",
         });
+        mark_gateway_chat_panel_dirty();
         LOG_EVERY_N_SEC(WARNING, 2.0)
             << "ClientApp: AI gateway send skipped because the session is not connected"
             << " session_id='" << session_id_for_log << "' prompt_bytes=" << text.size();
@@ -949,6 +973,7 @@ void ClientApp::send_gateway_chat_message(std::string text) {
         .role = ChatPanelEntryRole::User,
         .text = text,
     });
+    mark_gateway_chat_panel_dirty();
 
     const absl::Status status = ai_gateway_session_->SendTextInput(turn_id, text);
     if (!status.ok()) {
@@ -957,6 +982,7 @@ void ClientApp::send_gateway_chat_message(std::string text) {
             .role = ChatPanelEntryRole::System,
             .text = "Send failed: " + std::string(status.message()),
         });
+        mark_gateway_chat_panel_dirty();
         LOG(WARNING) << "ClientApp: AI gateway send failed turn_id='" << turn_id << "' session_id='"
                      << session_id_for_log << "' prompt_bytes=" << text.size() << " detail='"
                      << status.message() << "'";
@@ -966,6 +992,7 @@ void ClientApp::send_gateway_chat_message(std::string text) {
     gateway_state_.inflight_turn_id = turn_id;
     gateway_inflight_assistant_entry_index_.reset();
     gateway_state_.last_error.reset();
+    mark_gateway_chat_panel_dirty();
     LOG(INFO) << "ClientApp: AI gateway sent chat message turn_id='" << turn_id << "' session_id='"
               << session_id_for_log << "' prompt_bytes=" << text.size();
 }
