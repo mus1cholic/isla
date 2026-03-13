@@ -39,7 +39,7 @@ class ClientApp {
 
     bool initialize();
     void tick();
-    void render() const;
+    void render();
     void shutdown();
     void load_startup_mesh();
     void tick_animation(float dt_seconds);

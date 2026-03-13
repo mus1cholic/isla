@@ -497,7 +497,7 @@ void ClientApp::tick_animation(float dt_seconds) {
     tick_physics_proxies(should_recompute_bounds);
 }
 
-void ClientApp::render() const {
+void ClientApp::render() {
     model_renderer_.render(world_);
 }
 
