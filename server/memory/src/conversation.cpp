@@ -65,26 +65,45 @@ absl::Status ReplaceOngoingEpisodeWithStub(Conversation& conversation,
                                            std::size_t conversation_item_index,
                                            std::string stub_text, Timestamp stub_timestamp) {
     if (conversation_item_index >= conversation.items.size()) {
-        LOG(WARNING) << "Conversation flush rejected: item index out of range index="
-                     << conversation_item_index << " item_count=" << conversation.items.size();
-        return absl::InvalidArgumentError("flush target exceeds conversation size");
+        LOG(WARNING)
+            << "Conversation ReplaceOngoingEpisodeWithStub rejected because the requested "
+               "conversation item index is outside the current conversation"
+            << " conversation_item_index=" << conversation_item_index
+            << " conversation_item_count=" << conversation.items.size();
+        return absl::InvalidArgumentError(
+            "ReplaceOngoingEpisodeWithStub requires conversation_item_index to reference an "
+            "existing conversation item");
     }
     if (stub_text.empty()) {
-        LOG(WARNING) << "Conversation flush rejected: empty stub text index="
-                     << conversation_item_index;
-        return absl::InvalidArgumentError("flush stub text must be non-empty");
+        LOG(WARNING)
+            << "Conversation ReplaceOngoingEpisodeWithStub rejected because episode_stub_content "
+               "was empty"
+            << " conversation_item_index=" << conversation_item_index;
+        return absl::InvalidArgumentError(
+            "ReplaceOngoingEpisodeWithStub requires a non-empty episode stub text");
     }
 
     auto& item = conversation.items[conversation_item_index];
     if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
-        LOG(WARNING) << "Conversation flush rejected: target is not an ongoing episode index="
-                     << conversation_item_index;
-        return absl::InvalidArgumentError("flush target must be an ongoing episode");
+        LOG(WARNING)
+            << "Conversation ReplaceOngoingEpisodeWithStub rejected because the target "
+               "conversation item is not an ongoing episode"
+            << " conversation_item_index=" << conversation_item_index
+            << " conversation_item_type="
+            << (item.type == ConversationItemType::OngoingEpisode ? "ongoing_episode"
+                                                                  : "episode_stub");
+        return absl::InvalidArgumentError(
+            "ReplaceOngoingEpisodeWithStub requires the target conversation item to be an "
+            "ongoing episode");
     }
     if (item.ongoing_episode->messages.empty()) {
-        LOG(WARNING) << "Conversation flush rejected: target ongoing episode is empty index="
-                     << conversation_item_index;
-        return absl::InvalidArgumentError("flush target must contain at least one message");
+        LOG(WARNING)
+            << "Conversation ReplaceOngoingEpisodeWithStub rejected because the target ongoing "
+               "episode contains no messages"
+            << " conversation_item_index=" << conversation_item_index;
+        return absl::InvalidArgumentError(
+            "ReplaceOngoingEpisodeWithStub requires the target ongoing episode to contain at "
+            "least one message");
     }
 
     const std::size_t message_count = item.ongoing_episode->messages.size();
@@ -94,8 +113,10 @@ absl::Status ReplaceOngoingEpisodeWithStub(Conversation& conversation,
         .content = std::move(stub_text),
         .create_time = stub_timestamp,
     };
-    LOG(INFO) << "Conversation replaced ongoing episode with stub index=" << conversation_item_index
-              << " message_count=" << message_count;
+    LOG(INFO) << "Conversation ReplaceOngoingEpisodeWithStub replaced the target ongoing episode "
+                 "with an episode stub"
+              << " conversation_item_index=" << conversation_item_index
+              << " replaced_message_count=" << message_count;
     return absl::OkStatus();
 }
 

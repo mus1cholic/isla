@@ -78,10 +78,13 @@ absl::Status MemoryOrchestrator::PersistSessionIfNeeded(Timestamp create_time) {
         return status;
     }
     if (absl::Status status = store_->UpsertSession(session_record); !status.ok()) {
-        LOG(WARNING) << "MemoryOrchestrator failed to persist session session_id="
-                     << SanitizeForLog(session_id_)
-                     << " user_id=" << SanitizeForLog(state.conversation.user_id) << " detail='"
-                     << SanitizeForLog(status.message()) << "'";
+        LOG(WARNING)
+            << "MemoryOrchestrator store.UpsertSession failed while creating the persisted session "
+               "record for the first observed turn"
+            << " session_id=" << SanitizeForLog(session_id_)
+            << " user_id=" << SanitizeForLog(state.conversation.user_id)
+            << " session_created_at=" << SanitizeForLog(FormatTimestamp(create_time))
+            << " detail='" << SanitizeForLog(status.message()) << "'";
         return status;
     }
     session_persisted_ = true;
@@ -123,11 +126,16 @@ absl::Status MemoryOrchestrator::PersistConversationMessage(std::string_view tur
         return status;
     }
     if (absl::Status status = store_->AppendConversationMessage(write); !status.ok()) {
-        LOG(WARNING) << "MemoryOrchestrator failed to persist conversation message session_id="
-                     << SanitizeForLog(session_id_) << " turn_id=" << SanitizeForLog(turn_id)
-                     << " conversation_item_index=" << conversation_item_index
-                     << " message_index=" << message_index << " detail='"
-                     << SanitizeForLog(status.message()) << "'";
+        LOG(WARNING)
+            << "MemoryOrchestrator store.AppendConversationMessage failed while appending the raw "
+               "transcript message for the current ongoing episode"
+            << " session_id=" << SanitizeForLog(session_id_)
+            << " turn_id=" << SanitizeForLog(turn_id)
+            << " role=" << (message.role == MessageRole::User ? "user" : "assistant")
+            << " conversation_item_index=" << conversation_item_index
+            << " message_index=" << message_index
+            << " message_created_at=" << SanitizeForLog(FormatTimestamp(message.create_time))
+            << " detail='" << SanitizeForLog(status.message()) << "'";
         return status;
     }
     return absl::OkStatus();
@@ -148,11 +156,14 @@ MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFl
         return status;
     }
     if (absl::Status status = store_->UpsertMidTermEpisode(episode_write); !status.ok()) {
-        LOG(WARNING) << "MemoryOrchestrator failed to persist mid-term episode session_id="
-                     << SanitizeForLog(session_id_)
-                     << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
-                     << " conversation_item_index=" << flush.conversation_item_index << " detail='"
-                     << SanitizeForLog(status.message()) << "'";
+        LOG(WARNING)
+            << "MemoryOrchestrator store.UpsertMidTermEpisode failed while persisting the flushed "
+               "mid-term episode before conversation item replacement"
+            << " session_id=" << SanitizeForLog(session_id_)
+            << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
+            << " source_conversation_item_index=" << flush.conversation_item_index
+            << " episode_created_at=" << SanitizeForLog(FormatTimestamp(flush.episode.created_at))
+            << " detail='" << SanitizeForLog(status.message()) << "'";
         return status;
     }
 
@@ -168,11 +179,15 @@ MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFl
     }
     if (absl::Status status = store_->ReplaceConversationItemWithEpisodeStub(stub_write);
         !status.ok()) {
-        LOG(WARNING) << "MemoryOrchestrator failed to persist episode stub session_id="
-                     << SanitizeForLog(session_id_)
-                     << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
-                     << " conversation_item_index=" << flush.conversation_item_index << " detail='"
-                     << SanitizeForLog(status.message()) << "'";
+        LOG(WARNING)
+            << "MemoryOrchestrator store.ReplaceConversationItemWithEpisodeStub failed while "
+               "marking the flushed conversation item as an episode stub"
+            << " session_id=" << SanitizeForLog(session_id_)
+            << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
+            << " conversation_item_index=" << flush.conversation_item_index
+            << " episode_stub_created_at="
+            << SanitizeForLog(FormatTimestamp(flush.stub_timestamp))
+            << " detail='" << SanitizeForLog(status.message()) << "'";
         return status;
     }
     return absl::OkStatus();

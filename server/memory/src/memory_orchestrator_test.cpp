@@ -266,7 +266,7 @@ TEST_F(MemoryOrchestratorTest, HandleConversationMessagesPersistSessionAndTransc
                     .ok());
     ASSERT_TRUE(handler
                     .HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
-                                                                 Ts("2026-03-08T14:00:01Z")))
+                                                                Ts("2026-03-08T14:00:01Z")))
                     .ok());
 
     ASSERT_EQ(store->session_records.size(), 1U);
@@ -300,7 +300,7 @@ TEST_F(MemoryOrchestratorTest, SessionPersistenceRunsOnlyOnFirstTurn) {
                     .ok());
     ASSERT_TRUE(handler
                     .HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi",
-                                                                 Ts("2026-03-08T14:00:01Z")))
+                                                                Ts("2026-03-08T14:00:01Z")))
                     .ok());
     ASSERT_TRUE(handler
                     .HandleUserQuery(GatewayUserQuery("srv_test", "turn_002", "follow up",
@@ -427,22 +427,21 @@ TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPropagatesMidTermPersis
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
 
-    const absl::Status status =
-        handler.ApplyCompletedEpisodeFlush(CompletedOngoingEpisodeFlush{
-            .conversation_item_index = 0,
-            .episode =
-                Episode{
-                    .episode_id = "ep_001",
-                    .tier1_detail = std::string("full detail"),
-                    .tier2_summary = "summary",
-                    .tier3_ref = "stub ref",
-                    .tier3_keywords = { "memory" },
-                    .salience = 8,
-                    .embedding = {},
-                    .created_at = Ts("2026-03-08T14:00:02Z"),
-                },
-            .stub_timestamp = Ts("2026-03-08T14:00:03Z"),
-        });
+    const absl::Status status = handler.ApplyCompletedEpisodeFlush(CompletedOngoingEpisodeFlush{
+        .conversation_item_index = 0,
+        .episode =
+            Episode{
+                .episode_id = "ep_001",
+                .tier1_detail = std::string("full detail"),
+                .tier2_summary = "summary",
+                .tier3_ref = "stub ref",
+                .tier3_keywords = { "memory" },
+                .salience = 8,
+                .embedding = {},
+                .created_at = Ts("2026-03-08T14:00:02Z"),
+            },
+        .stub_timestamp = Ts("2026-03-08T14:00:03Z"),
+    });
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
@@ -467,22 +466,21 @@ TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPropagatesStubPersisten
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
 
-    const absl::Status status =
-        handler.ApplyCompletedEpisodeFlush(CompletedOngoingEpisodeFlush{
-            .conversation_item_index = 0,
-            .episode =
-                Episode{
-                    .episode_id = "ep_001",
-                    .tier1_detail = std::string("full detail"),
-                    .tier2_summary = "summary",
-                    .tier3_ref = "stub ref",
-                    .tier3_keywords = { "memory" },
-                    .salience = 8,
-                    .embedding = {},
-                    .created_at = Ts("2026-03-08T14:00:02Z"),
-                },
-            .stub_timestamp = Ts("2026-03-08T14:00:03Z"),
-        });
+    const absl::Status status = handler.ApplyCompletedEpisodeFlush(CompletedOngoingEpisodeFlush{
+        .conversation_item_index = 0,
+        .episode =
+            Episode{
+                .episode_id = "ep_001",
+                .tier1_detail = std::string("full detail"),
+                .tier2_summary = "summary",
+                .tier3_ref = "stub ref",
+                .tier3_keywords = { "memory" },
+                .salience = 8,
+                .embedding = {},
+                .created_at = Ts("2026-03-08T14:00:02Z"),
+            },
+        .stub_timestamp = Ts("2026-03-08T14:00:03Z"),
+    });
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
