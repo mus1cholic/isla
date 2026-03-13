@@ -1,12 +1,14 @@
 #pragma once
 
 #include "client_app.hpp"
+#include "engine/src/render/model_renderer_test_hooks.hpp"
 
 #include "absl/status/status.h"
 
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace isla::client::internal {
 
@@ -106,6 +108,18 @@ class ClientAppTestHooks {
 
     static std::optional<std::string> gateway_last_error(const ClientApp& app) {
         return app.gateway_state_.last_error;
+    }
+
+    static void update_debug_overlay(ClientApp& app) {
+        app.update_debug_overlay();
+    }
+
+    static bool debug_overlay_enabled(const ClientApp& app) {
+        return ModelRendererTestHooks::debug_overlay_enabled(app.model_renderer_);
+    }
+
+    static std::vector<std::string> debug_overlay_lines(const ClientApp& app) {
+        return ModelRendererTestHooks::debug_overlay_lines(app.model_renderer_);
     }
 };
 

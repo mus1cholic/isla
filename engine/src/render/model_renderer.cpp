@@ -3,11 +3,15 @@
 #include "absl/log/log.h"
 #include <SDL3/SDL.h>
 
+#include "engine/src/render/model_renderer_test_hooks.hpp"
+
 #if defined(_WIN32)
 
+#include "backends/imgui_impl_dx11.h"
 #include "engine/src/render/include/bgfx_mesh_manager.hpp"
 #include "engine/src/render/include/bgfx_shader_manager.hpp"
 #include "engine/src/render/include/bgfx_texture_manager.hpp"
+#include "imgui.h"
 #include "isla/engine/math/mat4.hpp"
 #include "isla/engine/render/model_renderer_skinning_utils.hpp"
 #include "isla/engine/render/overlay_transparency.hpp"
@@ -60,6 +64,8 @@ constexpr std::uint64_t kOpaqueRenderStateBase = BGFX_STATE_WRITE_RGB | BGFX_STA
 constexpr std::uint64_t kAlphaBlendRenderStateBase =
     BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_LESS |
     BGFX_STATE_MSAA | BGFX_STATE_BLEND_ALPHA;
+constexpr float kDefaultImGuiDeltaTimeSeconds = 1.0F / 60.0F;
+constexpr float kMaxImGuiDeltaTimeSeconds = 0.25F;
 
 static_assert((kAlphaBlendRenderStateBase & BGFX_STATE_WRITE_Z) == BGFX_STATE_WRITE_Z,
               "Alpha blend materials must write to depth to prevent intra-mesh self-occlusion "
@@ -81,6 +87,8 @@ struct DirectCompositionPresenter {
     ComPtr<IDCompositionTarget> dcomp_target;
     ComPtr<IDCompositionVisual> dcomp_visual;
 };
+
+constexpr const char* kDebugHudTitle = "Isla Debug HUD";
 
 bool vec3_is_finite(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
@@ -349,8 +357,14 @@ class ModelRenderer::Impl {
     bgfx::UniformHandle joint_palette_uniform = BGFX_INVALID_HANDLE;
     bgfx::UniformHandle tex_color_uniform = BGFX_INVALID_HANDLE;
     std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_render_time{};
+    bool has_last_render_time = false;
     std::vector<Mat4> joint_palette_upload;
     DirectCompositionPresenter presenter;
+    ImGuiContext* imgui_context = nullptr;
+    bool imgui_initialized = false;
+    bool debug_overlay_enabled = false;
+    std::vector<std::string> debug_overlay_lines;
 };
 
 namespace {
@@ -373,6 +387,95 @@ void destroy_renderer_uniforms(ModelRenderer::Impl& impl) {
     destroy_uniform_if_valid(impl.alpha_params_uniform);
     destroy_uniform_if_valid(impl.joint_palette_uniform);
     destroy_uniform_if_valid(impl.tex_color_uniform);
+}
+
+bool initialize_imgui_overlay(ModelRenderer::Impl& impl) {
+    IMGUI_CHECKVERSION();
+    impl.imgui_context = ImGui::CreateContext();
+    if (impl.imgui_context == nullptr) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: ImGui context creation failed";
+        return false;
+    }
+
+    ImGui::SetCurrentContext(impl.imgui_context);
+    ImGui::StyleColorsDark();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.LogFilename = nullptr;
+    io.DisplaySize =
+        ImVec2(static_cast<float>(impl.window_width), static_cast<float>(impl.window_height));
+    io.DeltaTime = kDefaultImGuiDeltaTimeSeconds;
+
+    if (!ImGui_ImplDX11_Init(impl.presenter.device.Get(), impl.presenter.device_context.Get())) {
+        LOG(ERROR) << "ModelRenderer: initialize failed: ImGui DX11 backend init failed";
+        ImGui::DestroyContext(impl.imgui_context);
+        impl.imgui_context = nullptr;
+        return false;
+    }
+
+    impl.imgui_initialized = true;
+    LOG(INFO) << "ModelRenderer: ImGui DX11 debug overlay initialized width=" << impl.window_width
+              << " height=" << impl.window_height;
+    return true;
+}
+
+void shutdown_imgui_overlay(ModelRenderer::Impl& impl) {
+    if (impl.imgui_initialized) {
+        VLOG(1) << "ModelRenderer: shutting down ImGui DX11 debug overlay";
+        ImGui::SetCurrentContext(impl.imgui_context);
+        ImGui_ImplDX11_Shutdown();
+        impl.imgui_initialized = false;
+    }
+    if (impl.imgui_context != nullptr) {
+        ImGui::DestroyContext(impl.imgui_context);
+        impl.imgui_context = nullptr;
+    }
+    impl.debug_overlay_lines.clear();
+}
+
+void cleanup_renderer_after_initialize_failure(ModelRenderer::Impl& impl, bool shutdown_managers) {
+    shutdown_imgui_overlay(impl);
+    if (shutdown_managers) {
+        impl.mesh_manager.shutdown();
+        impl.texture_manager.shutdown();
+        impl.shader_manager.shutdown();
+    }
+    destroy_renderer_uniforms(impl);
+    bgfx::shutdown();
+    shutdown_direct_composition_presenter(impl.presenter);
+    impl.has_last_render_time = false;
+}
+
+void render_imgui_overlay(ModelRenderer::Impl& impl, float dt_seconds) {
+    if (!impl.imgui_initialized || !impl.debug_overlay_enabled || impl.imgui_context == nullptr) {
+        return;
+    }
+
+    ImGui::SetCurrentContext(impl.imgui_context);
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize =
+        ImVec2(static_cast<float>(impl.window_width), static_cast<float>(impl.window_height));
+    io.DeltaTime = dt_seconds;
+
+    ImGui_ImplDX11_NewFrame();
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(16.0F, 16.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.75F);
+    constexpr ImGuiWindowFlags kHudWindowFlags = ImGuiWindowFlags_AlwaysAutoResize |
+                                                 ImGuiWindowFlags_NoCollapse |
+                                                 ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin(kDebugHudTitle, nullptr, kHudWindowFlags)) {
+        for (const std::string& line : impl.debug_overlay_lines) {
+            ImGui::TextUnformatted(line.c_str());
+        }
+    }
+    ImGui::End();
+    ImGui::Render();
+
+    ID3D11RenderTargetView* render_target_view = impl.presenter.render_target_view.Get();
+    ID3D11DepthStencilView* depth_stencil_view = impl.presenter.depth_stencil_view.Get();
+    impl.presenter.device_context->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 }
 
 } // namespace
@@ -458,21 +561,18 @@ bool ModelRenderer::initialize(SDL_Window* window, SDL_Renderer* renderer, Rende
         !bgfx::isValid(impl_->spec_params_uniform) || !bgfx::isValid(impl_->alpha_params_uniform) ||
         !bgfx::isValid(impl_->joint_palette_uniform) || !bgfx::isValid(impl_->tex_color_uniform)) {
         LOG(ERROR) << "ModelRenderer: initialize failed: could not create renderer uniforms";
-        destroy_renderer_uniforms(*impl_);
-        bgfx::shutdown();
-        shutdown_direct_composition_presenter(impl_->presenter);
+        cleanup_renderer_after_initialize_failure(*impl_, /*shutdown_managers=*/false);
         return false;
     }
 
     if (!impl_->shader_manager.initialize() || !impl_->texture_manager.initialize() ||
         !impl_->mesh_manager.initialize()) {
-        impl_->mesh_manager.shutdown();
-        impl_->texture_manager.shutdown();
-        impl_->shader_manager.shutdown();
-        destroy_renderer_uniforms(*impl_);
-        bgfx::shutdown();
-        shutdown_direct_composition_presenter(impl_->presenter);
+        cleanup_renderer_after_initialize_failure(*impl_, /*shutdown_managers=*/true);
         LOG(ERROR) << "ModelRenderer: initialize failed: renderer managers could not initialize";
+        return false;
+    }
+    if (!initialize_imgui_overlay(*impl_)) {
+        cleanup_renderer_after_initialize_failure(*impl_, /*shutdown_managers=*/true);
         return false;
     }
 
@@ -539,15 +639,26 @@ void ModelRenderer::on_resize(RenderSize size) {
                       static_cast<std::uint16_t>(impl_->window_height));
 }
 
-void ModelRenderer::render(const RenderWorld& world) const {
+void ModelRenderer::render(const RenderWorld& world) {
     if (!impl_->initialized) {
         return;
     }
+
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    float imgui_dt_seconds = kDefaultImGuiDeltaTimeSeconds;
+    if (impl_->has_last_render_time) {
+        const std::chrono::duration<float> elapsed = now - impl_->last_render_time;
+        if (elapsed.count() > 0.0F) {
+            imgui_dt_seconds = std::min(elapsed.count(), kMaxImGuiDeltaTimeSeconds);
+        }
+    }
+    impl_->last_render_time = now;
+    impl_->has_last_render_time = true;
+
     impl_->mesh_manager.begin_frame();
     impl_->mesh_manager.upload_dirty_meshes(world);
 
-    const auto elapsed =
-        std::chrono::duration<float>(std::chrono::steady_clock::now() - impl_->start_time).count();
+    const auto elapsed = std::chrono::duration<float>(now - impl_->start_time).count();
     const float sim_time =
         std::isfinite(world.sim_time_seconds()) ? std::max(0.0F, world.sim_time_seconds()) : 0.0F;
     const std::array<float, 4> time_values{ sim_time, elapsed, 0.0F, 0.0F };
@@ -724,6 +835,7 @@ void ModelRenderer::render(const RenderWorld& world) const {
     }
     bgfx::frame();
     if (impl_->presenter.swap_chain) {
+        render_imgui_overlay(*impl_, imgui_dt_seconds);
         const HRESULT present_hr = impl_->presenter.swap_chain->Present(1, 0);
         if (FAILED(present_hr)) {
             LOG_EVERY_N_SEC(ERROR, 2.0)
@@ -734,17 +846,24 @@ void ModelRenderer::render(const RenderWorld& world) const {
 }
 
 void ModelRenderer::set_debug_overlay_enabled(bool enabled) {
-    (void)enabled;
+    if (!impl_) {
+        return;
+    }
+    impl_->debug_overlay_enabled = enabled;
 }
 
 void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) {
-    (void)lines;
+    if (!impl_) {
+        return;
+    }
+    impl_->debug_overlay_lines.assign(lines.begin(), lines.end());
 }
 
 void ModelRenderer::shutdown() {
     if (!impl_->initialized) {
         return;
     }
+    shutdown_imgui_overlay(*impl_);
     impl_->mesh_manager.shutdown();
     impl_->texture_manager.shutdown();
     impl_->shader_manager.shutdown();
@@ -752,7 +871,20 @@ void ModelRenderer::shutdown() {
     bgfx::shutdown();
     shutdown_direct_composition_presenter(impl_->presenter);
     impl_->initialized = false;
+    impl_->has_last_render_time = false;
     impl_->window = nullptr;
+}
+
+bool internal::ModelRendererTestHooks::debug_overlay_enabled(const ModelRenderer& renderer) {
+    return renderer.impl_ != nullptr && renderer.impl_->debug_overlay_enabled;
+}
+
+std::vector<std::string>
+internal::ModelRendererTestHooks::debug_overlay_lines(const ModelRenderer& renderer) {
+    if (renderer.impl_ == nullptr) {
+        return {};
+    }
+    return renderer.impl_->debug_overlay_lines;
 }
 
 } // namespace isla::client
@@ -761,7 +893,11 @@ void ModelRenderer::shutdown() {
 
 namespace isla::client {
 
-class ModelRenderer::Impl {};
+class ModelRenderer::Impl {
+  public:
+    bool debug_overlay_enabled = false;
+    std::vector<std::string> debug_overlay_lines;
+};
 
 ModelRenderer::ModelRenderer() : impl_(std::make_unique<Impl>()) {}
 ModelRenderer::~ModelRenderer() = default;
@@ -790,19 +926,37 @@ void ModelRenderer::on_resize(RenderSize size) {
     (void)size;
 }
 
-void ModelRenderer::render(const RenderWorld& world) const {
+void ModelRenderer::render(const RenderWorld& world) {
     (void)world;
 }
 
 void ModelRenderer::set_debug_overlay_enabled(bool enabled) {
-    (void)enabled;
+    if (!impl_) {
+        return;
+    }
+    impl_->debug_overlay_enabled = enabled;
 }
 
 void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) {
-    (void)lines;
+    if (!impl_) {
+        return;
+    }
+    impl_->debug_overlay_lines.assign(lines.begin(), lines.end());
 }
 
 void ModelRenderer::shutdown() {}
+
+bool internal::ModelRendererTestHooks::debug_overlay_enabled(const ModelRenderer& renderer) {
+    return renderer.impl_ != nullptr && renderer.impl_->debug_overlay_enabled;
+}
+
+std::vector<std::string>
+internal::ModelRendererTestHooks::debug_overlay_lines(const ModelRenderer& renderer) {
+    if (renderer.impl_ == nullptr) {
+        return {};
+    }
+    return renderer.impl_->debug_overlay_lines;
+}
 
 } // namespace isla::client
 

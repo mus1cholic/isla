@@ -39,7 +39,7 @@ class ClientApp {
 
     bool initialize();
     void tick();
-    void render() const;
+    void render();
     void shutdown();
     void load_startup_mesh();
     void tick_animation(float dt_seconds);
@@ -48,6 +48,7 @@ class ClientApp {
     void load_physics_sidecar_for_asset(std::string_view asset_path);
     void append_physics_proxy_meshes();
     void tick_physics_proxies(bool recompute_bounds);
+    void update_debug_overlay();
     void initialize_ai_gateway_from_environment();
     [[nodiscard]] absl::Status start_ai_gateway_session(AiGatewayClientConfig config,
                                                         std::string canned_prompt);
@@ -101,6 +102,7 @@ class ClientApp {
     mutable std::mutex gateway_event_mutex_;
     std::deque<GatewayQueuedEvent> gateway_event_queue_;
     GatewayState gateway_state_{};
+    std::string last_gateway_hud_state_ = "uninitialized";
     const ISdlRuntime& sdl_runtime_;
 };
 

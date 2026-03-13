@@ -8,6 +8,10 @@
 
 namespace isla::client {
 
+namespace internal {
+class ModelRendererTestHooks;
+}
+
 class ModelRenderer final : public IRendererBackend {
   public:
     class Impl;
@@ -20,12 +24,14 @@ class ModelRenderer final : public IRendererBackend {
     [[nodiscard]] bool has_homogeneous_depth() const override;
     [[nodiscard]] bool supports_gpu_skinning() const;
     void on_resize(RenderSize size) override;
-    void render(const RenderWorld& world) const override;
+    void render(const RenderWorld& world) override;
     void set_debug_overlay_enabled(bool enabled) override;
     void set_debug_overlay_lines(std::span<const std::string> lines) override;
     void shutdown() override;
 
   private:
+    friend class internal::ModelRendererTestHooks;
+
     std::unique_ptr<Impl> impl_;
 };
 

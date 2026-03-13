@@ -219,6 +219,43 @@ cc_library(
 )
 
 git_repository(
+    name = "imgui_upstream",
+    build_file_content = """
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "imgui",
+    srcs = [
+        "imgui.cpp",
+        "imgui_draw.cpp",
+        "imgui_tables.cpp",
+        "imgui_widgets.cpp",
+    ],
+    hdrs = glob([
+        "*.h",
+        "misc/cpp/*.h",
+    ]),
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "imgui_dx11",
+    srcs = ["backends/imgui_impl_dx11.cpp"],
+    hdrs = ["backends/imgui_impl_dx11.h"],
+    includes = [
+        ".",
+        "backends",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [":imgui"],
+)
+""",
+    commit = "6d910d5487d11ca567b61c7824b0c78c569d62f0",
+    remote = "https://github.com/ocornut/imgui.git",
+)
+
+git_repository(
     name = "nlohmann_json_upstream",
     build_file_content = """
 load("@rules_cc//cc:defs.bzl", "cc_library")

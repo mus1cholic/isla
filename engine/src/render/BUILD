@@ -23,6 +23,7 @@ cc_library(
         "include/texture_loader_limits.hpp",
         "mesh_asset_loader.cpp",
         "model_renderer.cpp",
+        "model_renderer_test_hooks.hpp",
         "model_renderer_skinning_utils.cpp",
         "pmx_physics_sidecar.cpp",
         "pmx_texture_remap_sidecar.cpp",
@@ -74,7 +75,10 @@ cc_library(
         "//engine/include/isla/engine/render",
         "//third_party/sdl3:sdl3",
     ] + select({
-        "@platforms//os:windows": ["//third_party/bgfx:bgfx"],
+        "@platforms//os:windows": [
+            "//third_party/bgfx:bgfx",
+            "//third_party/imgui:imgui_dx11",
+        ],
         "//conditions:default": [],
     }),
 )
@@ -94,6 +98,16 @@ cc_library(
         "//engine/include/isla/engine/render",
         "//third_party/saba:saba_pmx_parser",
     ],
+)
+
+cc_library(
+    name = "model_renderer_test_hooks",
+    hdrs = ["model_renderer_test_hooks.hpp"],
+    visibility = [
+        "//client/src:__pkg__",
+        "//engine/src/render:__pkg__",
+    ],
+    deps = [":render"],
 )
 
 cc_test(
@@ -119,6 +133,16 @@ cc_test(
     srcs = ["overlay_transparency_contract_test.cpp"],
     deps = [
         "//engine/include/isla/engine/render",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "model_renderer_debug_overlay_tests",
+    srcs = ["model_renderer_debug_overlay_test.cpp"],
+    deps = [
+        ":model_renderer_test_hooks",
+        ":render",
         "@googletest//:gtest_main",
     ],
 )

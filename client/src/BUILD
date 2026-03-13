@@ -209,6 +209,7 @@ cc_test(
     ],
     deps = [
         ":client_app",
+        "//engine/src/render:model_renderer_test_hooks",
         "@googletest//:gtest_main",
     ],
 )
@@ -221,6 +222,7 @@ cc_test(
     ],
     deps = [
         ":client_app",
+        "//engine/src/render:model_renderer_test_hooks",
         "//server/include/isla/server:server_headers",
         "//server/src:ai_gateway_server",
         "//server/src:ai_gateway_stub_responder",

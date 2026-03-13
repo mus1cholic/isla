@@ -11,6 +11,16 @@
 #include <thread>
 #include <utility>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include <boost/asio/connect.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
@@ -47,6 +57,64 @@ absl::Status unavailable(std::string_view message) {
     return absl::UnavailableError(std::string(message));
 }
 
+#ifdef _WIN32
+std::string utf8_from_wide(std::wstring_view wide) {
+    if (wide.empty()) {
+        return {};
+    }
+
+    const int utf8_size = WideCharToMultiByte(
+        CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    if (utf8_size <= 0) {
+        return {};
+    }
+
+    std::string utf8(static_cast<std::size_t>(utf8_size), '\0');
+    const int converted =
+        WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), utf8.data(),
+                            utf8_size, nullptr, nullptr);
+    if (converted <= 0) {
+        return {};
+    }
+    utf8.resize(static_cast<std::size_t>(converted));
+    return utf8;
+}
+
+std::wstring format_message_wide(DWORD error_code) {
+    LPWSTR buffer = nullptr;
+    const DWORD flags =
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    const DWORD size = FormatMessageW(flags, nullptr, error_code, 0,
+                                      reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+    if (size == 0 || buffer == nullptr) {
+        return {};
+    }
+
+    std::wstring message(buffer, size);
+    LocalFree(buffer);
+    while (!message.empty() &&
+           (message.back() == L'\r' || message.back() == L'\n' || message.back() == L'.')) {
+        message.pop_back();
+    }
+    return message;
+}
+
+std::string error_message_utf8(const boost::system::error_code& error) {
+    const std::wstring wide_message = format_message_wide(static_cast<DWORD>(error.value()));
+    if (!wide_message.empty()) {
+        const std::string utf8_message = utf8_from_wide(wide_message);
+        if (!utf8_message.empty()) {
+            return utf8_message;
+        }
+    }
+    return error.message();
+}
+#else
+std::string error_message_utf8(const boost::system::error_code& error) {
+    return error.message();
+}
+#endif
+
 template <typename T>
 absl::StatusOr<T> await_future(std::future<T>& future, std::chrono::milliseconds timeout,
                                std::string_view action_name) {
@@ -57,7 +125,7 @@ absl::StatusOr<T> await_future(std::future<T>& future, std::chrono::milliseconds
 }
 
 std::string format_error(std::string_view context, const boost::system::error_code& error) {
-    return std::string(context) + ": " + error.message();
+    return std::string(context) + ": " + error_message_utf8(error);
 }
 
 } // namespace

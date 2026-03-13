@@ -211,6 +211,10 @@ std::optional<std::uint16_t> parse_gateway_env_port(std::string_view name,
     return static_cast<std::uint16_t>(port);
 }
 
+std::string bool_to_enabled_label(bool value) {
+    return value ? "yes" : "no";
+}
+
 } // namespace
 
 ClientApp::ClientApp() : ClientApp(default_sdl_runtime()) {}
@@ -264,8 +268,10 @@ bool ClientApp::initialize() {
         LOG(ERROR) << "ClientApp: model renderer initialize failed";
         return false;
     }
+    model_renderer_.set_debug_overlay_enabled(true);
     load_startup_mesh();
     initialize_ai_gateway_from_environment();
+    update_debug_overlay();
     last_tick_ns_ = sdl_runtime_.get_ticks_ns();
     is_running_ = true;
     return true;
@@ -450,6 +456,7 @@ void ClientApp::tick() {
 
     tick_animation(dt_seconds);
     drain_gateway_events();
+    update_debug_overlay();
 }
 
 void ClientApp::tick_animation(float dt_seconds) {
@@ -490,8 +497,58 @@ void ClientApp::tick_animation(float dt_seconds) {
     tick_physics_proxies(should_recompute_bounds);
 }
 
-void ClientApp::render() const {
+void ClientApp::render() {
     model_renderer_.render(world_);
+}
+
+void ClientApp::update_debug_overlay() {
+    const std::string hud_state = [&]() -> std::string {
+        if (gateway_state_.last_error.has_value()) {
+            return "error";
+        }
+        if (gateway_state_.last_reply_text.has_value()) {
+            return "reply";
+        }
+        if (gateway_state_.inflight_turn_id.has_value()) {
+            return "inflight";
+        }
+        if (gateway_state_.connected) {
+            return "connected";
+        }
+        if (gateway_state_.enabled) {
+            return "disconnected";
+        }
+        return "disabled";
+    }();
+    if (hud_state != last_gateway_hud_state_) {
+        VLOG(1) << "ClientApp: gateway HUD state changed state='" << hud_state << "' session_id='"
+                << gateway_state_.session_id.value_or("<none>") << "' turn_id='"
+                << gateway_state_.inflight_turn_id.value_or("<none>") << "'";
+        last_gateway_hud_state_ = hud_state;
+    }
+
+    // NOTICE: This temporary debug HUD rebuilds its lines every frame for simplicity. If the
+    // overlay becomes a longer-lived surface, prefer caching the rendered lines and regenerating
+    // them only when the displayed gateway state changes.
+    std::vector<std::string> overlay_lines;
+    overlay_lines.reserve(7U);
+    overlay_lines.emplace_back("Gateway Debug HUD");
+    overlay_lines.emplace_back("Press G to send the canned prompt");
+    overlay_lines.emplace_back("Enabled: " +
+                               std::string(bool_to_enabled_label(gateway_state_.enabled)));
+    overlay_lines.emplace_back("Connected: " +
+                               std::string(bool_to_enabled_label(gateway_state_.connected)));
+    overlay_lines.emplace_back("Session: " + gateway_state_.session_id.value_or("<none>"));
+    overlay_lines.emplace_back("Inflight: " + gateway_state_.inflight_turn_id.value_or("<none>"));
+    if (gateway_state_.last_reply_text.has_value()) {
+        overlay_lines.emplace_back("Reply: " + *gateway_state_.last_reply_text);
+    } else if (gateway_state_.last_error.has_value()) {
+        overlay_lines.emplace_back("Error: " + *gateway_state_.last_error);
+    } else {
+        overlay_lines.emplace_back("Status: idle");
+    }
+
+    model_renderer_.set_debug_overlay_lines(overlay_lines);
 }
 
 void ClientApp::shutdown() {
