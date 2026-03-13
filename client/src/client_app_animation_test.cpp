@@ -821,6 +821,13 @@ class FakeSdlRuntime final : public ISdlRuntime {
         (void)enabled;
         return true;
     }
+    [[nodiscard]] bool start_text_input(SDL_Window* window) const override {
+        (void)window;
+        return true;
+    }
+    void stop_text_input(SDL_Window* window) const override {
+        (void)window;
+    }
 };
 
 animated_gltf::AnimatedGltfAsset make_test_asset_with_two_clips() {

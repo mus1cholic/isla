@@ -84,4 +84,23 @@ TEST(Win32LayeredOverlayTest, RefreshReappliesLayeredAlphaInFallbackModeContract
     EXPECT_TRUE(normalized_source_contains(normalized_source, "layered fallback refresh failed"));
 }
 
+TEST(Win32LayeredOverlayTest, InputPassthroughToggleContract) {
+    const std::string source = load_client_source();
+    ASSERT_FALSE(source.empty()) << "Could not load win32_layered_overlay.cpp source";
+    const std::string normalized_source = normalize_source(source);
+
+    EXPECT_TRUE(normalized_source_contains(normalized_source,
+                                           "boolg_overlay_input_passthrough_enabled=true;"));
+    EXPECT_TRUE(normalized_source_contains(
+        normalized_source, "if(message==WM_NCHITTEST&&g_overlay_input_passthrough_enabled)"));
+    EXPECT_TRUE(
+        normalized_source_contains(normalized_source, "boolapply_overlay_input_passthrough("));
+    EXPECT_TRUE(
+        normalized_source_contains(normalized_source, "updated_ex_style|=WS_EX_TRANSPARENT;"));
+    EXPECT_TRUE(normalized_source_contains(
+        normalized_source, "updated_ex_style&=~static_cast<LONG_PTR>(WS_EX_TRANSPARENT);"));
+    EXPECT_TRUE(
+        normalized_source_contains(normalized_source, "boolset_win32_overlay_input_passthrough("));
+}
+
 } // namespace isla::client

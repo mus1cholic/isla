@@ -29,5 +29,29 @@ TEST(ModelRendererDebugOverlayTest, StoresOverlayStateWithoutInitialization) {
     EXPECT_EQ(internal::ModelRendererTestHooks::debug_overlay_lines(renderer), overlay_lines);
 }
 
+TEST(ModelRendererDebugOverlayTest, StoresChatPanelStateAndPendingSubmitWithoutInitialization) {
+    ModelRenderer renderer;
+
+    ChatPanelState chat_panel_state{
+        .enabled = true,
+        .connected = true,
+        .turn_in_flight = false,
+        .status_line = "Connected",
+        .transcript = {
+            ChatPanelEntry{ .role = ChatPanelEntryRole::User, .text = "hello" },
+            ChatPanelEntry{ .role = ChatPanelEntryRole::Assistant, .text = "hi there" },
+        },
+    };
+
+    renderer.set_chat_panel_state(chat_panel_state);
+    EXPECT_EQ(internal::ModelRendererTestHooks::chat_panel_state(renderer).status_line,
+              "Connected");
+    ASSERT_EQ(internal::ModelRendererTestHooks::chat_panel_state(renderer).transcript.size(), 2U);
+
+    internal::ModelRendererTestHooks::queue_chat_submit(renderer, "hello from hook");
+    EXPECT_EQ(renderer.take_chat_submit_request(), std::optional<std::string>("hello from hook"));
+    EXPECT_FALSE(renderer.take_chat_submit_request().has_value());
+}
+
 } // namespace
 } // namespace isla::client
