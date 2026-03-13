@@ -172,7 +172,7 @@ std::optional<std::string> read_process_env_string(std::string_view name) {
     return std::string(value);
 }
 
-GatewayEnvValue read_gateway_env_value(std::string_view name) {
+GatewayEnvValue read_gateway_env_value(std::string_view name, const DotEnvMap& dotenv_values) {
     if (const std::optional<std::string> process_value = read_process_env_string(name);
         process_value.has_value()) {
         return GatewayEnvValue{
@@ -181,7 +181,6 @@ GatewayEnvValue read_gateway_env_value(std::string_view name) {
         };
     }
 
-    const DotEnvMap dotenv_values = lookup_dotenv_values();
     const auto it = dotenv_values.find(std::string(name));
     if (it == dotenv_values.end() || it->second.empty()) {
         return GatewayEnvValue{};
@@ -512,7 +511,8 @@ void ClientApp::shutdown() {
 }
 
 void ClientApp::initialize_ai_gateway_from_environment() {
-    const GatewayEnvValue enabled = read_gateway_env_value(kAiGatewayEnabledEnvVar);
+    const DotEnvMap dotenv_values = lookup_dotenv_values();
+    const GatewayEnvValue enabled = read_gateway_env_value(kAiGatewayEnabledEnvVar, dotenv_values);
     if (!enabled.value.has_value() || !env_var_is_truthy(*enabled.value)) {
         LOG(INFO) << "ClientApp: AI gateway startup skipped because " << kAiGatewayEnabledEnvVar
                   << " is not enabled"
@@ -521,22 +521,22 @@ void ClientApp::initialize_ai_gateway_from_environment() {
     }
 
     AiGatewayClientConfig config{};
-    const GatewayEnvValue host = read_gateway_env_value(kAiGatewayHostEnvVar);
+    const GatewayEnvValue host = read_gateway_env_value(kAiGatewayHostEnvVar, dotenv_values);
     if (host.value.has_value()) {
         config.host = *host.value;
     }
-    const GatewayEnvValue port_value = read_gateway_env_value(kAiGatewayPortEnvVar);
+    const GatewayEnvValue port_value = read_gateway_env_value(kAiGatewayPortEnvVar, dotenv_values);
     if (const std::optional<std::uint16_t> port =
             parse_gateway_env_port(kAiGatewayPortEnvVar, port_value);
         port.has_value()) {
         config.port = *port;
     }
-    const GatewayEnvValue path = read_gateway_env_value(kAiGatewayPathEnvVar);
+    const GatewayEnvValue path = read_gateway_env_value(kAiGatewayPathEnvVar, dotenv_values);
     if (path.value.has_value()) {
         config.path = *path.value;
     }
 
-    GatewayEnvValue prompt = read_gateway_env_value(kAiGatewayPromptEnvVar);
+    GatewayEnvValue prompt = read_gateway_env_value(kAiGatewayPromptEnvVar, dotenv_values);
     if (!prompt.value.has_value()) {
         prompt = GatewayEnvValue{
             .value = std::string("hello!"),
@@ -549,6 +549,9 @@ void ClientApp::initialize_ai_gateway_from_environment() {
         port_value.value.has_value() ? port_value.source : GatewayEnvValueSource::DefaultValue;
     const GatewayEnvValueSource path_source =
         path.value.has_value() ? path.source : GatewayEnvValueSource::DefaultValue;
+    const std::string host_for_log = config.host;
+    const std::uint16_t port_for_log = config.port;
+    const std::string path_for_log = config.path;
     LOG(INFO) << "ClientApp: AI gateway startup requested host='" << config.host
               << "' host_source=" << gateway_env_value_source_name(host_source)
               << " port=" << config.port
@@ -558,7 +561,7 @@ void ClientApp::initialize_ai_gateway_from_environment() {
     const absl::Status status = start_ai_gateway_session(std::move(config), *prompt.value);
     if (!status.ok()) {
         LOG(WARNING) << "ClientApp: AI gateway session unavailable: " << status << " host='"
-                     << config.host << "' port=" << config.port << " path='" << config.path
+                     << host_for_log << "' port=" << port_for_log << " path='" << path_for_log
                      << "' detail='is isla_ai_gateway running and reachable?'";
         return;
     }
@@ -613,32 +616,26 @@ void ClientApp::shutdown_ai_gateway() {
         return;
     }
 
+    const std::string session_id_for_log = gateway_state_.session_id.value_or("<unknown>");
+    const std::string inflight_turn_id_for_log = gateway_state_.inflight_turn_id.value_or("<none>");
+
     if (gateway_state_.connected && !gateway_state_.inflight_turn_id.has_value()) {
         LOG(INFO) << "ClientApp: requesting graceful AI gateway session end session_id='"
-                  << (gateway_state_.session_id.has_value() ? *gateway_state_.session_id
-                                                            : std::string("<unknown>"))
-                  << "'";
+                  << session_id_for_log << "'";
         const absl::Status end_status = ai_gateway_session_->EndSession();
         if (!end_status.ok()) {
             LOG(WARNING) << "ClientApp: AI gateway session end failed session_id='"
-                         << (gateway_state_.session_id.has_value() ? *gateway_state_.session_id
-                                                                   : std::string("<unknown>"))
-                         << "' detail='" << end_status.message() << "'";
+                         << session_id_for_log << "' detail='" << end_status.message() << "'";
         } else {
             LOG(INFO) << "ClientApp: AI gateway session end request accepted session_id='"
-                      << (gateway_state_.session_id.has_value() ? *gateway_state_.session_id
-                                                                : std::string("<unknown>"))
-                      << "'";
+                      << session_id_for_log << "'";
         }
     } else if (!gateway_state_.connected) {
         LOG(INFO) << "ClientApp: AI gateway shutdown closing transport without session end because"
                   << " the session is already disconnected";
     } else {
         LOG(INFO) << "ClientApp: AI gateway shutdown closing transport without session end because"
-                  << " turn_id='"
-                  << (gateway_state_.inflight_turn_id.has_value() ? *gateway_state_.inflight_turn_id
-                                                                  : std::string("<none>"))
-                  << "' is still in flight";
+                  << " turn_id='" << inflight_turn_id_for_log << "' is still in flight";
     }
 
     ai_gateway_session_->Close();
@@ -719,16 +716,13 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
     }
     case protocol::MessageType::Error: {
         const auto& error_message = std::get<protocol::ErrorMessage>(message);
+        const std::string session_id_for_log = error_message.session_id.value_or("<none>");
+        const std::string turn_id_for_log = error_message.turn_id.value_or("<none>");
         gateway_state_.last_error =
             "ai gateway error " + error_message.code + ": " + error_message.message;
         LOG(WARNING) << "ClientApp: AI gateway error code='" << error_message.code << "' message='"
-                     << error_message.message << "' session_id='"
-                     << (error_message.session_id.has_value() ? *error_message.session_id
-                                                              : std::string("<none>"))
-                     << "' turn_id='"
-                     << (error_message.turn_id.has_value() ? *error_message.turn_id
-                                                           : std::string("<none>"))
-                     << "'";
+                     << error_message.message << "' session_id='" << session_id_for_log
+                     << "' turn_id='" << turn_id_for_log << "'";
         return;
     }
     case protocol::MessageType::SessionStart:
@@ -769,12 +763,11 @@ void ClientApp::enqueue_gateway_transport_closed(absl::Status status) {
 }
 
 void ClientApp::send_gateway_canned_prompt() {
+    const std::string session_id_for_log = gateway_state_.session_id.value_or("<none>");
     if (ai_gateway_session_ == nullptr || !gateway_state_.connected) {
         LOG_EVERY_N_SEC(WARNING, 2.0)
             << "ClientApp: AI gateway send skipped because the session is not connected"
-            << " session_id='"
-            << (gateway_state_.session_id.has_value() ? *gateway_state_.session_id
-                                                      : std::string("<none>"))
+            << " session_id='" << session_id_for_log
             << "' prompt_bytes=" << gateway_state_.canned_prompt.size();
         return;
     }
@@ -782,9 +775,7 @@ void ClientApp::send_gateway_canned_prompt() {
         LOG_EVERY_N_SEC(WARNING, 2.0)
             << "ClientApp: AI gateway send skipped while turn_id='"
             << *gateway_state_.inflight_turn_id << "' is still in flight session_id='"
-            << (gateway_state_.session_id.has_value() ? *gateway_state_.session_id
-                                                      : std::string("<none>"))
-            << "' prompt_bytes=" << gateway_state_.canned_prompt.size();
+            << session_id_for_log << "' prompt_bytes=" << gateway_state_.canned_prompt.size();
         return;
     }
 
@@ -796,8 +787,7 @@ void ClientApp::send_gateway_canned_prompt() {
     if (!status.ok()) {
         gateway_state_.last_error = std::string(status.message());
         LOG(WARNING) << "ClientApp: AI gateway send failed turn_id='" << turn_id << "' session_id='"
-                     << (gateway_state_.session_id.has_value() ? *gateway_state_.session_id
-                                                               : std::string("<none>"))
+                     << session_id_for_log
                      << "' prompt_bytes=" << gateway_state_.canned_prompt.size() << " detail='"
                      << status.message() << "'";
         return;
@@ -806,9 +796,7 @@ void ClientApp::send_gateway_canned_prompt() {
     gateway_state_.inflight_turn_id = turn_id;
     gateway_state_.last_error.reset();
     LOG(INFO) << "ClientApp: AI gateway sent canned prompt turn_id='" << turn_id << "' session_id='"
-              << (gateway_state_.session_id.has_value() ? *gateway_state_.session_id
-                                                        : std::string("<none>"))
-              << "' prompt_bytes=" << gateway_state_.canned_prompt.size();
+              << session_id_for_log << "' prompt_bytes=" << gateway_state_.canned_prompt.size();
 }
 
 } // namespace isla::client
