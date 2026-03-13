@@ -592,6 +592,23 @@ void ClientApp::update_gateway_chat_panel() {
     model_renderer_.set_chat_panel_state(chat_panel_state);
 }
 
+void ClientApp::append_or_create_assistant_transcript_entry(std::string_view output_turn_id,
+                                                            std::string_view text) {
+    if (gateway_state_.inflight_turn_id.has_value() &&
+        *gateway_state_.inflight_turn_id == output_turn_id &&
+        gateway_inflight_assistant_entry_index_.has_value() &&
+        *gateway_inflight_assistant_entry_index_ < gateway_chat_transcript_.size()) {
+        gateway_chat_transcript_.at(*gateway_inflight_assistant_entry_index_).text += text;
+        return;
+    }
+
+    gateway_chat_transcript_.push_back(GatewayChatEntry{
+        .role = ChatPanelEntryRole::Assistant,
+        .text = std::string(text),
+    });
+    gateway_inflight_assistant_entry_index_ = gateway_chat_transcript_.size() - 1U;
+}
+
 void ClientApp::shutdown() {
     shutdown_ai_gateway();
     model_renderer_.shutdown();
@@ -786,18 +803,7 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
     case protocol::MessageType::TextOutput: {
         const auto& text_output = std::get<protocol::TextOutputMessage>(message);
         gateway_state_.last_reply_text = text_output.text;
-        if (gateway_state_.inflight_turn_id == text_output.turn_id &&
-            gateway_inflight_assistant_entry_index_.has_value() &&
-            *gateway_inflight_assistant_entry_index_ < gateway_chat_transcript_.size()) {
-            gateway_chat_transcript_.at(*gateway_inflight_assistant_entry_index_).text +=
-                text_output.text;
-        } else {
-            gateway_chat_transcript_.push_back(GatewayChatEntry{
-                .role = ChatPanelEntryRole::Assistant,
-                .text = text_output.text,
-            });
-            gateway_inflight_assistant_entry_index_ = gateway_chat_transcript_.size() - 1U;
-        }
+        append_or_create_assistant_transcript_entry(text_output.turn_id, text_output.text);
         LOG(INFO) << "ClientApp: AI gateway reply turn_id='" << text_output.turn_id << "' text='"
                   << text_output.text << "'";
         return;

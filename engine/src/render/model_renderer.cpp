@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,7 @@ constexpr std::uint64_t kAlphaBlendRenderStateBase =
 constexpr float kDefaultImGuiDeltaTimeSeconds = 1.0F / 60.0F;
 constexpr float kMaxImGuiDeltaTimeSeconds = 0.25F;
 constexpr std::size_t kChatInputBufferBytes = 512U;
+constexpr std::string_view kImGuiFontPathEnvVar = "ISLA_IMGUI_FONT_PATH";
 
 static_assert((kAlphaBlendRenderStateBase & BGFX_STATE_WRITE_Z) == BGFX_STATE_WRITE_Z,
               "Alpha blend materials must write to depth to prevent intra-mesh self-occlusion "
@@ -528,6 +530,17 @@ void queue_chat_submit_if_ready(ModelRenderer::Impl& impl) {
     impl.chat_input_buffer.fill('\0');
 }
 
+std::vector<std::string> imgui_font_path_candidates() {
+    std::vector<std::string> candidates;
+    if (const char* env_font_path = std::getenv(kImGuiFontPathEnvVar.data());
+        env_font_path != nullptr && env_font_path[0] != '\0') {
+        candidates.emplace_back(env_font_path);
+    }
+    candidates.emplace_back("C:\\Windows\\Fonts\\segoeui.ttf");
+    candidates.emplace_back("C:\\Windows\\Fonts\\arial.ttf");
+    return candidates;
+}
+
 void initialize_imgui_font(ImGuiIO& io) {
     static const ImWchar kGlyphRanges[] = {
         0x0020, 0x00FF, // Basic Latin + Latin-1 Supplement.
@@ -538,17 +551,20 @@ void initialize_imgui_font(ImGuiIO& io) {
     ImFontConfig font_config;
     font_config.OversampleH = 2;
     font_config.OversampleV = 2;
-    ImFont* font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 18.0F,
-                                                &font_config, kGlyphRanges);
-    if (font != nullptr) {
-        io.FontDefault = font;
-        LOG(INFO) << "ModelRenderer: loaded Segoe UI for ImGui overlay text";
-        return;
+    for (const std::string& font_path : imgui_font_path_candidates()) {
+        ImFont* font =
+            io.Fonts->AddFontFromFileTTF(font_path.c_str(), 18.0F, &font_config, kGlyphRanges);
+        if (font != nullptr) {
+            io.FontDefault = font;
+            LOG(INFO) << "ModelRenderer: loaded ImGui overlay font path='" << font_path << "'";
+            return;
+        }
     }
 
     io.Fonts->AddFontDefault();
-    LOG(WARNING) << "ModelRenderer: failed to load Segoe UI for ImGui overlay; "
-                    "falling back to the default font, which may miss some punctuation glyphs";
+    LOG(WARNING) << "ModelRenderer: failed to load any configured ImGui overlay font"
+                 << " env_var=" << kImGuiFontPathEnvVar
+                 << "; falling back to the default font, which may miss some punctuation glyphs";
 }
 
 bool initialize_imgui_overlay(ModelRenderer::Impl& impl) {

@@ -50,6 +50,8 @@ class ClientApp {
     void tick_physics_proxies(bool recompute_bounds);
     void update_debug_overlay();
     void update_gateway_chat_panel();
+    void append_or_create_assistant_transcript_entry(std::string_view output_turn_id,
+                                                     std::string_view text);
     void initialize_ai_gateway_from_environment();
     [[nodiscard]] absl::Status start_ai_gateway_session(AiGatewayClientConfig config,
                                                         std::string canned_prompt);
