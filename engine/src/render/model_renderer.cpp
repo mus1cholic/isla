@@ -400,6 +400,8 @@ bool initialize_imgui_overlay(ModelRenderer::Impl& impl) {
     ImGui::SetCurrentContext(impl.imgui_context);
     ImGui::StyleColorsDark();
     ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.LogFilename = nullptr;
     io.DisplaySize =
         ImVec2(static_cast<float>(impl.window_width), static_cast<float>(impl.window_height));
     io.DeltaTime = kDefaultImGuiDeltaTimeSeconds;

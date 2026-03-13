@@ -527,6 +527,9 @@ void ClientApp::update_debug_overlay() {
         last_gateway_hud_state_ = hud_state;
     }
 
+    // NOTICE: This temporary debug HUD rebuilds its lines every frame for simplicity. If the
+    // overlay becomes a longer-lived surface, prefer caching the rendered lines and regenerating
+    // them only when the displayed gateway state changes.
     std::vector<std::string> overlay_lines;
     overlay_lines.reserve(7U);
     overlay_lines.emplace_back("Gateway Debug HUD");
