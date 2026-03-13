@@ -24,9 +24,13 @@ class ModelRenderer final : public IRendererBackend {
     [[nodiscard]] bool has_homogeneous_depth() const override;
     [[nodiscard]] bool supports_gpu_skinning() const;
     void on_resize(RenderSize size) override;
+    void handle_event(const SDL_Event& event) override;
     void render(const RenderWorld& world) override;
     void set_debug_overlay_enabled(bool enabled) override;
     void set_debug_overlay_lines(std::span<const std::string> lines) override;
+    void set_chat_panel_state(const ChatPanelState& state) override;
+    [[nodiscard]] bool wants_keyboard_capture() const override;
+    std::optional<std::string> take_chat_submit_request() override;
     void shutdown() override;
 
   private:

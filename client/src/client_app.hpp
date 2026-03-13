@@ -49,6 +49,7 @@ class ClientApp {
     void append_physics_proxy_meshes();
     void tick_physics_proxies(bool recompute_bounds);
     void update_debug_overlay();
+    void update_gateway_chat_panel();
     void initialize_ai_gateway_from_environment();
     [[nodiscard]] absl::Status start_ai_gateway_session(AiGatewayClientConfig config,
                                                         std::string canned_prompt);
@@ -59,6 +60,12 @@ class ClientApp {
     void enqueue_gateway_message(const shared::ai_gateway::GatewayMessage& message);
     void enqueue_gateway_transport_closed(absl::Status status);
     void send_gateway_canned_prompt();
+    void send_gateway_chat_message(std::string text);
+
+    struct GatewayChatEntry {
+        ChatPanelEntryRole role = ChatPanelEntryRole::System;
+        std::string text;
+    };
 
     struct GatewayQueuedEvent {
         enum class Kind {
@@ -102,6 +109,8 @@ class ClientApp {
     mutable std::mutex gateway_event_mutex_;
     std::deque<GatewayQueuedEvent> gateway_event_queue_;
     GatewayState gateway_state_{};
+    std::vector<GatewayChatEntry> gateway_chat_transcript_;
+    std::optional<std::size_t> gateway_inflight_assistant_entry_index_;
     std::string last_gateway_hud_state_ = "uninitialized";
     const ISdlRuntime& sdl_runtime_;
 };

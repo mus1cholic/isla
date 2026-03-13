@@ -26,9 +26,18 @@ enum class OverlayCompositionMode {
 };
 
 OverlayCompositionMode g_overlay_composition_mode = OverlayCompositionMode::Unknown;
+bool g_overlay_input_passthrough_enabled = true;
 
 LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
-    if (message == WM_NCHITTEST) {
+    // NOTICE: Original overlay behavior was unconditional click-through:
+    // if (message == WM_NCHITTEST) {
+    //     return HTTRANSPARENT;
+    // }
+    //
+    // We currently gate that behavior so the temporary ImGui chat surface can receive focus and
+    // mouse input. Keep the original shape here because future overlay work is expected to bring
+    // back click-through as the default interaction model.
+    if (message == WM_NCHITTEST && g_overlay_input_passthrough_enabled) {
         return HTTRANSPARENT;
     }
 
@@ -36,6 +45,25 @@ LRESULT CALLBACK overlay_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPA
         return CallWindowProc(g_overlay_original_wndproc, hwnd, message, wparam, lparam);
     }
     return DefWindowProc(hwnd, message, wparam, lparam);
+}
+
+bool apply_overlay_input_passthrough(HWND hwnd, bool enabled) {
+    const LONG_PTR existing_ex_style = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    LONG_PTR updated_ex_style = existing_ex_style;
+    if (enabled) {
+        updated_ex_style |= WS_EX_TRANSPARENT;
+    } else {
+        updated_ex_style &= ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT);
+    }
+
+    SetLastError(0);
+    if (SetWindowLongPtr(hwnd, GWL_EXSTYLE, updated_ex_style) == 0 && GetLastError() != 0) {
+        return false;
+    }
+    g_overlay_input_passthrough_enabled = enabled;
+    return SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                            SWP_FRAMECHANGED) != 0;
 }
 
 } // namespace
@@ -65,6 +93,13 @@ bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
     }
 
     const LONG_PTR existing_ex_style = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    // NOTICE: Original pass-through overlay style always included WS_EX_TRANSPARENT:
+    // const LONG_PTR non_layered_overlay_ex_style =
+    //     (existing_ex_style | WS_EX_TRANSPARENT | WS_EX_APPWINDOW) &
+    //     ~(WS_EX_LAYERED | WS_EX_TOOLWINDOW);
+    //
+    // The current chat-enabled path still supports toggling WS_EX_TRANSPARENT back on, but we
+    // avoid forcing it here so the overlay can temporarily accept direct input.
     // Preferred DirectComposition path: non-layered style so per-pixel swapchain alpha is honored.
     const LONG_PTR non_layered_overlay_ex_style =
         (existing_ex_style | WS_EX_TRANSPARENT | WS_EX_APPWINDOW) &
@@ -77,6 +112,10 @@ bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
                      << non_layered_error << std::dec
                      << "; falling back to layered-alpha compatibility style";
 
+        // NOTICE: Original layered fallback also always included WS_EX_TRANSPARENT:
+        // const LONG_PTR layered_overlay_ex_style =
+        //     (existing_ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_APPWINDOW) &
+        //     ~WS_EX_TOOLWINDOW;
         const LONG_PTR layered_overlay_ex_style =
             (existing_ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_APPWINDOW) &
             ~WS_EX_TOOLWINDOW;
@@ -152,6 +191,26 @@ bool refresh_win32_alpha_composited_overlay(SDL_Window* window) {
     return true;
 }
 
+bool set_win32_overlay_input_passthrough(SDL_Window* window, bool enabled) {
+    if (window == nullptr) {
+        return false;
+    }
+    const SDL_PropertiesID window_props = SDL_GetWindowProperties(window);
+    auto* hwnd = static_cast<HWND>(
+        SDL_GetPointerProperty(window_props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    if (hwnd == nullptr) {
+        return false;
+    }
+
+    if (!apply_overlay_input_passthrough(hwnd, enabled)) {
+        LOG(WARNING) << "Win32Overlay: failed to " << (enabled ? "enable" : "disable")
+                     << " input passthrough for overlay window";
+        return false;
+    }
+    LOG(INFO) << "Win32Overlay: input passthrough " << (enabled ? "enabled" : "disabled");
+    return true;
+}
+
 #else
 
 bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
@@ -162,6 +221,12 @@ bool configure_win32_alpha_composited_overlay(SDL_Window* window) {
 
 bool refresh_win32_alpha_composited_overlay(SDL_Window* window) {
     (void)window;
+    return false;
+}
+
+bool set_win32_overlay_input_passthrough(SDL_Window* window, bool enabled) {
+    (void)window;
+    (void)enabled;
     return false;
 }
 

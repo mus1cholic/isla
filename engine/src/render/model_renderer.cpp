@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -66,6 +67,7 @@ constexpr std::uint64_t kAlphaBlendRenderStateBase =
     BGFX_STATE_MSAA | BGFX_STATE_BLEND_ALPHA;
 constexpr float kDefaultImGuiDeltaTimeSeconds = 1.0F / 60.0F;
 constexpr float kMaxImGuiDeltaTimeSeconds = 0.25F;
+constexpr std::size_t kChatInputBufferBytes = 512U;
 
 static_assert((kAlphaBlendRenderStateBase & BGFX_STATE_WRITE_Z) == BGFX_STATE_WRITE_Z,
               "Alpha blend materials must write to depth to prevent intra-mesh self-occlusion "
@@ -89,6 +91,7 @@ struct DirectCompositionPresenter {
 };
 
 constexpr const char* kDebugHudTitle = "Isla Debug HUD";
+constexpr const char* kChatPanelTitle = "Gateway Chat";
 
 bool vec3_is_finite(const Vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
@@ -365,6 +368,9 @@ class ModelRenderer::Impl {
     bool imgui_initialized = false;
     bool debug_overlay_enabled = false;
     std::vector<std::string> debug_overlay_lines;
+    ChatPanelState chat_panel_state;
+    std::array<char, kChatInputBufferBytes> chat_input_buffer{};
+    std::optional<std::string> pending_chat_submit;
 };
 
 namespace {
@@ -389,6 +395,162 @@ void destroy_renderer_uniforms(ModelRenderer::Impl& impl) {
     destroy_uniform_if_valid(impl.tex_color_uniform);
 }
 
+std::string trim_ascii_copy(std::string_view text) {
+    std::size_t begin = 0U;
+    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+        ++begin;
+    }
+
+    std::size_t end = text.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1U])) != 0) {
+        --end;
+    }
+    return std::string(text.substr(begin, end - begin));
+}
+
+ImGuiKey imgui_key_from_sdl_scancode(SDL_Scancode scancode) {
+    switch (scancode) {
+    case SDL_SCANCODE_TAB:
+        return ImGuiKey_Tab;
+    case SDL_SCANCODE_LEFT:
+        return ImGuiKey_LeftArrow;
+    case SDL_SCANCODE_RIGHT:
+        return ImGuiKey_RightArrow;
+    case SDL_SCANCODE_UP:
+        return ImGuiKey_UpArrow;
+    case SDL_SCANCODE_DOWN:
+        return ImGuiKey_DownArrow;
+    case SDL_SCANCODE_PAGEUP:
+        return ImGuiKey_PageUp;
+    case SDL_SCANCODE_PAGEDOWN:
+        return ImGuiKey_PageDown;
+    case SDL_SCANCODE_HOME:
+        return ImGuiKey_Home;
+    case SDL_SCANCODE_END:
+        return ImGuiKey_End;
+    case SDL_SCANCODE_INSERT:
+        return ImGuiKey_Insert;
+    case SDL_SCANCODE_DELETE:
+        return ImGuiKey_Delete;
+    case SDL_SCANCODE_BACKSPACE:
+        return ImGuiKey_Backspace;
+    case SDL_SCANCODE_SPACE:
+        return ImGuiKey_Space;
+    case SDL_SCANCODE_RETURN:
+        return ImGuiKey_Enter;
+    case SDL_SCANCODE_ESCAPE:
+        return ImGuiKey_Escape;
+    case SDL_SCANCODE_A:
+        return ImGuiKey_A;
+    case SDL_SCANCODE_C:
+        return ImGuiKey_C;
+    case SDL_SCANCODE_V:
+        return ImGuiKey_V;
+    case SDL_SCANCODE_X:
+        return ImGuiKey_X;
+    case SDL_SCANCODE_Y:
+        return ImGuiKey_Y;
+    case SDL_SCANCODE_Z:
+        return ImGuiKey_Z;
+    default:
+        return ImGuiKey_None;
+    }
+}
+
+void update_imgui_modifier_keys(ImGuiIO& io, SDL_Keymod modifiers) {
+    io.AddKeyEvent(ImGuiMod_Ctrl, (modifiers & SDL_KMOD_CTRL) != 0);
+    io.AddKeyEvent(ImGuiMod_Shift, (modifiers & SDL_KMOD_SHIFT) != 0);
+    io.AddKeyEvent(ImGuiMod_Alt, (modifiers & SDL_KMOD_ALT) != 0);
+    io.AddKeyEvent(ImGuiMod_Super, (modifiers & SDL_KMOD_GUI) != 0);
+}
+
+void process_imgui_input_event(ModelRenderer::Impl& impl, const SDL_Event& event) {
+    if (!impl.imgui_initialized || impl.imgui_context == nullptr) {
+        return;
+    }
+
+    ImGui::SetCurrentContext(impl.imgui_context);
+    ImGuiIO& io = ImGui::GetIO();
+    switch (event.type) {
+    case SDL_EVENT_TEXT_INPUT:
+        io.AddInputCharactersUTF8(event.text.text);
+        return;
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP: {
+        const bool is_down = event.type == SDL_EVENT_KEY_DOWN;
+        update_imgui_modifier_keys(io, static_cast<SDL_Keymod>(event.key.mod));
+        const ImGuiKey key = imgui_key_from_sdl_scancode(event.key.scancode);
+        if (key != ImGuiKey_None) {
+            io.AddKeyEvent(key, is_down);
+        }
+        return;
+    }
+    case SDL_EVENT_MOUSE_MOTION:
+        io.AddMousePosEvent(event.motion.x, event.motion.y);
+        return;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        const bool is_down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        int button_index = -1;
+        switch (event.button.button) {
+        case SDL_BUTTON_LEFT:
+            button_index = 0;
+            break;
+        case SDL_BUTTON_RIGHT:
+            button_index = 1;
+            break;
+        case SDL_BUTTON_MIDDLE:
+            button_index = 2;
+            break;
+        default:
+            break;
+        }
+        if (button_index >= 0) {
+            io.AddMouseButtonEvent(button_index, is_down);
+        }
+        return;
+    }
+    case SDL_EVENT_MOUSE_WHEEL:
+        io.AddMouseWheelEvent(event.wheel.x, event.wheel.y);
+        return;
+    default:
+        return;
+    }
+}
+
+void queue_chat_submit_if_ready(ModelRenderer::Impl& impl) {
+    const std::string trimmed = trim_ascii_copy(impl.chat_input_buffer.data());
+    if (trimmed.empty() || impl.chat_panel_state.turn_in_flight ||
+        !impl.chat_panel_state.connected) {
+        return;
+    }
+    impl.pending_chat_submit = trimmed;
+    impl.chat_input_buffer.fill('\0');
+}
+
+void initialize_imgui_font(ImGuiIO& io) {
+    static const ImWchar kGlyphRanges[] = {
+        0x0020, 0x00FF, // Basic Latin + Latin-1 Supplement.
+        0x2000, 0x206F, // General punctuation (curly apostrophes, dashes, ellipsis, etc.).
+        0,
+    };
+
+    ImFontConfig font_config;
+    font_config.OversampleH = 2;
+    font_config.OversampleV = 2;
+    ImFont* font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 18.0F,
+                                                &font_config, kGlyphRanges);
+    if (font != nullptr) {
+        io.FontDefault = font;
+        LOG(INFO) << "ModelRenderer: loaded Segoe UI for ImGui overlay text";
+        return;
+    }
+
+    io.Fonts->AddFontDefault();
+    LOG(WARNING) << "ModelRenderer: failed to load Segoe UI for ImGui overlay; "
+                    "falling back to the default font, which may miss some punctuation glyphs";
+}
+
 bool initialize_imgui_overlay(ModelRenderer::Impl& impl) {
     IMGUI_CHECKVERSION();
     impl.imgui_context = ImGui::CreateContext();
@@ -400,6 +562,7 @@ bool initialize_imgui_overlay(ModelRenderer::Impl& impl) {
     ImGui::SetCurrentContext(impl.imgui_context);
     ImGui::StyleColorsDark();
     ImGuiIO& io = ImGui::GetIO();
+    initialize_imgui_font(io);
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.DisplaySize =
@@ -446,6 +609,73 @@ void cleanup_renderer_after_initialize_failure(ModelRenderer::Impl& impl, bool s
     impl.has_last_render_time = false;
 }
 
+void render_chat_panel(ModelRenderer::Impl& impl) {
+    if (!impl.chat_panel_state.enabled) {
+        return;
+    }
+
+    ImGui::SetNextWindowPos(ImVec2(16.0F, 160.0F), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(460.0F, 360.0F), ImGuiCond_FirstUseEver);
+    constexpr ImGuiWindowFlags kChatPanelFlags = ImGuiWindowFlags_NoSavedSettings;
+    if (!ImGui::Begin(kChatPanelTitle, nullptr, kChatPanelFlags)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextUnformatted(impl.chat_panel_state.status_line.c_str());
+    ImGui::Separator();
+
+    const float footer_height = ImGui::GetFrameHeightWithSpacing() * 2.0F + 12.0F;
+    if (ImGui::BeginChild("GatewayTranscript", ImVec2(0.0F, -footer_height), true)) {
+        for (const ChatPanelEntry& entry : impl.chat_panel_state.transcript) {
+            ImVec4 color = ImVec4(0.85F, 0.85F, 0.85F, 1.0F);
+            const char* label = "System";
+            switch (entry.role) {
+            case ChatPanelEntryRole::System:
+                color = ImVec4(0.78F, 0.82F, 0.90F, 1.0F);
+                label = "System";
+                break;
+            case ChatPanelEntryRole::User:
+                color = ImVec4(0.98F, 0.86F, 0.49F, 1.0F);
+                label = "You";
+                break;
+            case ChatPanelEntryRole::Assistant:
+                color = ImVec4(0.58F, 0.87F, 0.70F, 1.0F);
+                label = "Assistant";
+                break;
+            }
+            ImGui::PushTextWrapPos();
+            ImGui::TextColored(color, "%s:", label);
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", entry.text.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+        }
+        if (impl.chat_panel_state.turn_in_flight) {
+            ImGui::TextDisabled("Assistant is responding...");
+        }
+        if (!impl.chat_panel_state.transcript.empty() || impl.chat_panel_state.turn_in_flight) {
+            ImGui::SetScrollHereY(1.0F);
+        }
+    }
+    ImGui::EndChild();
+
+    const bool disable_submit =
+        !impl.chat_panel_state.connected || impl.chat_panel_state.turn_in_flight;
+    ImGui::BeginDisabled(disable_submit);
+    const bool submit_from_enter =
+        ImGui::InputText("Message", impl.chat_input_buffer.data(), impl.chat_input_buffer.size(),
+                         ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    const bool submit_from_button = ImGui::Button("Send");
+    ImGui::EndDisabled();
+    if (submit_from_enter || submit_from_button) {
+        queue_chat_submit_if_ready(impl);
+    }
+
+    ImGui::End();
+}
+
 void render_imgui_overlay(ModelRenderer::Impl& impl, float dt_seconds) {
     if (!impl.imgui_initialized || !impl.debug_overlay_enabled || impl.imgui_context == nullptr) {
         return;
@@ -470,6 +700,7 @@ void render_imgui_overlay(ModelRenderer::Impl& impl, float dt_seconds) {
         }
     }
     ImGui::End();
+    render_chat_panel(impl);
     ImGui::Render();
 
     ID3D11RenderTargetView* render_target_view = impl.presenter.render_target_view.Get();
@@ -637,6 +868,13 @@ void ModelRenderer::on_resize(RenderSize size) {
                 static_cast<std::uint32_t>(impl_->window_height), kBgfxResetFlags);
     bgfx::setViewRect(kBgfxViewId, 0, 0, static_cast<std::uint16_t>(impl_->window_width),
                       static_cast<std::uint16_t>(impl_->window_height));
+}
+
+void ModelRenderer::handle_event(const SDL_Event& event) {
+    if (!impl_) {
+        return;
+    }
+    process_imgui_input_event(*impl_, event);
 }
 
 void ModelRenderer::render(const RenderWorld& world) {
@@ -859,6 +1097,31 @@ void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) 
     impl_->debug_overlay_lines.assign(lines.begin(), lines.end());
 }
 
+void ModelRenderer::set_chat_panel_state(const ChatPanelState& state) {
+    if (!impl_) {
+        return;
+    }
+    impl_->chat_panel_state = state;
+}
+
+bool ModelRenderer::wants_keyboard_capture() const {
+    if (!impl_ || !impl_->imgui_initialized || impl_->imgui_context == nullptr) {
+        return false;
+    }
+    ImGui::SetCurrentContext(impl_->imgui_context);
+    const ImGuiIO& io = ImGui::GetIO();
+    return io.WantCaptureKeyboard || io.WantTextInput;
+}
+
+std::optional<std::string> ModelRenderer::take_chat_submit_request() {
+    if (!impl_) {
+        return std::nullopt;
+    }
+    std::optional<std::string> pending = std::move(impl_->pending_chat_submit);
+    impl_->pending_chat_submit.reset();
+    return pending;
+}
+
 void ModelRenderer::shutdown() {
     if (!impl_->initialized) {
         return;
@@ -887,6 +1150,21 @@ internal::ModelRendererTestHooks::debug_overlay_lines(const ModelRenderer& rende
     return renderer.impl_->debug_overlay_lines;
 }
 
+ChatPanelState internal::ModelRendererTestHooks::chat_panel_state(const ModelRenderer& renderer) {
+    if (renderer.impl_ == nullptr) {
+        return {};
+    }
+    return renderer.impl_->chat_panel_state;
+}
+
+void internal::ModelRendererTestHooks::queue_chat_submit(ModelRenderer& renderer,
+                                                         std::string text) {
+    if (renderer.impl_ == nullptr) {
+        return;
+    }
+    renderer.impl_->pending_chat_submit = std::move(text);
+}
+
 } // namespace isla::client
 
 #else
@@ -897,6 +1175,8 @@ class ModelRenderer::Impl {
   public:
     bool debug_overlay_enabled = false;
     std::vector<std::string> debug_overlay_lines;
+    ChatPanelState chat_panel_state;
+    std::optional<std::string> pending_chat_submit;
 };
 
 ModelRenderer::ModelRenderer() : impl_(std::make_unique<Impl>()) {}
@@ -926,6 +1206,10 @@ void ModelRenderer::on_resize(RenderSize size) {
     (void)size;
 }
 
+void ModelRenderer::handle_event(const SDL_Event& event) {
+    (void)event;
+}
+
 void ModelRenderer::render(const RenderWorld& world) {
     (void)world;
 }
@@ -944,6 +1228,26 @@ void ModelRenderer::set_debug_overlay_lines(std::span<const std::string> lines) 
     impl_->debug_overlay_lines.assign(lines.begin(), lines.end());
 }
 
+void ModelRenderer::set_chat_panel_state(const ChatPanelState& state) {
+    if (!impl_) {
+        return;
+    }
+    impl_->chat_panel_state = state;
+}
+
+bool ModelRenderer::wants_keyboard_capture() const {
+    return false;
+}
+
+std::optional<std::string> ModelRenderer::take_chat_submit_request() {
+    if (!impl_) {
+        return std::nullopt;
+    }
+    std::optional<std::string> pending = std::move(impl_->pending_chat_submit);
+    impl_->pending_chat_submit.reset();
+    return pending;
+}
+
 void ModelRenderer::shutdown() {}
 
 bool internal::ModelRendererTestHooks::debug_overlay_enabled(const ModelRenderer& renderer) {
@@ -956,6 +1260,21 @@ internal::ModelRendererTestHooks::debug_overlay_lines(const ModelRenderer& rende
         return {};
     }
     return renderer.impl_->debug_overlay_lines;
+}
+
+ChatPanelState internal::ModelRendererTestHooks::chat_panel_state(const ModelRenderer& renderer) {
+    if (renderer.impl_ == nullptr) {
+        return {};
+    }
+    return renderer.impl_->chat_panel_state;
+}
+
+void internal::ModelRendererTestHooks::queue_chat_submit(ModelRenderer& renderer,
+                                                         std::string text) {
+    if (renderer.impl_ == nullptr) {
+        return;
+    }
+    renderer.impl_->pending_chat_submit = std::move(text);
 }
 
 } // namespace isla::client

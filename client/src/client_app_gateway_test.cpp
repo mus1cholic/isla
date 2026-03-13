@@ -48,6 +48,7 @@ class FakeSdlRuntime final : public ISdlRuntime {
   public:
     std::uint64_t now_ticks_ns = 0U;
     mutable std::vector<SDL_Event> queued_events;
+    mutable bool text_input_started = false;
 
     [[nodiscard]] std::uint64_t get_ticks_ns() const override {
         return now_ticks_ns;
@@ -113,6 +114,15 @@ class FakeSdlRuntime final : public ISdlRuntime {
     [[nodiscard]] bool set_window_relative_mouse_mode(SDL_Window* /*window*/,
                                                       bool /*enabled*/) const override {
         return true;
+    }
+
+    [[nodiscard]] bool start_text_input(SDL_Window* /*window*/) const override {
+        text_input_started = true;
+        return true;
+    }
+
+    void stop_text_input(SDL_Window* /*window*/) const override {
+        text_input_started = false;
     }
 };
 
@@ -428,6 +438,40 @@ TEST_F(ClientAppGatewayIntegrationTest, GatewayHudLinesReflectLatestReplyState) 
     internal::ClientAppTestHooks::shutdown_ai_gateway(app);
 }
 
+TEST_F(ClientAppGatewayIntegrationTest, RendererChatSubmitAddsTranscriptAndAssistantReply) {
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+
+    ASSERT_TRUE(
+        internal::ClientAppTestHooks::start_ai_gateway_session(app,
+                                                               AiGatewayClientConfig{
+                                                                   .host = "127.0.0.1",
+                                                                   .port = server_.bound_port(),
+                                                                   .path = "/",
+                                                                   .operation_timeout = 2s,
+                                                               },
+                                                               "hello from canned prompt")
+            .ok());
+
+    internal::ClientAppTestHooks::queue_renderer_chat_submit(app, "hello from chat ui");
+    internal::ClientAppTestHooks::tick(app);
+
+    ASSERT_EQ(internal::ClientAppTestHooks::gateway_chat_transcript_lines(app),
+              std::vector<std::string>{ "user: hello from chat ui" });
+    ASSERT_EQ(internal::ClientAppTestHooks::gateway_inflight_turn_id(app),
+              std::optional<std::string>("client_turn_1"));
+
+    ASSERT_TRUE(PumpUntil(app, 2s, [&] {
+        const std::vector<std::string> lines =
+            internal::ClientAppTestHooks::gateway_chat_transcript_lines(app);
+        return lines == std::vector<std::string>{ "user: hello from chat ui",
+                                                  "assistant: stub echo: hello from chat ui" } &&
+               !internal::ClientAppTestHooks::gateway_inflight_turn_id(app).has_value();
+    }));
+
+    internal::ClientAppTestHooks::shutdown_ai_gateway(app);
+}
+
 TEST_F(ClientAppGatewayIntegrationTest, StartupSkipsGatewayWhenDisabled) {
     ScopedTempDir workspace_dir = ScopedTempDir::Create("isla_client_gateway_disabled");
     ASSERT_TRUE(workspace_dir.is_valid());
@@ -462,7 +506,13 @@ TEST_F(ClientAppGatewayIntegrationTest, StartupSkipsGatewayWhenDisabled) {
 
     EXPECT_FALSE(internal::ClientAppTestHooks::gateway_last_reply_text(app).has_value());
     EXPECT_FALSE(internal::ClientAppTestHooks::gateway_inflight_turn_id(app).has_value());
-    EXPECT_FALSE(internal::ClientAppTestHooks::gateway_last_error(app).has_value());
+    EXPECT_EQ(internal::ClientAppTestHooks::gateway_last_error(app),
+              std::optional<std::string>("ai gateway session is not connected"));
+    const std::vector<std::string> expected_disabled_lines = {
+        "system: Send skipped because the AI gateway session is not connected.",
+    };
+    EXPECT_EQ(internal::ClientAppTestHooks::gateway_chat_transcript_lines(app),
+              expected_disabled_lines);
 }
 
 TEST_F(ClientAppGatewayIntegrationTest, LoadsGatewayConfigFromDotEnvFallback) {
@@ -638,6 +688,60 @@ TEST(ClientAppGatewayStandaloneTest, RepeatedHotkeyPressWhileTurnInFlightSendsOn
                !internal::ClientAppTestHooks::gateway_inflight_turn_id(app).has_value();
     }));
 
+    EXPECT_EQ(counting_client->call_count(), 1);
+
+    internal::ClientAppTestHooks::shutdown_ai_gateway(app);
+    server.Stop();
+}
+
+TEST(ClientAppGatewayStandaloneTest, RendererChatSubmitWhileTurnInFlightSendsOnlyOnce) {
+    auto counting_client = std::make_shared<CountingOpenAiResponsesClient>();
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 250ms,
+        .openai_client = counting_client,
+    });
+    GatewayServer server(
+        GatewayServerConfig{
+            .bind_host = "127.0.0.1",
+            .port = 0,
+            .listen_backlog = 4,
+        },
+        &responder, std::make_unique<SequentialSessionIdGenerator>("cli_app_chat_repeat_"));
+    responder.AttachSessionRegistry(&server.session_registry());
+    ASSERT_TRUE(server.Start().ok());
+
+    FakeSdlRuntime runtime;
+    ClientApp app(runtime);
+    ASSERT_TRUE(
+        internal::ClientAppTestHooks::start_ai_gateway_session(app,
+                                                               AiGatewayClientConfig{
+                                                                   .host = "127.0.0.1",
+                                                                   .port = server.bound_port(),
+                                                                   .path = "/",
+                                                                   .operation_timeout = 2s,
+                                                               },
+                                                               "unused canned prompt")
+            .ok());
+
+    internal::ClientAppTestHooks::queue_renderer_chat_submit(app, "hello once");
+    internal::ClientAppTestHooks::tick(app);
+    ASSERT_EQ(internal::ClientAppTestHooks::gateway_inflight_turn_id(app),
+              std::optional<std::string>("client_turn_1"));
+
+    internal::ClientAppTestHooks::queue_renderer_chat_submit(app, "hello twice");
+    internal::ClientAppTestHooks::tick(app);
+    const std::vector<std::string> expected_inflight_lines = {
+        "user: hello once",
+    };
+    EXPECT_EQ(internal::ClientAppTestHooks::gateway_chat_transcript_lines(app),
+              expected_inflight_lines);
+
+    ASSERT_TRUE(PumpUntil(app, 2s, [&] {
+        return internal::ClientAppTestHooks::gateway_chat_transcript_lines(app) ==
+                   std::vector<std::string>{ "user: hello once",
+                                             "assistant: stub echo 1: hello once" } &&
+               !internal::ClientAppTestHooks::gateway_inflight_turn_id(app).has_value();
+    }));
     EXPECT_EQ(counting_client->call_count(), 1);
 
     internal::ClientAppTestHooks::shutdown_ai_gateway(app);

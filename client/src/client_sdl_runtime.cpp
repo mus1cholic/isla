@@ -65,6 +65,14 @@ bool SdlRuntime::set_window_relative_mouse_mode(SDL_Window* window, bool enabled
     return SDL_SetWindowRelativeMouseMode(window, enabled);
 }
 
+bool SdlRuntime::start_text_input(SDL_Window* window) const {
+    return SDL_StartTextInput(window);
+}
+
+void SdlRuntime::stop_text_input(SDL_Window* window) const {
+    SDL_StopTextInput(window);
+}
+
 const ISdlRuntime& default_sdl_runtime() {
     static const SdlRuntime instance{};
     return instance;

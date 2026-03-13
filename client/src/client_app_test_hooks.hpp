@@ -90,6 +90,10 @@ class ClientAppTestHooks {
         app.shutdown_ai_gateway();
     }
 
+    static void send_gateway_chat_message(ClientApp& app, std::string text) {
+        app.send_gateway_chat_message(std::move(text));
+    }
+
     static bool gateway_connected(const ClientApp& app) {
         return app.gateway_state_.connected;
     }
@@ -120,6 +124,31 @@ class ClientAppTestHooks {
 
     static std::vector<std::string> debug_overlay_lines(const ClientApp& app) {
         return ModelRendererTestHooks::debug_overlay_lines(app.model_renderer_);
+    }
+
+    static std::vector<std::string> gateway_chat_transcript_lines(const ClientApp& app) {
+        std::vector<std::string> lines;
+        lines.reserve(app.gateway_chat_transcript_.size());
+        for (const ClientApp::GatewayChatEntry& entry : app.gateway_chat_transcript_) {
+            std::string prefix = "system";
+            switch (entry.role) {
+            case ChatPanelEntryRole::System:
+                prefix = "system";
+                break;
+            case ChatPanelEntryRole::User:
+                prefix = "user";
+                break;
+            case ChatPanelEntryRole::Assistant:
+                prefix = "assistant";
+                break;
+            }
+            lines.push_back(prefix + ": " + entry.text);
+        }
+        return lines;
+    }
+
+    static void queue_renderer_chat_submit(ClientApp& app, std::string text) {
+        ModelRendererTestHooks::queue_chat_submit(app.model_renderer_, std::move(text));
     }
 };
 

@@ -31,6 +31,8 @@ class ISdlRuntime {
     virtual void set_window_bordered(SDL_Window* window, bool bordered) const = 0;
     [[nodiscard]] virtual bool set_window_relative_mouse_mode(SDL_Window* window,
                                                               bool enabled) const = 0;
+    [[nodiscard]] virtual bool start_text_input(SDL_Window* window) const = 0;
+    virtual void stop_text_input(SDL_Window* window) const = 0;
 };
 
 class SdlRuntime final : public ISdlRuntime {
@@ -53,9 +55,10 @@ class SdlRuntime final : public ISdlRuntime {
     void set_window_bordered(SDL_Window* window, bool bordered) const override;
     [[nodiscard]] bool set_window_relative_mouse_mode(SDL_Window* window,
                                                       bool enabled) const override;
+    [[nodiscard]] bool start_text_input(SDL_Window* window) const override;
+    void stop_text_input(SDL_Window* window) const override;
 };
 
 [[nodiscard]] const ISdlRuntime& default_sdl_runtime();
 
 } // namespace isla::client
-
