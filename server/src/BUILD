@@ -89,10 +89,7 @@ cc_library(
         ":windows_msvc": [
             "Advapi32.lib",
         ],
-        "//conditions:default": [
-            "-lssl",
-            "-lcrypto",
-        ],
+        "//conditions:default": [],
     }),
     deps = [
         "//server/include/isla/server:server_headers",
