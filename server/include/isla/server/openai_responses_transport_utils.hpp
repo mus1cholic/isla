@@ -7,7 +7,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/openai_responses_client.hpp"
-#include "openai_responses_sse_parser.hpp"
+#include "isla/server/openai_responses_sse_parser.hpp"
 
 namespace isla::server::ai_gateway {
 
@@ -22,10 +22,10 @@ struct TransportStreamResult {
 absl::Status AppendTransportBytes(const OpenAiResponsesClientConfig& config, std::string_view chunk,
                                   std::string* body_text);
 
-absl::StatusOr<SseFeedDisposition> ConsumeTransportChunk(
-    const OpenAiResponsesClientConfig& config, std::string_view chunk,
-    IncrementalSseParser* parser, const OpenAiResponsesEventCallback& on_event,
-    std::string* body_text);
+absl::StatusOr<SseFeedDisposition>
+ConsumeTransportChunk(const OpenAiResponsesClientConfig& config, std::string_view chunk,
+                      IncrementalSseParser* parser, const OpenAiResponsesEventCallback& on_event,
+                      std::string* body_text);
 
 std::string BuildHttpHostHeaderValue(const OpenAiResponsesClientConfig& config);
 std::string BuildRawHttpRequest(const OpenAiResponsesClientConfig& config,

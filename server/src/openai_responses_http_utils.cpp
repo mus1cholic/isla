@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <charconv>
 
-#include <nlohmann/json.hpp>
 #include "absl/log/log.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/openai_responses_json_utils.hpp"
+#include <nlohmann/json.hpp>
 
 namespace isla::server::ai_gateway {
 namespace {

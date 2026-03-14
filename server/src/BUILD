@@ -108,7 +108,6 @@ cc_library(
     }),
     deps = [
         "//server/include/isla/server:server_headers",
-        "//shared/src:ai_gateway_protocol",
         "//server/src:ai_gateway_string_utils",
         "//server/src:ai_gateway_logging_utils",
         "@abseil-cpp//absl/log:log",

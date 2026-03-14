@@ -4,7 +4,7 @@
 
 #include "absl/status/statusor.h"
 #include "isla/server/openai_responses_client.hpp"
-#include "openai_responses_transport_utils.hpp"
+#include "isla/server/openai_responses_transport_utils.hpp"
 
 namespace isla::server::ai_gateway {
 
