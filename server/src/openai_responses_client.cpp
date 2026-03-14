@@ -1235,24 +1235,33 @@ struct ParsedHttpResponseHead {
     std::string buffered_body;
 };
 
-void SetInProcessTransportTimeout(beast::tcp_stream* stream,
-                                  const OpenAiResponsesClientConfig& config) {
-    stream->expires_after(config.request_timeout);
+using InProcessTransportDeadline = std::chrono::steady_clock::time_point;
+
+InProcessTransportDeadline
+ComputeInProcessTransportDeadline(const OpenAiResponsesClientConfig& config) {
+    // TODO(https-transport): Synchronous DNS resolution still sits outside this deadline budget.
+    // Move the in-process transport to an async resolve/connect/read/write flow with one timer so
+    // request_timeout becomes a true end-to-end cap, including name resolution.
+    return std::chrono::steady_clock::now() + config.request_timeout;
+}
+
+void SetInProcessTransportDeadline(beast::tcp_stream* stream, InProcessTransportDeadline deadline) {
+    stream->expires_at(deadline);
 }
 
 #if !defined(_WIN32)
-void SetInProcessTransportTimeout(beast::ssl_stream<beast::tcp_stream>* stream,
-                                  const OpenAiResponsesClientConfig& config) {
-    beast::get_lowest_layer(*stream).expires_after(config.request_timeout);
+void SetInProcessTransportDeadline(beast::ssl_stream<beast::tcp_stream>* stream,
+                                   InProcessTransportDeadline deadline) {
+    beast::get_lowest_layer(*stream).expires_at(deadline);
 }
 #endif
 
 template <typename Stream>
 absl::StatusOr<ParsedHttpResponseHead>
-ReadInProcessResponseHead(Stream* stream, const OpenAiResponsesClientConfig& config) {
+ReadInProcessResponseHead(Stream* stream, InProcessTransportDeadline deadline) {
     asio::streambuf response_buffer;
     boost::system::error_code error;
-    SetInProcessTransportTimeout(stream, config);
+    SetInProcessTransportDeadline(stream, deadline);
     asio::read_until(*stream, response_buffer, "\r\n\r\n", error);
     if (error) {
         return UnavailableTransportError("failed to read openai responses HTTP response header",
@@ -1285,9 +1294,9 @@ ReadInProcessResponseHead(Stream* stream, const OpenAiResponsesClientConfig& con
 
 template <typename Stream>
 absl::StatusOr<std::size_t>
-ReadInProcessBodyChunk(Stream* stream, const OpenAiResponsesClientConfig& config, char* buffer,
+ReadInProcessBodyChunk(Stream* stream, InProcessTransportDeadline deadline, char* buffer,
                        std::size_t buffer_size, bool* eof) {
-    SetInProcessTransportTimeout(stream, config);
+    SetInProcessTransportDeadline(stream, deadline);
     boost::system::error_code error;
     const std::size_t bytes_read = stream->read_some(asio::buffer(buffer, buffer_size), error);
     if (error == asio::error::eof) {
@@ -1308,20 +1317,19 @@ void CloseInProcessStream(beast::tcp_stream* stream) {
 }
 
 template <typename Stream>
-absl::StatusOr<TransportStreamResult>
-ExecuteStreamingResponse(Stream* stream, const OpenAiResponsesClientConfig& config,
-                         const std::string& request_json,
-                         const OpenAiResponsesEventCallback& on_event) {
+absl::StatusOr<TransportStreamResult> ExecuteStreamingResponse(
+    Stream* stream, const OpenAiResponsesClientConfig& config, const std::string& request_json,
+    const OpenAiResponsesEventCallback& on_event, InProcessTransportDeadline deadline) {
     const std::string raw_request = BuildRawHttpRequest(config, request_json);
     boost::system::error_code error;
-    SetInProcessTransportTimeout(stream, config);
+    SetInProcessTransportDeadline(stream, deadline);
     asio::write(*stream, asio::buffer(raw_request), error);
     if (error) {
         return UnavailableTransportError("failed to write openai responses HTTP request", error);
     }
 
     const absl::StatusOr<ParsedHttpResponseHead> response_head =
-        ReadInProcessResponseHead(stream, config);
+        ReadInProcessResponseHead(stream, deadline);
     if (!response_head.ok()) {
         return response_head.status();
     }
@@ -1356,7 +1364,7 @@ ExecuteStreamingResponse(Stream* stream, const OpenAiResponsesClientConfig& conf
         for (;;) {
             bool eof = false;
             const absl::StatusOr<std::size_t> bytes_read = ReadInProcessBodyChunk(
-                stream, config, chunk_buffer.data(), chunk_buffer.size(), &eof);
+                stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
             if (!bytes_read.ok()) {
                 return bytes_read.status();
             }
@@ -1377,8 +1385,8 @@ ExecuteStreamingResponse(Stream* stream, const OpenAiResponsesClientConfig& conf
 
     for (;;) {
         bool eof = false;
-        const absl::StatusOr<std::size_t> bytes_read =
-            ReadInProcessBodyChunk(stream, config, chunk_buffer.data(), chunk_buffer.size(), &eof);
+        const absl::StatusOr<std::size_t> bytes_read = ReadInProcessBodyChunk(
+            stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
         if (!bytes_read.ok()) {
             return bytes_read.status();
         }
@@ -1420,34 +1428,33 @@ ExecuteStreamingResponse(Stream* stream, const OpenAiResponsesClientConfig& conf
 absl::StatusOr<TransportStreamResult>
 ExecuteInProcessHttp(const OpenAiResponsesClientConfig& config, const std::string& request_json,
                      const OpenAiResponsesEventCallback& on_event) {
+    const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config);
     asio::io_context io_context;
     tcp::resolver resolver(io_context);
     beast::tcp_stream stream(io_context);
 
     boost::system::error_code error;
-    stream.expires_after(config.request_timeout);
+    SetInProcessTransportDeadline(&stream, deadline);
     const tcp::resolver::results_type endpoints =
         resolver.resolve(config.host, std::to_string(config.port), error);
     if (error) {
         return UnavailableTransportError("failed to resolve openai responses host", error);
     }
 
-    stream.expires_after(config.request_timeout);
+    SetInProcessTransportDeadline(&stream, deadline);
     stream.connect(endpoints, error);
     if (error) {
         return UnavailableTransportError("failed to connect to openai responses host", error);
     }
 
     const absl::StatusOr<TransportStreamResult> result =
-        ExecuteStreamingResponse(&stream, config, request_json, on_event);
+        ExecuteStreamingResponse(&stream, config, request_json, on_event, deadline);
     CloseInProcessStream(&stream);
     return result;
 }
 
 #if !defined(_WIN32)
-absl::Status ConfigureLinuxTlsContext(const OpenAiResponsesClientConfig& config,
-                                      ssl::context* context) {
-    static_cast<void>(config);
+absl::Status ConfigureLinuxTlsContext(ssl::context* context) {
     boost::system::error_code error;
     context->set_default_verify_paths(error);
     if (error) {
@@ -1476,9 +1483,10 @@ void CloseInProcessStream(beast::ssl_stream<beast::tcp_stream>* stream) {
 absl::StatusOr<TransportStreamResult>
 ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::string& request_json,
                       const OpenAiResponsesEventCallback& on_event) {
+    const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config);
     asio::io_context io_context;
     ssl::context context(ssl::context::tls_client);
-    absl::Status context_status = ConfigureLinuxTlsContext(config, &context);
+    absl::Status context_status = ConfigureLinuxTlsContext(&context);
     if (!context_status.ok()) {
         return context_status;
     }
@@ -1491,20 +1499,20 @@ ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::stri
     }
 
     boost::system::error_code error;
-    beast::get_lowest_layer(stream).expires_after(config.request_timeout);
+    SetInProcessTransportDeadline(&stream, deadline);
     const tcp::resolver::results_type endpoints =
         resolver.resolve(config.host, std::to_string(config.port), error);
     if (error) {
         return UnavailableTransportError("failed to resolve openai responses host", error);
     }
 
-    beast::get_lowest_layer(stream).expires_after(config.request_timeout);
+    SetInProcessTransportDeadline(&stream, deadline);
     beast::get_lowest_layer(stream).connect(endpoints, error);
     if (error) {
         return UnavailableTransportError("failed to connect to openai responses host", error);
     }
 
-    beast::get_lowest_layer(stream).expires_after(config.request_timeout);
+    SetInProcessTransportDeadline(&stream, deadline);
     stream.handshake(ssl::stream_base::client, error);
     if (error) {
         CloseInProcessStream(&stream);
@@ -1512,17 +1520,16 @@ ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::stri
                                          error);
     }
 
-    beast::get_lowest_layer(stream).expires_after(config.request_timeout);
     const absl::StatusOr<TransportStreamResult> result =
-        ExecuteStreamingResponse(&stream, config, request_json, on_event);
+        ExecuteStreamingResponse(&stream, config, request_json, on_event, deadline);
     CloseInProcessStream(&stream);
     return result;
 }
 #endif
 
-absl::StatusOr<TransportStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& config,
-                                                  const std::string& request_json,
-                                                  const OpenAiResponsesEventCallback& on_event) {
+[[maybe_unused]] absl::StatusOr<TransportStreamResult>
+ExecuteCurl(const OpenAiResponsesClientConfig& config, const std::string& request_json,
+            const OpenAiResponsesEventCallback& on_event) {
     absl::StatusOr<ScopedTempFile> curl_config_file = ScopedTempFile::Create(".curlrc");
     if (!curl_config_file.ok()) {
         return curl_config_file.status();
