@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "isla/server/memory/system_prompt.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
@@ -120,19 +121,13 @@ std::string EscapePromptText(std::string_view text) {
     return escaped;
 }
 
-absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
-    std::string output;
-    output.append(working_memory.system_prompt);
-    if (!output.empty() && output.back() != '\n') {
-        output.push_back('\n');
-    }
-
+void AppendPersistentMemoryCacheSection(std::string& output, const PersistentMemoryCache& cache) {
     AppendLine(output, "<persistent_memory_cache>");
     AppendLine(output, "Active Models:");
-    if (working_memory.persistent_memory_cache.active_models.empty()) {
+    if (cache.active_models.empty()) {
         AppendLine(output, "- (none)");
     } else {
-        for (const ActiveModel& model : working_memory.persistent_memory_cache.active_models) {
+        for (const ActiveModel& model : cache.active_models) {
             output.append("- [");
             AppendEscapedPromptText(output, model.entity_id);
             output.append("] ");
@@ -141,10 +136,10 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
         }
     }
     AppendLine(output, "Familiar Labels:");
-    if (working_memory.persistent_memory_cache.familiar_labels.empty()) {
+    if (cache.familiar_labels.empty()) {
         AppendLine(output, "- (none)");
     } else {
-        for (const FamiliarLabel& label : working_memory.persistent_memory_cache.familiar_labels) {
+        for (const FamiliarLabel& label : cache.familiar_labels) {
             output.append("- [");
             AppendEscapedPromptText(output, label.entity_id);
             output.append("] ");
@@ -152,6 +147,15 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
             output.push_back('\n');
         }
     }
+}
+
+absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
+    absl::StatusOr<std::string> rendered_system_prompt = RenderSystemPrompt(working_memory.system_prompt);
+    if (!rendered_system_prompt.ok()) {
+        return rendered_system_prompt.status();
+    }
+
+    std::string output = std::move(*rendered_system_prompt);
 
     AppendLine(output, "<mid_term_episodes>");
     if (working_memory.mid_term_episodes.empty()) {

@@ -6,6 +6,7 @@
 #include "absl/log/log.h"
 #include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
+#include "isla/server/memory/system_prompt.hpp"
 #include "isla/server/memory/working_memory_utils.hpp"
 
 namespace isla::server::memory {
@@ -32,14 +33,13 @@ absl::Status ValidateCompletedEpisode(const Episode& episode) {
 WorkingMemory::WorkingMemory(WorkingMemoryState state) : state_(std::move(state)) {}
 
 absl::StatusOr<WorkingMemory> WorkingMemory::Create(const WorkingMemoryInit& init) {
-    absl::StatusOr<std::string> system_prompt = ResolveSystemPrompt(init.system_prompt);
+    absl::StatusOr<SystemPromptState> system_prompt = CreateSystemPromptState(init.system_prompt);
     if (!system_prompt.ok()) {
         return system_prompt.status();
     }
 
     return WorkingMemory(WorkingMemoryState{
         .system_prompt = std::move(*system_prompt),
-        .persistent_memory_cache = {},
         .mid_term_episodes = {},
         .retrieved_memory = std::nullopt,
         .conversation =
@@ -62,18 +62,20 @@ void WorkingMemory::SetRetrievedMemory(std::optional<RetrievedMemory> retrieved_
 
 void WorkingMemory::UpsertActiveModel(std::string entity_id, std::string text) {
     const std::string entity_id_for_log = entity_id;
-    isla::server::memory::UpsertActiveModel(state_.persistent_memory_cache, std::move(entity_id),
-                                            std::move(text));
+    isla::server::memory::UpsertActiveModel(state_.system_prompt.persistent_memory_cache,
+                                            std::move(entity_id), std::move(text));
     LOG(INFO) << "WorkingMemory upserted active model entity_id=" << entity_id_for_log
-              << " active_count=" << state_.persistent_memory_cache.active_models.size();
+              << " active_count="
+              << state_.system_prompt.persistent_memory_cache.active_models.size();
 }
 
 void WorkingMemory::UpsertFamiliarLabel(std::string entity_id, std::string text) {
     const std::string entity_id_for_log = entity_id;
-    isla::server::memory::UpsertFamiliarLabel(state_.persistent_memory_cache, std::move(entity_id),
-                                              std::move(text));
+    isla::server::memory::UpsertFamiliarLabel(state_.system_prompt.persistent_memory_cache,
+                                              std::move(entity_id), std::move(text));
     LOG(INFO) << "WorkingMemory upserted familiar label entity_id=" << entity_id_for_log
-              << " familiar_count=" << state_.persistent_memory_cache.familiar_labels.size();
+              << " familiar_count="
+              << state_.system_prompt.persistent_memory_cache.familiar_labels.size();
 }
 
 absl::Status WorkingMemory::WriteBackCoreEntity(std::string_view entity_id, std::string text) {

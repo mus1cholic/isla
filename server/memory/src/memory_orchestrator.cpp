@@ -70,7 +70,7 @@ absl::Status MemoryOrchestrator::PersistSessionIfNeeded(Timestamp create_time) {
     const MemorySessionRecord session_record{
         .session_id = session_id_,
         .user_id = state.conversation.user_id,
-        .system_prompt = state.system_prompt,
+        .system_prompt = state.system_prompt.base_instructions,
         .created_at = create_time,
         .ended_at = std::nullopt,
     };

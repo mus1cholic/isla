@@ -520,7 +520,7 @@ TEST_F(MemoryOrchestratorTest, CreateUsesWorkingMemoryDefaultPromptResolution) {
 
     ASSERT_TRUE(handler.ok()) << handler.status();
     ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
-    EXPECT_EQ(handler->memory().snapshot().system_prompt, *system_prompt);
+    EXPECT_EQ(handler->memory().snapshot().system_prompt.base_instructions, *system_prompt);
 }
 
 TEST_F(MemoryOrchestratorTest, HandleUserQueryRendersBundledDefaultPromptWhenConfigIsEmpty) {

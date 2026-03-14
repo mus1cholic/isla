@@ -45,6 +45,11 @@ struct PersistentMemoryCache {
     std::vector<FamiliarLabel> familiar_labels;
 };
 
+struct SystemPromptState {
+    std::string base_instructions;
+    PersistentMemoryCache persistent_memory_cache;
+};
+
 struct Message {
     MessageRole role = MessageRole::User;
     std::string content;
@@ -83,8 +88,7 @@ struct Conversation {
 };
 
 struct WorkingMemoryState {
-    std::string system_prompt;
-    PersistentMemoryCache persistent_memory_cache;
+    SystemPromptState system_prompt;
     std::vector<Episode> mid_term_episodes;
     // TODO: Replace this placeholder string with structured retrieved-memory
     // types once the retrieval payload schema is defined.
@@ -158,11 +162,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ActiveModel, entity_id, text)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(FamiliarLabel, entity_id, text)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(PersistentMemoryCache, active_models,
                                                 familiar_labels)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SystemPromptState, base_instructions,
+                                                persistent_memory_cache)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Message, role, content, create_time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(OngoingEpisode, messages)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(WorkingMemoryState, system_prompt,
-                                                persistent_memory_cache, mid_term_episodes,
-                                                retrieved_memory, conversation)
+                                                mid_term_episodes, retrieved_memory, conversation)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Episode, episode_id, tier1_detail, tier2_summary,
                                                 tier3_ref, tier3_keywords, salience, embedding,
                                                 created_at)

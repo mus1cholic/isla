@@ -12,6 +12,8 @@ void UpsertActiveModel(PersistentMemoryCache& cache, std::string entity_id, std:
 void UpsertFamiliarLabel(PersistentMemoryCache& cache, std::string entity_id, std::string text);
 [[nodiscard]] std::string EscapePromptText(std::string_view text);
 
+void AppendPersistentMemoryCacheSection(std::string& output, const PersistentMemoryCache& cache);
+
 [[nodiscard]] absl::StatusOr<std::string>
 RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory);
 
