@@ -1,6 +1,7 @@
 #include "http_json_client.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <iterator>
@@ -37,13 +38,17 @@ void ReportTestServerThreadException(std::string_view server_name) {
     try {
         throw;
     } catch (const std::exception& error) {
-        const std::string_view message = error.what();
-        if (message.find("10054") != std::string_view::npos ||
-            message.find("broken pipe") != std::string_view::npos ||
-            message.find("Connection reset by peer") != std::string_view::npos) {
+        std::string message = error.what();
+        std::string lowered = message;
+        for (char& ch : lowered) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        if (lowered.find("10054") != std::string::npos ||
+            lowered.find("broken pipe") != std::string::npos ||
+            lowered.find("connection reset by peer") != std::string::npos) {
             return;
         }
-        ADD_FAILURE() << server_name << " worker thread threw exception: " << error.what();
+        ADD_FAILURE() << server_name << " worker thread threw exception: " << message;
     } catch (...) {
         ADD_FAILURE() << server_name << " worker thread threw a non-std exception";
     }
