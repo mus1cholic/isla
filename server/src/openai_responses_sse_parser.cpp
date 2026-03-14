@@ -221,9 +221,14 @@ IncrementalSseParser::ProcessLine(const std::string& line,
         return FlushBufferedEvent(on_event);
     }
     if (line.starts_with("data:")) {
-        const std::string payload = TrimAscii(std::string_view(line).substr(5));
-        if (!data_.empty()) {
-            data_.push_back('\n');
+        std::string_view payload = std::string_view(line).substr(5);
+        // NOTICE: OpenAI Responses may emit one JSON event across multiple SSE `data:` lines.
+        // Re-inserting literal newlines between those fragments is valid generic SSE behavior,
+        // but it corrupts provider JSON when the split lands inside a quoted string (for example
+        // a long `instructions` field echoed in `response.created`). Preserve only the single
+        // optional leading space after `data:` and concatenate the fragments directly.
+        if (!payload.empty() && payload.front() == ' ') {
+            payload.remove_prefix(1U);
         }
         data_.append(payload);
     } else if (line.starts_with("event:")) {
