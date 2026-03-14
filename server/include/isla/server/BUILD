@@ -1,5 +1,14 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+exports_files([
+    "openai_responses_curl_transport.hpp",
+    "openai_responses_http_utils.hpp",
+    "openai_responses_inprocess_transport.hpp",
+    "openai_responses_json_utils.hpp",
+    "openai_responses_sse_parser.hpp",
+    "openai_responses_transport_utils.hpp",
+])
+
 cc_library(
     name = "server_headers",
     hdrs = [
@@ -14,6 +23,12 @@ cc_library(
         "ai_gateway_stub_responder.hpp",
         "ai_gateway_stub_responder_utils.hpp",
         "ai_gateway_websocket_session.hpp",
+        "openai_responses_curl_transport.hpp",
+        "openai_responses_http_utils.hpp",
+        "openai_responses_inprocess_transport.hpp",
+        "openai_responses_json_utils.hpp",
+        "openai_responses_sse_parser.hpp",
+        "openai_responses_transport_utils.hpp",
     ],
     strip_include_prefix = "/server/include",
     visibility = ["//visibility:public"],
