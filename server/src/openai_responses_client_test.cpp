@@ -30,6 +30,8 @@
 
 #include <gtest/gtest.h>
 
+#include "openai_responses_inprocess_transport_test_hooks.hpp"
+
 namespace isla::server::ai_gateway {
 namespace {
 
@@ -41,6 +43,71 @@ namespace ssl = asio::ssl;
 #endif
 
 constexpr auto kEarlyAbortTimeout = 2s;
+
+void ReportTestServerThreadException(std::string_view server_name) {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        ADD_FAILURE() << server_name << " worker thread threw exception: " << error.what();
+    } catch (...) {
+        ADD_FAILURE() << server_name << " worker thread threw a non-std exception";
+    }
+}
+
+bool IsExpectedTlsPeerAbort(const std::exception& error) {
+    // NOTICE: The negative HTTPS tests intentionally provoke client-side certificate rejection,
+    // which causes the local TLS server thread to observe peer-abort errors such as
+    // "alert unknown ca", "certificate unknown", or a truncated stream during shutdown. Those
+    // failures are expected for flows like RejectsHttpsServerCertificateWithoutInjectedCa and do
+    // not indicate a bug in the test server itself, so we suppress only these specific peer-abort
+    // cases while still surfacing any other unexpected server-thread exception via ADD_FAILURE().
+    const std::string_view message = error.what();
+    return message.find("alert unknown ca") != std::string_view::npos ||
+           message.find("certificate unknown") != std::string_view::npos ||
+           message.find("stream truncated") != std::string_view::npos;
+}
+
+void ReportHttpsTestServerThreadException() {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        if (IsExpectedTlsPeerAbort(error)) {
+            return;
+        }
+        ADD_FAILURE() << "OneShotHttpsServer worker thread threw exception: " << error.what();
+    } catch (...) {
+        ADD_FAILURE() << "OneShotHttpsServer worker thread threw a non-std exception";
+    }
+}
+
+class FixedStatusHostResolver final : public OpenAiResponsesHostResolver {
+  public:
+    explicit FixedStatusHostResolver(absl::Status status) : status_(std::move(status)) {}
+
+    [[nodiscard]] absl::StatusOr<tcp::resolver::results_type>
+    Resolve(asio::io_context* /*io_context*/, const OpenAiResponsesClientConfig& /*config*/,
+            std::chrono::steady_clock::time_point /*deadline*/) const override {
+        return status_;
+    }
+
+  private:
+    absl::Status status_;
+};
+
+class StaticEndpointHostResolver final : public OpenAiResponsesHostResolver {
+  public:
+    explicit StaticEndpointHostResolver(tcp::endpoint endpoint) : endpoint_(std::move(endpoint)) {}
+
+    [[nodiscard]] absl::StatusOr<tcp::resolver::results_type>
+    Resolve(asio::io_context* /*io_context*/, const OpenAiResponsesClientConfig& config,
+            std::chrono::steady_clock::time_point /*deadline*/) const override {
+        return tcp::resolver::results_type::create(endpoint_, config.host,
+                                                   std::to_string(endpoint_.port()));
+    }
+
+  private:
+    tcp::endpoint endpoint_;
+};
 
 class OneShotHttpServer {
   public:
@@ -139,6 +206,7 @@ class OneShotHttpServer {
             socket.shutdown(tcp::socket::shutdown_both, error);
             socket.close(error);
         } catch (...) {
+            ReportTestServerThreadException("OneShotHttpServer");
         }
     }
 
@@ -227,6 +295,7 @@ class PausingHttpServer {
             socket.shutdown(tcp::socket::shutdown_both, error);
             socket.close(error);
         } catch (...) {
+            ReportTestServerThreadException("PausingHttpServer");
         }
     }
 
@@ -237,6 +306,81 @@ class PausingHttpServer {
     std::thread thread_;
     std::atomic<bool> stopped_{ false };
     std::atomic<bool> first_chunk_sent_{ false };
+    std::uint16_t port_ = 0;
+};
+
+class DelayedHeaderHttpServer {
+  public:
+    explicit DelayedHeaderHttpServer(std::string response, std::chrono::milliseconds response_delay)
+        : response_(std::move(response)), response_delay_(response_delay),
+          acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
+        port_ = acceptor_.local_endpoint().port();
+        thread_ = std::thread([this] { Run(); });
+    }
+
+    ~DelayedHeaderHttpServer() {
+        Stop();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return port_;
+    }
+
+    [[nodiscard]] bool WaitForRequest() {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (request_received_.load()) {
+                return true;
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    }
+
+  private:
+    void Stop() {
+        if (stopped_.exchange(true)) {
+            return;
+        }
+        boost::system::error_code error;
+        acceptor_.close(error);
+        io_context_.stop();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void Run() {
+        try {
+            tcp::socket socket(io_context_);
+            acceptor_.accept(socket);
+
+            asio::streambuf buffer;
+            asio::read_until(socket, buffer, "\r\n\r\n");
+            request_received_.store(true);
+
+            const auto deadline = std::chrono::steady_clock::now() + response_delay_;
+            while (!stopped_.load() && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(10ms);
+            }
+
+            boost::system::error_code write_error;
+            asio::write(socket, asio::buffer(response_.data(), response_.size()), write_error);
+            boost::system::error_code error;
+            socket.shutdown(tcp::socket::shutdown_both, error);
+            socket.close(error);
+        } catch (...) {
+            ReportTestServerThreadException("DelayedHeaderHttpServer");
+        }
+    }
+
+    std::string response_;
+    std::chrono::milliseconds response_delay_;
+    asio::io_context io_context_;
+    tcp::acceptor acceptor_;
+    std::thread thread_;
+    std::atomic<bool> stopped_{ false };
+    std::atomic<bool> request_received_{ false };
     std::uint16_t port_ = 0;
 };
 
@@ -422,6 +566,7 @@ class OneShotHttpsServer {
             ssl_stream.next_layer().shutdown(tcp::socket::shutdown_both, error);
             ssl_stream.next_layer().close(error);
         } catch (...) {
+            ReportHttpsTestServerThreadException();
         }
     }
 
@@ -541,6 +686,56 @@ TEST(OpenAiResponsesClientTest, StreamsSseWhenEventPayloadIsSplitAcrossReadChunk
     EXPECT_EQ(completed_count, 1);
 }
 
+TEST(OpenAiResponsesClientTest, UsesRealDnsResolutionForLocalhostHttpTransport) {
+    const std::string body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"dns ok\"}\r\n\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_dns\"}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
+    OneShotHttpServer server(response);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "localhost",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    std::string output_text;
+    int completed_count = 0;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            return std::visit(
+                [&](const auto& concrete_event) -> absl::Status {
+                    using Event = std::decay_t<decltype(concrete_event)>;
+                    if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += concrete_event.text_delta;
+                    } else if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
+                        ++completed_count;
+                    }
+                    return absl::OkStatus();
+                },
+                event);
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequest());
+    EXPECT_EQ(output_text, "dns ok");
+    EXPECT_EQ(completed_count, 1);
+}
+
 TEST(OpenAiResponsesClientTest, PassesHeaderValuesWithShellMetacharactersLiterally) {
     const std::string body =
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\r\n\r\n"
@@ -625,7 +820,7 @@ TEST(OpenAiResponsesClientTest, ExtractsFinalTextFromCompletedEventWhenNoDeltaAr
 }
 
 #if !defined(_WIN32)
-TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttpsWithInjectedCa) {
+TEST(OpenAiResponsesClientTest, UsesRealDnsResolutionForLocalhostHttpsTransportWithInjectedCa) {
     const std::string body =
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"secure \"}\r\n\r\n"
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world\"}\r\n\r\n"
@@ -1214,6 +1409,251 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenBodyBudgetIsExceeded) {
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kResourceExhausted);
     EXPECT_EQ(status.message(), "openai responses transport body exceeds maximum length");
+}
+
+TEST(OpenAiResponsesClientTest, DeterministicallyUsesInjectedResolverSuccessEndpoints) {
+    const std::string body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"resolver ok\"}\r\n\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_resolver\"}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
+    OneShotHttpServer server(response);
+    auto resolver = std::make_shared<StaticEndpointHostResolver>(
+        tcp::endpoint(asio::ip::make_address("127.0.0.1"), server.port()));
+    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(resolver);
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "resolver.override.test",
+        .port = 80,
+        .target = "/v1/responses",
+    });
+
+    std::string output_text;
+    int completed_count = 0;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            return std::visit(
+                [&](const auto& concrete_event) -> absl::Status {
+                    using Event = std::decay_t<decltype(concrete_event)>;
+                    if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += concrete_event.text_delta;
+                    } else if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
+                        ++completed_count;
+                    }
+                    return absl::OkStatus();
+                },
+                event);
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequest());
+    EXPECT_EQ(output_text, "resolver ok");
+    EXPECT_EQ(completed_count, 1);
+    EXPECT_NE(server.request_text().find("Host: resolver.override.test"), std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDeadline) {
+    const std::string body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"late\"}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
+    DelayedHeaderHttpServer server(response, std::chrono::milliseconds(500));
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+        .request_timeout = std::chrono::milliseconds(100),
+    });
+
+    auto response_future = std::async(std::launch::async, [&] {
+        return client->StreamResponse(
+            OpenAiResponsesRequest{
+                .model = "gpt-5.4",
+                .system_prompt = "",
+                .user_text = "hello",
+            },
+            [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+    });
+
+    ASSERT_TRUE(server.WaitForRequest());
+    ASSERT_EQ(response_future.wait_for(kEarlyAbortTimeout), std::future_status::ready);
+
+    const absl::Status status = response_future.get();
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kDeadlineExceeded);
+    EXPECT_NE(
+        std::string(status.message()).find("failed to read openai responses HTTP response header"),
+        std::string::npos);
+    EXPECT_NE(std::string(status.message()).find("timeout"), std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsTimeoutFromInjectedResolver) {
+    auto resolver = std::make_shared<FixedStatusHostResolver>(
+        absl::DeadlineExceededError("openai responses request timed out during DNS resolution"));
+    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(resolver);
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "example.com",
+        .port = 80,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kDeadlineExceeded);
+    EXPECT_EQ(status.message(), "openai responses request timed out during DNS resolution");
+}
+
+TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsResolutionFailureFromInjectedResolver) {
+    auto resolver = std::make_shared<FixedStatusHostResolver>(
+        absl::UnavailableError("failed to resolve openai responses host: host not found"));
+    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(resolver);
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "example.com",
+        .port = 80,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
+    EXPECT_EQ(status.message(), "failed to resolve openai responses host: host not found");
+}
+
+TEST(OpenAiResponsesClientTest, RestoresPreviousResolverOverrideWhenNestedScopesExit) {
+    auto outer_resolver = std::make_shared<FixedStatusHostResolver>(
+        absl::UnavailableError("failed to resolve openai responses host: outer"));
+    auto inner_resolver = std::make_shared<FixedStatusHostResolver>(
+        absl::DeadlineExceededError("openai responses request timed out during DNS resolution"));
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "example.com",
+        .port = 80,
+        .target = "/v1/responses",
+    });
+
+    ScopedOpenAiResponsesHostResolverOverrideForTest outer_scope(outer_resolver);
+    {
+        ScopedOpenAiResponsesHostResolverOverrideForTest inner_scope(inner_resolver);
+        const absl::Status inner_status = client->StreamResponse(
+            OpenAiResponsesRequest{
+                .model = "gpt-5.4",
+                .system_prompt = "",
+                .user_text = "hello",
+            },
+            [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+        ASSERT_FALSE(inner_status.ok());
+        EXPECT_EQ(inner_status.code(), absl::StatusCode::kDeadlineExceeded);
+        EXPECT_EQ(inner_status.message(),
+                  "openai responses request timed out during DNS resolution");
+    }
+
+    const absl::Status restored_status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(restored_status.ok());
+    EXPECT_EQ(restored_status.code(), absl::StatusCode::kUnavailable);
+    EXPECT_EQ(restored_status.message(), "failed to resolve openai responses host: outer");
+}
+
+TEST(OpenAiResponsesClientTest, RemovesOnlyItsOwnResolverOverrideWhenScopesOverlap) {
+    auto outer_resolver = std::make_shared<FixedStatusHostResolver>(
+        absl::UnavailableError("failed to resolve openai responses host: outer"));
+    auto inner_resolver = std::make_shared<FixedStatusHostResolver>(
+        absl::DeadlineExceededError("openai responses request timed out during DNS resolution"));
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "example.com",
+        .port = 80,
+        .target = "/v1/responses",
+    });
+
+    auto outer_scope =
+        std::make_unique<ScopedOpenAiResponsesHostResolverOverrideForTest>(outer_resolver);
+    auto inner_scope =
+        std::make_unique<ScopedOpenAiResponsesHostResolverOverrideForTest>(inner_resolver);
+
+    outer_scope.reset();
+    const absl::Status still_inner_status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(still_inner_status.ok());
+    EXPECT_EQ(still_inner_status.code(), absl::StatusCode::kDeadlineExceeded);
+    EXPECT_EQ(still_inner_status.message(),
+              "openai responses request timed out during DNS resolution");
+
+    inner_scope.reset();
+    const absl::Status default_status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(default_status.ok());
+    EXPECT_NE(default_status.message(), "failed to resolve openai responses host: outer");
 }
 
 TEST(OpenAiResponsesClientTest, RejectsTargetContainingNewlineBeforeStartingTransport) {
