@@ -472,6 +472,8 @@ TEST(AiGatewayStartupConfigTest, RejectsPartialSupabaseConfig) {
 
     ASSERT_FALSE(parsed.ok());
     EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(parsed.status().message(),
+              "supabase service_role_key must not be empty when the store is enabled");
 }
 
 } // namespace

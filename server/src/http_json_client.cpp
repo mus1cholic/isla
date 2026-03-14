@@ -435,6 +435,10 @@ BuildHttpQueryString(const std::vector<std::pair<std::string, std::string>>& que
 absl::StatusOr<HttpResponse> ExecuteHttpRequest(const ParsedHttpUrl& parsed_url,
                                                 const HttpClientConfig& config,
                                                 const HttpRequestSpec& request) {
+    if (request.target_path.empty() || request.target_path.front() != '/') {
+        return absl::InvalidArgumentError("HTTP request target_path must start with '/'");
+    }
+
     const TransportDeadline deadline = ComputeTransportDeadline(config);
     asio::io_context io_context;
 

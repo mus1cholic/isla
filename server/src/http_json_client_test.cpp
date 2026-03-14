@@ -381,6 +381,30 @@ TEST(HttpJsonClientTest, ParseHttpUrlSupportsBracketedIpv6WithoutExplicitPort) {
     EXPECT_EQ(parsed->port, 80);
 }
 
+TEST(HttpJsonClientTest, RejectsTargetPathWithoutLeadingSlash) {
+    const absl::StatusOr<ParsedHttpUrl> parsed_url =
+        ParseHttpUrl("http://127.0.0.1:8080", "test url");
+    ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
+
+    const absl::StatusOr<HttpResponse> response =
+        ExecuteHttpRequest(*parsed_url,
+                           HttpClientConfig{
+                               .request_timeout = 2s,
+                               .user_agent = "isla-http-json-client-test",
+                           },
+                           HttpRequestSpec{
+                               .method = boost::beast::http::verb::get,
+                               .target_path = "rest/v1/test",
+                               .query_parameters = {},
+                               .headers = {},
+                               .body = std::nullopt,
+                           });
+
+    ASSERT_FALSE(response.ok());
+    EXPECT_EQ(response.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(response.status().message(), "HTTP request target_path must start with '/'");
+}
+
 TEST(HttpJsonClientTest, RejectsOversizedResponseHeaders) {
     const std::string oversized_header(20 * 1024, 'a');
     OneShotHttpServer server("HTTP/1.1 200 OK\r\nX-Oversized: " + oversized_header +
