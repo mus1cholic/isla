@@ -286,9 +286,6 @@ ReadInProcessResponseHead(asio::io_context* io_context, Stream* stream,
         return UnavailableTransportError("failed to read openai responses HTTP response header",
                                          read_error);
     }
-    if (!parser.is_header_done()) {
-        return internal_error("openai responses transport response header was incomplete");
-    }
 
     return ParsedHttpResponseHead{
         .status_code = parser.get().result_int(),

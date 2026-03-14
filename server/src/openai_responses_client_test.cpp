@@ -905,7 +905,7 @@ TEST(OpenAiResponsesClientTest, RejectsHttpsServerCertificateWithoutInjectedCa) 
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
-    EXPECT_NE(std::string(status.message()).find("TLS handshake"), std::string::npos);
+    EXPECT_NE(status.message().find("TLS handshake"), std::string::npos);
 }
 #endif
 
@@ -991,9 +991,8 @@ TEST(OpenAiResponsesClientTest, RejectsMalformedHttpResponseHeaders) {
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
-    EXPECT_NE(
-        std::string(status.message()).find("failed to read openai responses HTTP response header"),
-        std::string::npos);
+    EXPECT_NE(status.message().find("failed to read openai responses HTTP response header"),
+              std::string::npos);
 }
 
 TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeStartingTransport) {
@@ -1531,10 +1530,9 @@ TEST(OpenAiResponsesClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDead
     const absl::Status status = response_future.get();
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kDeadlineExceeded);
-    EXPECT_NE(
-        std::string(status.message()).find("failed to read openai responses HTTP response header"),
-        std::string::npos);
-    EXPECT_NE(std::string(status.message()).find("timeout"), std::string::npos);
+    EXPECT_NE(status.message().find("failed to read openai responses HTTP response header"),
+              std::string::npos);
+    EXPECT_NE(status.message().find("timeout"), std::string::npos);
 }
 
 TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsTimeoutFromInjectedResolver) {
