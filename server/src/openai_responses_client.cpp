@@ -1464,6 +1464,25 @@ absl::Status ConfigureLinuxTlsContext(ssl::context* context) {
     return absl::OkStatus();
 }
 
+absl::Status ConfigureLinuxTlsContext(const OpenAiResponsesClientConfig& config,
+                                      ssl::context* context) {
+    absl::Status status = ConfigureLinuxTlsContext(context);
+    if (!status.ok()) {
+        return status;
+    }
+    if (!config.trusted_ca_cert_pem.has_value() || config.trusted_ca_cert_pem->empty()) {
+        return absl::OkStatus();
+    }
+
+    boost::system::error_code error;
+    context->add_certificate_authority(asio::buffer(*config.trusted_ca_cert_pem), error);
+    if (error) {
+        return UnavailableTransportError("failed to load openai responses additional TLS CA",
+                                         error);
+    }
+    return absl::OkStatus();
+}
+
 absl::Status ConfigureLinuxTlsStream(const OpenAiResponsesClientConfig& config,
                                      beast::ssl_stream<beast::tcp_stream>* stream) {
     if (!SSL_set_tlsext_host_name(stream->native_handle(), config.host.c_str())) {
@@ -1486,7 +1505,7 @@ ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::stri
     const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config);
     asio::io_context io_context;
     ssl::context context(ssl::context::tls_client);
-    absl::Status context_status = ConfigureLinuxTlsContext(&context);
+    absl::Status context_status = ConfigureLinuxTlsContext(config, &context);
     if (!context_status.ok()) {
         return context_status;
     }
