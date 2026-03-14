@@ -1,12 +1,19 @@
 #include "isla/server/ai_gateway_websocket_session.hpp"
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
 
 #include "isla/shared/ai_gateway_protocol.hpp"
 
@@ -64,6 +71,64 @@ class RecordingEventSink final : public GatewaySessionEventSink {
     std::vector<TurnCancelRequestedEvent> cancel_requests;
     std::vector<SessionClosedEvent> closed_sessions;
 };
+
+TEST(AiGatewayWebSocketSessionTest, UuidSessionIdGeneratorCreatesValidAndUniqueUUIDs) {
+    UuidSessionIdGenerator generator;
+
+    const std::string id1 = generator.NextSessionId();
+    const std::string id2 = generator.NextSessionId();
+
+    EXPECT_NE(id1, id2);
+
+    boost::uuids::string_generator sgen;
+    boost::uuids::uuid u1;
+    boost::uuids::uuid u2;
+    ASSERT_NO_THROW(u1 = sgen(id1));
+    ASSERT_NO_THROW(u2 = sgen(id2));
+
+    EXPECT_EQ(u1.version(), boost::uuids::uuid::version_random_number_based);
+    EXPECT_EQ(u2.version(), boost::uuids::uuid::version_random_number_based);
+}
+
+TEST(AiGatewayWebSocketSessionTest, UuidSessionIdGeneratorProducesUniqueIdsAcrossThreads) {
+    UuidSessionIdGenerator generator;
+    constexpr std::size_t kNumThreads = 10;
+    constexpr std::size_t kIdsPerThread = 100;
+
+    std::vector<std::thread> threads;
+    threads.reserve(kNumThreads);
+    std::mutex results_mutex;
+    std::vector<std::string> all_ids;
+    all_ids.reserve(kNumThreads * kIdsPerThread);
+
+    for (std::size_t i = 0; i < kNumThreads; ++i) {
+        threads.emplace_back([&]() {
+            std::vector<std::string> local_ids;
+            local_ids.reserve(kIdsPerThread);
+            for (std::size_t j = 0; j < kIdsPerThread; ++j) {
+                local_ids.push_back(generator.NextSessionId());
+            }
+
+            std::lock_guard<std::mutex> lock(results_mutex);
+            all_ids.insert(all_ids.end(), local_ids.begin(), local_ids.end());
+        });
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    std::unordered_set<std::string> unique_ids(all_ids.begin(), all_ids.end());
+    EXPECT_EQ(unique_ids.size(), kNumThreads * kIdsPerThread);
+}
+
+TEST(AiGatewayWebSocketSessionTest, SequentialSessionIdGeneratorCreatesOrderedIds) {
+    SequentialSessionIdGenerator generator("srv_test_");
+
+    EXPECT_EQ(generator.NextSessionId(), "srv_test_1");
+    EXPECT_EQ(generator.NextSessionId(), "srv_test_2");
+    EXPECT_EQ(generator.NextSessionId(), "srv_test_3");
+}
 
 TEST(AiGatewayWebSocketSessionTest, FactoryGeneratesPerConnectionSessionIds) {
     GatewayWebSocketSessionFactory factory(

@@ -1,10 +1,15 @@
 #include "isla/server/ai_gateway_websocket_session.hpp"
 
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
 
 #include "absl/log/log.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
@@ -39,6 +44,12 @@ SequentialSessionIdGenerator::SequentialSessionIdGenerator(std::string prefix)
 
 std::string SequentialSessionIdGenerator::NextSessionId() {
     return prefix_ + std::to_string(next_id_.fetch_add(1));
+}
+
+std::string UuidSessionIdGenerator::NextSessionId() {
+    thread_local std::mt19937 engine(std::random_device{}());
+    thread_local boost::uuids::basic_random_generator<std::mt19937> generator(&engine);
+    return boost::uuids::to_string(generator());
 }
 
 GatewayWebSocketSessionAdapter::GatewayWebSocketSessionAdapter(

@@ -85,7 +85,7 @@ class GatewayServer {
     explicit GatewayServer(GatewayServerConfig config,
                            GatewayApplicationEventSink* application_sink = nullptr,
                            std::unique_ptr<SessionIdGenerator> session_id_generator =
-                               std::make_unique<SequentialSessionIdGenerator>());
+                               std::make_unique<UuidSessionIdGenerator>());
     ~GatewayServer();
 
     GatewayServer(const GatewayServer&) = delete;
