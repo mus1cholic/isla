@@ -513,6 +513,12 @@ absl::StatusOr<MemoryStorePtr> CreateSupabaseMemoryStore(SupabaseMemoryStoreConf
     if (!parsed_url.ok()) {
         return parsed_url.status();
     }
+#if defined(_WIN32)
+    if (parsed_url->scheme == "https") {
+        return absl::FailedPreconditionError("supabase https transport is unavailable in Windows "
+                                             "builds; run the gateway server on Linux");
+    }
+#endif
     return std::make_shared<SupabaseMemoryStore>(std::move(config), *parsed_url);
 }
 

@@ -33,6 +33,22 @@ namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 using namespace std::chrono_literals;
 
+void ReportTestServerThreadException(std::string_view server_name) {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        const std::string_view message = error.what();
+        if (message.find("10054") != std::string_view::npos ||
+            message.find("broken pipe") != std::string_view::npos ||
+            message.find("Connection reset by peer") != std::string_view::npos) {
+            return;
+        }
+        ADD_FAILURE() << server_name << " worker thread threw exception: " << error.what();
+    } catch (...) {
+        ADD_FAILURE() << server_name << " worker thread threw a non-std exception";
+    }
+}
+
 #if !defined(_WIN32)
 namespace ssl = asio::ssl;
 
@@ -182,6 +198,7 @@ class OneShotHttpServer {
             socket.shutdown(tcp::socket::shutdown_both, error);
             socket.close(error);
         } catch (...) {
+            ReportTestServerThreadException("OneShotHttpServer");
         }
     }
 
@@ -294,6 +311,7 @@ class OneShotHttpsServer {
             boost::system::error_code ignored;
             ssl_stream.shutdown(ignored);
         } catch (...) {
+            ReportTestServerThreadException("OneShotHttpsServer");
         }
     }
 
@@ -338,6 +356,24 @@ TEST(HttpJsonClientTest, ReturnsNon2xxResponseBodyWithoutMapping) {
     EXPECT_EQ(response->status_code, 429U);
     EXPECT_EQ(response->body, body);
     EXPECT_TRUE(server.WaitForRequest());
+}
+
+TEST(HttpJsonClientTest, ParseHttpUrlSupportsBracketedIpv6WithExplicitPort) {
+    const absl::StatusOr<ParsedHttpUrl> parsed = ParseHttpUrl("https://[::1]:8443", "test url");
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_EQ(parsed->scheme, "https");
+    EXPECT_EQ(parsed->host, "[::1]");
+    EXPECT_EQ(parsed->port, 8443);
+}
+
+TEST(HttpJsonClientTest, ParseHttpUrlSupportsBracketedIpv6WithoutExplicitPort) {
+    const absl::StatusOr<ParsedHttpUrl> parsed = ParseHttpUrl("http://[::1]", "test url");
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_EQ(parsed->scheme, "http");
+    EXPECT_EQ(parsed->host, "[::1]");
+    EXPECT_EQ(parsed->port, 80);
 }
 
 TEST(HttpJsonClientTest, RejectsOversizedResponseHeaders) {

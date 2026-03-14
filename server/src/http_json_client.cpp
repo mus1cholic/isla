@@ -350,28 +350,63 @@ absl::StatusOr<ParsedHttpUrl> ParseHttpUrl(std::string_view url, std::string_vie
                                           " scheme must be 'http' or 'https'");
     }
 
-    const std::size_t port_delimiter = authority.rfind(':');
-    if (port_delimiter != std::string_view::npos && authority.find(']') == std::string_view::npos) {
-        parsed.host = std::string(authority.substr(0, port_delimiter));
-        const std::string port_text(authority.substr(port_delimiter + 1U));
-        if (port_text.empty()) {
-            return absl::InvalidArgumentError(std::string(url_label) + " port must not be empty");
-        }
-        int port = 0;
-        try {
-            port = std::stoi(port_text);
-        } catch (const std::exception&) {
+    if (authority.front() == '[') {
+        const std::size_t bracket_end = authority.find(']');
+        if (bracket_end == std::string_view::npos) {
             return absl::InvalidArgumentError(std::string(url_label) +
-                                              " port must be a base-10 integer");
+                                              " contains an unterminated bracketed IPv6 host");
         }
-        if (port < 0 || port > 65535) {
-            return absl::InvalidArgumentError(std::string(url_label) +
-                                              " port must be between 0 and 65535");
+        parsed.host = std::string(authority.substr(0, bracket_end + 1U));
+        if (bracket_end + 1U == authority.size()) {
+            parsed.port = parsed.scheme == "https" ? 443 : 80;
+        } else {
+            if (authority[bracket_end + 1U] != ':') {
+                return absl::InvalidArgumentError(
+                    std::string(url_label) + " contains invalid text after bracketed IPv6 host");
+            }
+            const std::string port_text(authority.substr(bracket_end + 2U));
+            if (port_text.empty()) {
+                return absl::InvalidArgumentError(std::string(url_label) +
+                                                  " port must not be empty");
+            }
+            int port = 0;
+            try {
+                port = std::stoi(port_text);
+            } catch (const std::exception&) {
+                return absl::InvalidArgumentError(std::string(url_label) +
+                                                  " port must be a base-10 integer");
+            }
+            if (port < 0 || port > 65535) {
+                return absl::InvalidArgumentError(std::string(url_label) +
+                                                  " port must be between 0 and 65535");
+            }
+            parsed.port = static_cast<std::uint16_t>(port);
         }
-        parsed.port = static_cast<std::uint16_t>(port);
     } else {
-        parsed.host = std::string(authority);
-        parsed.port = parsed.scheme == "https" ? 443 : 80;
+        const std::size_t port_delimiter = authority.rfind(':');
+        if (port_delimiter != std::string_view::npos) {
+            parsed.host = std::string(authority.substr(0, port_delimiter));
+            const std::string port_text(authority.substr(port_delimiter + 1U));
+            if (port_text.empty()) {
+                return absl::InvalidArgumentError(std::string(url_label) +
+                                                  " port must not be empty");
+            }
+            int port = 0;
+            try {
+                port = std::stoi(port_text);
+            } catch (const std::exception&) {
+                return absl::InvalidArgumentError(std::string(url_label) +
+                                                  " port must be a base-10 integer");
+            }
+            if (port < 0 || port > 65535) {
+                return absl::InvalidArgumentError(std::string(url_label) +
+                                                  " port must be between 0 and 65535");
+            }
+            parsed.port = static_cast<std::uint16_t>(port);
+        } else {
+            parsed.host = std::string(authority);
+            parsed.port = parsed.scheme == "https" ? 443 : 80;
+        }
     }
 
     if (parsed.host.empty()) {

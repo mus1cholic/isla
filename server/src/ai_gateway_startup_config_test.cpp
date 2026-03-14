@@ -154,12 +154,12 @@ TEST(AiGatewayStartupConfigTest, LooksLikeOpenAiProjectIdRecognizesExpectedPrefi
 }
 
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
-    std::array<char*, 16> argv = { kArg0.data(),        kHost.data(),       kPort.data(),
-                                   kBacklog.data(),     kApiKey.data(),     kScheme.data(),
-                                   kOpenAiHost.data(),  kOpenAiPort.data(), kTarget.data(),
-                                   kOrg.data(),         kProject.data(),    kTimeout.data(),
-                                   kSupabaseUrl.data(), kSupabaseKey.data(), kSupabaseSchema.data(),
-                                   kSupabaseTimeout.data() };
+    std::array<char*, 16> argv = {
+        kArg0.data(),        kHost.data(),        kPort.data(),           kBacklog.data(),
+        kApiKey.data(),      kScheme.data(),      kOpenAiHost.data(),     kOpenAiPort.data(),
+        kTarget.data(),      kOrg.data(),         kProject.data(),        kTimeout.data(),
+        kSupabaseUrl.data(), kSupabaseKey.data(), kSupabaseSchema.data(), kSupabaseTimeout.data()
+    };
 
     const absl::StatusOr<ParsedStartupConfig> parsed =
         ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
@@ -445,11 +445,9 @@ TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsSupabaseConfigured
     std::array<char*, 4> argv = { kArg0.data(), kApiKey.data(), kSupabaseUrl.data(),
                                   kSupabaseKey.data() };
 
-    const absl::StatusOr<ParsedStartupConfig> parsed =
-        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
-                                  [](std::string_view) -> std::optional<std::string> {
-                                      return std::nullopt;
-                                  });
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
 
     ASSERT_TRUE(parsed.ok()) << parsed.status();
     const StartupLogContext context = BuildStartupLogContext(

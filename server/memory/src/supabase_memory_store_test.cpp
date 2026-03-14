@@ -33,6 +33,16 @@ using tcp = asio::ip::tcp;
 using nlohmann::json;
 using namespace std::chrono_literals;
 
+void ReportTestServerThreadException(std::string_view server_name) {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        ADD_FAILURE() << server_name << " worker thread threw exception: " << error.what();
+    } catch (...) {
+        ADD_FAILURE() << server_name << " worker thread threw a non-std exception";
+    }
+}
+
 #if !defined(_WIN32)
 namespace ssl = asio::ssl;
 
@@ -207,6 +217,7 @@ class SequentialHttpServer {
                 socket.close(error);
             }
         } catch (...) {
+            ReportTestServerThreadException("SequentialHttpServer");
         }
     }
 
@@ -300,6 +311,7 @@ class OneShotHttpsServer {
             boost::system::error_code ignored;
             ssl_stream.shutdown(ignored);
         } catch (...) {
+            ReportTestServerThreadException("OneShotHttpsServer");
         }
     }
 
@@ -326,6 +338,21 @@ TEST(SupabaseMemoryStoreTest, CreateRejectsInvalidUrl) {
     ASSERT_FALSE(store.ok());
     EXPECT_EQ(store.status().code(), absl::StatusCode::kInvalidArgument);
 }
+
+#if defined(_WIN32)
+TEST(SupabaseMemoryStoreTest, CreateRejectsHttpsOnWindows) {
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "https://project.supabase.co",
+            .service_role_key = "service_role_key",
+        });
+
+    ASSERT_FALSE(store.ok());
+    EXPECT_EQ(store.status().code(), absl::StatusCode::kFailedPrecondition);
+    EXPECT_NE(store.status().message().find("Windows builds"), std::string::npos);
+}
+#endif
 
 TEST(SupabaseMemoryStoreTest, AppendConversationMessageCreatesConversationItemThenMessage) {
     SequentialHttpServer server({
