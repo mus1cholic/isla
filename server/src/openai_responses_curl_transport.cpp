@@ -232,30 +232,6 @@ std::vector<std::string> BuildCurlArgs(const OpenAiResponsesClientConfig& config
     return args;
 }
 
-class ScopedTempFile final {
-  public:
-    explicit ScopedTempFile(std::filesystem::path path) : path_(std::move(path)) {}
-
-    ScopedTempFile(const ScopedTempFile&) = delete;
-    ScopedTempFile& operator=(const ScopedTempFile&) = delete;
-    ScopedTempFile(ScopedTempFile&&) = default;
-    ScopedTempFile& operator=(ScopedTempFile&&) = default;
-
-    [[nodiscard]] static absl::StatusOr<ScopedTempFile> Create(std::string_view suffix);
-
-    ~ScopedTempFile() {
-        std::error_code error;
-        std::filesystem::remove(path_, error);
-    }
-
-    [[nodiscard]] const std::filesystem::path& path() const {
-        return path_;
-    }
-
-  private:
-    std::filesystem::path path_;
-};
-
 #if defined(_WIN32)
 class ScopedWindowsHandle final {
   public:
@@ -377,6 +353,30 @@ class ScopedWindowsAcl final {
 
   private:
     PACL dacl_ = nullptr;
+};
+
+class ScopedTempFile final {
+  public:
+    explicit ScopedTempFile(std::filesystem::path path) : path_(std::move(path)) {}
+
+    ScopedTempFile(const ScopedTempFile&) = delete;
+    ScopedTempFile& operator=(const ScopedTempFile&) = delete;
+    ScopedTempFile(ScopedTempFile&&) = default;
+    ScopedTempFile& operator=(ScopedTempFile&&) = default;
+
+    [[nodiscard]] static absl::StatusOr<ScopedTempFile> Create(std::string_view suffix);
+
+    ~ScopedTempFile() {
+        std::error_code error;
+        std::filesystem::remove(path_, error);
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const {
+        return path_;
+    }
+
+  private:
+    std::filesystem::path path_;
 };
 
 absl::StatusOr<ScopedTempFile> ScopedTempFile::Create(std::string_view suffix) {
@@ -521,6 +521,30 @@ absl::StatusOr<int> WaitForCurlProcess(CurlProcess* process) {
     return static_cast<int>(exit_code);
 }
 #else
+class ScopedTempFile final {
+  public:
+    explicit ScopedTempFile(std::filesystem::path path) : path_(std::move(path)) {}
+
+    ScopedTempFile(const ScopedTempFile&) = delete;
+    ScopedTempFile& operator=(const ScopedTempFile&) = delete;
+    ScopedTempFile(ScopedTempFile&&) = default;
+    ScopedTempFile& operator=(ScopedTempFile&&) = default;
+
+    [[nodiscard]] static absl::StatusOr<ScopedTempFile> Create(std::string_view suffix);
+
+    ~ScopedTempFile() {
+        std::error_code error;
+        std::filesystem::remove(path_, error);
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const {
+        return path_;
+    }
+
+  private:
+    std::filesystem::path path_;
+};
+
 absl::StatusOr<ScopedTempFile> ScopedTempFile::Create(std::string_view suffix) {
     std::string pattern =
         (std::filesystem::temp_directory_path() / ("isla_openai_XXXXXX" + std::string(suffix)))

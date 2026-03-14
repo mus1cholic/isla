@@ -8,8 +8,8 @@
 
 namespace isla::server::ai_gateway {
 
-absl::StatusOr<TransportStreamResult> ExecuteCurl(
-    const OpenAiResponsesClientConfig& config, const std::string& request_json,
-    const OpenAiResponsesEventCallback& on_event);
+absl::StatusOr<TransportStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& config,
+                                                  const std::string& request_json,
+                                                  const OpenAiResponsesEventCallback& on_event);
 
 } // namespace isla::server::ai_gateway

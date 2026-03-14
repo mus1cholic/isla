@@ -8,14 +8,14 @@
 
 namespace isla::server::ai_gateway {
 
-absl::StatusOr<TransportStreamResult> ExecuteInProcessHttp(
-    const OpenAiResponsesClientConfig& config, const std::string& request_json,
-    const OpenAiResponsesEventCallback& on_event);
+absl::StatusOr<TransportStreamResult>
+ExecuteInProcessHttp(const OpenAiResponsesClientConfig& config, const std::string& request_json,
+                     const OpenAiResponsesEventCallback& on_event);
 
 #if !defined(_WIN32)
-absl::StatusOr<TransportStreamResult> ExecuteInProcessHttps(
-    const OpenAiResponsesClientConfig& config, const std::string& request_json,
-    const OpenAiResponsesEventCallback& on_event);
+absl::StatusOr<TransportStreamResult>
+ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::string& request_json,
+                      const OpenAiResponsesEventCallback& on_event);
 #endif
 
 } // namespace isla::server::ai_gateway

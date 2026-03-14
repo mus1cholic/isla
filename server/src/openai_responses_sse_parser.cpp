@@ -1,11 +1,11 @@
 #include "isla/server/openai_responses_sse_parser.hpp"
 
-#include <nlohmann/json.hpp>
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "ai_gateway_string_utils.hpp"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/openai_responses_json_utils.hpp"
+#include <nlohmann/json.hpp>
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -53,23 +53,6 @@ std::optional<std::string> ExtractCompletedText(const nlohmann::json& event_json
     return text;
 }
 
-std::string ExtractJsonErrorMessage2(const nlohmann::json& json) {
-    if (json.contains("error") && json["error"].is_object()) {
-        const auto& error = json["error"];
-        const absl::StatusOr<std::optional<std::string>> message =
-            ReadOptionalStringField(error, "message");
-        if (message.ok() && message->has_value()) {
-            return **message;
-        }
-    }
-    const absl::StatusOr<std::optional<std::string>> message =
-        ReadOptionalStringField(json, "message");
-    if (message.ok() && message->has_value()) {
-        return **message;
-    }
-    return {};
-}
-
 absl::Status MapProviderEventError(const nlohmann::json& event_json) {
     const absl::StatusOr<std::optional<std::string>> type_field =
         ReadOptionalStringField(event_json, "type");
@@ -78,7 +61,7 @@ absl::Status MapProviderEventError(const nlohmann::json& event_json) {
     }
     const std::string type = type_field->value_or("");
     if (type == "error") {
-        std::string message = ExtractJsonErrorMessage2(event_json);
+        std::string message = ExtractJsonErrorMessage(event_json);
         if (message.empty()) {
             message = "openai responses stream returned an error event";
         }
@@ -89,7 +72,7 @@ absl::Status MapProviderEventError(const nlohmann::json& event_json) {
         if (event_json.contains("response") && event_json["response"].is_object()) {
             const auto& response = event_json["response"];
             if (response.contains("error") && response["error"].is_object()) {
-                const std::string extracted = ExtractJsonErrorMessage2(response);
+                const std::string extracted = ExtractJsonErrorMessage(response);
                 if (!extracted.empty()) {
                     message = extracted;
                 }

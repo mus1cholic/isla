@@ -99,6 +99,11 @@ cc_library(
             "-lsecur32",
             "-ladvapi32",
         ],
+        ":windows_msvc": [
+            "Ws2_32.lib",
+            "Secur32.lib",
+            "Advapi32.lib",
+        ],
         "//conditions:default": [],
     }),
     deps = [

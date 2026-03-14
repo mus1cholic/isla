@@ -23,23 +23,6 @@ bool ContainsAsciiWhitespaceOrControl(std::string_view value) {
     });
 }
 
-std::string ExtractJsonErrorMessage(const nlohmann::json& json) {
-    if (json.contains("error") && json["error"].is_object()) {
-        const auto& error = json["error"];
-        const absl::StatusOr<std::optional<std::string>> message =
-            ReadOptionalStringField(error, "message");
-        if (message.ok() && message->has_value()) {
-            return **message;
-        }
-    }
-    const absl::StatusOr<std::optional<std::string>> message =
-        ReadOptionalStringField(json, "message");
-    if (message.ok() && message->has_value()) {
-        return **message;
-    }
-    return {};
-}
-
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
 }

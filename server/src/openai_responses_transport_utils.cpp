@@ -1,8 +1,8 @@
 #include "isla/server/openai_responses_transport_utils.hpp"
 
-#include <sstream>
 #include "absl/log/log.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include <sstream>
 
 namespace isla::server::ai_gateway {
 
@@ -20,10 +20,10 @@ absl::Status AppendTransportBytes(const OpenAiResponsesClientConfig& config, std
     return absl::OkStatus();
 }
 
-absl::StatusOr<SseFeedDisposition> ConsumeTransportChunk(
-    const OpenAiResponsesClientConfig& config, std::string_view chunk,
-    IncrementalSseParser* parser, const OpenAiResponsesEventCallback& on_event,
-    std::string* body_text) {
+absl::StatusOr<SseFeedDisposition>
+ConsumeTransportChunk(const OpenAiResponsesClientConfig& config, std::string_view chunk,
+                      IncrementalSseParser* parser, const OpenAiResponsesEventCallback& on_event,
+                      std::string* body_text) {
     absl::Status append_status = AppendTransportBytes(config, chunk, body_text);
     if (!append_status.ok()) {
         return append_status;
