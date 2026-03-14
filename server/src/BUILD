@@ -79,25 +79,41 @@ cc_library(
 
 cc_library(
     name = "openai_responses_client",
-    srcs = ["openai_responses_client.cpp"],
+    srcs = [
+        "openai_responses_client.cpp",
+        "openai_responses_curl_transport.cpp",
+        "openai_responses_http_utils.cpp",
+        "openai_responses_inprocess_transport.cpp",
+        "openai_responses_json_utils.cpp",
+        "openai_responses_sse_parser.cpp",
+        "openai_responses_transport_utils.cpp",
+    ],
+    includes = [
+        "../../server/include",
+        ".",
+    ],
     visibility = ["//visibility:public"],
     linkopts = select({
         ":windows_gnu": [
+            "-lws2_32",
+            "-lsecur32",
             "-ladvapi32",
         ],
         ":windows_msvc": [
+            "Ws2_32.lib",
+            "Secur32.lib",
             "Advapi32.lib",
         ],
         "//conditions:default": [],
     }),
     deps = [
         "//server/include/isla/server:server_headers",
-        ":ai_gateway_logging_utils",
-        ":ai_gateway_string_utils",
-        "@boost.beast//:boost.beast",
+        "//server/src:ai_gateway_string_utils",
+        "//server/src:ai_gateway_logging_utils",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+        "@boost.beast//:boost.beast",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
