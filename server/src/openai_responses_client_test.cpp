@@ -44,6 +44,16 @@ namespace ssl = asio::ssl;
 
 constexpr auto kEarlyAbortTimeout = 2s;
 
+void ReportTestServerThreadException(std::string_view server_name) {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        ADD_FAILURE() << server_name << " worker thread threw exception: " << error.what();
+    } catch (...) {
+        ADD_FAILURE() << server_name << " worker thread threw a non-std exception";
+    }
+}
+
 class FixedStatusHostResolver final : public OpenAiResponsesHostResolver {
   public:
     explicit FixedStatusHostResolver(absl::Status status) : status_(std::move(status)) {}
@@ -170,6 +180,7 @@ class OneShotHttpServer {
             socket.shutdown(tcp::socket::shutdown_both, error);
             socket.close(error);
         } catch (...) {
+            ReportTestServerThreadException("OneShotHttpServer");
         }
     }
 
@@ -258,6 +269,7 @@ class PausingHttpServer {
             socket.shutdown(tcp::socket::shutdown_both, error);
             socket.close(error);
         } catch (...) {
+            ReportTestServerThreadException("PausingHttpServer");
         }
     }
 
@@ -274,8 +286,7 @@ class PausingHttpServer {
 class DelayedHeaderHttpServer {
   public:
     explicit DelayedHeaderHttpServer(std::string response, std::chrono::milliseconds response_delay)
-        : response_(std::move(response)),
-          response_delay_(response_delay),
+        : response_(std::move(response)), response_delay_(response_delay),
           acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
         port_ = acceptor_.local_endpoint().port();
         thread_ = std::thread([this] { Run(); });
@@ -333,6 +344,7 @@ class DelayedHeaderHttpServer {
             socket.shutdown(tcp::socket::shutdown_both, error);
             socket.close(error);
         } catch (...) {
+            ReportTestServerThreadException("DelayedHeaderHttpServer");
         }
     }
 
@@ -528,6 +540,7 @@ class OneShotHttpsServer {
             ssl_stream.next_layer().shutdown(tcp::socket::shutdown_both, error);
             ssl_stream.next_layer().close(error);
         } catch (...) {
+            ReportTestServerThreadException("OneShotHttpsServer");
         }
     }
 
@@ -1424,8 +1437,7 @@ TEST(OpenAiResponsesClientTest, DeterministicallyUsesInjectedResolverSuccessEndp
     ASSERT_TRUE(server.WaitForRequest());
     EXPECT_EQ(output_text, "resolver ok");
     EXPECT_EQ(completed_count, 1);
-    EXPECT_NE(server.request_text().find("Host: resolver.override.test"),
-              std::string::npos);
+    EXPECT_NE(server.request_text().find("Host: resolver.override.test"), std::string::npos);
 }
 
 TEST(OpenAiResponsesClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDeadline) {
@@ -1466,8 +1478,9 @@ TEST(OpenAiResponsesClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDead
     const absl::Status status = response_future.get();
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kDeadlineExceeded);
-    EXPECT_NE(std::string(status.message()).find("failed to read openai responses HTTP response header"),
-              std::string::npos);
+    EXPECT_NE(
+        std::string(status.message()).find("failed to read openai responses HTTP response header"),
+        std::string::npos);
     EXPECT_NE(std::string(status.message()).find("timeout"), std::string::npos);
 }
 
