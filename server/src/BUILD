@@ -19,6 +19,7 @@ cc_library(
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
+        "@boost.beast//:boost.beast",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -88,12 +89,16 @@ cc_library(
         ":windows_msvc": [
             "Advapi32.lib",
         ],
-        "//conditions:default": [],
+        "//conditions:default": [
+            "-lssl",
+            "-lcrypto",
+        ],
     }),
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
+        "@boost.beast//:boost.beast",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",

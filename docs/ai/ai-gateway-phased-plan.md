@@ -175,9 +175,9 @@ Sequencing rule for the remaining work:
 >     client-visible `text.output` emission time
 > - Current implementation limitation:
 >   - the provider adapter currently shells out to `curl` for HTTP/SSE transport because the
->     repository's current Windows toolchain does not expose OpenSSL headers for a direct Beast TLS
->     client; the transport remains isolated behind the provider boundary and can be replaced later
->     without touching websocket/session code
+>     gateway server is now treated as Ubuntu/Linux-only and still lacks a first-class in-process
+>     TLS client dependency; the transport remains isolated behind the provider boundary and can be
+>     replaced later without touching websocket/session code
 > - Known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
 >   slow step execution or slow accepted-turn emit completion can create cross-session head-of-line
 >   blocking. Fixing that isolation is deferred to the next PR rather than Phase 3.
@@ -197,9 +197,9 @@ Sequencing rule for the remaining work:
   SSE event parsing into normalized provider events, bundled system-prompt loading/validation,
   final-text buffering back through the existing live-session seam, shared final-output size
   enforcement, and dedicated provider/registry/executor regression coverage; the current transport
-  implementation uses `curl` behind the adapter because the repository's Windows toolchain does not
-  currently expose OpenSSL headers for a direct Beast TLS client, and truly incremental subprocess
-  SSE parsing is deferred to Phase 3.6.
+  implementation uses `curl` behind the adapter because the Ubuntu/Linux-only gateway server does
+  not yet have a first-class in-process TLS client, and truly incremental subprocess SSE parsing is
+  deferred to Phase 3.6.
 - 2026-03-10: completed Phase 3 with explicit execution-plan planner/executor contracts, a
   `CreateOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, an explicit
   `GatewayStepRegistry`, planner-built execution steps with concrete compile-time types like
@@ -828,8 +828,8 @@ Route gateway text requests to OpenAI through the executor boundary established 
 >     live gateway multi-delta aggregation into one final `text.output`, and teardown-safe
 >     early-abort transport waits
 > - Remaining limitation:
->   - the provider transport still relies on `curl` because the repository's active Windows
->     toolchain does not yet expose the headers needed for a direct TLS client implementation
+>   - the provider transport still relies on `curl` because the Ubuntu/Linux-only gateway server
+>     does not yet have a direct in-process TLS client implementation
 
 ### Goal
 

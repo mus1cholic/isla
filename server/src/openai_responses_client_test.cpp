@@ -452,7 +452,7 @@ TEST(OpenAiResponsesClientTest, MapsHttpErrorResponsesToAbslStatus) {
     EXPECT_EQ(status.message(), "rate limited");
 }
 
-TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeLaunchingCurl) {
+TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeStartingTransport) {
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
         .api_key = "test_key\noutput = /tmp/pwned",
@@ -470,7 +470,7 @@ TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeLaunchingCur
               "openai responses api_key must not contain carriage return, newline, or NUL");
 }
 
-TEST(OpenAiResponsesClientTest, RejectsHeaderValuesContainingNewlineBeforeLaunchingCurl) {
+TEST(OpenAiResponsesClientTest, RejectsHeaderValuesContainingNewlineBeforeStartingTransport) {
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
         .api_key = "test_key",
@@ -489,7 +489,7 @@ TEST(OpenAiResponsesClientTest, RejectsHeaderValuesContainingNewlineBeforeLaunch
               "openai responses organization must not contain carriage return, newline, or NUL");
 }
 
-TEST(OpenAiResponsesClientTest, RejectsUserAgentContainingNulBeforeLaunchingCurl) {
+TEST(OpenAiResponsesClientTest, RejectsUserAgentContainingNulBeforeStartingTransport) {
     std::string user_agent = "agent";
     user_agent.push_back('\0');
     user_agent += "suffix";
@@ -891,7 +891,25 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenStdoutBudgetIsExceeded) {
     const absl::Status status = response_future.get();
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kResourceExhausted);
-    EXPECT_EQ(status.message(), "openai responses transport stdout exceeds maximum length");
+    EXPECT_EQ(status.message(), "openai responses transport body exceeds maximum length");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsTargetContainingNewlineBeforeStartingTransport) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 1,
+        .target = "/v1/responses\r\nX-Injected: yes",
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses target must not contain carriage return, newline, or NUL");
 }
 
 } // namespace

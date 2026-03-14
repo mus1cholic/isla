@@ -90,8 +90,8 @@ As of 2026-03-12:
     built-in synthetic OpenAI fallback path
 - current implementation limitation:
   - the OpenAI provider adapter currently uses `curl` for HTTPS/SSE transport because the active
-    Windows toolchain in this repository does not expose OpenSSL headers for a direct Beast TLS
-    client build; incremental SSE parsing and early-abort behavior now happen inside that `curl`
+    Ubuntu/Linux-only gateway server does not yet have a direct in-process TLS client
+    implementation; incremental SSE parsing and early-abort behavior now happen inside that `curl`
     transport rather than being deferred
 - no Fish Audio integration exists yet
 
@@ -404,8 +404,8 @@ Current implementation note (2026-03-12):
   slow step execution or slow accepted-turn emit completion can delay unrelated sessions until a
   later concurrency/isolation refactor lands
 - live OpenAI Responses API traffic is now implemented behind a provider-owned adapter; the current
-  transport implementation uses `curl` because the active Windows toolchain in this repository does
-  not expose OpenSSL headers for a direct Beast TLS client build
+  transport implementation uses `curl` because the Ubuntu/Linux-only gateway server does not yet
+  have a direct in-process TLS client implementation
 - the legacy synthetic fallback path has been removed from `OpenAiLLMs`, so provider execution now
   fails closed unless an explicit provider client or provider-shaped fake is configured
 - the planner now loads the bundled system prompt through the memory prompt loader, and prompt
