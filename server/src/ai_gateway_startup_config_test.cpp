@@ -40,6 +40,10 @@ auto kOrg = std::to_array("--openai-organization=org_123");
 auto kProject = std::to_array("--openai-project=proj_123");
 auto kProjectId = std::to_array("--openai-project-id=proj_456");
 auto kTimeout = std::to_array("--openai-timeout-ms=1500");
+auto kSupabaseUrl = std::to_array("--supabase-url=https://project.supabase.co");
+auto kSupabaseKey = std::to_array("--supabase-service-role-key=service_role_key");
+auto kSupabaseSchema = std::to_array("--supabase-schema=private_mem");
+auto kSupabaseTimeout = std::to_array("--supabase-timeout-ms=2500");
 auto kBadScheme = std::to_array("--openai-scheme=ftp");
 auto kBadPort = std::to_array("--openai-port=70000");
 
@@ -150,10 +154,12 @@ TEST(AiGatewayStartupConfigTest, LooksLikeOpenAiProjectIdRecognizesExpectedPrefi
 }
 
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
-    std::array<char*, 12> argv = { kArg0.data(),       kHost.data(),       kPort.data(),
-                                   kBacklog.data(),    kApiKey.data(),     kScheme.data(),
-                                   kOpenAiHost.data(), kOpenAiPort.data(), kTarget.data(),
-                                   kOrg.data(),        kProject.data(),    kTimeout.data() };
+    std::array<char*, 16> argv = {
+        kArg0.data(),        kHost.data(),        kPort.data(),           kBacklog.data(),
+        kApiKey.data(),      kScheme.data(),      kOpenAiHost.data(),     kOpenAiPort.data(),
+        kTarget.data(),      kOrg.data(),         kProject.data(),        kTimeout.data(),
+        kSupabaseUrl.data(), kSupabaseKey.data(), kSupabaseSchema.data(), kSupabaseTimeout.data()
+    };
 
     const absl::StatusOr<ParsedStartupConfig> parsed =
         ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
@@ -177,6 +183,11 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     ASSERT_TRUE(parsed->openai_config.project.has_value());
     EXPECT_EQ(*parsed->openai_config.project, "proj_123");
     EXPECT_EQ(parsed->openai_config.request_timeout, std::chrono::milliseconds(1500));
+    EXPECT_TRUE(parsed->supabase_config.enabled);
+    EXPECT_EQ(parsed->supabase_config.url, "https://project.supabase.co");
+    EXPECT_EQ(parsed->supabase_config.service_role_key, "service_role_key");
+    EXPECT_EQ(parsed->supabase_config.schema, "private_mem");
+    EXPECT_EQ(parsed->supabase_config.request_timeout, std::chrono::milliseconds(2500));
 }
 
 TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
@@ -372,6 +383,7 @@ TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsEnvOnlySource) {
     EXPECT_EQ(context.api_key_source, "env");
     EXPECT_FALSE(context.organization_configured);
     EXPECT_TRUE(context.project_configured);
+    EXPECT_FALSE(context.supabase_configured);
 }
 
 TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsMixedSourceWhenCliOverridesEnv) {
@@ -397,6 +409,71 @@ TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsMixedSourceWhenCli
     EXPECT_EQ(context.api_key_source, "cli");
     EXPECT_FALSE(context.organization_configured);
     EXPECT_TRUE(context.project_configured);
+    EXPECT_FALSE(context.supabase_configured);
+}
+
+TEST(AiGatewayStartupConfigTest, UsesSupabaseEnvironmentDefaultsWhenConfigured) {
+    std::array<char*, 2> argv = { kArg0.data(), kApiKey.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "SUPABASE_URL") {
+                                          return "https://env.supabase.co";
+                                      }
+                                      if (name == "SUPABASE_SERVICE_ROLE_KEY") {
+                                          return "env_service_role_key";
+                                      }
+                                      if (name == "SUPABASE_SCHEMA") {
+                                          return "memory_private";
+                                      }
+                                      if (name == "SUPABASE_TIMEOUT_MS") {
+                                          return "4500";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_TRUE(parsed->supabase_config.enabled);
+    EXPECT_EQ(parsed->supabase_config.url, "https://env.supabase.co");
+    EXPECT_EQ(parsed->supabase_config.service_role_key, "env_service_role_key");
+    EXPECT_EQ(parsed->supabase_config.schema, "memory_private");
+    EXPECT_EQ(parsed->supabase_config.request_timeout, std::chrono::milliseconds(4500));
+}
+
+TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsSupabaseConfiguredWhenPresent) {
+    std::array<char*, 4> argv = { kArg0.data(), kApiKey.data(), kSupabaseUrl.data(),
+                                  kSupabaseKey.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    const StartupLogContext context = BuildStartupLogContext(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; }, *parsed);
+
+    EXPECT_EQ(context.config_source, "cli");
+    EXPECT_TRUE(context.supabase_configured);
+}
+
+TEST(AiGatewayStartupConfigTest, RejectsPartialSupabaseConfig) {
+    std::array<char*, 2> argv = { kArg0.data(), kApiKey.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "SUPABASE_URL") {
+                                          return "https://env.supabase.co";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_FALSE(parsed.ok());
+    EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(parsed.status().message(),
+              "supabase service_role_key must not be empty when the store is enabled");
 }
 
 } // namespace

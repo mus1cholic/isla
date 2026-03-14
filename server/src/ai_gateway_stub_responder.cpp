@@ -34,11 +34,10 @@ absl::Status await_emit(std::chrono::milliseconds timeout, StartFn&& start) {
 } // namespace
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
-    : config_(std::move(config)),
-      executor_(GatewayStepRegistryConfig{
-          .openai_config = config_.openai_config,
-          .openai_client = config_.openai_client,
-      }) {
+    : config_(std::move(config)), executor_(GatewayStepRegistryConfig{
+                                      .openai_config = config_.openai_config,
+                                      .openai_client = config_.openai_client,
+                                  }) {
     worker_ = std::thread([this] {
         try {
             WorkerLoop();
@@ -726,6 +725,7 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         isla::server::memory::MemoryOrchestrator::Create(
             std::string(session_id), isla::server::memory::MemoryOrchestratorInit{
                                          .user_id = config_.memory_user_id,
+                                         .store = config_.memory_store,
                                      });
     if (!orchestrator.ok()) {
         return orchestrator.status();
