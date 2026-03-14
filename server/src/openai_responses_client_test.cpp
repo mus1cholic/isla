@@ -969,6 +969,33 @@ TEST(OpenAiResponsesClientTest, RejectsOversizedHttpResponseHeaders) {
               "openai responses transport response header exceeds maximum length");
 }
 
+TEST(OpenAiResponsesClientTest, RejectsMalformedHttpResponseHeaders) {
+    const std::string response = "NOT_HTTP\r\nConnection: close\r\n\r\n";
+    OneShotHttpServer server(response);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
+    EXPECT_NE(
+        std::string(status.message()).find("failed to read openai responses HTTP response header"),
+        std::string::npos);
+}
+
 TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeStartingTransport) {
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
