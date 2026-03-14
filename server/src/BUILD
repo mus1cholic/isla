@@ -17,6 +17,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:supabase_memory_store",
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
         "@abseil-cpp//absl/log:log",
@@ -32,6 +33,32 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+    ],
+)
+
+cc_library(
+    name = "http_json_client",
+    srcs = ["http_json_client.cpp"],
+    hdrs = ["http_json_client.hpp"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    linkopts = select({
+        ":windows_gnu": [
+            "-lws2_32",
+            "-lsecur32",
+            "-ladvapi32",
+        ],
+        ":windows_msvc": [
+            "Ws2_32.lib",
+            "Secur32.lib",
+            "Advapi32.lib",
+        ],
+        "//conditions:default": [],
+    }),
+    deps = [
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@boost.beast//:boost.beast",
     ],
 )
 
@@ -243,6 +270,7 @@ cc_binary(
         ":ai_gateway_logging_utils",
         ":ai_gateway_server",
         ":ai_gateway_stub_responder",
+        "//server/memory/src:supabase_memory_store",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:initialize",
         "@abseil-cpp//absl/log:log",
@@ -267,6 +295,16 @@ cc_library(
     deps = [
         "//server/include/isla/server:server_headers",
         "@abseil-cpp//absl/status",
+    ],
+)
+
+cc_test(
+    name = "http_json_client_test",
+    srcs = ["http_json_client_test.cpp"],
+    deps = [
+        ":http_json_client",
+        "@boost.beast//:boost.beast",
+        "@googletest//:gtest_main",
     ],
 )
 

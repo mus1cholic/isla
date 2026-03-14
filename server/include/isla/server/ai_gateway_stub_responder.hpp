@@ -14,6 +14,7 @@
 #include "isla/server/ai_gateway_executor.hpp"
 #include "isla/server/ai_gateway_planner.hpp"
 #include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
@@ -23,6 +24,7 @@ struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
     std::string memory_user_id = "gateway_user";
+    isla::server::memory::MemoryStorePtr memory_store;
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
     std::function<void(const ExecutionPlan&)> on_execution_plan;
