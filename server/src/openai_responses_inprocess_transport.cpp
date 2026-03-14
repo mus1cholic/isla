@@ -1,11 +1,16 @@
 #include "isla/server/openai_responses_inprocess_transport.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <type_traits>
+#include <vector>
 
 #include "absl/status/status.h"
 #if !defined(_WIN32)
@@ -21,7 +26,7 @@
 #include "absl/log/log.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/openai_responses_http_utils.hpp"
-#include "openai_responses_inprocess_transport_test_hooks.hpp"
+#include "openai_responses_inprocess_transport_resolver.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -54,8 +59,14 @@ struct ParsedHttpResponseHead {
 
 using InProcessTransportDeadline = std::chrono::steady_clock::time_point;
 
+struct HostResolverOverrideEntry {
+    std::uint64_t token = 0U;
+    std::shared_ptr<const OpenAiResponsesHostResolver> resolver;
+};
+
 std::mutex g_host_resolver_mutex;
-std::shared_ptr<const OpenAiResponsesHostResolver> g_host_resolver_override;
+std::vector<HostResolverOverrideEntry> g_host_resolver_overrides;
+std::uint64_t g_next_host_resolver_override_token = 1U;
 
 InProcessTransportDeadline
 ComputeInProcessTransportDeadline(const OpenAiResponsesClientConfig& config) {
@@ -136,25 +147,6 @@ class AsioOpenAiResponsesHostResolver final : public OpenAiResponsesHostResolver
         return ResolveOpenAiHostWithDeadline(io_context, &resolver, config, deadline);
     }
 };
-
-std::shared_ptr<const OpenAiResponsesHostResolver> GetOpenAiResponsesHostResolver() {
-    std::lock_guard<std::mutex> lock(g_host_resolver_mutex);
-    if (g_host_resolver_override != nullptr) {
-        return g_host_resolver_override;
-    }
-    static const std::shared_ptr<const OpenAiResponsesHostResolver> kDefaultResolver =
-        std::make_shared<const AsioOpenAiResponsesHostResolver>();
-    return kDefaultResolver;
-}
-
-std::shared_ptr<const OpenAiResponsesHostResolver> SwapOpenAiResponsesHostResolverOverrideForTest(
-    std::shared_ptr<const OpenAiResponsesHostResolver> resolver) {
-    std::lock_guard<std::mutex> lock(g_host_resolver_mutex);
-    std::shared_ptr<const OpenAiResponsesHostResolver> previous =
-        std::move(g_host_resolver_override);
-    g_host_resolver_override = std::move(resolver);
-    return previous;
-}
 
 template <typename Stream>
 absl::Status ConnectInProcessStream(asio::io_context* io_context, Stream* stream,
@@ -519,6 +511,37 @@ void CloseInProcessStream(beast::ssl_stream<beast::tcp_stream>* stream) {
 
 } // namespace
 
+std::shared_ptr<const OpenAiResponsesHostResolver> GetOpenAiResponsesHostResolver() {
+    std::lock_guard<std::mutex> lock(g_host_resolver_mutex);
+    if (!g_host_resolver_overrides.empty()) {
+        return g_host_resolver_overrides.back().resolver;
+    }
+    static const std::shared_ptr<const OpenAiResponsesHostResolver> kDefaultResolver =
+        std::make_shared<const AsioOpenAiResponsesHostResolver>();
+    return kDefaultResolver;
+}
+
+std::uint64_t RegisterOpenAiResponsesHostResolverOverrideForTest(
+    std::shared_ptr<const OpenAiResponsesHostResolver> resolver) {
+    std::lock_guard<std::mutex> lock(g_host_resolver_mutex);
+    const std::uint64_t token = g_next_host_resolver_override_token++;
+    g_host_resolver_overrides.push_back(HostResolverOverrideEntry{
+        .token = token,
+        .resolver = std::move(resolver),
+    });
+    return token;
+}
+
+void UnregisterOpenAiResponsesHostResolverOverrideForTest(std::uint64_t token) {
+    std::lock_guard<std::mutex> lock(g_host_resolver_mutex);
+    const auto it = std::find_if(
+        g_host_resolver_overrides.begin(), g_host_resolver_overrides.end(),
+        [token](const HostResolverOverrideEntry& entry) { return entry.token == token; });
+    if (it != g_host_resolver_overrides.end()) {
+        g_host_resolver_overrides.erase(it);
+    }
+}
+
 absl::StatusOr<TransportStreamResult>
 ExecuteInProcessHttp(const OpenAiResponsesClientConfig& config, const std::string& request_json,
                      const OpenAiResponsesEventCallback& on_event) {
@@ -532,7 +555,7 @@ ExecuteInProcessHttp(const OpenAiResponsesClientConfig& config, const std::strin
         return endpoints.status();
     }
 
-    const absl::Status connect_status =
+    absl::Status connect_status =
         ConnectInProcessStream(&io_context, &stream, *endpoints, deadline);
     if (!connect_status.ok()) {
         return connect_status;
@@ -568,13 +591,13 @@ ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::stri
         return endpoints.status();
     }
 
-    const absl::Status connect_status =
+    absl::Status connect_status =
         ConnectInProcessStream(&io_context, &stream, *endpoints, deadline);
     if (!connect_status.ok()) {
         return connect_status;
     }
 
-    const absl::Status handshake_status = CompleteTlsHandshake(&io_context, &stream, deadline);
+    absl::Status handshake_status = CompleteTlsHandshake(&io_context, &stream, deadline);
     if (!handshake_status.ok()) {
         CloseInProcessStream(&stream);
         return handshake_status;
@@ -586,14 +609,5 @@ ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::stri
     return result;
 }
 #endif
-
-ScopedOpenAiResponsesHostResolverOverrideForTest::ScopedOpenAiResponsesHostResolverOverrideForTest(
-    std::shared_ptr<const OpenAiResponsesHostResolver> resolver)
-    : previous_(SwapOpenAiResponsesHostResolverOverrideForTest(std::move(resolver))) {}
-
-ScopedOpenAiResponsesHostResolverOverrideForTest::
-    ~ScopedOpenAiResponsesHostResolverOverrideForTest() {
-    SwapOpenAiResponsesHostResolverOverrideForTest(std::move(previous_));
-}
 
 } // namespace isla::server::ai_gateway

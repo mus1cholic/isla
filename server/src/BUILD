@@ -78,6 +78,26 @@ cc_library(
 )
 
 cc_library(
+    name = "openai_responses_inprocess_transport_resolver",
+    hdrs = ["openai_responses_inprocess_transport_resolver.hpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status:statusor",
+        "@boost.beast//:boost.beast",
+    ],
+)
+
+cc_library(
+    name = "openai_responses_inprocess_transport_test_hooks",
+    testonly = True,
+    srcs = ["openai_responses_inprocess_transport_test_hooks.cpp"],
+    hdrs = ["openai_responses_inprocess_transport_test_hooks.hpp"],
+    deps = [
+        ":openai_responses_inprocess_transport_resolver",
+    ],
+)
+
+cc_library(
     name = "openai_responses_client",
     srcs = [
         "openai_responses_client.cpp",
@@ -87,9 +107,6 @@ cc_library(
         "openai_responses_json_utils.cpp",
         "openai_responses_sse_parser.cpp",
         "openai_responses_transport_utils.cpp",
-    ],
-    hdrs = [
-        "openai_responses_inprocess_transport_test_hooks.hpp",
     ],
     includes = [
         "../../server/include",
@@ -113,6 +130,7 @@ cc_library(
         "//server/include/isla/server:server_headers",
         "//server/src:ai_gateway_string_utils",
         "//server/src:ai_gateway_logging_utils",
+        ":openai_responses_inprocess_transport_resolver",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -293,6 +311,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":openai_responses_client",
+        ":openai_responses_inprocess_transport_test_hooks",
         "@boost.beast//:boost.beast",
         "@googletest//:gtest_main",
     ],

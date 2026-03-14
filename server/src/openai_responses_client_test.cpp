@@ -55,6 +55,12 @@ void ReportTestServerThreadException(std::string_view server_name) {
 }
 
 bool IsExpectedTlsPeerAbort(const std::exception& error) {
+    // NOTICE: The negative HTTPS tests intentionally provoke client-side certificate rejection,
+    // which causes the local TLS server thread to observe peer-abort errors such as
+    // "alert unknown ca", "certificate unknown", or a truncated stream during shutdown. Those
+    // failures are expected for flows like RejectsHttpsServerCertificateWithoutInjectedCa and do
+    // not indicate a bug in the test server itself, so we suppress only these specific peer-abort
+    // cases while still surfacing any other unexpected server-thread exception via ADD_FAILURE().
     const std::string_view message = error.what();
     return message.find("alert unknown ca") != std::string_view::npos ||
            message.find("certificate unknown") != std::string_view::npos ||
@@ -1601,6 +1607,53 @@ TEST(OpenAiResponsesClientTest, RestoresPreviousResolverOverrideWhenNestedScopes
     ASSERT_FALSE(restored_status.ok());
     EXPECT_EQ(restored_status.code(), absl::StatusCode::kUnavailable);
     EXPECT_EQ(restored_status.message(), "failed to resolve openai responses host: outer");
+}
+
+TEST(OpenAiResponsesClientTest, RemovesOnlyItsOwnResolverOverrideWhenScopesOverlap) {
+    auto outer_resolver = std::make_shared<FixedStatusHostResolver>(
+        absl::UnavailableError("failed to resolve openai responses host: outer"));
+    auto inner_resolver = std::make_shared<FixedStatusHostResolver>(
+        absl::DeadlineExceededError("openai responses request timed out during DNS resolution"));
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "example.com",
+        .port = 80,
+        .target = "/v1/responses",
+    });
+
+    auto outer_scope =
+        std::make_unique<ScopedOpenAiResponsesHostResolverOverrideForTest>(outer_resolver);
+    auto inner_scope =
+        std::make_unique<ScopedOpenAiResponsesHostResolverOverrideForTest>(inner_resolver);
+
+    outer_scope.reset();
+    const absl::Status still_inner_status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(still_inner_status.ok());
+    EXPECT_EQ(still_inner_status.code(), absl::StatusCode::kDeadlineExceeded);
+    EXPECT_EQ(still_inner_status.message(),
+              "openai responses request timed out during DNS resolution");
+
+    inner_scope.reset();
+    const absl::Status default_status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(default_status.ok());
+    EXPECT_NE(default_status.message(), "failed to resolve openai responses host: outer");
 }
 
 TEST(OpenAiResponsesClientTest, RejectsTargetContainingNewlineBeforeStartingTransport) {

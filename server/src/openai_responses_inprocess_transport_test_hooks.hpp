@@ -1,25 +1,15 @@
 #pragma once
 
-#include <chrono>
 #include <memory>
 
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/ip/tcp.hpp>
-
-#include "absl/status/statusor.h"
-#include "isla/server/openai_responses_client.hpp"
+#include "openai_responses_inprocess_transport_resolver.hpp"
 
 namespace isla::server::ai_gateway {
 
-class OpenAiResponsesHostResolver {
-  public:
-    virtual ~OpenAiResponsesHostResolver() = default;
-
-    [[nodiscard]] virtual absl::StatusOr<boost::asio::ip::tcp::resolver::results_type>
-    Resolve(boost::asio::io_context* io_context, const OpenAiResponsesClientConfig& config,
-            std::chrono::steady_clock::time_point deadline) const = 0;
-};
-
+// Test-only process-wide DNS override for the in-process OpenAI transport.
+// The active override affects all OpenAI responses clients in the current process and is not
+// scoped to a specific client instance. Use ScopedOpenAiResponsesHostResolverOverrideForTest to
+// install one only inside tightly-bounded test code.
 class ScopedOpenAiResponsesHostResolverOverrideForTest {
   public:
     explicit ScopedOpenAiResponsesHostResolverOverrideForTest(
@@ -32,7 +22,7 @@ class ScopedOpenAiResponsesHostResolverOverrideForTest {
     operator=(const ScopedOpenAiResponsesHostResolverOverrideForTest&) = delete;
 
   private:
-    std::shared_ptr<const OpenAiResponsesHostResolver> previous_;
+    std::uint64_t token_ = 0;
 };
 
 } // namespace isla::server::ai_gateway
