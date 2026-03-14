@@ -1418,9 +1418,9 @@ TEST(OpenAiResponsesClientTest, DeterministicallyUsesInjectedResolverSuccessEndp
                                  "Connection: close\r\n\r\n" +
                                  body;
     OneShotHttpServer server(response);
-    StaticEndpointHostResolver resolver(
+    auto resolver = std::make_shared<StaticEndpointHostResolver>(
         tcp::endpoint(asio::ip::make_address("127.0.0.1"), server.port()));
-    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(&resolver);
+    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(resolver);
 
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -1505,9 +1505,9 @@ TEST(OpenAiResponsesClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDead
 }
 
 TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsTimeoutFromInjectedResolver) {
-    FixedStatusHostResolver resolver(
+    auto resolver = std::make_shared<FixedStatusHostResolver>(
         absl::DeadlineExceededError("openai responses request timed out during DNS resolution"));
-    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(&resolver);
+    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(resolver);
 
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -1532,9 +1532,9 @@ TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsTimeoutFromInjectedR
 }
 
 TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsResolutionFailureFromInjectedResolver) {
-    FixedStatusHostResolver resolver(
+    auto resolver = std::make_shared<FixedStatusHostResolver>(
         absl::UnavailableError("failed to resolve openai responses host: host not found"));
-    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(&resolver);
+    ScopedOpenAiResponsesHostResolverOverrideForTest scoped_resolver(resolver);
 
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -1559,9 +1559,9 @@ TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsResolutionFailureFro
 }
 
 TEST(OpenAiResponsesClientTest, RestoresPreviousResolverOverrideWhenNestedScopesExit) {
-    FixedStatusHostResolver outer_resolver(
+    auto outer_resolver = std::make_shared<FixedStatusHostResolver>(
         absl::UnavailableError("failed to resolve openai responses host: outer"));
-    FixedStatusHostResolver inner_resolver(
+    auto inner_resolver = std::make_shared<FixedStatusHostResolver>(
         absl::DeadlineExceededError("openai responses request timed out during DNS resolution"));
 
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
@@ -1573,9 +1573,9 @@ TEST(OpenAiResponsesClientTest, RestoresPreviousResolverOverrideWhenNestedScopes
         .target = "/v1/responses",
     });
 
-    ScopedOpenAiResponsesHostResolverOverrideForTest outer_scope(&outer_resolver);
+    ScopedOpenAiResponsesHostResolverOverrideForTest outer_scope(outer_resolver);
     {
-        ScopedOpenAiResponsesHostResolverOverrideForTest inner_scope(&inner_resolver);
+        ScopedOpenAiResponsesHostResolverOverrideForTest inner_scope(inner_resolver);
         const absl::Status inner_status = client->StreamResponse(
             OpenAiResponsesRequest{
                 .model = "gpt-5.4",

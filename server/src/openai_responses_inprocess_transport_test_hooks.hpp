@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <memory>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -22,7 +23,7 @@ class OpenAiResponsesHostResolver {
 class ScopedOpenAiResponsesHostResolverOverrideForTest {
   public:
     explicit ScopedOpenAiResponsesHostResolverOverrideForTest(
-        const OpenAiResponsesHostResolver* resolver);
+        std::shared_ptr<const OpenAiResponsesHostResolver> resolver);
     ~ScopedOpenAiResponsesHostResolverOverrideForTest();
 
     ScopedOpenAiResponsesHostResolverOverrideForTest(
@@ -31,7 +32,7 @@ class ScopedOpenAiResponsesHostResolverOverrideForTest {
     operator=(const ScopedOpenAiResponsesHostResolverOverrideForTest&) = delete;
 
   private:
-    const OpenAiResponsesHostResolver* previous_ = nullptr;
+    std::shared_ptr<const OpenAiResponsesHostResolver> previous_;
 };
 
 } // namespace isla::server::ai_gateway
