@@ -89,10 +89,10 @@ As of 2026-03-12:
   - uses provider-shaped fakes for deterministic non-network execution in tests rather than a
     built-in synthetic OpenAI fallback path
 - current implementation limitation:
-  - the OpenAI provider adapter currently uses `curl` for HTTPS/SSE transport because the active
-    Ubuntu/Linux-only gateway server does not yet have a direct in-process TLS client
-    implementation; incremental SSE parsing and early-abort behavior now happen inside that `curl`
-    transport rather than being deferred
+  - the OpenAI provider adapter now uses an in-process HTTP/TLS transport on Ubuntu/Linux, while
+    native Windows development still keeps a `curl` HTTPS fallback behind the provider boundary;
+    incremental SSE parsing and early-abort behavior happen inside the active transport rather than
+    being deferred
 - no Fish Audio integration exists yet
 
 This document defines the architecture baseline that later code should implement. The current
@@ -404,8 +404,8 @@ Current implementation note (2026-03-12):
   slow step execution or slow accepted-turn emit completion can delay unrelated sessions until a
   later concurrency/isolation refactor lands
 - live OpenAI Responses API traffic is now implemented behind a provider-owned adapter; the current
-  transport implementation uses `curl` because the Ubuntu/Linux-only gateway server does not yet
-  have a direct in-process TLS client implementation
+  transport implementation uses an in-process HTTP/TLS client on Ubuntu/Linux, while native Windows
+  development still retains a `curl` HTTPS fallback behind the same provider seam
 - the legacy synthetic fallback path has been removed from `OpenAiLLMs`, so provider execution now
   fails closed unless an explicit provider client or provider-shaped fake is configured
 - the planner now loads the bundled system prompt through the memory prompt loader, and prompt
@@ -485,9 +485,9 @@ Current implementation note (2026-03-12):
 - `GatewayStubResponder` maps that final execution result to one final `text.output` in v1
 - the OpenAI provider adapter now normalizes streamed SSE events through a provider callback
   interface before the gateway buffers them back into that final-result-only contract
-- the current `curl` transport now parses stdout incrementally and honors early callback-driven
-  abort, terminal completion, and a hard stdout byte budget without changing the final-output
-  contract
+- the current transport path now parses response bytes incrementally and honors early
+  callback-driven abort, terminal completion, and a hard response-body byte budget without changing
+  the final-output contract
 - transport regression coverage now includes split-read SSE payloads and verifies that provider
   work can complete before trailing transport bytes are released
 - executor failures now surface stable public error codes/messages rather than raw internal step

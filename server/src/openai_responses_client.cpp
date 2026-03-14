@@ -67,6 +67,7 @@ struct SseParseSummary {
 };
 
 constexpr std::size_t kMaxOpenAiTransportBodyBytes = 256U * 1024U;
+constexpr std::size_t kMaxOpenAiTransportHeaderBytes = 16U * 1024U;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
@@ -1259,28 +1260,50 @@ void SetInProcessTransportDeadline(beast::ssl_stream<beast::tcp_stream>* stream,
 template <typename Stream>
 absl::StatusOr<ParsedHttpResponseHead>
 ReadInProcessResponseHead(Stream* stream, InProcessTransportDeadline deadline) {
-    asio::streambuf response_buffer;
-    boost::system::error_code error;
-    SetInProcessTransportDeadline(stream, deadline);
-    asio::read_until(*stream, response_buffer, "\r\n\r\n", error);
-    if (error) {
-        return UnavailableTransportError("failed to read openai responses HTTP response header",
-                                         error);
+    std::string response_text;
+    response_text.reserve(4096U);
+    std::array<char, 4096> chunk_buffer{};
+    constexpr std::string_view kHeaderTerminator = "\r\n\r\n";
+
+    // TODO(https-transport): Move this to Beast's HTTP parser with header_limit once the
+    // in-process transport gets a fuller parser pass. The capped manual read keeps this PR slice
+    // bounded without expanding parser scope further.
+    for (;;) {
+        const std::size_t header_end = response_text.find(kHeaderTerminator);
+        if (header_end != std::string::npos) {
+            if (header_end + kHeaderTerminator.size() > kMaxOpenAiTransportHeaderBytes) {
+                return absl::ResourceExhaustedError(
+                    "openai responses transport response header exceeds maximum length");
+            }
+            break;
+        }
+        if (response_text.size() > kMaxOpenAiTransportHeaderBytes) {
+            return absl::ResourceExhaustedError(
+                "openai responses transport response header exceeds maximum length");
+        }
+
+        boost::system::error_code error;
+        SetInProcessTransportDeadline(stream, deadline);
+        const std::size_t bytes_read =
+            stream->read_some(asio::buffer(chunk_buffer.data(), chunk_buffer.size()), error);
+        if (error && error != asio::error::eof) {
+            return UnavailableTransportError("failed to read openai responses HTTP response header",
+                                             error);
+        }
+        if (bytes_read > 0U) {
+            response_text.append(chunk_buffer.data(), bytes_read);
+            continue;
+        }
+        break;
     }
 
-    std::string response_text;
-    {
-        std::istream response_stream(&response_buffer);
-        response_text.assign(std::istreambuf_iterator<char>(response_stream),
-                             std::istreambuf_iterator<char>());
-    }
-    const std::size_t header_end = response_text.find("\r\n\r\n");
+    const std::size_t header_end = response_text.find(kHeaderTerminator);
     if (header_end == std::string::npos) {
         return internal_error("openai responses transport response header was incomplete");
     }
 
     const std::optional<unsigned int> status_code =
-        ParseHttpStatusCode(response_text.substr(0, header_end + 4U));
+        ParseHttpStatusCode(response_text.substr(0, header_end + kHeaderTerminator.size()));
     if (!status_code.has_value()) {
         return internal_error(
             "openai responses transport response did not include a valid HTTP status");
@@ -1288,7 +1311,7 @@ ReadInProcessResponseHead(Stream* stream, InProcessTransportDeadline deadline) {
 
     return ParsedHttpResponseHead{
         .status_code = *status_code,
-        .buffered_body = response_text.substr(header_end + 4U),
+        .buffered_body = response_text.substr(header_end + kHeaderTerminator.size()),
     };
 }
 

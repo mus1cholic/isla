@@ -737,6 +737,34 @@ TEST(OpenAiResponsesClientTest, MapsHttpErrorResponsesToAbslStatus) {
     EXPECT_EQ(status.message(), "rate limited");
 }
 
+TEST(OpenAiResponsesClientTest, RejectsOversizedHttpResponseHeaders) {
+    const std::string oversized_header_value(20U * 1024U, 'a');
+    const std::string response =
+        "HTTP/1.1 200 OK\r\nX-Fill: " + oversized_header_value + "\r\nConnection: close\r\n\r\n";
+    OneShotHttpServer server(response);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kResourceExhausted);
+    EXPECT_EQ(status.message(),
+              "openai responses transport response header exceeds maximum length");
+}
+
 TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeStartingTransport) {
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -1142,7 +1170,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportAfterCompletedEventWithoutWaiting
     EXPECT_EQ(completed_count, 1);
 }
 
-TEST(OpenAiResponsesClientTest, AbortsTransportWhenStdoutBudgetIsExceeded) {
+TEST(OpenAiResponsesClientTest, AbortsTransportWhenBodyBudgetIsExceeded) {
     auto continue_promise = std::make_shared<std::promise<void>>();
     const std::string oversized_body(300U * 1024U, 'x');
     const std::string first_chunk = "HTTP/1.1 200 OK\r\n"

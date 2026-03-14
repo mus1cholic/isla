@@ -19,7 +19,6 @@ cc_library(
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
-        "@boost.beast//:boost.beast",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
