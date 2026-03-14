@@ -2,10 +2,15 @@
 
 #include <array>
 #include <chrono>
+#include <mutex>
+#include <optional>
+#include <string>
 
+#include "absl/status/status.h"
 #if !defined(_WIN32)
 #include <boost/asio/ssl.hpp>
 #endif
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #if !defined(_WIN32)
@@ -15,6 +20,7 @@
 #include "absl/log/log.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/openai_responses_http_utils.hpp"
+#include "openai_responses_inprocess_transport_test_hooks.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -32,6 +38,12 @@ absl::Status internal_error(std::string_view message) {
 
 absl::Status UnavailableTransportError(std::string_view prefix,
                                        const boost::system::error_code& error) {
+    if (error == beast::error::timeout || error == asio::error::timed_out) {
+        VLOG(1) << "AI gateway openai responses transport timeout phase='"
+                << SanitizeForLog(prefix) << "' detail='" << SanitizeForLog(error.message())
+                << "'";
+        return absl::DeadlineExceededError(std::string(prefix) + ": " + error.message());
+    }
     return absl::UnavailableError(std::string(prefix) + ": " + error.message());
 }
 
@@ -41,6 +53,9 @@ struct ParsedHttpResponseHead {
 };
 
 using InProcessTransportDeadline = std::chrono::steady_clock::time_point;
+
+std::mutex g_host_resolver_mutex;
+const OpenAiResponsesHostResolver* g_host_resolver_override = nullptr;
 
 InProcessTransportDeadline
 ComputeInProcessTransportDeadline(const OpenAiResponsesClientConfig& config) {
@@ -58,9 +73,215 @@ void SetInProcessTransportDeadline(beast::ssl_stream<beast::tcp_stream>* stream,
 }
 #endif
 
+absl::StatusOr<tcp::resolver::results_type>
+ResolveOpenAiHostWithDeadline(asio::io_context* io_context, tcp::resolver* resolver,
+                              const OpenAiResponsesClientConfig& config,
+                              InProcessTransportDeadline deadline) {
+    io_context->restart();
+
+    asio::steady_timer timer(*io_context);
+    std::optional<tcp::resolver::results_type> endpoints;
+    boost::system::error_code resolve_error;
+    bool resolve_completed = false;
+    bool timed_out = false;
+
+    timer.expires_at(deadline);
+    timer.async_wait(
+        [resolver, &resolve_completed, &timed_out](const boost::system::error_code& error) {
+            if (error == asio::error::operation_aborted || resolve_completed) {
+                return;
+            }
+            timed_out = true;
+            resolver->cancel();
+        });
+
+    resolver->async_resolve(config.host, std::to_string(config.port),
+                            [&timer, &endpoints, &resolve_error,
+                             &resolve_completed](const boost::system::error_code& error,
+                                                 tcp::resolver::results_type results) {
+                                resolve_completed = true;
+                                resolve_error = error;
+                                if (!error) {
+                                    endpoints = std::move(results);
+                                }
+                                timer.cancel();
+                            });
+
+    io_context->run();
+    io_context->restart();
+
+    if (timed_out) {
+        VLOG(1) << "AI gateway openai responses transport timeout phase='DNS resolution'";
+        return absl::DeadlineExceededError(
+            "openai responses request timed out during DNS resolution");
+    }
+    if (!resolve_completed) {
+        return internal_error("openai responses DNS resolution did not complete");
+    }
+    if (resolve_error) {
+        return UnavailableTransportError("failed to resolve openai responses host", resolve_error);
+    }
+    if (!endpoints.has_value()) {
+        return internal_error("openai responses DNS resolution returned no endpoints");
+    }
+    return std::move(*endpoints);
+}
+
+class AsioOpenAiResponsesHostResolver final : public OpenAiResponsesHostResolver {
+  public:
+    [[nodiscard]] absl::StatusOr<tcp::resolver::results_type>
+    Resolve(asio::io_context* io_context, const OpenAiResponsesClientConfig& config,
+            InProcessTransportDeadline deadline) const override {
+        tcp::resolver resolver(*io_context);
+        return ResolveOpenAiHostWithDeadline(io_context, &resolver, config, deadline);
+    }
+};
+
+const OpenAiResponsesHostResolver& GetOpenAiResponsesHostResolver() {
+    std::lock_guard<std::mutex> lock(g_host_resolver_mutex);
+    if (g_host_resolver_override != nullptr) {
+        return *g_host_resolver_override;
+    }
+    static const AsioOpenAiResponsesHostResolver kDefaultResolver;
+    return kDefaultResolver;
+}
+
+const OpenAiResponsesHostResolver*
+SwapOpenAiResponsesHostResolverOverrideForTest(const OpenAiResponsesHostResolver* resolver) {
+    std::lock_guard<std::mutex> lock(g_host_resolver_mutex);
+    const OpenAiResponsesHostResolver* previous = g_host_resolver_override;
+    g_host_resolver_override = resolver;
+    return previous;
+}
+
+absl::Status ConnectInProcessStream(asio::io_context* io_context, beast::tcp_stream* stream,
+                                    const tcp::resolver::results_type& endpoints,
+                                    InProcessTransportDeadline deadline) {
+    io_context->restart();
+
+    boost::system::error_code connect_error;
+    bool connect_completed = false;
+    SetInProcessTransportDeadline(stream, deadline);
+    stream->async_connect(endpoints, [&connect_error, &connect_completed](
+                                         const boost::system::error_code& error,
+                                         const tcp::endpoint&) {
+        connect_error = error;
+        connect_completed = true;
+    });
+
+    io_context->run();
+    io_context->restart();
+
+    if (!connect_completed) {
+        return internal_error("openai responses TCP connect did not complete");
+    }
+    if (connect_error) {
+        return UnavailableTransportError("failed to connect to openai responses host",
+                                         connect_error);
+    }
+    return absl::OkStatus();
+}
+
+#if !defined(_WIN32)
+absl::Status ConnectInProcessStream(asio::io_context* io_context,
+                                    beast::ssl_stream<beast::tcp_stream>* stream,
+                                    const tcp::resolver::results_type& endpoints,
+                                    InProcessTransportDeadline deadline) {
+    io_context->restart();
+
+    boost::system::error_code connect_error;
+    bool connect_completed = false;
+    SetInProcessTransportDeadline(stream, deadline);
+    beast::get_lowest_layer(*stream).async_connect(
+        endpoints, [&connect_error, &connect_completed](const boost::system::error_code& error,
+                                                        const tcp::endpoint&) {
+            connect_error = error;
+            connect_completed = true;
+        });
+
+    io_context->run();
+    io_context->restart();
+
+    if (!connect_completed) {
+        return internal_error("openai responses TCP connect did not complete");
+    }
+    if (connect_error) {
+        return UnavailableTransportError("failed to connect to openai responses host",
+                                         connect_error);
+    }
+    return absl::OkStatus();
+}
+#endif
+
+template <typename Stream>
+absl::Status WriteInProcessRequest(asio::io_context* io_context, Stream* stream,
+                                   InProcessTransportDeadline deadline,
+                                   const std::string& raw_request) {
+    io_context->restart();
+
+    boost::system::error_code write_error;
+    bool write_completed = false;
+    SetInProcessTransportDeadline(stream, deadline);
+    asio::async_write(*stream, asio::buffer(raw_request),
+                      [&write_error, &write_completed](const boost::system::error_code& error,
+                                                       std::size_t) {
+                          write_error = error;
+                          write_completed = true;
+                      });
+
+    io_context->run();
+    io_context->restart();
+
+    if (!write_completed) {
+        return internal_error("openai responses HTTP request write did not complete");
+    }
+    if (write_error) {
+        return UnavailableTransportError("failed to write openai responses HTTP request",
+                                         write_error);
+    }
+    return absl::OkStatus();
+}
+
+template <typename Stream>
+absl::StatusOr<std::size_t>
+ReadInProcessChunk(asio::io_context* io_context, Stream* stream,
+                   InProcessTransportDeadline deadline, char* buffer, std::size_t buffer_size,
+                   bool* eof, std::string_view prefix) {
+    io_context->restart();
+
+    boost::system::error_code read_error;
+    std::size_t bytes_read = 0U;
+    bool read_completed = false;
+    SetInProcessTransportDeadline(stream, deadline);
+    stream->async_read_some(asio::buffer(buffer, buffer_size),
+                            [&read_error, &bytes_read,
+                             &read_completed](const boost::system::error_code& error,
+                                              std::size_t transferred) {
+                                read_error = error;
+                                bytes_read = transferred;
+                                read_completed = true;
+                            });
+
+    io_context->run();
+    io_context->restart();
+
+    if (!read_completed) {
+        return internal_error("openai responses transport read did not complete");
+    }
+    if (read_error == asio::error::eof) {
+        *eof = true;
+        return bytes_read;
+    }
+    if (read_error) {
+        return UnavailableTransportError(prefix, read_error);
+    }
+    return bytes_read;
+}
+
 template <typename Stream>
 absl::StatusOr<ParsedHttpResponseHead>
-ReadInProcessResponseHead(Stream* stream, InProcessTransportDeadline deadline) {
+ReadInProcessResponseHead(asio::io_context* io_context, Stream* stream,
+                          InProcessTransportDeadline deadline) {
     std::string response_text;
     response_text.reserve(4096U);
     std::array<char, 4096> chunk_buffer{};
@@ -80,17 +301,20 @@ ReadInProcessResponseHead(Stream* stream, InProcessTransportDeadline deadline) {
                 "openai responses transport response header exceeds maximum length");
         }
 
-        boost::system::error_code error;
-        SetInProcessTransportDeadline(stream, deadline);
-        const std::size_t bytes_read =
-            stream->read_some(asio::buffer(chunk_buffer.data(), chunk_buffer.size()), error);
-        if (error && error != asio::error::eof) {
-            return UnavailableTransportError("failed to read openai responses HTTP response header",
-                                             error);
+        bool eof = false;
+        const absl::StatusOr<std::size_t> bytes_read =
+            ReadInProcessChunk(io_context, stream, deadline, chunk_buffer.data(),
+                               chunk_buffer.size(), &eof,
+                               "failed to read openai responses HTTP response header");
+        if (!bytes_read.ok()) {
+            return bytes_read.status();
         }
-        if (bytes_read > 0U) {
-            response_text.append(chunk_buffer.data(), bytes_read);
+        if (*bytes_read > 0U) {
+            response_text.append(chunk_buffer.data(), *bytes_read);
             continue;
+        }
+        if (eof) {
+            break;
         }
         break;
     }
@@ -115,20 +339,11 @@ ReadInProcessResponseHead(Stream* stream, InProcessTransportDeadline deadline) {
 
 template <typename Stream>
 absl::StatusOr<std::size_t>
-ReadInProcessBodyChunk(Stream* stream, InProcessTransportDeadline deadline, char* buffer,
-                       std::size_t buffer_size, bool* eof) {
-    SetInProcessTransportDeadline(stream, deadline);
-    boost::system::error_code error;
-    const std::size_t bytes_read = stream->read_some(asio::buffer(buffer, buffer_size), error);
-    if (error == asio::error::eof) {
-        *eof = true;
-        return bytes_read;
-    }
-    if (error) {
-        return UnavailableTransportError("failed to read openai responses HTTP response body",
-                                         error);
-    }
-    return bytes_read;
+ReadInProcessBodyChunk(asio::io_context* io_context, Stream* stream,
+                       InProcessTransportDeadline deadline, char* buffer, std::size_t buffer_size,
+                       bool* eof) {
+    return ReadInProcessChunk(io_context, stream, deadline, buffer, buffer_size, eof,
+                              "failed to read openai responses HTTP response body");
 }
 
 void CloseInProcessStream(beast::tcp_stream* stream) {
@@ -139,18 +354,17 @@ void CloseInProcessStream(beast::tcp_stream* stream) {
 
 template <typename Stream>
 absl::StatusOr<TransportStreamResult> ExecuteStreamingResponse(
-    Stream* stream, const OpenAiResponsesClientConfig& config, const std::string& request_json,
-    const OpenAiResponsesEventCallback& on_event, InProcessTransportDeadline deadline) {
+    asio::io_context* io_context, Stream* stream, const OpenAiResponsesClientConfig& config,
+    const std::string& request_json, const OpenAiResponsesEventCallback& on_event,
+    InProcessTransportDeadline deadline) {
     const std::string raw_request = BuildRawHttpRequest(config, request_json);
-    boost::system::error_code error;
-    SetInProcessTransportDeadline(stream, deadline);
-    asio::write(*stream, asio::buffer(raw_request), error);
-    if (error) {
-        return UnavailableTransportError("failed to write openai responses HTTP request", error);
+    absl::Status write_status = WriteInProcessRequest(io_context, stream, deadline, raw_request);
+    if (!write_status.ok()) {
+        return write_status;
     }
 
     const absl::StatusOr<ParsedHttpResponseHead> response_head =
-        ReadInProcessResponseHead(stream, deadline);
+        ReadInProcessResponseHead(io_context, stream, deadline);
     if (!response_head.ok()) {
         return response_head.status();
     }
@@ -185,7 +399,7 @@ absl::StatusOr<TransportStreamResult> ExecuteStreamingResponse(
         for (;;) {
             bool eof = false;
             const absl::StatusOr<std::size_t> bytes_read = ReadInProcessBodyChunk(
-                stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
+                io_context, stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
             if (!bytes_read.ok()) {
                 return bytes_read.status();
             }
@@ -207,7 +421,7 @@ absl::StatusOr<TransportStreamResult> ExecuteStreamingResponse(
     for (;;) {
         bool eof = false;
         const absl::StatusOr<std::size_t> bytes_read = ReadInProcessBodyChunk(
-            stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
+            io_context, stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
         if (!bytes_read.ok()) {
             return bytes_read.status();
         }
@@ -245,6 +459,36 @@ absl::StatusOr<TransportStreamResult> ExecuteStreamingResponse(
         .body_bytes = body_text.size(),
     };
 }
+
+#if !defined(_WIN32)
+absl::Status CompleteTlsHandshake(asio::io_context* io_context,
+                                  beast::ssl_stream<beast::tcp_stream>* stream,
+                                  InProcessTransportDeadline deadline) {
+    io_context->restart();
+
+    boost::system::error_code handshake_error;
+    bool handshake_completed = false;
+    SetInProcessTransportDeadline(stream, deadline);
+    stream->async_handshake(ssl::stream_base::client,
+                            [&handshake_error, &handshake_completed](
+                                const boost::system::error_code& error) {
+                                handshake_error = error;
+                                handshake_completed = true;
+                            });
+
+    io_context->run();
+    io_context->restart();
+
+    if (!handshake_completed) {
+        return internal_error("openai responses TLS handshake did not complete");
+    }
+    if (handshake_error) {
+        return UnavailableTransportError("failed to complete openai responses TLS handshake",
+                                         handshake_error);
+    }
+    return absl::OkStatus();
+}
+#endif
 
 #if !defined(_WIN32)
 absl::Status ConfigureLinuxTlsContext(ssl::context* context) {
@@ -300,25 +544,22 @@ ExecuteInProcessHttp(const OpenAiResponsesClientConfig& config, const std::strin
                      const OpenAiResponsesEventCallback& on_event) {
     const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config);
     asio::io_context io_context;
-    tcp::resolver resolver(io_context);
     beast::tcp_stream stream(io_context);
 
-    boost::system::error_code error;
-    SetInProcessTransportDeadline(&stream, deadline);
-    const tcp::resolver::results_type endpoints =
-        resolver.resolve(config.host, std::to_string(config.port), error);
-    if (error) {
-        return UnavailableTransportError("failed to resolve openai responses host", error);
+    const absl::StatusOr<tcp::resolver::results_type> endpoints =
+        GetOpenAiResponsesHostResolver().Resolve(&io_context, config, deadline);
+    if (!endpoints.ok()) {
+        return endpoints.status();
     }
 
-    SetInProcessTransportDeadline(&stream, deadline);
-    stream.connect(endpoints, error);
-    if (error) {
-        return UnavailableTransportError("failed to connect to openai responses host", error);
+    const absl::Status connect_status =
+        ConnectInProcessStream(&io_context, &stream, *endpoints, deadline);
+    if (!connect_status.ok()) {
+        return connect_status;
     }
 
     const absl::StatusOr<TransportStreamResult> result =
-        ExecuteStreamingResponse(&stream, config, request_json, on_event, deadline);
+        ExecuteStreamingResponse(&io_context, &stream, config, request_json, on_event, deadline);
     CloseInProcessStream(&stream);
     return result;
 }
@@ -335,40 +576,44 @@ ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::stri
         return context_status;
     }
 
-    tcp::resolver resolver(io_context);
     beast::ssl_stream<beast::tcp_stream> stream(io_context, context);
     absl::Status stream_status = ConfigureLinuxTlsStream(config, &stream);
     if (!stream_status.ok()) {
         return stream_status;
     }
 
-    boost::system::error_code error;
-    SetInProcessTransportDeadline(&stream, deadline);
-    const tcp::resolver::results_type endpoints =
-        resolver.resolve(config.host, std::to_string(config.port), error);
-    if (error) {
-        return UnavailableTransportError("failed to resolve openai responses host", error);
+    const absl::StatusOr<tcp::resolver::results_type> endpoints =
+        GetOpenAiResponsesHostResolver().Resolve(&io_context, config, deadline);
+    if (!endpoints.ok()) {
+        return endpoints.status();
     }
 
-    SetInProcessTransportDeadline(&stream, deadline);
-    beast::get_lowest_layer(stream).connect(endpoints, error);
-    if (error) {
-        return UnavailableTransportError("failed to connect to openai responses host", error);
+    const absl::Status connect_status =
+        ConnectInProcessStream(&io_context, &stream, *endpoints, deadline);
+    if (!connect_status.ok()) {
+        return connect_status;
     }
 
-    SetInProcessTransportDeadline(&stream, deadline);
-    stream.handshake(ssl::stream_base::client, error);
-    if (error) {
+    const absl::Status handshake_status = CompleteTlsHandshake(&io_context, &stream, deadline);
+    if (!handshake_status.ok()) {
         CloseInProcessStream(&stream);
-        return UnavailableTransportError("failed to complete openai responses TLS handshake",
-                                         error);
+        return handshake_status;
     }
 
     const absl::StatusOr<TransportStreamResult> result =
-        ExecuteStreamingResponse(&stream, config, request_json, on_event, deadline);
+        ExecuteStreamingResponse(&io_context, &stream, config, request_json, on_event, deadline);
     CloseInProcessStream(&stream);
     return result;
 }
 #endif
+
+ScopedOpenAiResponsesHostResolverOverrideForTest::ScopedOpenAiResponsesHostResolverOverrideForTest(
+    const OpenAiResponsesHostResolver* resolver)
+    : previous_(SwapOpenAiResponsesHostResolverOverrideForTest(resolver)) {}
+
+ScopedOpenAiResponsesHostResolverOverrideForTest::
+    ~ScopedOpenAiResponsesHostResolverOverrideForTest() {
+    SwapOpenAiResponsesHostResolverOverrideForTest(previous_);
+}
 
 } // namespace isla::server::ai_gateway

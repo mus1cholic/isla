@@ -88,6 +88,9 @@ cc_library(
         "openai_responses_sse_parser.cpp",
         "openai_responses_transport_utils.cpp",
     ],
+    hdrs = [
+        "openai_responses_inprocess_transport_test_hooks.hpp",
+    ],
     includes = [
         "../../server/include",
         ".",
