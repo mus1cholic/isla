@@ -70,6 +70,13 @@ class SequentialSessionIdGenerator final : public SessionIdGenerator {
     std::atomic<std::uint64_t> next_id_{ 1 };
 };
 
+class UuidSessionIdGenerator final : public SessionIdGenerator {
+  public:
+    UuidSessionIdGenerator() = default;
+
+    [[nodiscard]] std::string NextSessionId() override;
+};
+
 class GatewayWebSocketSessionAdapter {
   public:
     GatewayWebSocketSessionAdapter(std::string session_id, GatewayWebSocketConnection& connection,

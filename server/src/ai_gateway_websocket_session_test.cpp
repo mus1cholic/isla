@@ -65,6 +65,36 @@ class RecordingEventSink final : public GatewaySessionEventSink {
     std::vector<SessionClosedEvent> closed_sessions;
 };
 
+TEST(AiGatewayWebSocketSessionTest, UuidSessionIdGeneratorCreatesValidAndUniqueUUIDs) {
+    UuidSessionIdGenerator generator;
+    
+    const std::string id1 = generator.NextSessionId();
+    const std::string id2 = generator.NextSessionId();
+    
+    EXPECT_NE(id1, id2);
+    
+    // UUIDv4 length should be 36
+    EXPECT_EQ(id1.length(), 36);
+    EXPECT_EQ(id2.length(), 36);
+    
+    // Check hyphens
+    EXPECT_EQ(id1[8], '-');
+    EXPECT_EQ(id1[13], '-');
+    EXPECT_EQ(id1[18], '-');
+    EXPECT_EQ(id1[23], '-');
+    
+    // Check version block (v4)
+    EXPECT_EQ(id1[14], '4');
+}
+
+TEST(AiGatewayWebSocketSessionTest, SequentialSessionIdGeneratorCreatesOrderedIds) {
+    SequentialSessionIdGenerator generator("srv_test_");
+    
+    EXPECT_EQ(generator.NextSessionId(), "srv_test_1");
+    EXPECT_EQ(generator.NextSessionId(), "srv_test_2");
+    EXPECT_EQ(generator.NextSessionId(), "srv_test_3");
+}
+
 TEST(AiGatewayWebSocketSessionTest, FactoryGeneratesPerConnectionSessionIds) {
     GatewayWebSocketSessionFactory factory(
         std::make_unique<SequentialSessionIdGenerator>("srv_test_"));

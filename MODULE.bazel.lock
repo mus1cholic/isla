@@ -157,6 +157,8 @@
     "https://bcr.bazel.build/modules/boost.unordered/1.89.0.bcr.2/source.json": "f3ca89da116ae95423c48e24d6ac005020d8534646f57dc6ef9ac7e8279956d7",
     "https://bcr.bazel.build/modules/boost.utility/1.89.0.bcr.2/MODULE.bazel": "0892266c631affaa46cc6eb799208068a5bec7a43597ccdd0558026691e40616",
     "https://bcr.bazel.build/modules/boost.utility/1.89.0.bcr.2/source.json": "d70bda2408a40e0d27a1329ac37f099a5600e486305a84b2d07e7be82db5e061",
+    "https://bcr.bazel.build/modules/boost.uuid/1.89.0.bcr.2/MODULE.bazel": "08e0e072b1913aa40535a407f05d10c741ea5d1e01b7656c1bbee3bfcf4309f0",
+    "https://bcr.bazel.build/modules/boost.uuid/1.89.0.bcr.2/source.json": "19cc5fa60c4d389f8a79c5d4c01f6443d4163ae1c9089744d6a49c17282def2b",
     "https://bcr.bazel.build/modules/boost.variant2/1.89.0.bcr.2/MODULE.bazel": "4b0a2cc09a3aeec58faa1e78f0cd370cbeec00f0b9c78c4120932c7709f954f5",
     "https://bcr.bazel.build/modules/boost.variant2/1.89.0.bcr.2/source.json": "092571cb05ffeabebae1953df0d2f52785840e168eb8af348554e7d751480e1d",
     "https://bcr.bazel.build/modules/boost.winapi/1.89.0.bcr.2/MODULE.bazel": "62bfa08886bd8fb88f470faa9f437939ec38e69178a8f4189607b650a6703041",
