@@ -726,6 +726,7 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         isla::server::memory::MemoryOrchestrator::Create(
             std::string(session_id), isla::server::memory::MemoryOrchestratorInit{
                                          .user_id = config_.memory_user_id,
+                                         .store = config_.memory_store,
                                      });
     if (!orchestrator.ok()) {
         return orchestrator.status();

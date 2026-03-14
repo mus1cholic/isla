@@ -10,6 +10,7 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
+#include "isla/server/memory/supabase_memory_store.hpp"
 
 namespace {
 
@@ -43,8 +44,18 @@ int main(int argc, char** argv) {
     static_cast<void>(previous_sigint_handler);
     static_cast<void>(previous_sigterm_handler);
 
+    absl::StatusOr<isla::server::memory::MemoryStorePtr> memory_store =
+        isla::server::memory::CreateSupabaseMemoryStore(startup_config->supabase_config);
+    if (!memory_store.ok()) {
+        LOG(ERROR) << "AI gateway failed to create Supabase memory store detail='"
+                   << isla::server::ai_gateway::SanitizeForLog(memory_store.status().message())
+                   << "'";
+        return 1;
+    }
+
     isla::server::ai_gateway::GatewayStubResponder responder(
         isla::server::ai_gateway::GatewayStubResponderConfig{
+            .memory_store = *memory_store,
             .openai_config = startup_config->openai_config,
         });
     isla::server::ai_gateway::GatewayServer server(startup_config->server_config, &responder);
@@ -63,12 +74,22 @@ int main(int argc, char** argv) {
     LOG(INFO) << "AI gateway OpenAI config source=" << log_context.config_source
               << " api_key_source=" << log_context.api_key_source << " organization_configured="
               << (log_context.organization_configured ? "true" : "false")
-              << " project_configured=" << (log_context.project_configured ? "true" : "false");
+              << " project_configured=" << (log_context.project_configured ? "true" : "false")
+              << " supabase_configured=" << (log_context.supabase_configured ? "true" : "false");
     LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
               << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.host) << ":"
               << startup_config->openai_config.port << " scheme="
               << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.scheme)
               << " timeout_ms=" << startup_config->openai_config.request_timeout.count();
+    if (startup_config->supabase_config.enabled) {
+        LOG(INFO) << "AI gateway using Supabase memory store url="
+                  << isla::server::ai_gateway::SanitizeForLog(startup_config->supabase_config.url)
+                  << " schema="
+                  << isla::server::ai_gateway::SanitizeForLog(startup_config->supabase_config.schema)
+                  << " timeout_ms=" << startup_config->supabase_config.request_timeout.count();
+    } else {
+        LOG(INFO) << "AI gateway Supabase memory store disabled";
+    }
     LOG(INFO) << "AI gateway listening on "
               << isla::server::ai_gateway::SanitizeForLog(startup_config->server_config.bind_host)
               << ":" << server.bound_port();

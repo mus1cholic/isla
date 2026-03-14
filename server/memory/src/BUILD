@@ -43,6 +43,21 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "supabase_memory_store",
+    srcs = ["supabase_memory_store.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":memory_store",
+        ":memory_types",
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "//server/src:http_json_client",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
 cc_test(
     name = "memory_types_test",
     srcs = ["memory_types_test.cpp"],
@@ -146,6 +161,17 @@ cc_test(
     srcs = ["memory_store_test.cpp"],
     deps = [
         ":memory_store",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "supabase_memory_store_test",
+    srcs = ["supabase_memory_store_test.cpp"],
+    deps = [
+        ":supabase_memory_store",
+        "@boost.beast//:boost.beast",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],

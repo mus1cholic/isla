@@ -11,6 +11,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/memory/supabase_memory_store.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
@@ -18,6 +19,7 @@ namespace isla::server::ai_gateway {
 struct ParsedStartupConfig {
     GatewayServerConfig server_config;
     OpenAiResponsesClientConfig openai_config;
+    isla::server::memory::SupabaseMemoryStoreConfig supabase_config;
 };
 
 struct StartupLogContext {
@@ -25,6 +27,7 @@ struct StartupLogContext {
     std::string api_key_source;
     bool organization_configured = false;
     bool project_configured = false;
+    bool supabase_configured = false;
 };
 
 using StartupEnvLookup = std::function<std::optional<std::string>(std::string_view)>;

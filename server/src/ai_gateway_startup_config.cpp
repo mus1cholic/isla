@@ -168,6 +168,37 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
     }
 }
 
+void ApplySupabaseEnvDefaults(isla::server::memory::SupabaseMemoryStoreConfig* config,
+                              const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> url = env_lookup("SUPABASE_URL"); url.has_value()) {
+        config->url = *url;
+    }
+    if (const std::optional<std::string> key = env_lookup("SUPABASE_SERVICE_ROLE_KEY");
+        key.has_value()) {
+        config->service_role_key = *key;
+    }
+    if (const std::optional<std::string> schema = env_lookup("SUPABASE_SCHEMA");
+        schema.has_value()) {
+        config->schema = *schema;
+    }
+    if (const std::optional<std::string> timeout_ms = env_lookup("SUPABASE_TIMEOUT_MS");
+        timeout_ms.has_value()) {
+        const absl::StatusOr<int> parsed_timeout =
+            ParseIntArgument(*timeout_ms, "SUPABASE_TIMEOUT_MS");
+        if (!parsed_timeout.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid SUPABASE_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "' detail='"
+                         << SanitizeForLog(parsed_timeout.status().message()) << "'";
+        } else if (*parsed_timeout <= 0) {
+            LOG(WARNING) << "AI gateway ignored non-positive SUPABASE_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "'";
+        } else {
+            config->request_timeout = std::chrono::milliseconds(*parsed_timeout);
+        }
+    }
+    config->enabled = !config->url.empty() || !config->service_role_key.empty();
+}
+
 } // namespace
 
 absl::StatusOr<StartupEnvMap> LoadDotEnvFile(std::string_view path) {
@@ -343,6 +374,7 @@ StartupLogContext BuildStartupLogContext(int argc, char** argv, const StartupEnv
                                                                                 : "unknown";
     context.organization_configured = parsed.openai_config.organization.has_value();
     context.project_configured = parsed.openai_config.project.has_value();
+    context.supabase_configured = parsed.supabase_config.enabled;
     return context;
 }
 
@@ -350,6 +382,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                                                               const StartupEnvLookup& env_lookup) {
     ParsedStartupConfig parsed;
     ApplyOpenAiEnvDefaults(&parsed.openai_config, env_lookup);
+    ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -444,6 +477,37 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         } else if (*handled) {
             continue;
         }
+        if (argument.starts_with("--supabase-url=")) {
+            parsed.supabase_config.url = argument.substr(15);
+            parsed.supabase_config.enabled = true;
+            continue;
+        }
+        if (argument.starts_with("--supabase-service-role-key=")) {
+            parsed.supabase_config.service_role_key = argument.substr(28);
+            parsed.supabase_config.enabled = true;
+            continue;
+        }
+        if (argument.starts_with("--supabase-schema=")) {
+            parsed.supabase_config.schema = argument.substr(18);
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled =
+                TryParseIntFlag(argument, "--supabase-timeout-ms=", "supabase-timeout-ms",
+                                [&parsed](int timeout_ms) -> absl::Status {
+                                    if (timeout_ms <= 0) {
+                                        return absl::InvalidArgumentError(
+                                            "supabase-timeout-ms must be greater than zero");
+                                    }
+                                    parsed.supabase_config.request_timeout =
+                                        std::chrono::milliseconds(timeout_ms);
+                                    parsed.supabase_config.enabled = true;
+                                    return absl::OkStatus();
+                                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
         return absl::InvalidArgumentError("unknown argument: " + argument);
     }
 
@@ -454,6 +518,13 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     absl::Status openai_status = ValidateOpenAiStartupConfig(parsed.openai_config);
     if (!openai_status.ok()) {
         return openai_status;
+    }
+    if (parsed.supabase_config.enabled) {
+        const absl::Status supabase_status =
+            isla::server::memory::ValidateSupabaseMemoryStoreConfig(parsed.supabase_config);
+        if (!supabase_status.ok()) {
+            return supabase_status;
+        }
     }
     return parsed;
 }
