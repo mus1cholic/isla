@@ -16,11 +16,9 @@
 #include <utility>
 #include <vector>
 
-#include <boost/asio/read_until.hpp>
 #if !defined(_WIN32)
 #include <boost/asio/ssl.hpp>
 #endif
-#include <boost/asio/streambuf.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #if !defined(_WIN32)
@@ -86,10 +84,41 @@ bool ContainsForbiddenHttpFieldChar(std::string_view value) {
                        [](char ch) { return ch == '\r' || ch == '\n' || ch == '\0'; });
 }
 
+bool ContainsAsciiWhitespaceOrControl(std::string_view value) {
+    return std::any_of(value.begin(), value.end(), [](char ch) {
+        const unsigned char byte = static_cast<unsigned char>(ch);
+        return byte <= 0x20U || byte == 0x7fU;
+    });
+}
+
 absl::Status ValidateHttpFieldValue(std::string_view field_name, std::string_view value) {
     if (ContainsForbiddenHttpFieldChar(value)) {
         return invalid_argument(std::string(field_name) +
                                 " must not contain carriage return, newline, or NUL");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateHttpHostValue(std::string_view value) {
+    if (absl::Status status = ValidateHttpFieldValue("openai responses host", value);
+        !status.ok()) {
+        return status;
+    }
+    if (ContainsAsciiWhitespaceOrControl(value)) {
+        return invalid_argument(
+            "openai responses host must not contain ASCII whitespace or control characters");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateHttpTargetValue(std::string_view value) {
+    if (absl::Status status = ValidateHttpFieldValue("openai responses target", value);
+        !status.ok()) {
+        return status;
+    }
+    if (ContainsAsciiWhitespaceOrControl(value)) {
+        return invalid_argument(
+            "openai responses target must not contain ASCII whitespace or control characters");
     }
     return absl::OkStatus();
 }
@@ -1747,15 +1776,13 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
         if (config_.host.empty()) {
             return invalid_argument("openai responses host must not be empty");
         }
-        if (absl::Status status = ValidateHttpFieldValue("openai responses host", config_.host);
-            !status.ok()) {
+        if (absl::Status status = ValidateHttpHostValue(config_.host); !status.ok()) {
             return status;
         }
         if (config_.target.empty() || config_.target.front() != '/') {
             return invalid_argument("openai responses target must start with '/'");
         }
-        if (absl::Status status = ValidateHttpFieldValue("openai responses target", config_.target);
-            !status.ok()) {
+        if (absl::Status status = ValidateHttpTargetValue(config_.target); !status.ok()) {
             return status;
         }
         if (config_.scheme != "http" && config_.scheme != "https") {

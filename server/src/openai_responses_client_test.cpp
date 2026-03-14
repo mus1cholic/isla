@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -315,7 +316,15 @@ class OneShotHttpsServer {
           acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
         boost::system::error_code error;
         ssl_context_.use_certificate_chain(asio::buffer(kTestTlsServerCertPem), error);
+        if (error) {
+            throw std::runtime_error("failed to configure test TLS certificate chain: " +
+                                     error.message());
+        }
         ssl_context_.use_private_key(asio::buffer(kTestTlsServerKeyPem), ssl::context::pem, error);
+        if (error) {
+            throw std::runtime_error("failed to configure test TLS private key: " +
+                                     error.message());
+        }
         port_ = acceptor_.local_endpoint().port();
         thread_ = std::thread([this] { Run(); });
     }
@@ -1223,6 +1232,42 @@ TEST(OpenAiResponsesClientTest, RejectsTargetContainingNewlineBeforeStartingTran
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
     EXPECT_EQ(status.message(),
               "openai responses target must not contain carriage return, newline, or NUL");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsHostContainingSpaceBeforeStartingTransport) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "local host",
+        .port = 1,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses host must not contain ASCII whitespace or control characters");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsTargetContainingSpaceBeforeStartingTransport) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 1,
+        .target = "/v1/responses bad",
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses target must not contain ASCII whitespace or control characters");
 }
 
 } // namespace
