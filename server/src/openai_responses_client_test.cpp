@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -21,6 +22,9 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/read_until.hpp>
+#if !defined(_WIN32)
+#include <boost/asio/ssl.hpp>
+#endif
 #include <boost/asio/streambuf.hpp>
 #include <boost/asio/write.hpp>
 
@@ -32,6 +36,9 @@ namespace {
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 using namespace std::chrono_literals;
+#if !defined(_WIN32)
+namespace ssl = asio::ssl;
+#endif
 
 constexpr auto kEarlyAbortTimeout = 2s;
 
@@ -233,6 +240,203 @@ class PausingHttpServer {
     std::uint16_t port_ = 0;
 };
 
+#if !defined(_WIN32)
+constexpr char kTestTlsServerKeyPem[] = R"(-----BEGIN PRIVATE KEY-----
+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
+zNwzC+QhFTZoOomFoqMgFWujng==
+-----END PRIVATE KEY-----)";
+
+constexpr char kTestTlsServerCertPem[] = R"(-----BEGIN CERTIFICATE-----
+MIIEWTCCAsGgAwIBAgIJAJinz4jHSjLtMA0GCSqGSIb3DQEBCwUAMF8xCzAJBgNV
+BAYTAlhZMRcwFQYDVQQHDA5DYXN0bGUgQW50aHJheDEjMCEGA1UECgwaUHl0aG9u
+IFNvZnR3YXJlIEZvdW5kYXRpb24xEjAQBgNVBAMMCWxvY2FsaG9zdDAeFw0xODA4
+MjkxNDIzMTVaFw0yODA4MjYxNDIzMTVaMF8xCzAJBgNVBAYTAlhZMRcwFQYDVQQH
+DA5DYXN0bGUgQW50aHJheDEjMCEGA1UECgwaUHl0aG9uIFNvZnR3YXJlIEZvdW5k
+YXRpb24xEjAQBgNVBAMMCWxvY2FsaG9zdDCCAaIwDQYJKoZIhvcNAQEBBQADggGP
+ADCCAYoCggGBALKUqUtopT6E68kN+uJNEt34i2EbmG/bwjcD8IaMsgJPSsMO2Bpd
+3S6qWgkCeOyCfmAwBxK2kNbxGb63ouysEv7l8GCTJTWv3hG/HQcejJpnAEGi6K1U
+fDbyE/db6yZ12SoHVTGkadN4vYGCPd1Wj9ZO1F877SHQ8rDWX3xgTWkxN2ojBw44
+T8RHSDiG8D/CvG4uEy+VUszL+Uvny5y2poNSqvI3J56sptWSrh8nIIbkPZPBdUne
+LYMOHTFK3ZjXSmhlXgziTxK71nnzM3Y9K9gxPnRqoXbvu/wFo55hQCkETiRkYgmm
+jXcBMZ0TClQVnQWuLjMthRnWFZs4Lfmwqjs7FZD/61581R2BYehvpWbLvvuOJhwv
+DFzexL2sXcAl7SsxbzeQKRHqGbIDfbnQTXfs3/VC6Ye5P82P2ucj+XC32N9piRmO
+gCBP8L3ub+YzzdxikZN2gZXXE2jsb3QyE/R2LkWdWyshpKe+RsZP1SBRbHShUyOh
+yJ90baoiEwj2mwIDAQABoxgwFjAUBgNVHREEDTALgglsb2NhbGhvc3QwDQYJKoZI
+hvcNAQELBQADggGBAHRUO/UIHl3jXQENewYayHxkIx8t7nu40iO2DXbicSijz5bo
+5//xAB6RxhBAlsDBehgQP1uoZg+WJW+nHu3CIVOU3qZNZRaozxiCl2UFKcNqLOmx
+R3NKpo1jYf4REQIeG8Yw9+hSWLRbshNteP6bKUUf+vanhg9+axyOEOH/iOQvgk/m
+b8wA8wNa4ujWljPbTQnj7ry8RqhTM0GcAN5LSdSvcKcpzLcs3aYwh+Z8e30sQWna
+F40sa5u7izgBTOrwpcDm/w5kC46vpRQ5fnbshVw6pne2by0mdMECASid/p25N103
+jMqTFlmO7kpf/jpCSmamp3/JSEE1BJKHwQ6Ql4nzRA2N1mnvWH7Zxcv043gkHeAu
+0x8evpvwuhdIyproejNFlBpKmW8OX7yKTCPPMC/VkX8Q1rVkxU0DQ6hmvwZlhoKa
+9Wc2uXpw9xF8itV4Uvcdr3dwqByvIqn7iI/gB+4l41e0u8OmH2MKOx4Nxlly5TNW
+HcVKQHyOeyvnINuBAQ==
+-----END CERTIFICATE-----)";
+
+class OneShotHttpsServer {
+  public:
+    explicit OneShotHttpsServer(std::string response)
+        : response_(std::move(response)), ssl_context_(ssl::context::tls_server),
+          acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
+        boost::system::error_code error;
+        ssl_context_.use_certificate_chain(asio::buffer(kTestTlsServerCertPem), error);
+        if (error) {
+            throw std::runtime_error("failed to configure test TLS certificate chain: " +
+                                     error.message());
+        }
+        ssl_context_.use_private_key(asio::buffer(kTestTlsServerKeyPem), ssl::context::pem, error);
+        if (error) {
+            throw std::runtime_error("failed to configure test TLS private key: " +
+                                     error.message());
+        }
+        port_ = acceptor_.local_endpoint().port();
+        thread_ = std::thread([this] { Run(); });
+    }
+
+    ~OneShotHttpsServer() {
+        Stop();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return port_;
+    }
+
+    [[nodiscard]] bool WaitForRequest() {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (request_text_.has_value()) {
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    }
+
+    [[nodiscard]] std::string request_text() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return request_text_.value_or("");
+    }
+
+  private:
+    void Stop() {
+        if (stopped_.exchange(true)) {
+            return;
+        }
+        boost::system::error_code error;
+        acceptor_.close(error);
+        io_context_.stop();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void Run() {
+        try {
+            tcp::socket socket(io_context_);
+            acceptor_.accept(socket);
+
+            ssl::stream<tcp::socket> ssl_stream(std::move(socket), ssl_context_);
+            ssl_stream.handshake(ssl::stream_base::server);
+
+            asio::streambuf buffer;
+            asio::read_until(ssl_stream, buffer, "\r\n\r\n");
+            std::string request;
+            {
+                std::istream request_stream(&buffer);
+                request.assign(std::istreambuf_iterator<char>(request_stream),
+                               std::istreambuf_iterator<char>());
+            }
+
+            std::size_t content_length = 0;
+            const std::string_view header_terminator = "\r\n\r\n";
+            const std::size_t header_end = request.find(header_terminator);
+            if (header_end != std::string::npos) {
+                const std::string headers = request.substr(0, header_end);
+                const std::string content_length_prefix = "Content-Length:";
+                const std::size_t content_length_pos = headers.find(content_length_prefix);
+                if (content_length_pos != std::string::npos) {
+                    const std::size_t value_begin =
+                        content_length_pos + content_length_prefix.size();
+                    const std::size_t value_end = headers.find("\r\n", value_begin);
+                    content_length = static_cast<std::size_t>(
+                        std::stoul(headers.substr(value_begin, value_end - value_begin)));
+                }
+            }
+
+            const std::size_t body_already_buffered =
+                header_end == std::string::npos ? 0U : request.size() - (header_end + 4U);
+            if (body_already_buffered < content_length) {
+                const std::size_t remaining = content_length - body_already_buffered;
+                std::string tail(remaining, '\0');
+                asio::read(ssl_stream, asio::buffer(tail.data(), tail.size()));
+                request += tail;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                request_text_ = request;
+            }
+
+            asio::write(ssl_stream, asio::buffer(response_.data(), response_.size()));
+            boost::system::error_code error;
+            ssl_stream.shutdown(error);
+            ssl_stream.next_layer().shutdown(tcp::socket::shutdown_both, error);
+            ssl_stream.next_layer().close(error);
+        } catch (...) {
+        }
+    }
+
+    std::string response_;
+    mutable std::mutex mutex_;
+    std::optional<std::string> request_text_;
+    asio::io_context io_context_;
+    ssl::context ssl_context_;
+    tcp::acceptor acceptor_;
+    std::thread thread_;
+    std::atomic<bool> stopped_{ false };
+    std::uint16_t port_ = 0;
+};
+#endif
+
 TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     const std::string body =
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
@@ -420,6 +624,96 @@ TEST(OpenAiResponsesClientTest, ExtractsFinalTextFromCompletedEventWhenNoDeltaAr
     EXPECT_EQ(output_text, "final only");
 }
 
+#if !defined(_WIN32)
+TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttpsWithInjectedCa) {
+    const std::string body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"secure \"}\r\n\r\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world\"}\r\n\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tls\"}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
+    OneShotHttpsServer server(response);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "https",
+        .host = "localhost",
+        .port = server.port(),
+        .target = "/v1/responses",
+        .trusted_ca_cert_pem = std::string(kTestTlsServerCertPem),
+    });
+
+    std::string output_text;
+    int completed_count = 0;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            return std::visit(
+                [&](const auto& concrete_event) -> absl::Status {
+                    using Event = std::decay_t<decltype(concrete_event)>;
+                    if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += concrete_event.text_delta;
+                    } else if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
+                        ++completed_count;
+                    }
+                    return absl::OkStatus();
+                },
+                event);
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequest());
+    EXPECT_EQ(output_text, "secure world");
+    EXPECT_EQ(completed_count, 1);
+    EXPECT_NE(server.request_text().find("POST /v1/responses HTTP/1.1"), std::string::npos);
+    EXPECT_NE(server.request_text().find("Authorization: Bearer test_key"), std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, RejectsHttpsServerCertificateWithoutInjectedCa) {
+    const std::string body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ignored\"}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
+    OneShotHttpsServer server(response);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "https",
+        .host = "localhost",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
+    EXPECT_NE(std::string(status.message()).find("TLS handshake"), std::string::npos);
+}
+#endif
+
 TEST(OpenAiResponsesClientTest, MapsHttpErrorResponsesToAbslStatus) {
     const std::string body = "{\"error\":{\"message\":\"rate limited\"}}";
     const std::string response = "HTTP/1.1 429 Too Many Requests\r\n"
@@ -452,7 +746,35 @@ TEST(OpenAiResponsesClientTest, MapsHttpErrorResponsesToAbslStatus) {
     EXPECT_EQ(status.message(), "rate limited");
 }
 
-TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeLaunchingCurl) {
+TEST(OpenAiResponsesClientTest, RejectsOversizedHttpResponseHeaders) {
+    const std::string oversized_header_value(20U * 1024U, 'a');
+    const std::string response =
+        "HTTP/1.1 200 OK\r\nX-Fill: " + oversized_header_value + "\r\nConnection: close\r\n\r\n";
+    OneShotHttpServer server(response);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .system_prompt = "",
+            .user_text = "hello",
+        },
+        [](const OpenAiResponsesEvent&) { return absl::OkStatus(); });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kResourceExhausted);
+    EXPECT_EQ(status.message(),
+              "openai responses transport response header exceeds maximum length");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeStartingTransport) {
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
         .api_key = "test_key\noutput = /tmp/pwned",
@@ -470,7 +792,7 @@ TEST(OpenAiResponsesClientTest, RejectsApiKeyContainingNewlineBeforeLaunchingCur
               "openai responses api_key must not contain carriage return, newline, or NUL");
 }
 
-TEST(OpenAiResponsesClientTest, RejectsHeaderValuesContainingNewlineBeforeLaunchingCurl) {
+TEST(OpenAiResponsesClientTest, RejectsHeaderValuesContainingNewlineBeforeStartingTransport) {
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
         .api_key = "test_key",
@@ -489,7 +811,7 @@ TEST(OpenAiResponsesClientTest, RejectsHeaderValuesContainingNewlineBeforeLaunch
               "openai responses organization must not contain carriage return, newline, or NUL");
 }
 
-TEST(OpenAiResponsesClientTest, RejectsUserAgentContainingNulBeforeLaunchingCurl) {
+TEST(OpenAiResponsesClientTest, RejectsUserAgentContainingNulBeforeStartingTransport) {
     std::string user_agent = "agent";
     user_agent.push_back('\0');
     user_agent += "suffix";
@@ -857,7 +1179,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportAfterCompletedEventWithoutWaiting
     EXPECT_EQ(completed_count, 1);
 }
 
-TEST(OpenAiResponsesClientTest, AbortsTransportWhenStdoutBudgetIsExceeded) {
+TEST(OpenAiResponsesClientTest, AbortsTransportWhenBodyBudgetIsExceeded) {
     auto continue_promise = std::make_shared<std::promise<void>>();
     const std::string oversized_body(300U * 1024U, 'x');
     const std::string first_chunk = "HTTP/1.1 200 OK\r\n"
@@ -891,7 +1213,61 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenStdoutBudgetIsExceeded) {
     const absl::Status status = response_future.get();
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kResourceExhausted);
-    EXPECT_EQ(status.message(), "openai responses transport stdout exceeds maximum length");
+    EXPECT_EQ(status.message(), "openai responses transport body exceeds maximum length");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsTargetContainingNewlineBeforeStartingTransport) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 1,
+        .target = "/v1/responses\r\nX-Injected: yes",
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses target must not contain carriage return, newline, or NUL");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsHostContainingSpaceBeforeStartingTransport) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "local host",
+        .port = 1,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses host must not contain ASCII whitespace or control characters");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsTargetContainingSpaceBeforeStartingTransport) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 1,
+        .target = "/v1/responses bad",
+    });
+
+    const absl::Status status = client->Validate();
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses target must not contain ASCII whitespace or control characters");
 }
 
 } // namespace

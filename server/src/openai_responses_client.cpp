@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -17,6 +16,14 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <boost/asio/ssl.hpp>
+#endif
+#include <boost/asio/write.hpp>
+#include <boost/beast/core/tcp_stream.hpp>
+#if !defined(_WIN32)
+#include <boost/beast/ssl.hpp>
+#endif
 #include <nlohmann/json.hpp>
 
 #include "absl/log/log.h"
@@ -44,13 +51,21 @@ extern char** environ;
 namespace isla::server::ai_gateway {
 namespace {
 
+namespace asio = boost::asio;
+namespace beast = boost::beast;
+using tcp = asio::ip::tcp;
+#if !defined(_WIN32)
+namespace ssl = asio::ssl;
+#endif
+
 struct SseParseSummary {
     bool saw_delta = false;
     bool saw_completed = false;
     std::size_t event_count = 0;
 };
 
-constexpr std::size_t kMaxOpenAiTransportStdoutBytes = 256U * 1024U;
+constexpr std::size_t kMaxOpenAiTransportBodyBytes = 256U * 1024U;
+constexpr std::size_t kMaxOpenAiTransportHeaderBytes = 16U * 1024U;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
@@ -64,15 +79,46 @@ std::string BuildCurlUrl(const OpenAiResponsesClientConfig& config) {
     return config.scheme + "://" + config.host + ":" + std::to_string(config.port) + config.target;
 }
 
-bool ContainsForbiddenCurlConfigOrHeaderChar(std::string_view value) {
+bool ContainsForbiddenHttpFieldChar(std::string_view value) {
     return std::any_of(value.begin(), value.end(),
                        [](char ch) { return ch == '\r' || ch == '\n' || ch == '\0'; });
 }
 
-absl::Status ValidateCurlConfigOrHeaderValue(std::string_view field_name, std::string_view value) {
-    if (ContainsForbiddenCurlConfigOrHeaderChar(value)) {
+bool ContainsAsciiWhitespaceOrControl(std::string_view value) {
+    return std::any_of(value.begin(), value.end(), [](char ch) {
+        const unsigned char byte = static_cast<unsigned char>(ch);
+        return byte <= 0x20U || byte == 0x7fU;
+    });
+}
+
+absl::Status ValidateHttpFieldValue(std::string_view field_name, std::string_view value) {
+    if (ContainsForbiddenHttpFieldChar(value)) {
         return invalid_argument(std::string(field_name) +
                                 " must not contain carriage return, newline, or NUL");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateHttpHostValue(std::string_view value) {
+    if (absl::Status status = ValidateHttpFieldValue("openai responses host", value);
+        !status.ok()) {
+        return status;
+    }
+    if (ContainsAsciiWhitespaceOrControl(value)) {
+        return invalid_argument(
+            "openai responses host must not contain ASCII whitespace or control characters");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateHttpTargetValue(std::string_view value) {
+    if (absl::Status status = ValidateHttpFieldValue("openai responses target", value);
+        !status.ok()) {
+        return status;
+    }
+    if (ContainsAsciiWhitespaceOrControl(value)) {
+        return invalid_argument(
+            "openai responses target must not contain ASCII whitespace or control characters");
     }
     return absl::OkStatus();
 }
@@ -89,6 +135,12 @@ absl::StatusOr<std::optional<std::string>> ReadOptionalStringField(const nlohman
     }
     return it->get<std::string>();
 }
+
+std::optional<unsigned int> ParseHttpStatusCode(std::string_view header_text);
+
+absl::Status MapHttpErrorStatus(unsigned int status_code, std::string message);
+
+std::string BuildHttpErrorMessage(unsigned int status_code, std::string_view body);
 
 #if defined(_WIN32)
 constexpr std::string_view kCurlCommand = "curl.exe";
@@ -1129,14 +1181,426 @@ absl::StatusOr<SseParseSummary> ParseSseBody(std::string_view body,
     return parser.Finish(on_event);
 }
 
-struct CurlStreamResult {
+struct TransportStreamResult {
     SseParseSummary parse_summary;
-    std::size_t stdout_bytes = 0;
+    std::size_t body_bytes = 0;
 };
 
-absl::StatusOr<CurlStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& config,
-                                             const std::string& request_json,
-                                             const OpenAiResponsesEventCallback& on_event) {
+absl::Status UnavailableTransportError(std::string_view prefix,
+                                       const boost::system::error_code& error) {
+    return absl::UnavailableError(std::string(prefix) + ": " + error.message());
+}
+
+std::string BuildHttpHostHeaderValue(const OpenAiResponsesClientConfig& config) {
+    const bool default_http_port = config.scheme == "http" && config.port == 80;
+    const bool default_https_port = config.scheme == "https" && config.port == 443;
+    if (default_http_port || default_https_port) {
+        return config.host;
+    }
+    return config.host + ":" + std::to_string(config.port);
+}
+
+std::string BuildRawHttpRequest(const OpenAiResponsesClientConfig& config,
+                                std::string_view request_json) {
+    std::ostringstream request;
+    request << "POST " << config.target << " HTTP/1.1\r\n";
+    request << "Host: " << BuildHttpHostHeaderValue(config) << "\r\n";
+    request << "Authorization: Bearer " << config.api_key << "\r\n";
+    request << "Content-Type: application/json\r\n";
+    request << "Accept: text/event-stream\r\n";
+    request << "User-Agent: " << config.user_agent << "\r\n";
+    if (config.organization.has_value()) {
+        request << "OpenAI-Organization: " << *config.organization << "\r\n";
+    }
+    if (config.project.has_value()) {
+        request << "OpenAI-Project: " << *config.project << "\r\n";
+    }
+    request << "Connection: close\r\n";
+    request << "Content-Length: " << request_json.size() << "\r\n\r\n";
+    request << request_json;
+    return request.str();
+}
+
+absl::Status AppendTransportBytes(const OpenAiResponsesClientConfig& config, std::string_view chunk,
+                                  std::string* body_text) {
+    body_text->append(chunk.data(), chunk.size());
+    if (body_text->size() > kMaxOpenAiTransportBodyBytes) {
+        LOG(ERROR) << "AI gateway openai responses transport body budget exceeded host='"
+                   << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
+                   << "' body_bytes=" << body_text->size()
+                   << " budget_bytes=" << kMaxOpenAiTransportBodyBytes;
+        return absl::ResourceExhaustedError(
+            "openai responses transport body exceeds maximum length");
+    }
+    return absl::OkStatus();
+}
+
+absl::StatusOr<SseFeedDisposition>
+ConsumeTransportChunk(const OpenAiResponsesClientConfig& config, std::string_view chunk,
+                      IncrementalSseParser* parser, const OpenAiResponsesEventCallback& on_event,
+                      std::string* body_text) {
+    absl::Status append_status = AppendTransportBytes(config, chunk, body_text);
+    if (!append_status.ok()) {
+        return append_status;
+    }
+
+    const absl::StatusOr<SseFeedDisposition> disposition = parser->Feed(chunk, on_event);
+    if (!disposition.ok()) {
+        VLOG(1) << "AI gateway openai responses aborting stream on callback/parser status host='"
+                << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
+                << "' status_code=" << static_cast<int>(disposition.status().code()) << " detail='"
+                << SanitizeForLog(disposition.status().message()) << "'";
+        return disposition.status();
+    }
+    if (*disposition == SseFeedDisposition::kCompleted) {
+        VLOG(1) << "AI gateway openai responses observed terminal completion early host='"
+                << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
+                << "' body_bytes=" << body_text->size();
+    }
+    return disposition;
+}
+
+struct ParsedHttpResponseHead {
+    unsigned int status_code = 0;
+    std::string buffered_body;
+};
+
+using InProcessTransportDeadline = std::chrono::steady_clock::time_point;
+
+InProcessTransportDeadline
+ComputeInProcessTransportDeadline(const OpenAiResponsesClientConfig& config) {
+    // TODO(https-transport): Synchronous DNS resolution still sits outside this deadline budget.
+    // Move the in-process transport to an async resolve/connect/read/write flow with one timer so
+    // request_timeout becomes a true end-to-end cap, including name resolution.
+    return std::chrono::steady_clock::now() + config.request_timeout;
+}
+
+void SetInProcessTransportDeadline(beast::tcp_stream* stream, InProcessTransportDeadline deadline) {
+    stream->expires_at(deadline);
+}
+
+#if !defined(_WIN32)
+void SetInProcessTransportDeadline(beast::ssl_stream<beast::tcp_stream>* stream,
+                                   InProcessTransportDeadline deadline) {
+    beast::get_lowest_layer(*stream).expires_at(deadline);
+}
+#endif
+
+template <typename Stream>
+absl::StatusOr<ParsedHttpResponseHead>
+ReadInProcessResponseHead(Stream* stream, InProcessTransportDeadline deadline) {
+    std::string response_text;
+    response_text.reserve(4096U);
+    std::array<char, 4096> chunk_buffer{};
+    constexpr std::string_view kHeaderTerminator = "\r\n\r\n";
+
+    // TODO(https-transport): Move this to Beast's HTTP parser with header_limit once the
+    // in-process transport gets a fuller parser pass. The capped manual read keeps this PR slice
+    // bounded without expanding parser scope further.
+    for (;;) {
+        const std::size_t header_end = response_text.find(kHeaderTerminator);
+        if (header_end != std::string::npos) {
+            if (header_end + kHeaderTerminator.size() > kMaxOpenAiTransportHeaderBytes) {
+                return absl::ResourceExhaustedError(
+                    "openai responses transport response header exceeds maximum length");
+            }
+            break;
+        }
+        if (response_text.size() > kMaxOpenAiTransportHeaderBytes) {
+            return absl::ResourceExhaustedError(
+                "openai responses transport response header exceeds maximum length");
+        }
+
+        boost::system::error_code error;
+        SetInProcessTransportDeadline(stream, deadline);
+        const std::size_t bytes_read =
+            stream->read_some(asio::buffer(chunk_buffer.data(), chunk_buffer.size()), error);
+        if (error && error != asio::error::eof) {
+            return UnavailableTransportError("failed to read openai responses HTTP response header",
+                                             error);
+        }
+        if (bytes_read > 0U) {
+            response_text.append(chunk_buffer.data(), bytes_read);
+            continue;
+        }
+        break;
+    }
+
+    const std::size_t header_end = response_text.find(kHeaderTerminator);
+    if (header_end == std::string::npos) {
+        return internal_error("openai responses transport response header was incomplete");
+    }
+
+    const std::optional<unsigned int> status_code =
+        ParseHttpStatusCode(response_text.substr(0, header_end + kHeaderTerminator.size()));
+    if (!status_code.has_value()) {
+        return internal_error(
+            "openai responses transport response did not include a valid HTTP status");
+    }
+
+    return ParsedHttpResponseHead{
+        .status_code = *status_code,
+        .buffered_body = response_text.substr(header_end + kHeaderTerminator.size()),
+    };
+}
+
+template <typename Stream>
+absl::StatusOr<std::size_t>
+ReadInProcessBodyChunk(Stream* stream, InProcessTransportDeadline deadline, char* buffer,
+                       std::size_t buffer_size, bool* eof) {
+    SetInProcessTransportDeadline(stream, deadline);
+    boost::system::error_code error;
+    const std::size_t bytes_read = stream->read_some(asio::buffer(buffer, buffer_size), error);
+    if (error == asio::error::eof) {
+        *eof = true;
+        return bytes_read;
+    }
+    if (error) {
+        return UnavailableTransportError("failed to read openai responses HTTP response body",
+                                         error);
+    }
+    return bytes_read;
+}
+
+void CloseInProcessStream(beast::tcp_stream* stream) {
+    boost::system::error_code ignored;
+    stream->socket().shutdown(tcp::socket::shutdown_both, ignored);
+    stream->socket().close(ignored);
+}
+
+template <typename Stream>
+absl::StatusOr<TransportStreamResult> ExecuteStreamingResponse(
+    Stream* stream, const OpenAiResponsesClientConfig& config, const std::string& request_json,
+    const OpenAiResponsesEventCallback& on_event, InProcessTransportDeadline deadline) {
+    const std::string raw_request = BuildRawHttpRequest(config, request_json);
+    boost::system::error_code error;
+    SetInProcessTransportDeadline(stream, deadline);
+    asio::write(*stream, asio::buffer(raw_request), error);
+    if (error) {
+        return UnavailableTransportError("failed to write openai responses HTTP request", error);
+    }
+
+    const absl::StatusOr<ParsedHttpResponseHead> response_head =
+        ReadInProcessResponseHead(stream, deadline);
+    if (!response_head.ok()) {
+        return response_head.status();
+    }
+
+    std::string body_text;
+    IncrementalSseParser parser;
+    if (response_head->status_code == 200U && !response_head->buffered_body.empty()) {
+        const absl::StatusOr<SseFeedDisposition> disposition = ConsumeTransportChunk(
+            config, response_head->buffered_body, &parser, on_event, &body_text);
+        if (!disposition.ok()) {
+            return disposition.status();
+        }
+        if (*disposition == SseFeedDisposition::kCompleted) {
+            const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
+            if (!parse_summary.ok()) {
+                return parse_summary.status();
+            }
+            return TransportStreamResult{
+                .parse_summary = *parse_summary,
+                .body_bytes = body_text.size(),
+            };
+        }
+    }
+
+    std::array<char, 4096> chunk_buffer{};
+    if (response_head->status_code != 200U) {
+        absl::Status append_status =
+            AppendTransportBytes(config, response_head->buffered_body, &body_text);
+        if (!append_status.ok()) {
+            return append_status;
+        }
+        for (;;) {
+            bool eof = false;
+            const absl::StatusOr<std::size_t> bytes_read = ReadInProcessBodyChunk(
+                stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
+            if (!bytes_read.ok()) {
+                return bytes_read.status();
+            }
+            if (*bytes_read > 0U) {
+                append_status = AppendTransportBytes(
+                    config, std::string_view(chunk_buffer.data(), *bytes_read), &body_text);
+                if (!append_status.ok()) {
+                    return append_status;
+                }
+            }
+            if (eof) {
+                break;
+            }
+        }
+        return MapHttpErrorStatus(response_head->status_code,
+                                  BuildHttpErrorMessage(response_head->status_code, body_text));
+    }
+
+    for (;;) {
+        bool eof = false;
+        const absl::StatusOr<std::size_t> bytes_read = ReadInProcessBodyChunk(
+            stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
+        if (!bytes_read.ok()) {
+            return bytes_read.status();
+        }
+
+        if (*bytes_read > 0U) {
+            const absl::StatusOr<SseFeedDisposition> disposition =
+                ConsumeTransportChunk(config, std::string_view(chunk_buffer.data(), *bytes_read),
+                                      &parser, on_event, &body_text);
+            if (!disposition.ok()) {
+                return disposition.status();
+            }
+            if (*disposition == SseFeedDisposition::kCompleted) {
+                const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
+                if (!parse_summary.ok()) {
+                    return parse_summary.status();
+                }
+                return TransportStreamResult{
+                    .parse_summary = *parse_summary,
+                    .body_bytes = body_text.size(),
+                };
+            }
+        }
+
+        if (eof) {
+            break;
+        }
+    }
+
+    const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
+    if (!parse_summary.ok()) {
+        return parse_summary.status();
+    }
+    return TransportStreamResult{
+        .parse_summary = *parse_summary,
+        .body_bytes = body_text.size(),
+    };
+}
+
+absl::StatusOr<TransportStreamResult>
+ExecuteInProcessHttp(const OpenAiResponsesClientConfig& config, const std::string& request_json,
+                     const OpenAiResponsesEventCallback& on_event) {
+    const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config);
+    asio::io_context io_context;
+    tcp::resolver resolver(io_context);
+    beast::tcp_stream stream(io_context);
+
+    boost::system::error_code error;
+    SetInProcessTransportDeadline(&stream, deadline);
+    const tcp::resolver::results_type endpoints =
+        resolver.resolve(config.host, std::to_string(config.port), error);
+    if (error) {
+        return UnavailableTransportError("failed to resolve openai responses host", error);
+    }
+
+    SetInProcessTransportDeadline(&stream, deadline);
+    stream.connect(endpoints, error);
+    if (error) {
+        return UnavailableTransportError("failed to connect to openai responses host", error);
+    }
+
+    const absl::StatusOr<TransportStreamResult> result =
+        ExecuteStreamingResponse(&stream, config, request_json, on_event, deadline);
+    CloseInProcessStream(&stream);
+    return result;
+}
+
+#if !defined(_WIN32)
+absl::Status ConfigureLinuxTlsContext(ssl::context* context) {
+    boost::system::error_code error;
+    context->set_default_verify_paths(error);
+    if (error) {
+        return UnavailableTransportError("failed to load system TLS trust store", error);
+    }
+    context->set_verify_mode(ssl::verify_peer);
+    return absl::OkStatus();
+}
+
+absl::Status ConfigureLinuxTlsContext(const OpenAiResponsesClientConfig& config,
+                                      ssl::context* context) {
+    absl::Status status = ConfigureLinuxTlsContext(context);
+    if (!status.ok()) {
+        return status;
+    }
+    if (!config.trusted_ca_cert_pem.has_value() || config.trusted_ca_cert_pem->empty()) {
+        return absl::OkStatus();
+    }
+
+    boost::system::error_code error;
+    context->add_certificate_authority(asio::buffer(*config.trusted_ca_cert_pem), error);
+    if (error) {
+        return UnavailableTransportError("failed to load openai responses additional TLS CA",
+                                         error);
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ConfigureLinuxTlsStream(const OpenAiResponsesClientConfig& config,
+                                     beast::ssl_stream<beast::tcp_stream>* stream) {
+    if (!SSL_set_tlsext_host_name(stream->native_handle(), config.host.c_str())) {
+        return absl::UnavailableError("failed to configure openai responses TLS SNI host");
+    }
+    stream->set_verify_callback(ssl::host_name_verification(config.host));
+    return absl::OkStatus();
+}
+
+void CloseInProcessStream(beast::ssl_stream<beast::tcp_stream>* stream) {
+    boost::system::error_code ignored;
+    stream->shutdown(ignored);
+    beast::get_lowest_layer(*stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
+    beast::get_lowest_layer(*stream).socket().close(ignored);
+}
+
+absl::StatusOr<TransportStreamResult>
+ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::string& request_json,
+                      const OpenAiResponsesEventCallback& on_event) {
+    const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config);
+    asio::io_context io_context;
+    ssl::context context(ssl::context::tls_client);
+    absl::Status context_status = ConfigureLinuxTlsContext(config, &context);
+    if (!context_status.ok()) {
+        return context_status;
+    }
+
+    tcp::resolver resolver(io_context);
+    beast::ssl_stream<beast::tcp_stream> stream(io_context, context);
+    absl::Status stream_status = ConfigureLinuxTlsStream(config, &stream);
+    if (!stream_status.ok()) {
+        return stream_status;
+    }
+
+    boost::system::error_code error;
+    SetInProcessTransportDeadline(&stream, deadline);
+    const tcp::resolver::results_type endpoints =
+        resolver.resolve(config.host, std::to_string(config.port), error);
+    if (error) {
+        return UnavailableTransportError("failed to resolve openai responses host", error);
+    }
+
+    SetInProcessTransportDeadline(&stream, deadline);
+    beast::get_lowest_layer(stream).connect(endpoints, error);
+    if (error) {
+        return UnavailableTransportError("failed to connect to openai responses host", error);
+    }
+
+    SetInProcessTransportDeadline(&stream, deadline);
+    stream.handshake(ssl::stream_base::client, error);
+    if (error) {
+        CloseInProcessStream(&stream);
+        return UnavailableTransportError("failed to complete openai responses TLS handshake",
+                                         error);
+    }
+
+    const absl::StatusOr<TransportStreamResult> result =
+        ExecuteStreamingResponse(&stream, config, request_json, on_event, deadline);
+    CloseInProcessStream(&stream);
+    return result;
+}
+#endif
+
+[[maybe_unused]] absl::StatusOr<TransportStreamResult>
+ExecuteCurl(const OpenAiResponsesClientConfig& config, const std::string& request_json,
+            const OpenAiResponsesEventCallback& on_event) {
     absl::StatusOr<ScopedTempFile> curl_config_file = ScopedTempFile::Create(".curlrc");
     if (!curl_config_file.ok()) {
         return curl_config_file.status();
@@ -1166,10 +1630,9 @@ absl::StatusOr<CurlStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& 
         return write_status;
     }
 
-    // NOTICE: The current Windows toolchain in this repository does not provide OpenSSL headers,
-    // which blocks a direct Boost.Beast HTTPS implementation. This subprocess curl transport keeps
-    // the OpenAI HTTP/SSE integration behind the provider boundary until the toolchain grows a
-    // first-class TLS client dependency.
+    // NOTICE: Native Windows development still uses this curl subprocess transport for HTTPS while
+    // the Ubuntu/Linux server path uses the in-process TLS client above. Keep this fallback behind
+    // the provider boundary until the local Windows HTTPS path is retired or replaced.
     absl::StatusOr<CurlProcess> curl_process = StartCurlProcess(
         BuildCurlArgs(config, curl_config_file->path(), request_file->path(), header_file->path()),
         stderr_file->path());
@@ -1183,7 +1646,7 @@ absl::StatusOr<CurlStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& 
     CurlProcess process = std::move(*curl_process);
     IncrementalSseParser parser;
     std::array<char, 4096> chunk_buffer{};
-    std::string stdout_text;
+    std::string body_text;
     bool completed_early = false;
     bool aborted_early = false;
     absl::Status early_status;
@@ -1200,36 +1663,15 @@ absl::StatusOr<CurlStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& 
         }
 
         if (*bytes_read > 0U) {
-            stdout_text.append(chunk_buffer.data(), *bytes_read);
-            if (stdout_text.size() > kMaxOpenAiTransportStdoutBytes) {
-                LOG(ERROR) << "AI gateway openai responses stdout budget exceeded host='"
-                           << SanitizeForLog(config.host) << "' target='"
-                           << SanitizeForLog(config.target) << "' stdout_bytes="
-                           << stdout_text.size() << " budget_bytes="
-                           << kMaxOpenAiTransportStdoutBytes;
-                early_status = absl::ResourceExhaustedError(
-                    "openai responses transport stdout exceeds maximum length");
-                aborted_early = true;
-                break;
-            }
-
             const absl::StatusOr<SseFeedDisposition> disposition =
-                parser.Feed(std::string_view(chunk_buffer.data(), *bytes_read), on_event);
+                ConsumeTransportChunk(config, std::string_view(chunk_buffer.data(), *bytes_read),
+                                      &parser, on_event, &body_text);
             if (!disposition.ok()) {
-                VLOG(1) << "AI gateway openai responses aborting stream on callback/parser status "
-                        << "host='" << SanitizeForLog(config.host) << "' target='"
-                        << SanitizeForLog(config.target) << "' status_code="
-                        << static_cast<int>(disposition.status().code()) << " detail='"
-                        << SanitizeForLog(disposition.status().message()) << "'";
                 early_status = disposition.status();
                 aborted_early = true;
                 break;
             }
             if (*disposition == SseFeedDisposition::kCompleted) {
-                VLOG(1) << "AI gateway openai responses observed terminal completion early host='"
-                        << SanitizeForLog(config.host) << "' target='"
-                        << SanitizeForLog(config.target) << "' stdout_bytes="
-                        << stdout_text.size();
                 completed_early = true;
                 break;
             }
@@ -1251,9 +1693,9 @@ absl::StatusOr<CurlStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& 
         if (!parse_summary.ok()) {
             return parse_summary.status();
         }
-        return CurlStreamResult{
+        return TransportStreamResult{
             .parse_summary = *parse_summary,
-            .stdout_bytes = stdout_text.size(),
+            .body_bytes = body_text.size(),
         };
     }
 
@@ -1278,31 +1720,45 @@ absl::StatusOr<CurlStreamResult> ExecuteCurl(const OpenAiResponsesClientConfig& 
                    << "' exit_code=" << *exit_code << " http_status="
                    << (status_code.has_value() ? std::to_string(*status_code)
                                                : std::string("<none>"))
-                   << " stderr='"
-                   << SanitizeForLog(stderr_text.ok() ? *stderr_text : std::string()) << "'";
+                   << " stderr='" << SanitizeForLog(stderr_text.ok() ? *stderr_text : std::string())
+                   << "'";
         if (status_code.has_value()) {
-            return MapHttpErrorStatus(*status_code,
-                                      BuildHttpErrorMessage(*status_code, stdout_text));
+            return MapHttpErrorStatus(*status_code, BuildHttpErrorMessage(*status_code, body_text));
         }
         return absl::UnavailableError("openai responses transport command failed");
     }
     if (status_code.has_value() && *status_code != 200U) {
-        return MapHttpErrorStatus(*status_code, BuildHttpErrorMessage(*status_code, stdout_text));
+        return MapHttpErrorStatus(*status_code, BuildHttpErrorMessage(*status_code, body_text));
     }
 
     const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
     if (!parse_summary.ok()) {
         return parse_summary.status();
     }
-    return CurlStreamResult{
+    return TransportStreamResult{
         .parse_summary = *parse_summary,
-        .stdout_bytes = stdout_text.size(),
+        .body_bytes = body_text.size(),
     };
 }
 
-class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
+absl::StatusOr<TransportStreamResult>
+ExecuteTransport(const OpenAiResponsesClientConfig& config, const std::string& request_json,
+                 const OpenAiResponsesEventCallback& on_event) {
+    if (config.scheme == "http") {
+        return ExecuteInProcessHttp(config, request_json, on_event);
+    }
+#if !defined(_WIN32)
+    return ExecuteInProcessHttps(config, request_json, on_event);
+#else
+    // NOTICE: Native Windows development still uses the curl fallback for HTTPS while the
+    // Linux-only server path moves to an in-process TLS client.
+    return ExecuteCurl(config, request_json, on_event);
+#endif
+}
+
+class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
   public:
-    explicit CurlOpenAiResponsesClient(OpenAiResponsesClientConfig config)
+    explicit OpenAiResponsesClientImpl(OpenAiResponsesClientConfig config)
         : config_(std::move(config)) {}
 
     [[nodiscard]] absl::Status Validate() const override {
@@ -1313,15 +1769,21 @@ class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
             return invalid_argument("openai responses api_key must not be empty");
         }
         if (absl::Status status =
-                ValidateCurlConfigOrHeaderValue("openai responses api_key", config_.api_key);
+                ValidateHttpFieldValue("openai responses api_key", config_.api_key);
             !status.ok()) {
             return status;
         }
         if (config_.host.empty()) {
             return invalid_argument("openai responses host must not be empty");
         }
+        if (absl::Status status = ValidateHttpHostValue(config_.host); !status.ok()) {
+            return status;
+        }
         if (config_.target.empty() || config_.target.front() != '/') {
             return invalid_argument("openai responses target must start with '/'");
+        }
+        if (absl::Status status = ValidateHttpTargetValue(config_.target); !status.ok()) {
+            return status;
         }
         if (config_.scheme != "http" && config_.scheme != "https") {
             return invalid_argument("openai responses scheme must be 'http' or 'https'");
@@ -1330,20 +1792,20 @@ class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
             return invalid_argument("openai responses request_timeout must be positive");
         }
         if (absl::Status status =
-                ValidateCurlConfigOrHeaderValue("openai responses user_agent", config_.user_agent);
+                ValidateHttpFieldValue("openai responses user_agent", config_.user_agent);
             !status.ok()) {
             return status;
         }
         if (config_.organization.has_value()) {
-            if (absl::Status status = ValidateCurlConfigOrHeaderValue(
-                    "openai responses organization", *config_.organization);
+            if (absl::Status status =
+                    ValidateHttpFieldValue("openai responses organization", *config_.organization);
                 !status.ok()) {
                 return status;
             }
         }
         if (config_.project.has_value()) {
             if (absl::Status status =
-                    ValidateCurlConfigOrHeaderValue("openai responses project", *config_.project);
+                    ValidateHttpFieldValue("openai responses project", *config_.project);
                 !status.ok()) {
                 return status;
             }
@@ -1381,8 +1843,9 @@ class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
                 << " user_text_bytes=" << request.user_text.size()
                 << " system_prompt_present=" << (!request.system_prompt.empty() ? "true" : "false");
 
-        const absl::StatusOr<CurlStreamResult> stream_result =
-            ExecuteCurl(config_, body.dump(), on_event);
+        const std::string request_json = body.dump();
+        const absl::StatusOr<TransportStreamResult> stream_result =
+            ExecuteTransport(config_, request_json, on_event);
         if (!stream_result.ok()) {
             LOG(ERROR) << "AI gateway openai responses request failed host='"
                        << SanitizeForLog(config_.host) << "' target='"
@@ -1392,7 +1855,7 @@ class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
         }
         VLOG(1) << "AI gateway openai responses completed host='" << SanitizeForLog(config_.host)
                 << "' target='" << SanitizeForLog(config_.target)
-                << "' body_bytes=" << stream_result->stdout_bytes
+                << "' body_bytes=" << stream_result->body_bytes
                 << " saw_delta=" << (stream_result->parse_summary.saw_delta ? "true" : "false")
                 << " saw_completed="
                 << (stream_result->parse_summary.saw_completed ? "true" : "false")
@@ -1408,7 +1871,7 @@ class CurlOpenAiResponsesClient final : public OpenAiResponsesClient {
 
 std::shared_ptr<const OpenAiResponsesClient>
 CreateOpenAiResponsesClient(OpenAiResponsesClientConfig config) {
-    return std::make_shared<CurlOpenAiResponsesClient>(std::move(config));
+    return std::make_shared<OpenAiResponsesClientImpl>(std::move(config));
 }
 
 } // namespace isla::server::ai_gateway

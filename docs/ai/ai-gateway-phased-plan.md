@@ -174,10 +174,10 @@ Sequencing rule for the remaining work:
 >   - enforces the same final-text size bound at both provider aggregation time and
 >     client-visible `text.output` emission time
 > - Current implementation limitation:
->   - the provider adapter currently shells out to `curl` for HTTP/SSE transport because the
->     repository's current Windows toolchain does not expose OpenSSL headers for a direct Beast TLS
->     client; the transport remains isolated behind the provider boundary and can be replaced later
->     without touching websocket/session code
+>   - the provider adapter now uses an in-process HTTP/TLS transport on Ubuntu/Linux, while native
+>     Windows development still keeps a `curl` HTTPS fallback behind the provider boundary; the
+>     transport remains isolated behind the provider seam and can still be replaced later without
+>     touching websocket/session code
 > - Known limitation: `GatewayStubResponder` still uses one blocking worker across all sessions, so
 >   slow step execution or slow accepted-turn emit completion can create cross-session head-of-line
 >   blocking. Fixing that isolation is deferred to the next PR rather than Phase 3.
@@ -191,15 +191,14 @@ Sequencing rule for the remaining work:
   requiring the OpenAI execution path to use an explicit provider client or fake provider in tests,
   refactoring the `curl` transport to parse SSE incrementally while the subprocess is still
   running, and aborting the provider transport early on callback failure, terminal completion, or
-  a hard stdout byte budget with dedicated regression coverage.
+  a hard response-body byte budget with dedicated regression coverage.
 - 2026-03-11: completed Phase 3.5 with a live OpenAI Responses provider adapter behind the
   executor boundary, gateway startup/config wiring for OpenAI credentials and transport settings,
   SSE event parsing into normalized provider events, bundled system-prompt loading/validation,
   final-text buffering back through the existing live-session seam, shared final-output size
-  enforcement, and dedicated provider/registry/executor regression coverage; the current transport
-  implementation uses `curl` behind the adapter because the repository's Windows toolchain does not
-  currently expose OpenSSL headers for a direct Beast TLS client, and truly incremental subprocess
-  SSE parsing is deferred to Phase 3.6.
+  enforcement, and dedicated provider/registry/executor regression coverage; Linux now uses the
+  in-process transport while native Windows development keeps the HTTPS `curl` fallback behind the
+  adapter.
 - 2026-03-10: completed Phase 3 with explicit execution-plan planner/executor contracts, a
   `CreateOpenAiPlan()` entrypoint, a generic `GatewayPlanExecutor`, an explicit
   `GatewayStepRegistry`, planner-built execution steps with concrete compile-time types like
@@ -788,10 +787,9 @@ live provider I/O.
 >   - provider and transport failures stay inside the executor/provider seam and continue to map to
 >     stable public gateway error codes through the existing executor failure mapping
 > - Current implementation limitation:
->   - the OpenAI adapter currently uses `curl` for the HTTPS/SSE transport because the active
->     Windows toolchain does not expose OpenSSL headers for a direct Beast TLS client build; the
->     follow-on Phase 3.6 work removed the earlier buffered-subprocess limitation, so the remaining
->     transport limitation is the `curl` dependency itself rather than non-incremental SSE parsing
+>   - the OpenAI adapter now uses an in-process HTTP/TLS transport on Ubuntu/Linux, while native
+>     Windows development still keeps a `curl` HTTPS fallback; the remaining transport limitation is
+>     the Windows-specific fallback dependency rather than non-incremental SSE parsing
 
 ### Goal
 
@@ -822,14 +820,14 @@ Route gateway text requests to OpenAI through the executor boundary established 
 >     `response_builder`
 >   - production execution now depends on an explicit OpenAI provider client, while tests inject
 >     provider-shaped fakes through the same seam
->   - the `curl` transport now parses SSE stdout incrementally and aborts early on callback
->     failure, terminal completion, or stdout byte-budget exhaustion
+>   - the active transport now parses response bytes incrementally and aborts early on callback
+>     failure, terminal completion, or response-body byte-budget exhaustion
 >   - regression coverage now includes chunk-boundary SSE parsing, provider `Validate()` failure,
 >     live gateway multi-delta aggregation into one final `text.output`, and teardown-safe
 >     early-abort transport waits
 > - Remaining limitation:
->   - the provider transport still relies on `curl` because the repository's active Windows
->     toolchain does not yet expose the headers needed for a direct TLS client implementation
+>   - native Windows development still relies on a `curl` HTTPS fallback; the Ubuntu/Linux server
+>     path now uses the in-process TLS client
 
 ### Goal
 
@@ -848,7 +846,8 @@ like a real incremental stream rather than a buffered subprocess result.
 - Refactor the `curl`-backed transport so SSE stdout is parsed incrementally while the subprocess is
   still running, rather than buffering the full response before dispatching events.
 - Abort provider transport early when the event callback returns non-OK, when the terminal
-  completion event is observed, or when a hard transport-level stdout byte budget is exceeded.
+  completion event is observed, or when a hard transport-level response-body byte budget is
+  exceeded.
 - Keep the transport/provider seam aligned with the documented `StreamResponse(...)` callback
   contract: synchronous, ordered, abortable, and completion-signaling on success.
 - Keep the executor boundary and client-visible final-output contract unchanged.
@@ -1055,7 +1054,7 @@ self-hosted GPU infrastructure.
 >   refine that completion semantic.
 > - After the implemented Phase 3.6 transport, provider callbacks now execute against an
 >   incrementally parsed `curl` stdout stream and can now abort provider work early on callback
->   failure, terminal completion, or the hard stdout byte budget.
+>   failure, terminal completion, or the hard response-body byte budget.
 > - Current transport coverage now explicitly exercises split-read SSE parsing and "finish before
 >   trailing bytes are released" behavior, so later client-visible streaming work should preserve
 >   those callback-ordering and early-abort guarantees rather than reintroducing buffered semantics.

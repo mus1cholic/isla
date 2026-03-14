@@ -21,6 +21,7 @@ struct OpenAiResponsesClientConfig {
     std::string target = "/v1/responses";
     std::optional<std::string> organization;
     std::optional<std::string> project;
+    std::optional<std::string> trusted_ca_cert_pem;
     std::chrono::milliseconds request_timeout{ std::chrono::seconds(60) };
     std::string user_agent = "isla-ai-gateway/phase-3.5";
 };
