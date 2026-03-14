@@ -8,6 +8,10 @@
 
 #include <gtest/gtest.h>
 
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
+
 #include "isla/shared/ai_gateway_protocol.hpp"
 
 namespace isla::server::ai_gateway {
@@ -67,29 +71,25 @@ class RecordingEventSink final : public GatewaySessionEventSink {
 
 TEST(AiGatewayWebSocketSessionTest, UuidSessionIdGeneratorCreatesValidAndUniqueUUIDs) {
     UuidSessionIdGenerator generator;
-    
+
     const std::string id1 = generator.NextSessionId();
     const std::string id2 = generator.NextSessionId();
-    
+
     EXPECT_NE(id1, id2);
-    
-    // UUIDv4 length should be 36
-    EXPECT_EQ(id1.length(), 36);
-    EXPECT_EQ(id2.length(), 36);
-    
-    // Check hyphens
-    EXPECT_EQ(id1[8], '-');
-    EXPECT_EQ(id1[13], '-');
-    EXPECT_EQ(id1[18], '-');
-    EXPECT_EQ(id1[23], '-');
-    
-    // Check version block (v4)
-    EXPECT_EQ(id1[14], '4');
+
+    boost::uuids::string_generator sgen;
+    boost::uuids::uuid u1;
+    boost::uuids::uuid u2;
+    ASSERT_NO_THROW(u1 = sgen(id1));
+    ASSERT_NO_THROW(u2 = sgen(id2));
+
+    EXPECT_EQ(u1.version(), boost::uuids::uuid::version_random_number_based);
+    EXPECT_EQ(u2.version(), boost::uuids::uuid::version_random_number_based);
 }
 
 TEST(AiGatewayWebSocketSessionTest, SequentialSessionIdGeneratorCreatesOrderedIds) {
     SequentialSessionIdGenerator generator("srv_test_");
-    
+
     EXPECT_EQ(generator.NextSessionId(), "srv_test_1");
     EXPECT_EQ(generator.NextSessionId(), "srv_test_2");
     EXPECT_EQ(generator.NextSessionId(), "srv_test_3");

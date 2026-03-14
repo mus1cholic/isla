@@ -406,6 +406,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_websocket_session",
+        "@boost.uuid//:boost.uuid",
         "@googletest//:gtest_main",
     ],
 )

@@ -1,6 +1,7 @@
 #include "isla/server/ai_gateway_websocket_session.hpp"
 
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -46,7 +47,8 @@ std::string SequentialSessionIdGenerator::NextSessionId() {
 }
 
 std::string UuidSessionIdGenerator::NextSessionId() {
-    thread_local boost::uuids::random_generator generator;
+    thread_local std::mt19937 engine(std::random_device{}());
+    thread_local boost::uuids::basic_random_generator<std::mt19937> generator(&engine);
     return boost::uuids::to_string(generator());
 }
 
