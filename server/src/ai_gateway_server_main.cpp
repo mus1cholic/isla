@@ -85,7 +85,8 @@ int main(int argc, char** argv) {
         LOG(INFO) << "AI gateway using Supabase memory store url="
                   << isla::server::ai_gateway::SanitizeForLog(startup_config->supabase_config.url)
                   << " schema="
-                  << isla::server::ai_gateway::SanitizeForLog(startup_config->supabase_config.schema)
+                  << isla::server::ai_gateway::SanitizeForLog(
+                         startup_config->supabase_config.schema)
                   << " timeout_ms=" << startup_config->supabase_config.request_timeout.count();
     } else {
         LOG(INFO) << "AI gateway Supabase memory store disabled";

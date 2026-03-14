@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,16 +25,14 @@ using isla::server::ExecuteHttpRequest;
 using isla::server::HttpClientConfig;
 using isla::server::HttpRequestSpec;
 using isla::server::HttpResponse;
-using isla::server::ParseHttpUrl;
 using isla::server::ParsedHttpUrl;
+using isla::server::ParseHttpUrl;
 using nlohmann::json;
 
 json BuildSessionJson(const MemorySessionRecord& record) {
     return json{
-        { "session_id", record.session_id },
-        { "user_id", record.user_id },
-        { "system_prompt", record.system_prompt },
-        { "created_at", record.created_at },
+        { "session_id", record.session_id },       { "user_id", record.user_id },
+        { "system_prompt", record.system_prompt }, { "created_at", record.created_at },
         { "ended_at", record.ended_at },
     };
 }
@@ -106,8 +105,7 @@ HttpRequestSpec BuildUpsertRequest(std::string_view table_name, const json& body
 
 HttpRequestSpec BuildGetRequest(std::string target_path,
                                 std::vector<std::pair<std::string, std::string>> query_parameters,
-                                std::string_view schema,
-                                const SupabaseMemoryStoreConfig& config) {
+                                std::string_view schema, const SupabaseMemoryStoreConfig& config) {
     HttpRequestSpec request{
         .method = boost::beast::http::verb::get,
         .target_path = std::move(target_path),
@@ -209,9 +207,9 @@ class SupabaseMemoryStore final : public MemoryStore {
         if (absl::Status status = ValidateMemorySessionRecord(record); !status.ok()) {
             return status;
         }
-        const HttpRequestSpec request = BuildUpsertRequest(
-            "memory_sessions", json::array({ BuildSessionJson(record) }), "session_id",
-            config_.schema, config_);
+        const HttpRequestSpec request =
+            BuildUpsertRequest("memory_sessions", json::array({ BuildSessionJson(record) }),
+                               "session_id", config_.schema, config_);
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(parsed_url_, config_, request);
         if (!response.ok()) {
@@ -272,9 +270,9 @@ class SupabaseMemoryStore final : public MemoryStore {
         if (absl::Status status = ValidateMidTermEpisodeWrite(write); !status.ok()) {
             return status;
         }
-        const HttpRequestSpec request = BuildUpsertRequest(
-            "mid_term_episodes", json::array({ BuildMidTermEpisodeJson(write) }), "episode_id",
-            config_.schema, config_);
+        const HttpRequestSpec request =
+            BuildUpsertRequest("mid_term_episodes", json::array({ BuildMidTermEpisodeJson(write) }),
+                               "episode_id", config_.schema, config_);
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(parsed_url_, config_, request);
         if (!response.ok()) {
@@ -321,31 +319,73 @@ class SupabaseMemoryStore final : public MemoryStore {
                 .user_id = session_json.at("user_id").get<std::string>(),
                 .system_prompt = session_json.at("system_prompt").get<std::string>(),
                 .created_at = session_json.at("created_at").get<Timestamp>(),
-                .ended_at = session_json.at("ended_at").is_null()
-                                ? std::nullopt
-                                : std::optional<Timestamp>(session_json.at("ended_at").get<Timestamp>()),
+                .ended_at =
+                    session_json.at("ended_at").is_null()
+                        ? std::nullopt
+                        : std::optional<Timestamp>(session_json.at("ended_at").get<Timestamp>()),
             };
         } catch (const std::exception& error) {
             return absl::InternalError(std::string("supabase memory_sessions row was malformed: ") +
                                        error.what());
         }
 
-        const HttpRequestSpec items_request = BuildGetRequest(
-            "/rest/v1/conversation_items",
-            {
-                { "select",
-                  "item_index,item_type,episode_id,episode_stub_content,episode_stub_created_at" },
-                { "session_id", "eq." + std::string(session_id) },
-                { "order", "item_index.asc" },
-            },
-            config_.schema, config_);
-        const absl::StatusOr<std::string> items_response =
-            ExecuteSupabaseRequest(parsed_url_, config_, items_request);
-        if (!items_response.ok()) {
-            return items_response.status();
-        }
-        const absl::StatusOr<json> item_rows =
-            ParseJsonArrayResponse(*items_response, "supabase conversation_items");
+        const std::string session_id_string(session_id);
+        const auto fetch_item_rows = [this, session_id_string]() -> absl::StatusOr<json> {
+            const HttpRequestSpec items_request =
+                BuildGetRequest("/rest/v1/conversation_items",
+                                {
+                                    { "select", "item_index,item_type,episode_id,episode_stub_"
+                                                "content,episode_stub_created_at" },
+                                    { "session_id", "eq." + session_id_string },
+                                    { "order", "item_index.asc" },
+                                },
+                                config_.schema, config_);
+            const absl::StatusOr<std::string> items_response =
+                ExecuteSupabaseRequest(parsed_url_, config_, items_request);
+            if (!items_response.ok()) {
+                return items_response.status();
+            }
+            return ParseJsonArrayResponse(*items_response, "supabase conversation_items");
+        };
+        const auto fetch_message_rows = [this, session_id_string]() -> absl::StatusOr<json> {
+            const HttpRequestSpec messages_request = BuildGetRequest(
+                "/rest/v1/conversation_messages",
+                {
+                    { "select", "item_index,message_index,role,content,created_at" },
+                    { "session_id", "eq." + session_id_string },
+                    { "order", "item_index.asc,message_index.asc" },
+                },
+                config_.schema, config_);
+            const absl::StatusOr<std::string> messages_response =
+                ExecuteSupabaseRequest(parsed_url_, config_, messages_request);
+            if (!messages_response.ok()) {
+                return messages_response.status();
+            }
+            return ParseJsonArrayResponse(*messages_response, "supabase conversation_messages");
+        };
+        const auto fetch_episode_rows = [this, session_id_string]() -> absl::StatusOr<json> {
+            const HttpRequestSpec episodes_request =
+                BuildGetRequest("/rest/v1/mid_term_episodes",
+                                {
+                                    { "select", "episode_id,tier1_detail,tier2_summary,tier3_ref,"
+                                                "tier3_keywords,salience,embedding,created_at" },
+                                    { "session_id", "eq." + session_id_string },
+                                    { "order", "created_at.asc" },
+                                },
+                                config_.schema, config_);
+            const absl::StatusOr<std::string> episodes_response =
+                ExecuteSupabaseRequest(parsed_url_, config_, episodes_request);
+            if (!episodes_response.ok()) {
+                return episodes_response.status();
+            }
+            return ParseJsonArrayResponse(*episodes_response, "supabase mid_term_episodes");
+        };
+
+        auto item_rows_future = std::async(std::launch::async, fetch_item_rows);
+        auto message_rows_future = std::async(std::launch::async, fetch_message_rows);
+        auto episode_rows_future = std::async(std::launch::async, fetch_episode_rows);
+
+        const absl::StatusOr<json> item_rows = item_rows_future.get();
         if (!item_rows.ok()) {
             return item_rows.status();
         }
@@ -370,21 +410,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                 std::string("supabase conversation_items row was malformed: ") + error.what());
         }
 
-        const HttpRequestSpec messages_request = BuildGetRequest(
-            "/rest/v1/conversation_messages",
-            {
-                { "select", "item_index,message_index,role,content,created_at" },
-                { "session_id", "eq." + std::string(session_id) },
-                { "order", "item_index.asc,message_index.asc" },
-            },
-            config_.schema, config_);
-        const absl::StatusOr<std::string> messages_response =
-            ExecuteSupabaseRequest(parsed_url_, config_, messages_request);
-        if (!messages_response.ok()) {
-            return messages_response.status();
-        }
-        const absl::StatusOr<json> message_rows =
-            ParseJsonArrayResponse(*messages_response, "supabase conversation_messages");
+        const absl::StatusOr<json> message_rows = message_rows_future.get();
         if (!message_rows.ok()) {
             return message_rows.status();
         }
@@ -395,14 +421,14 @@ class SupabaseMemoryStore final : public MemoryStore {
                     static_cast<std::size_t>(item_index) >= snapshot.conversation_items.size() ||
                     snapshot.conversation_items[static_cast<std::size_t>(item_index)]
                             .conversation_item_index != item_index) {
-                    return absl::InternalError(
-                        "supabase conversation_messages row referenced an unknown conversation item");
+                    return absl::InternalError("supabase conversation_messages row referenced an "
+                                               "unknown conversation item");
                 }
                 PersistedConversationItem& item =
                     snapshot.conversation_items[static_cast<std::size_t>(item_index)];
                 if (!item.ongoing_episode.has_value()) {
-                    return absl::InternalError(
-                        "supabase conversation_messages row referenced a non-ongoing conversation item");
+                    return absl::InternalError("supabase conversation_messages row referenced a "
+                                               "non-ongoing conversation item");
                 }
                 item.ongoing_episode->messages.push_back(Message{
                     .role = message_json.at("role").get<MessageRole>(),
@@ -415,22 +441,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                 std::string("supabase conversation_messages row was malformed: ") + error.what());
         }
 
-        const HttpRequestSpec episodes_request = BuildGetRequest(
-            "/rest/v1/mid_term_episodes",
-            {
-                { "select",
-                  "episode_id,tier1_detail,tier2_summary,tier3_ref,tier3_keywords,salience,embedding,created_at" },
-                { "session_id", "eq." + std::string(session_id) },
-                { "order", "created_at.asc" },
-            },
-            config_.schema, config_);
-        const absl::StatusOr<std::string> episodes_response =
-            ExecuteSupabaseRequest(parsed_url_, config_, episodes_request);
-        if (!episodes_response.ok()) {
-            return episodes_response.status();
-        }
-        const absl::StatusOr<json> episode_rows =
-            ParseJsonArrayResponse(*episodes_response, "supabase mid_term_episodes");
+        const absl::StatusOr<json> episode_rows = episode_rows_future.get();
         if (!episode_rows.ok()) {
             return episode_rows.status();
         }
@@ -487,10 +498,6 @@ absl::Status ValidateSupabaseMemoryStoreConfig(const SupabaseMemoryStoreConfig& 
     }
     if (config.request_timeout <= std::chrono::milliseconds::zero()) {
         return absl::InvalidArgumentError("supabase request_timeout must be positive");
-    }
-    const absl::StatusOr<ParsedHttpUrl> parsed_url = ParseHttpUrl(config.url, "supabase url");
-    if (!parsed_url.ok()) {
-        return parsed_url.status();
     }
     return absl::OkStatus();
 }

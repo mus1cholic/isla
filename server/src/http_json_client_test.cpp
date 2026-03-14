@@ -320,19 +320,19 @@ TEST(HttpJsonClientTest, ReturnsNon2xxResponseBodyWithoutMapping) {
         ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
     ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
 
-    const absl::StatusOr<HttpResponse> response = ExecuteHttpRequest(
-        *parsed_url,
-        HttpClientConfig{
-            .request_timeout = 2s,
-            .user_agent = "isla-http-json-client-test",
-        },
-        HttpRequestSpec{
-            .method = boost::beast::http::verb::get,
-            .target_path = "/rest/v1/test",
-            .query_parameters = {},
-            .headers = {},
-            .body = std::nullopt,
-        });
+    const absl::StatusOr<HttpResponse> response =
+        ExecuteHttpRequest(*parsed_url,
+                           HttpClientConfig{
+                               .request_timeout = 2s,
+                               .user_agent = "isla-http-json-client-test",
+                           },
+                           HttpRequestSpec{
+                               .method = boost::beast::http::verb::get,
+                               .target_path = "/rest/v1/test",
+                               .query_parameters = {},
+                               .headers = {},
+                               .body = std::nullopt,
+                           });
 
     ASSERT_TRUE(response.ok()) << response.status();
     EXPECT_EQ(response->status_code, 429U);
@@ -349,19 +349,19 @@ TEST(HttpJsonClientTest, RejectsOversizedResponseHeaders) {
         ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
     ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
 
-    const absl::StatusOr<HttpResponse> response = ExecuteHttpRequest(
-        *parsed_url,
-        HttpClientConfig{
-            .request_timeout = 2s,
-            .user_agent = "isla-http-json-client-test",
-        },
-        HttpRequestSpec{
-            .method = boost::beast::http::verb::get,
-            .target_path = "/rest/v1/test",
-            .query_parameters = {},
-            .headers = {},
-            .body = std::nullopt,
-        });
+    const absl::StatusOr<HttpResponse> response =
+        ExecuteHttpRequest(*parsed_url,
+                           HttpClientConfig{
+                               .request_timeout = 2s,
+                               .user_agent = "isla-http-json-client-test",
+                           },
+                           HttpRequestSpec{
+                               .method = boost::beast::http::verb::get,
+                               .target_path = "/rest/v1/test",
+                               .query_parameters = {},
+                               .headers = {},
+                               .body = std::nullopt,
+                           });
 
     ASSERT_FALSE(response.ok());
     EXPECT_EQ(response.status().code(), absl::StatusCode::kResourceExhausted);
@@ -370,26 +370,27 @@ TEST(HttpJsonClientTest, RejectsOversizedResponseHeaders) {
 
 TEST(HttpJsonClientTest, RejectsOversizedResponseBody) {
     const std::string oversized_body((17 * 1024 * 1024), 'x');
-    OneShotHttpServer server("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-                             std::to_string(oversized_body.size()) + "\r\n\r\n" + oversized_body);
+    OneShotHttpServer server(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+        std::to_string(oversized_body.size()) + "\r\n\r\n" + oversized_body);
 
     const absl::StatusOr<ParsedHttpUrl> parsed_url =
         ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
     ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
 
-    const absl::StatusOr<HttpResponse> response = ExecuteHttpRequest(
-        *parsed_url,
-        HttpClientConfig{
-            .request_timeout = 2s,
-            .user_agent = "isla-http-json-client-test",
-        },
-        HttpRequestSpec{
-            .method = boost::beast::http::verb::get,
-            .target_path = "/rest/v1/test",
-            .query_parameters = {},
-            .headers = {},
-            .body = std::nullopt,
-        });
+    const absl::StatusOr<HttpResponse> response =
+        ExecuteHttpRequest(*parsed_url,
+                           HttpClientConfig{
+                               .request_timeout = 2s,
+                               .user_agent = "isla-http-json-client-test",
+                           },
+                           HttpRequestSpec{
+                               .method = boost::beast::http::verb::get,
+                               .target_path = "/rest/v1/test",
+                               .query_parameters = {},
+                               .headers = {},
+                               .body = std::nullopt,
+                           });
 
     ASSERT_FALSE(response.ok());
     EXPECT_EQ(response.status().code(), absl::StatusCode::kResourceExhausted);
@@ -403,19 +404,19 @@ TEST(HttpJsonClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDeadline) {
         ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
     ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
 
-    const absl::StatusOr<HttpResponse> response = ExecuteHttpRequest(
-        *parsed_url,
-        HttpClientConfig{
-            .request_timeout = 100ms,
-            .user_agent = "isla-http-json-client-test",
-        },
-        HttpRequestSpec{
-            .method = boost::beast::http::verb::get,
-            .target_path = "/rest/v1/test",
-            .query_parameters = {},
-            .headers = {},
-            .body = std::nullopt,
-        });
+    const absl::StatusOr<HttpResponse> response =
+        ExecuteHttpRequest(*parsed_url,
+                           HttpClientConfig{
+                               .request_timeout = 100ms,
+                               .user_agent = "isla-http-json-client-test",
+                           },
+                           HttpRequestSpec{
+                               .method = boost::beast::http::verb::get,
+                               .target_path = "/rest/v1/test",
+                               .query_parameters = {},
+                               .headers = {},
+                               .body = std::nullopt,
+                           });
 
     ASSERT_FALSE(response.ok());
     EXPECT_EQ(response.status().code(), absl::StatusCode::kDeadlineExceeded);
@@ -424,27 +425,28 @@ TEST(HttpJsonClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDeadline) {
 #if !defined(_WIN32)
 TEST(HttpJsonClientTest, PerformsHttpsRequestWithInjectedTrust) {
     const std::string body = "{\"ok\":true}";
-    OneShotHttpsServer server("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-                              std::to_string(body.size()) + "\r\n\r\n" + body);
+    OneShotHttpsServer server(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+        std::to_string(body.size()) + "\r\n\r\n" + body);
 
     const absl::StatusOr<ParsedHttpUrl> parsed_url =
         ParseHttpUrl("https://localhost:" + std::to_string(server.port()), "test url");
     ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
 
-    const absl::StatusOr<HttpResponse> response = ExecuteHttpRequest(
-        *parsed_url,
-        HttpClientConfig{
-            .request_timeout = 2s,
-            .user_agent = "isla-http-json-client-test",
-            .trusted_ca_cert_pem = std::string(kTestTlsServerCertPem),
-        },
-        HttpRequestSpec{
-            .method = boost::beast::http::verb::get,
-            .target_path = "/rest/v1/test",
-            .query_parameters = {},
-            .headers = {},
-            .body = std::nullopt,
-        });
+    const absl::StatusOr<HttpResponse> response =
+        ExecuteHttpRequest(*parsed_url,
+                           HttpClientConfig{
+                               .request_timeout = 2s,
+                               .user_agent = "isla-http-json-client-test",
+                               .trusted_ca_cert_pem = std::string(kTestTlsServerCertPem),
+                           },
+                           HttpRequestSpec{
+                               .method = boost::beast::http::verb::get,
+                               .target_path = "/rest/v1/test",
+                               .query_parameters = {},
+                               .headers = {},
+                               .body = std::nullopt,
+                           });
 
     ASSERT_TRUE(response.ok()) << response.status();
     EXPECT_EQ(response->status_code, 200U);

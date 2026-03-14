@@ -1,7 +1,7 @@
 #pragma once
 
-#include <functional>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,16 +37,15 @@ using StartupEnvMap = std::unordered_map<std::string, std::string>;
 [[nodiscard]] StartupEnvLookup DotEnvFileEnvLookup(std::string_view path);
 [[nodiscard]] StartupEnvLookup CombinedStartupEnvLookup(StartupEnvLookup primary,
                                                         StartupEnvLookup fallback);
-[[nodiscard]] std::vector<std::filesystem::path>
-DefaultDotEnvCandidatePaths(const StartupEnvLookup& env_lookup,
-                            const std::filesystem::path& current_path =
-                                std::filesystem::current_path());
+[[nodiscard]] std::vector<std::filesystem::path> DefaultDotEnvCandidatePaths(
+    const StartupEnvLookup& env_lookup,
+    const std::filesystem::path& current_path = std::filesystem::current_path());
 [[nodiscard]] bool LooksLikeOpenAiProjectId(std::string_view value);
 [[nodiscard]] StartupEnvLookup DefaultStartupEnvLookup();
-[[nodiscard]] absl::Status ValidateOpenAiStartupConfig(
-    const OpenAiResponsesClientConfig& config);
-[[nodiscard]] StartupLogContext BuildStartupLogContext(
-    int argc, char** argv, const StartupEnvLookup& env_lookup, const ParsedStartupConfig& parsed);
+[[nodiscard]] absl::Status ValidateOpenAiStartupConfig(const OpenAiResponsesClientConfig& config);
+[[nodiscard]] StartupLogContext BuildStartupLogContext(int argc, char** argv,
+                                                       const StartupEnvLookup& env_lookup,
+                                                       const ParsedStartupConfig& parsed);
 [[nodiscard]] absl::StatusOr<ParsedStartupConfig>
 ParseGatewayStartupConfig(int argc, char** argv,
                           const StartupEnvLookup& env_lookup = DefaultStartupEnvLookup());

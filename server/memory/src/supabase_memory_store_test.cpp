@@ -356,13 +356,15 @@ TEST(SupabaseMemoryStoreTest, AppendConversationMessageCreatesConversationItemTh
     ASSERT_TRUE(server.WaitForRequestCount(2U));
     const std::vector<std::string> requests = server.requests();
     ASSERT_EQ(requests.size(), 2U);
-    EXPECT_NE(
-        requests[0].find(
-            "POST /rest/v1/conversation_items?on_conflict=session_id%2Citem_index HTTP/1.1"),
-        std::string::npos);
+    EXPECT_NE(requests[0].find(
+                  "POST /rest/v1/conversation_items?on_conflict=session_id%2Citem_index HTTP/1.1"),
+              std::string::npos);
     EXPECT_NE(requests[0].find("Content-Profile: public"), std::string::npos);
     EXPECT_NE(
-        requests[1].find("POST /rest/v1/conversation_messages?on_conflict=session_id%2Citem_index%2Cmessage_index HTTP/1.1"),
+        requests[1].find(
+            "POST "
+            "/rest/v1/conversation_messages?on_conflict=session_id%2Citem_index%2Cmessage_index "
+            "HTTP/1.1"),
         std::string::npos);
 
     const std::size_t body_pos = requests[1].find("\r\n\r\n");
@@ -378,13 +380,21 @@ TEST(SupabaseMemoryStoreTest, AppendConversationMessageCreatesConversationItemTh
 
 TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes) {
     const std::string session_body =
-        "[{\"session_id\":\"session_001\",\"user_id\":\"user_001\",\"system_prompt\":\"You are Isla.\",\"created_at\":\"2026-03-08T14:00:00Z\",\"ended_at\":null}]";
+        "[{\"session_id\":\"session_001\",\"user_id\":\"user_001\",\"system_prompt\":\"You are "
+        "Isla.\",\"created_at\":\"2026-03-08T14:00:00Z\",\"ended_at\":null}]";
     const std::string items_body =
-        "[{\"item_index\":0,\"item_type\":\"episode_stub\",\"episode_id\":\"ep_001\",\"episode_stub_content\":\"summary ref\",\"episode_stub_created_at\":\"2026-03-08T14:00:03Z\"},{\"item_index\":1,\"item_type\":\"ongoing_episode\",\"episode_id\":null,\"episode_stub_content\":null,\"episode_stub_created_at\":null}]";
+        "[{\"item_index\":0,\"item_type\":\"episode_stub\",\"episode_id\":\"ep_001\",\"episode_"
+        "stub_content\":\"summary "
+        "ref\",\"episode_stub_created_at\":\"2026-03-08T14:00:03Z\"},{\"item_index\":1,\"item_"
+        "type\":\"ongoing_episode\",\"episode_id\":null,\"episode_stub_content\":null,\"episode_"
+        "stub_created_at\":null}]";
     const std::string messages_body =
-        "[{\"item_index\":1,\"message_index\":0,\"role\":\"user\",\"content\":\"follow up\",\"created_at\":\"2026-03-08T14:00:04Z\"}]";
-    const std::string episodes_body =
-        "[{\"episode_id\":\"ep_001\",\"tier1_detail\":null,\"tier2_summary\":\"summary\",\"tier3_ref\":\"summary ref\",\"tier3_keywords\":[\"memory\"],\"salience\":7,\"embedding\":[],\"created_at\":\"2026-03-08T14:00:02Z\"}]";
+        "[{\"item_index\":1,\"message_index\":0,\"role\":\"user\",\"content\":\"follow "
+        "up\",\"created_at\":\"2026-03-08T14:00:04Z\"}]";
+    const std::string episodes_body = "[{\"episode_id\":\"ep_001\",\"tier1_detail\":null,\"tier2_"
+                                      "summary\":\"summary\",\"tier3_ref\":\"summary "
+                                      "ref\",\"tier3_keywords\":[\"memory\"],\"salience\":7,"
+                                      "\"embedding\":[],\"created_at\":\"2026-03-08T14:00:02Z\"}]";
     SequentialHttpServer server({
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
             std::to_string(session_body.size()) + "\r\n\r\n" + session_body,

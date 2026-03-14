@@ -34,11 +34,10 @@ absl::Status await_emit(std::chrono::milliseconds timeout, StartFn&& start) {
 } // namespace
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
-    : config_(std::move(config)),
-      executor_(GatewayStepRegistryConfig{
-          .openai_config = config_.openai_config,
-          .openai_client = config_.openai_client,
-      }) {
+    : config_(std::move(config)), executor_(GatewayStepRegistryConfig{
+                                      .openai_config = config_.openai_config,
+                                      .openai_client = config_.openai_client,
+                                  }) {
     worker_ = std::thread([this] {
         try {
             WorkerLoop();

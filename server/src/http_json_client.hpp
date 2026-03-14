@@ -44,8 +44,8 @@ struct HttpResponse {
                                                          std::string_view url_label);
 [[nodiscard]] std::string
 BuildHttpQueryString(const std::vector<std::pair<std::string, std::string>>& query_parameters);
-[[nodiscard]] absl::StatusOr<HttpResponse>
-ExecuteHttpRequest(const ParsedHttpUrl& parsed_url, const HttpClientConfig& config,
-                   const HttpRequestSpec& request);
+[[nodiscard]] absl::StatusOr<HttpResponse> ExecuteHttpRequest(const ParsedHttpUrl& parsed_url,
+                                                              const HttpClientConfig& config,
+                                                              const HttpRequestSpec& request);
 
 } // namespace isla::server

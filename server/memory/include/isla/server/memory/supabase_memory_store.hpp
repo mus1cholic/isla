@@ -21,8 +21,8 @@ struct SupabaseMemoryStoreConfig {
     std::optional<std::string> trusted_ca_cert_pem;
 };
 
-[[nodiscard]] absl::Status ValidateSupabaseMemoryStoreConfig(
-    const SupabaseMemoryStoreConfig& config);
+[[nodiscard]] absl::Status
+ValidateSupabaseMemoryStoreConfig(const SupabaseMemoryStoreConfig& config);
 [[nodiscard]] absl::StatusOr<MemoryStorePtr>
 CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig config);
 

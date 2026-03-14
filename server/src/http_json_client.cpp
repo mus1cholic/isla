@@ -87,15 +87,15 @@ std::string ComposeRequestTarget(const ParsedHttpUrl& parsed_url, const HttpRequ
         return request.target_path + query;
     }
     if (parsed_url.base_path.back() == '/') {
-        return parsed_url.base_path.substr(0, parsed_url.base_path.size() - 1U) + request.target_path +
-               query;
+        return parsed_url.base_path.substr(0, parsed_url.base_path.size() - 1U) +
+               request.target_path + query;
     }
     return parsed_url.base_path + request.target_path + query;
 }
 
-absl::StatusOr<tcp::resolver::results_type>
-ResolveHostWithDeadline(asio::io_context* io_context, const ParsedHttpUrl& parsed_url,
-                        TransportDeadline deadline) {
+absl::StatusOr<tcp::resolver::results_type> ResolveHostWithDeadline(asio::io_context* io_context,
+                                                                    const ParsedHttpUrl& parsed_url,
+                                                                    TransportDeadline deadline) {
     io_context->restart();
 
     tcp::resolver resolver(*io_context);
@@ -182,11 +182,10 @@ absl::Status ConnectStream(asio::io_context* io_context, Stream* stream,
 }
 
 template <typename Stream>
-absl::StatusOr<HttpResponse> ExecutePreparedRequest(asio::io_context* io_context, Stream* stream,
-                                                    const HttpClientConfig& config,
-                                                    const ParsedHttpUrl& parsed_url,
-                                                    const HttpRequestSpec& request,
-                                                    TransportDeadline deadline) {
+absl::StatusOr<HttpResponse>
+ExecutePreparedRequest(asio::io_context* io_context, Stream* stream, const HttpClientConfig& config,
+                       const ParsedHttpUrl& parsed_url, const HttpRequestSpec& request,
+                       TransportDeadline deadline) {
     http::request<http::string_body> http_request(request.method,
                                                   ComposeRequestTarget(parsed_url, request), 11);
     http_request.set(http::field::host, parsed_url.host);
@@ -340,8 +339,9 @@ absl::StatusOr<ParsedHttpUrl> ParseHttpUrl(std::string_view url, std::string_vie
     const std::size_t path_begin = remainder.find('/');
     const std::string_view authority =
         path_begin == std::string_view::npos ? remainder : remainder.substr(0, path_begin);
-    parsed.base_path =
-        path_begin == std::string_view::npos ? std::string() : std::string(remainder.substr(path_begin));
+    parsed.base_path = path_begin == std::string_view::npos
+                           ? std::string()
+                           : std::string(remainder.substr(path_begin));
     if (authority.empty()) {
         return absl::InvalidArgumentError(std::string(url_label) + " must include a host");
     }

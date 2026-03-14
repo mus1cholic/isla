@@ -14,8 +14,8 @@
 #include "isla/server/ai_gateway_executor.hpp"
 #include "isla/server/ai_gateway_planner.hpp"
 #include "isla/server/ai_gateway_server.hpp"
-#include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
+#include "isla/server/memory/memory_store.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
