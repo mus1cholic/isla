@@ -54,6 +54,26 @@ void ReportTestServerThreadException(std::string_view server_name) {
     }
 }
 
+bool IsExpectedTlsPeerAbort(const std::exception& error) {
+    const std::string_view message = error.what();
+    return message.find("alert unknown ca") != std::string_view::npos ||
+           message.find("certificate unknown") != std::string_view::npos ||
+           message.find("stream truncated") != std::string_view::npos;
+}
+
+void ReportHttpsTestServerThreadException() {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        if (IsExpectedTlsPeerAbort(error)) {
+            return;
+        }
+        ADD_FAILURE() << "OneShotHttpsServer worker thread threw exception: " << error.what();
+    } catch (...) {
+        ADD_FAILURE() << "OneShotHttpsServer worker thread threw a non-std exception";
+    }
+}
+
 class FixedStatusHostResolver final : public OpenAiResponsesHostResolver {
   public:
     explicit FixedStatusHostResolver(absl::Status status) : status_(std::move(status)) {}
@@ -540,7 +560,7 @@ class OneShotHttpsServer {
             ssl_stream.next_layer().shutdown(tcp::socket::shutdown_both, error);
             ssl_stream.next_layer().close(error);
         } catch (...) {
-            ReportTestServerThreadException("OneShotHttpsServer");
+            ReportHttpsTestServerThreadException();
         }
     }
 
