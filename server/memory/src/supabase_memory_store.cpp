@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
-#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,6 +28,7 @@ using isla::server::HttpRequestSpec;
 using isla::server::HttpResponse;
 using isla::server::ParsedHttpUrl;
 using isla::server::ParseHttpUrl;
+using isla::server::PersistentHttpClient;
 using isla::server::ai_gateway::SanitizeForLog;
 using nlohmann::json;
 
@@ -236,17 +236,11 @@ class ScopedSupabaseOperationLatency final {
     std::string outcome_ = "error";
 };
 
-absl::StatusOr<std::string> ExecuteSupabaseRequest(const ParsedHttpUrl& parsed_url,
+absl::StatusOr<std::string> ExecuteSupabaseRequest(PersistentHttpClient& client,
                                                    const SupabaseMemoryStoreConfig& config,
                                                    const HttpRequestSpec& request) {
     const Clock::time_point started_at = Clock::now();
-    const HttpClientConfig http_config{
-        .request_timeout = config.request_timeout,
-        .user_agent = config.user_agent,
-        .trusted_ca_cert_pem = config.trusted_ca_cert_pem,
-    };
-    const absl::StatusOr<HttpResponse> response =
-        ExecuteHttpRequest(parsed_url, http_config, request);
+    const absl::StatusOr<HttpResponse> response = client.Execute(request);
     if (!response.ok()) {
         const Clock::time_point completed_at = Clock::now();
         LogSupabaseRequestLatency(config, request, started_at, completed_at, "transport_error");
@@ -278,8 +272,9 @@ absl::StatusOr<json> ParseJsonArrayResponse(std::string_view body, std::string_v
 
 class SupabaseMemoryStore final : public MemoryStore {
   public:
-    SupabaseMemoryStore(SupabaseMemoryStoreConfig config, ParsedHttpUrl parsed_url)
-        : config_(std::move(config)), parsed_url_(std::move(parsed_url)) {}
+    SupabaseMemoryStore(SupabaseMemoryStoreConfig config,
+                        std::unique_ptr<PersistentHttpClient> client)
+        : config_(std::move(config)), client_(std::move(client)) {}
 
     [[nodiscard]] absl::Status UpsertSession(const MemorySessionRecord& record) override {
         ScopedSupabaseOperationLatency latency(config_, "upsert_session", record.session_id);
@@ -291,7 +286,7 @@ class SupabaseMemoryStore final : public MemoryStore {
             BuildUpsertRequest("memory_sessions", json::array({ BuildSessionJson(record) }),
                                "session_id", config_.schema, config_);
         const absl::StatusOr<std::string> response =
-            ExecuteSupabaseRequest(parsed_url_, config_, request);
+            ExecuteSupabaseRequest(*client_, config_, request);
         if (!response.ok()) {
             return response.status();
         }
@@ -315,7 +310,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                                                     std::nullopt, std::nullopt, std::nullopt) }),
             "session_id,item_index", config_.schema, config_);
         const absl::StatusOr<std::string> item_response =
-            ExecuteSupabaseRequest(parsed_url_, config_, item_request);
+            ExecuteSupabaseRequest(*client_, config_, item_request);
         if (!item_response.ok()) {
             return item_response.status();
         }
@@ -324,7 +319,7 @@ class SupabaseMemoryStore final : public MemoryStore {
             "conversation_messages", json::array({ BuildConversationMessageJson(write) }),
             "session_id,item_index,message_index", config_.schema, config_);
         const absl::StatusOr<std::string> message_response =
-            ExecuteSupabaseRequest(parsed_url_, config_, message_request);
+            ExecuteSupabaseRequest(*client_, config_, message_request);
         if (!message_response.ok()) {
             return message_response.status();
         }
@@ -347,7 +342,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                 write.episode_id, write.episode_stub_content, write.episode_stub_create_time) }),
             "session_id,item_index", config_.schema, config_);
         const absl::StatusOr<std::string> response =
-            ExecuteSupabaseRequest(parsed_url_, config_, request);
+            ExecuteSupabaseRequest(*client_, config_, request);
         if (!response.ok()) {
             return response.status();
         }
@@ -366,7 +361,7 @@ class SupabaseMemoryStore final : public MemoryStore {
             BuildUpsertRequest("mid_term_episodes", json::array({ BuildMidTermEpisodeJson(write) }),
                                "episode_id", config_.schema, config_);
         const absl::StatusOr<std::string> response =
-            ExecuteSupabaseRequest(parsed_url_, config_, request);
+            ExecuteSupabaseRequest(*client_, config_, request);
         if (!response.ok()) {
             return response.status();
         }
@@ -390,7 +385,7 @@ class SupabaseMemoryStore final : public MemoryStore {
             },
             config_.schema, config_);
         const absl::StatusOr<std::string> session_response =
-            ExecuteSupabaseRequest(parsed_url_, config_, session_request);
+            ExecuteSupabaseRequest(*client_, config_, session_request);
         if (!session_response.ok()) {
             return session_response.status();
         }
@@ -437,7 +432,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                                 },
                                 config_.schema, config_);
             const absl::StatusOr<std::string> items_response =
-                ExecuteSupabaseRequest(parsed_url_, config_, items_request);
+                ExecuteSupabaseRequest(*client_, config_, items_request);
             if (!items_response.ok()) {
                 return items_response.status();
             }
@@ -453,7 +448,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                 },
                 config_.schema, config_);
             const absl::StatusOr<std::string> messages_response =
-                ExecuteSupabaseRequest(parsed_url_, config_, messages_request);
+                ExecuteSupabaseRequest(*client_, config_, messages_request);
             if (!messages_response.ok()) {
                 return messages_response.status();
             }
@@ -470,18 +465,17 @@ class SupabaseMemoryStore final : public MemoryStore {
                                 },
                                 config_.schema, config_);
             const absl::StatusOr<std::string> episodes_response =
-                ExecuteSupabaseRequest(parsed_url_, config_, episodes_request);
+                ExecuteSupabaseRequest(*client_, config_, episodes_request);
             if (!episodes_response.ok()) {
                 return episodes_response.status();
             }
             return ParseJsonArrayResponse(*episodes_response, "supabase mid_term_episodes");
         };
 
-        auto item_rows_future = std::async(std::launch::async, fetch_item_rows);
-        auto message_rows_future = std::async(std::launch::async, fetch_message_rows);
-        auto episode_rows_future = std::async(std::launch::async, fetch_episode_rows);
-
-        const absl::StatusOr<json> item_rows = item_rows_future.get();
+        // These run sequentially on the same persistent connection. Using
+        // std::async would only add thread overhead since PersistentHttpClient
+        // serializes requests via its internal mutex.
+        const absl::StatusOr<json> item_rows = fetch_item_rows();
         if (!item_rows.ok()) {
             return item_rows.status();
         }
@@ -506,7 +500,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                 std::string("supabase conversation_items row was malformed: ") + error.what());
         }
 
-        const absl::StatusOr<json> message_rows = message_rows_future.get();
+        const absl::StatusOr<json> message_rows = fetch_message_rows();
         if (!message_rows.ok()) {
             return message_rows.status();
         }
@@ -537,7 +531,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                 std::string("supabase conversation_messages row was malformed: ") + error.what());
         }
 
-        const absl::StatusOr<json> episode_rows = episode_rows_future.get();
+        const absl::StatusOr<json> episode_rows = fetch_episode_rows();
         if (!episode_rows.ok()) {
             return episode_rows.status();
         }
@@ -572,7 +566,7 @@ class SupabaseMemoryStore final : public MemoryStore {
 
   private:
     SupabaseMemoryStoreConfig config_;
-    ParsedHttpUrl parsed_url_;
+    std::unique_ptr<PersistentHttpClient> client_;
 };
 
 } // namespace
@@ -616,7 +610,13 @@ absl::StatusOr<MemoryStorePtr> CreateSupabaseMemoryStore(SupabaseMemoryStoreConf
                                              "builds; run the gateway server on Linux");
     }
 #endif
-    return std::make_shared<SupabaseMemoryStore>(std::move(config), *parsed_url);
+    const HttpClientConfig http_config{
+        .request_timeout = config.request_timeout,
+        .user_agent = config.user_agent,
+        .trusted_ca_cert_pem = config.trusted_ca_cert_pem,
+    };
+    auto client = std::make_unique<PersistentHttpClient>(*parsed_url, http_config);
+    return std::make_shared<SupabaseMemoryStore>(std::move(config), std::move(client));
 }
 
 } // namespace isla::server::memory

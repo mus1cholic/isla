@@ -889,14 +889,13 @@ TEST(OpenAiResponsesClientTest, ParsesBareLineContinuationInsideJsonString) {
 
     // The first chunk has a `data:` line whose JSON string is interrupted by a literal
     // newline — the continuation lands as a bare line (no `data:` prefix).
-    ASSERT_TRUE(
-        parser
-            .Feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\","
-                  "\"instructions\":\"Your name is Isla. You are a Giftia.\n"
-                  "Like all Giftias, you cherish time with others.\"}}\r\n"
-                  "\r\n",
-                  on_event)
-            .ok());
+    ASSERT_TRUE(parser
+                    .Feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\","
+                          "\"instructions\":\"Your name is Isla. You are a Giftia.\n"
+                          "Like all Giftias, you cherish time with others.\"}}\r\n"
+                          "\r\n",
+                          on_event)
+                    .ok());
 
     ASSERT_TRUE(parser
                     .Feed("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\r\n"
