@@ -863,6 +863,57 @@ TEST(OpenAiResponsesClientTest, ParsesJsonEventSplitAcrossMultipleSseDataLines) 
     EXPECT_TRUE(summary->saw_completed);
 }
 
+TEST(OpenAiResponsesClientTest, ParsesBareLineContinuationInsideJsonString) {
+    // Reproduces a real-world failure where OpenAI leaks a literal newline into a
+    // `data:` field value (e.g. inside a long `instructions` string echoed in
+    // `response.created`).  The Feed loop splits on '\n', producing a bare
+    // continuation line without a `data:` prefix.  The parser must append it to the
+    // in-progress event buffer so the full JSON payload is preserved.
+    IncrementalSseParser parser;
+    std::string output_text;
+    int completed_count = 0;
+    const OpenAiResponsesEventCallback on_event =
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+        std::visit(
+            [&](const auto& concrete_event) {
+                using Event = std::decay_t<decltype(concrete_event)>;
+                if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                    output_text += concrete_event.text_delta;
+                } else if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
+                    ++completed_count;
+                }
+            },
+            event);
+        return absl::OkStatus();
+    };
+
+    // The first chunk has a `data:` line whose JSON string is interrupted by a literal
+    // newline — the continuation lands as a bare line (no `data:` prefix).
+    ASSERT_TRUE(
+        parser
+            .Feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\","
+                  "\"instructions\":\"Your name is Isla. You are a Giftia.\n"
+                  "Like all Giftias, you cherish time with others.\"}}\r\n"
+                  "\r\n",
+                  on_event)
+            .ok());
+
+    ASSERT_TRUE(parser
+                    .Feed("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\r\n"
+                          "\r\n"
+                          "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}"
+                          "\r\n\r\n"
+                          "data: [DONE]\r\n\r\n",
+                          on_event)
+                    .ok());
+
+    const absl::StatusOr<SseParseSummary> summary = parser.Finish(on_event);
+    ASSERT_TRUE(summary.ok()) << summary.status();
+    EXPECT_EQ(output_text, "hello");
+    EXPECT_EQ(completed_count, 1);
+    EXPECT_TRUE(summary->saw_completed);
+}
+
 TEST(OpenAiResponsesClientTest, UsesRealDnsResolutionForLocalhostHttpTransport) {
     const std::string body =
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"dns ok\"}\r\n\r\n"

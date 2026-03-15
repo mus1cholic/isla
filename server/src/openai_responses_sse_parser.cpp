@@ -233,6 +233,15 @@ IncrementalSseParser::ProcessLine(const std::string& line,
         data_.append(payload);
     } else if (line.starts_with("event:")) {
         event_name_ = TrimAscii(std::string_view(line).substr(6));
+    } else if (line.starts_with(":")) {
+        // SSE comment — ignore.
+    } else if (!data_.empty()) {
+        // Continuation line without a `data:` prefix. This can happen when the provider
+        // leaks a literal newline into a `data:` field value (e.g. inside a long JSON
+        // string such as `instructions` echoed in `response.created`). The Feed loop
+        // splits on '\n', so the remainder lands here as a bare line. Append it to the
+        // in-progress event buffer so the full JSON payload is preserved.
+        data_.append(line);
     }
     return SseFeedDisposition::kContinue;
 }
