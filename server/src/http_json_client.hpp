@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -10,6 +12,7 @@
 
 #include <boost/beast/http/verb.hpp>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 
 namespace isla::server {
@@ -47,5 +50,27 @@ BuildHttpQueryString(const std::vector<std::pair<std::string, std::string>>& que
 [[nodiscard]] absl::StatusOr<HttpResponse> ExecuteHttpRequest(const ParsedHttpUrl& parsed_url,
                                                               const HttpClientConfig& config,
                                                               const HttpRequestSpec& request);
+
+class PersistentHttpClient {
+  public:
+    PersistentHttpClient(ParsedHttpUrl parsed_url, HttpClientConfig config);
+    ~PersistentHttpClient();
+
+    PersistentHttpClient(const PersistentHttpClient&) = delete;
+    PersistentHttpClient& operator=(const PersistentHttpClient&) = delete;
+
+    [[nodiscard]] absl::StatusOr<HttpResponse> Execute(const HttpRequestSpec& request);
+
+  private:
+    absl::Status EnsureConnected();
+    void Disconnect();
+    absl::StatusOr<HttpResponse> ExecuteOnce(const HttpRequestSpec& request);
+
+    struct Impl;
+    ParsedHttpUrl parsed_url_;
+    HttpClientConfig config_;
+    std::mutex mutex_;
+    std::unique_ptr<Impl> impl_;
+};
 
 } // namespace isla::server

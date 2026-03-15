@@ -487,6 +487,206 @@ TEST(HttpJsonClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDeadline) {
     EXPECT_EQ(response.status().code(), absl::StatusCode::kDeadlineExceeded);
 }
 
+class MultiRequestHttpServer {
+  public:
+    MultiRequestHttpServer(std::string response, int max_requests)
+        : response_(std::move(response)), max_requests_(max_requests),
+          acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
+        port_ = acceptor_.local_endpoint().port();
+        thread_ = std::thread([this] { Run(); });
+    }
+
+    ~MultiRequestHttpServer() {
+        Stop();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return port_;
+    }
+
+    [[nodiscard]] int requests_served() const {
+        return requests_served_.load();
+    }
+
+    [[nodiscard]] int connections_accepted() const {
+        return connections_accepted_.load();
+    }
+
+  private:
+    void Stop() {
+        if (stopped_.exchange(true)) {
+            return;
+        }
+        boost::system::error_code error;
+        acceptor_.close(error);
+        io_context_.stop();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void Run() {
+        try {
+            while (!stopped_.load()) {
+                boost::system::error_code accept_error;
+                tcp::socket socket(io_context_);
+                acceptor_.accept(socket, accept_error);
+                if (accept_error) {
+                    break;
+                }
+                connections_accepted_.fetch_add(1);
+                HandleConnection(std::move(socket));
+            }
+        } catch (...) {
+            ReportTestServerThreadException("MultiRequestHttpServer");
+        }
+    }
+
+    void HandleConnection(tcp::socket socket) {
+        try {
+            for (int i = 0; i < max_requests_ && !stopped_.load(); ++i) {
+                asio::streambuf buffer;
+                boost::system::error_code read_error;
+                asio::read_until(socket, buffer, "\r\n\r\n", read_error);
+                if (read_error) {
+                    break;
+                }
+
+                // Extract buffered data (may include body bytes past the header boundary).
+                std::string buffered_data;
+                {
+                    std::istream stream(&buffer);
+                    buffered_data.assign(std::istreambuf_iterator<char>(stream),
+                                         std::istreambuf_iterator<char>());
+                }
+                const auto header_end = buffered_data.find("\r\n\r\n");
+                const std::size_t body_bytes_buffered = buffered_data.size() - (header_end + 4U);
+
+                // Drain any remaining body from the socket based on Content-Length.
+                const auto cl_pos = buffered_data.find("Content-Length: ");
+                if (cl_pos != std::string::npos) {
+                    const std::size_t content_length = std::stoull(buffered_data.substr(
+                        cl_pos + 16U, buffered_data.find("\r\n", cl_pos + 16U) - (cl_pos + 16U)));
+                    if (content_length > body_bytes_buffered) {
+                        std::vector<char> remaining(content_length - body_bytes_buffered);
+                        asio::read(socket, asio::buffer(remaining), read_error);
+                    }
+                }
+
+                asio::write(socket, asio::buffer(response_.data(), response_.size()));
+                requests_served_.fetch_add(1);
+            }
+            boost::system::error_code error;
+            socket.shutdown(tcp::socket::shutdown_both, error);
+            socket.close(error);
+        } catch (...) {
+            ReportTestServerThreadException("MultiRequestHttpServer::HandleConnection");
+        }
+    }
+
+    std::string response_;
+    int max_requests_;
+    asio::io_context io_context_;
+    tcp::acceptor acceptor_;
+    std::thread thread_;
+    std::atomic<bool> stopped_{ false };
+    std::atomic<int> requests_served_{ 0 };
+    std::atomic<int> connections_accepted_{ 0 };
+    std::uint16_t port_ = 0;
+};
+
+TEST(PersistentHttpClientTest, ReusesConnectionForMultipleRequests) {
+    const std::string body = "{\"ok\":true}";
+    MultiRequestHttpServer server("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                  "Connection: keep-alive\r\nContent-Length: " +
+                                      std::to_string(body.size()) + "\r\n\r\n" + body,
+                                  10);
+
+    const absl::StatusOr<ParsedHttpUrl> parsed_url =
+        ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
+    ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
+
+    PersistentHttpClient client(*parsed_url, HttpClientConfig{
+                                                 .request_timeout = 2s,
+                                                 .user_agent = "isla-persistent-test",
+                                             });
+
+    for (int i = 0; i < 5; ++i) {
+        const absl::StatusOr<HttpResponse> response = client.Execute(HttpRequestSpec{
+            .method = boost::beast::http::verb::get,
+            .target_path = "/rest/v1/test",
+        });
+        ASSERT_TRUE(response.ok()) << "request " << i << " failed: " << response.status();
+        EXPECT_EQ(response->status_code, 200U);
+        EXPECT_EQ(response->body, body);
+    }
+
+    EXPECT_EQ(server.requests_served(), 5);
+    EXPECT_EQ(server.connections_accepted(), 1);
+}
+
+TEST(PersistentHttpClientTest, ReconnectsAfterServerClosesConnection) {
+    const std::string body = "{\"ok\":true}";
+    // Server closes connection after each request (max_requests=1), forcing reconnect.
+    MultiRequestHttpServer server("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                  "Connection: close\r\nContent-Length: " +
+                                      std::to_string(body.size()) + "\r\n\r\n" + body,
+                                  1);
+
+    const absl::StatusOr<ParsedHttpUrl> parsed_url =
+        ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
+    ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
+
+    PersistentHttpClient client(*parsed_url, HttpClientConfig{
+                                                 .request_timeout = 2s,
+                                                 .user_agent = "isla-persistent-test",
+                                             });
+
+    for (int i = 0; i < 3; ++i) {
+        const absl::StatusOr<HttpResponse> response = client.Execute(HttpRequestSpec{
+            .method = boost::beast::http::verb::get,
+            .target_path = "/rest/v1/test",
+        });
+        ASSERT_TRUE(response.ok()) << "request " << i << " failed: " << response.status();
+        EXPECT_EQ(response->status_code, 200U);
+    }
+
+    EXPECT_EQ(server.requests_served(), 3);
+    EXPECT_EQ(server.connections_accepted(), 3);
+}
+
+TEST(PersistentHttpClientTest, HandlesPostRequestsWithBody) {
+    const std::string response_body = "{\"id\":1}";
+    MultiRequestHttpServer server("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n"
+                                  "Connection: keep-alive\r\nContent-Length: " +
+                                      std::to_string(response_body.size()) + "\r\n\r\n" +
+                                      response_body,
+                                  10);
+
+    const absl::StatusOr<ParsedHttpUrl> parsed_url =
+        ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
+    ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
+
+    PersistentHttpClient client(*parsed_url, HttpClientConfig{
+                                                 .request_timeout = 2s,
+                                                 .user_agent = "isla-persistent-test",
+                                             });
+
+    for (int i = 0; i < 3; ++i) {
+        const absl::StatusOr<HttpResponse> response = client.Execute(HttpRequestSpec{
+            .method = boost::beast::http::verb::post,
+            .target_path = "/rest/v1/items",
+            .body = "{\"name\":\"test\"}",
+        });
+        ASSERT_TRUE(response.ok()) << "request " << i << " failed: " << response.status();
+        EXPECT_EQ(response->status_code, 201U);
+        EXPECT_EQ(response->body, response_body);
+    }
+
+    EXPECT_EQ(server.requests_served(), 3);
+    EXPECT_EQ(server.connections_accepted(), 1);
+}
+
 #if !defined(_WIN32)
 TEST(HttpJsonClientTest, PerformsHttpsRequestWithInjectedTrust) {
     const std::string body = "{\"ok\":true}";

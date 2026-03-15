@@ -185,7 +185,7 @@ template <typename Stream>
 absl::StatusOr<HttpResponse>
 ExecutePreparedRequest(asio::io_context* io_context, Stream* stream, const HttpClientConfig& config,
                        const ParsedHttpUrl& parsed_url, const HttpRequestSpec& request,
-                       TransportDeadline deadline) {
+                       TransportDeadline deadline, bool keep_alive_request = false) {
     http::request<http::string_body> http_request(request.method,
                                                   ComposeRequestTarget(parsed_url, request), 11);
     http_request.set(http::field::host, parsed_url.host);
@@ -198,7 +198,7 @@ ExecutePreparedRequest(asio::io_context* io_context, Stream* stream, const HttpC
         http_request.body() = *request.body;
     }
     http_request.prepare_payload();
-    http_request.keep_alive(false);
+    http_request.keep_alive(keep_alive_request);
 
     io_context->restart();
     boost::system::error_code write_error;
@@ -485,6 +485,157 @@ absl::StatusOr<HttpResponse> ExecuteHttpRequest(const ParsedHttpUrl& parsed_url,
     CloseStream(&stream);
     return response;
 #endif
+}
+
+struct PersistentHttpClient::Impl {
+    boost::asio::io_context io_context;
+    bool connected = false;
+
+    std::unique_ptr<boost::beast::tcp_stream> tcp_stream;
+#if !defined(_WIN32)
+    std::unique_ptr<boost::asio::ssl::context> ssl_context;
+    std::unique_ptr<boost::beast::ssl_stream<boost::beast::tcp_stream>> ssl_stream;
+#endif
+};
+
+PersistentHttpClient::PersistentHttpClient(ParsedHttpUrl parsed_url, HttpClientConfig config)
+    : parsed_url_(std::move(parsed_url)), config_(std::move(config)),
+      impl_(std::make_unique<Impl>()) {}
+
+PersistentHttpClient::~PersistentHttpClient() {
+    if (impl_->connected) {
+        if (impl_->tcp_stream) {
+            CloseStream(impl_->tcp_stream.get());
+        }
+#if !defined(_WIN32)
+        if (impl_->ssl_stream) {
+            CloseStream(impl_->ssl_stream.get());
+        }
+#endif
+    }
+}
+
+absl::StatusOr<HttpResponse> PersistentHttpClient::Execute(const HttpRequestSpec& request) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (request.target_path.empty() || request.target_path.front() != '/') {
+        return absl::InvalidArgumentError("HTTP request target_path must start with '/'");
+    }
+
+    // First attempt: connect if needed, then execute.
+    if (absl::Status status = EnsureConnected(); !status.ok()) {
+        return status;
+    }
+    absl::StatusOr<HttpResponse> result = ExecuteOnce(request);
+    if (result.ok()) {
+        return result;
+    }
+
+    // If the request failed with a transport error, reconnect and retry once.
+    if (!absl::IsUnavailable(result.status()) && !absl::IsDeadlineExceeded(result.status())) {
+        return result;
+    }
+
+    Disconnect();
+    if (absl::Status status = EnsureConnected(); !status.ok()) {
+        return status;
+    }
+    return ExecuteOnce(request);
+}
+
+absl::Status PersistentHttpClient::EnsureConnected() {
+    if (impl_->connected) {
+        return absl::OkStatus();
+    }
+
+    const auto deadline = ComputeTransportDeadline(config_);
+
+    const absl::StatusOr<boost::asio::ip::tcp::resolver::results_type> endpoints =
+        ResolveHostWithDeadline(&impl_->io_context, parsed_url_, deadline);
+    if (!endpoints.ok()) {
+        return endpoints.status();
+    }
+
+    if (parsed_url_.scheme == "http") {
+        impl_->tcp_stream = std::make_unique<boost::beast::tcp_stream>(impl_->io_context);
+        if (absl::Status status =
+                ConnectStream(&impl_->io_context, impl_->tcp_stream.get(), *endpoints, deadline);
+            !status.ok()) {
+            impl_->tcp_stream.reset();
+            return status;
+        }
+        impl_->connected = true;
+        return absl::OkStatus();
+    }
+
+#if defined(_WIN32)
+    return absl::FailedPreconditionError(
+        "https transport is unavailable in Windows builds; run the gateway server on Linux");
+#else
+    impl_->ssl_context =
+        std::make_unique<boost::asio::ssl::context>(boost::asio::ssl::context::tls_client);
+    if (absl::Status status = ConfigureTlsContext(config_, impl_->ssl_context.get());
+        !status.ok()) {
+        impl_->ssl_context.reset();
+        return status;
+    }
+    impl_->ssl_stream = std::make_unique<boost::beast::ssl_stream<boost::beast::tcp_stream>>(
+        impl_->io_context, *impl_->ssl_context);
+    if (absl::Status status = ConfigureTlsStream(parsed_url_, impl_->ssl_stream.get());
+        !status.ok()) {
+        impl_->ssl_stream.reset();
+        impl_->ssl_context.reset();
+        return status;
+    }
+    if (absl::Status status =
+            ConnectStream(&impl_->io_context, impl_->ssl_stream.get(), *endpoints, deadline);
+        !status.ok()) {
+        impl_->ssl_stream.reset();
+        impl_->ssl_context.reset();
+        return status;
+    }
+    if (absl::Status status =
+            CompleteTlsHandshake(&impl_->io_context, impl_->ssl_stream.get(), deadline);
+        !status.ok()) {
+        CloseStream(impl_->ssl_stream.get());
+        impl_->ssl_stream.reset();
+        impl_->ssl_context.reset();
+        return status;
+    }
+    impl_->connected = true;
+    return absl::OkStatus();
+#endif
+}
+
+void PersistentHttpClient::Disconnect() {
+    if (impl_->tcp_stream) {
+        CloseStream(impl_->tcp_stream.get());
+        impl_->tcp_stream.reset();
+    }
+#if !defined(_WIN32)
+    if (impl_->ssl_stream) {
+        CloseStream(impl_->ssl_stream.get());
+        impl_->ssl_stream.reset();
+    }
+    impl_->ssl_context.reset();
+#endif
+    impl_->connected = false;
+}
+
+absl::StatusOr<HttpResponse> PersistentHttpClient::ExecuteOnce(const HttpRequestSpec& request) {
+    const auto deadline = ComputeTransportDeadline(config_);
+
+    if (impl_->tcp_stream) {
+        return ExecutePreparedRequest(&impl_->io_context, impl_->tcp_stream.get(), config_,
+                                      parsed_url_, request, deadline, true);
+    }
+#if !defined(_WIN32)
+    if (impl_->ssl_stream) {
+        return ExecutePreparedRequest(&impl_->io_context, impl_->ssl_stream.get(), config_,
+                                      parsed_url_, request, deadline, true);
+    }
+#endif
+    return absl::InternalError("persistent HTTP client has no active stream");
 }
 
 } // namespace isla::server
