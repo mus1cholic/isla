@@ -19,7 +19,7 @@ TEST(AiGatewayPlannerTest, CreateOpenAiPlanBuildsOneExecutableItem) {
     EXPECT_EQ(openai_step.step_name, "main");
     EXPECT_EQ(openai_step.model, "gpt-5.3-chat-latest");
     EXPECT_EQ(openai_step.system_prompt, *system_prompt);
-    EXPECT_EQ(openai_step.reasoning_effort, OpenAiReasoningEffort::kMinimal);
+    EXPECT_EQ(openai_step.reasoning_effort, OpenAiReasoningEffort::kMedium);
 }
 
 TEST(AiGatewayPlannerTest, CreateOpenAiPlanDoesNotRequireRuntimeUserText) {

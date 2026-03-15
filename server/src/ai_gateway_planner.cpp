@@ -22,7 +22,7 @@ absl::StatusOr<ExecutionPlan> CreateOpenAiPlan() {
         .step_name = std::string(kMainStepName),
         .system_prompt = *system_prompt,
         .model = std::string(kMainModel),
-        .reasoning_effort = OpenAiReasoningEffort::kMinimal,
+        .reasoning_effort = OpenAiReasoningEffort::kMedium,
     });
     return plan;
 }

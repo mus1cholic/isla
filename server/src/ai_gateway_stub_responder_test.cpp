@@ -569,7 +569,7 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecu
     const OpenAiLlmStep& openai_step = std::get<OpenAiLlmStep>(execution_plan->steps.front());
     EXPECT_EQ(openai_step.step_name, "main");
     EXPECT_EQ(openai_step.model, "gpt-5.3-chat-latest");
-    EXPECT_EQ(openai_step.reasoning_effort, OpenAiReasoningEffort::kMinimal);
+    EXPECT_EQ(openai_step.reasoning_effort, OpenAiReasoningEffort::kMedium);
 
     const std::vector<EmittedEvent> events = session->events();
     ASSERT_EQ(events.size(), 2U);
