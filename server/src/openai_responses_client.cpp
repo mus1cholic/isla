@@ -39,14 +39,15 @@ ExecuteTransport(const OpenAiResponsesClientConfig& config, const std::string& r
 
 class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
   public:
-    explicit OpenAiResponsesClientImpl(OpenAiResponsesClientConfig config) : config_(config) {
-        const bool in_process_available = config.scheme == "http"
+    explicit OpenAiResponsesClientImpl(OpenAiResponsesClientConfig config)
+        : config_(std::move(config)) {
+        const bool in_process_available = config_.scheme == "http"
 #if !defined(_WIN32)
-                                          || config.scheme == "https"
+                                          || config_.scheme == "https"
 #endif
             ;
         if (in_process_available) {
-            transport_ = std::make_unique<PersistentInProcessTransport>(config);
+            transport_ = std::make_unique<PersistentInProcessTransport>(config_);
         }
     }
 
