@@ -85,6 +85,7 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
     EXPECT_EQ(client->last_request.model, "gpt-5.4");
     EXPECT_EQ(client->last_request.system_prompt, "runtime system");
     EXPECT_EQ(client->last_request.user_text, "hello");
+    EXPECT_EQ(client->last_request.reasoning_effort, OpenAiReasoningEffort::kNone);
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
 }
 

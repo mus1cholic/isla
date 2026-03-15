@@ -19,6 +19,7 @@ TEST(AiGatewayPlannerTest, CreateOpenAiPlanBuildsOneExecutableItem) {
     EXPECT_EQ(openai_step.step_name, "main");
     EXPECT_EQ(openai_step.model, "gpt-5.4");
     EXPECT_EQ(openai_step.system_prompt, *system_prompt);
+    EXPECT_EQ(openai_step.reasoning_effort, OpenAiReasoningEffort::kNone);
 }
 
 TEST(AiGatewayPlannerTest, CreateOpenAiPlanDoesNotRequireRuntimeUserText) {

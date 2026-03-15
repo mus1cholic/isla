@@ -637,7 +637,47 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     EXPECT_NE(server.request_text().find("Authorization: Bearer test_key"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"stream\":true"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.4\""), std::string::npos);
+    EXPECT_NE(server.request_text().find("\"reasoning\":{\"effort\":\"none\"}"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"instructions\":\"system prompt\""), std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody) {
+    OneShotHttpServer server(
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Content-Length: 109\r\n"
+        "\r\n"
+        "event: response.output_text.delta\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n");
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    ASSERT_TRUE(client != nullptr);
+    ASSERT_TRUE(client->Validate().ok());
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.4",
+            .user_text = "hello world",
+            .reasoning_effort = OpenAiReasoningEffort::kXHigh,
+        },
+        [](const OpenAiResponsesEvent& event) -> absl::Status {
+            static_cast<void>(event);
+            return absl::OkStatus();
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequest());
+    EXPECT_NE(server.request_text().find("\"reasoning\":{\"effort\":\"xhigh\"}"),
+              std::string::npos);
 }
 
 TEST(OpenAiResponsesClientTest, StreamsSseWhenEventPayloadIsSplitAcrossReadChunks) {

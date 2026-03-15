@@ -415,6 +415,7 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecu
     const OpenAiLlmStep& openai_step = std::get<OpenAiLlmStep>(execution_plan->steps.front());
     EXPECT_EQ(openai_step.step_name, "main");
     EXPECT_EQ(openai_step.model, "gpt-5.4");
+    EXPECT_EQ(openai_step.reasoning_effort, OpenAiReasoningEffort::kNone);
 
     const std::vector<EmittedEvent> events = session->events();
     ASSERT_EQ(events.size(), 2U);

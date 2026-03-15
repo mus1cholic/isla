@@ -109,6 +109,10 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
         nlohmann::json body = {
             { "model", request.model },
             { "input", request.user_text },
+            { "reasoning",
+              {
+                  { "effort", OpenAiReasoningEffortToString(request.reasoning_effort) },
+              } },
             { "stream", true },
         };
         if (!request.system_prompt.empty()) {
@@ -117,7 +121,8 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
 
         VLOG(1) << "AI gateway openai responses dispatching host='" << SanitizeForLog(config_.host)
                 << "' target='" << SanitizeForLog(config_.target) << "' model='"
-                << SanitizeForLog(request.model)
+                << SanitizeForLog(request.model) << "' reasoning_effort='"
+                << OpenAiReasoningEffortToString(request.reasoning_effort)
                 << "' timeout_ms=" << config_.request_timeout.count()
                 << " user_text_bytes=" << request.user_text.size()
                 << " system_prompt_present=" << (!request.system_prompt.empty() ? "true" : "false");

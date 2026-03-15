@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "absl/status/status.h"
+#include "isla/server/openai_reasoning_effort.hpp"
 
 namespace isla::server::ai_gateway {
 
@@ -30,6 +31,7 @@ struct OpenAiResponsesRequest {
     std::string model;
     std::string system_prompt;
     std::string user_text;
+    OpenAiReasoningEffort reasoning_effort = OpenAiReasoningEffort::kNone;
 };
 
 struct OpenAiResponsesTextDeltaEvent {

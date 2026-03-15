@@ -12,6 +12,15 @@
 namespace isla::server::ai_gateway {
 namespace {
 
+TEST(OpenAiReasoningEffortTest, MapsAllSupportedEffortValuesToSchemaStrings) {
+    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kNone), "none");
+    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kMinimal), "minimal");
+    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kLow), "low");
+    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kMedium), "medium");
+    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kHigh), "high");
+    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kXHigh), "xhigh");
+}
+
 TEST(OpenAiLlmstest, RejectsMissingStepName) {
     OpenAiLLMs openai_llms("", "", "gpt-4.1-mini");
 
@@ -54,7 +63,8 @@ TEST(OpenAiLlmstest, RejectsMissingConfiguredResponsesClient) {
 
 TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
-    OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.4", client);
+    OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.4", client,
+                           OpenAiReasoningEffort::kMedium);
 
     const absl::StatusOr<ExecutionStepResult> result =
         openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
@@ -63,6 +73,7 @@ TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
     ASSERT_EQ(client->last_request.model, "gpt-5.4");
     ASSERT_EQ(client->last_request.system_prompt, "system prompt");
     ASSERT_EQ(client->last_request.user_text, "hi");
+    EXPECT_EQ(client->last_request.reasoning_effort, OpenAiReasoningEffort::kMedium);
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "hello world");
 }
 
@@ -76,6 +87,7 @@ TEST(OpenAiLlmstest, UsesRuntimeSystemPromptOverrideWhenProvided) {
     ASSERT_TRUE(result.ok()) << result.status();
     ASSERT_EQ(client->last_request.system_prompt, "rendered system prompt");
     ASSERT_EQ(client->last_request.user_text, "ctx");
+    EXPECT_EQ(client->last_request.reasoning_effort, OpenAiReasoningEffort::kNone);
 }
 
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {

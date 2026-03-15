@@ -6,6 +6,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_planner.hpp"
+#include "isla/server/openai_reasoning_effort.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
@@ -13,7 +14,8 @@ namespace isla::server::ai_gateway {
 class OpenAiLLMs final {
   public:
     OpenAiLLMs(std::string step_name, std::string system_prompt, std::string model,
-               std::shared_ptr<const OpenAiResponsesClient> responses_client = nullptr);
+               std::shared_ptr<const OpenAiResponsesClient> responses_client = nullptr,
+               OpenAiReasoningEffort reasoning_effort = OpenAiReasoningEffort::kNone);
 
     [[nodiscard]] const std::string& step_name() const;
     [[nodiscard]] absl::Status Validate() const;
@@ -31,6 +33,7 @@ class OpenAiLLMs final {
     // overrides this value for the current request.
     std::string system_prompt_;
     std::string model_;
+    OpenAiReasoningEffort reasoning_effort_ = OpenAiReasoningEffort::kNone;
     std::shared_ptr<const OpenAiResponsesClient> responses_client_;
 };
 
