@@ -91,4 +91,3 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
 
 } // namespace
 } // namespace isla::server::ai_gateway
-

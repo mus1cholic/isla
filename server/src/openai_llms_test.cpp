@@ -171,4 +171,3 @@ TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {
 
 } // namespace
 } // namespace isla::server::ai_gateway
-

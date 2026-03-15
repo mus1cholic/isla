@@ -44,4 +44,3 @@ TEST(AiGatewayPlannerTest, ExecutorRejectsMissingRuntimeUserText) {
 
 } // namespace
 } // namespace isla::server::ai_gateway
-

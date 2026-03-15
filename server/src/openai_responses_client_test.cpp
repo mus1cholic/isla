@@ -651,8 +651,10 @@ TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody
     OneShotHttpServer server("HTTP/1.1 200 OK\r\n"
                              "Content-Type: text/event-stream\r\n"
                              "Content-Length: " +
-                             std::to_string(body.size()) + "\r\n"
-                                                           "\r\n" + body);
+                             std::to_string(body.size()) +
+                             "\r\n"
+                             "\r\n" +
+                             body);
 
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -1854,4 +1856,3 @@ TEST(OpenAiResponsesClientTest, RejectsTargetContainingSpaceBeforeStartingTransp
 
 } // namespace
 } // namespace isla::server::ai_gateway
-
