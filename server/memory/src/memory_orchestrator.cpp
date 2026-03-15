@@ -290,25 +290,15 @@ MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
         return status;
     }
 
-    absl::StatusOr<std::string> rendered_system_prompt = RenderSystemPrompt();
-    if (!rendered_system_prompt.ok()) {
-        return rendered_system_prompt.status();
-    }
-
-    absl::StatusOr<std::string> rendered_working_memory_context = RenderWorkingMemoryContext();
-    if (!rendered_working_memory_context.ok()) {
-        return rendered_working_memory_context.status();
-    }
-
-    absl::StatusOr<std::string> rendered_working_memory = RenderFullWorkingMemory();
-    if (!rendered_working_memory.ok()) {
-        return rendered_working_memory.status();
+    absl::StatusOr<RenderedWorkingMemory> rendered_bundle = memory_.RenderPromptBundle();
+    if (!rendered_bundle.ok()) {
+        return rendered_bundle.status();
     }
 
     return UserQueryMemoryResult{
-        .rendered_system_prompt = std::move(*rendered_system_prompt),
-        .rendered_working_memory_context = std::move(*rendered_working_memory_context),
-        .rendered_working_memory = std::move(*rendered_working_memory),
+        .rendered_system_prompt = std::move(rendered_bundle->system_prompt),
+        .rendered_working_memory_context = std::move(rendered_bundle->context),
+        .rendered_working_memory = std::move(rendered_bundle->full_prompt),
     };
 }
 

@@ -149,6 +149,8 @@ void AppendPersistentMemoryCacheSection(std::string& output, const PersistentMem
     }
 }
 
+namespace {
+
 void AppendMidTermEpisodesSection(std::string& output,
                                   const std::vector<Episode>& mid_term_episodes) {
     AppendLine(output, "<mid_term_episodes>");
@@ -201,6 +203,33 @@ absl::Status AppendConversationSection(std::string& output, const Conversation& 
     return absl::OkStatus();
 }
 
+} // namespace
+
+absl::StatusOr<RenderedWorkingMemory>
+RenderWorkingMemoryBundle(const WorkingMemoryState& working_memory) {
+    absl::StatusOr<std::string> rendered_system_prompt =
+        RenderSystemPrompt(working_memory.system_prompt);
+    if (!rendered_system_prompt.ok()) {
+        return rendered_system_prompt.status();
+    }
+
+    absl::StatusOr<std::string> rendered_context = RenderWorkingMemoryContext(working_memory);
+    if (!rendered_context.ok()) {
+        return rendered_context.status();
+    }
+
+    std::string full_prompt;
+    full_prompt.reserve(rendered_system_prompt->size() + rendered_context->size());
+    full_prompt.append(*rendered_system_prompt);
+    full_prompt.append(*rendered_context);
+
+    return RenderedWorkingMemory{
+        .system_prompt = std::move(*rendered_system_prompt),
+        .context = std::move(*rendered_context),
+        .full_prompt = std::move(full_prompt),
+    };
+}
+
 absl::StatusOr<std::string> RenderWorkingMemoryContext(const WorkingMemoryState& working_memory) {
     std::string output;
     AppendMidTermEpisodesSection(output, working_memory.mid_term_episodes);
@@ -213,20 +242,12 @@ absl::StatusOr<std::string> RenderWorkingMemoryContext(const WorkingMemoryState&
 }
 
 absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
-    absl::StatusOr<std::string> rendered_system_prompt =
-        RenderSystemPrompt(working_memory.system_prompt);
-    if (!rendered_system_prompt.ok()) {
-        return rendered_system_prompt.status();
+    absl::StatusOr<RenderedWorkingMemory> rendered_bundle =
+        RenderWorkingMemoryBundle(working_memory);
+    if (!rendered_bundle.ok()) {
+        return rendered_bundle.status();
     }
-
-    absl::StatusOr<std::string> rendered_context = RenderWorkingMemoryContext(working_memory);
-    if (!rendered_context.ok()) {
-        return rendered_context.status();
-    }
-
-    std::string output = std::move(*rendered_system_prompt);
-    output.append(*rendered_context);
-    return output;
+    return std::move(rendered_bundle->full_prompt);
 }
 
 } // namespace isla::server::memory

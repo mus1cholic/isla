@@ -144,6 +144,10 @@ WorkingMemory::ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFl
     return absl::OkStatus();
 }
 
+absl::StatusOr<RenderedWorkingMemory> WorkingMemory::RenderPromptBundle() const {
+    return RenderWorkingMemoryBundle(state_);
+}
+
 absl::StatusOr<std::string> WorkingMemory::RenderFullWorkingMemory() const {
     return RenderWorkingMemoryPrompt(state_);
 }

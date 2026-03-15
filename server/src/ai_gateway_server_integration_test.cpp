@@ -50,24 +50,13 @@ template <typename StartFn> absl::Status await_emit(StartFn&& start) {
     return future.get();
 }
 
-std::string ExtractLatestPromptLine(std::string_view prompt_text) {
-    if (const std::size_t last_marker = prompt_text.rfind("] "); last_marker != std::string::npos) {
-        const std::size_t content_begin = last_marker + 2U;
-        const std::size_t content_end = prompt_text.find('\n', content_begin);
-        return std::string(prompt_text.substr(content_begin, content_end == std::string_view::npos
-                                                                 ? std::string_view::npos
-                                                                 : content_end - content_begin));
-    }
-    return std::string(prompt_text);
-}
-
 std::shared_ptr<test::FakeOpenAiResponsesClient> MakeEchoOpenAiResponsesClient() {
     return test::MakeFakeOpenAiResponsesClient(
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             const std::string text =
-                std::string("stub echo: ") + ExtractLatestPromptLine(request.user_text);
+                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
             const absl::Status delta_status =
                 on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
             if (!delta_status.ok()) {
@@ -766,7 +755,7 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            const std::string latest_text = ExtractLatestPromptLine(request.user_text);
+            const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
             const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
                 .text_delta = "stub ",
             });

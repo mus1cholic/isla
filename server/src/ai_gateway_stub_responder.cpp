@@ -19,6 +19,7 @@ namespace isla::server::ai_gateway {
 namespace {
 
 using namespace std::chrono_literals;
+inline constexpr std::size_t kMaxRenderedWorkingMemoryContextBytes = 64U * 1024U;
 
 template <typename StartFn>
 absl::Status await_emit(std::chrono::milliseconds timeout, StartFn&& start) {
@@ -487,6 +488,16 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
                    << " text_bytes=" << turn.text.size();
         BestEffortTerminateAcceptedTurn(turn, "bad_request",
                                         "text.input text exceeds maximum length", "oversized turn");
+        return;
+    }
+    if (turn.rendered_working_memory_context.size() > kMaxRenderedWorkingMemoryContextBytes) {
+        LOG(ERROR) << "AI gateway stub rejected oversized rendered working memory context session="
+                   << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
+                   << " context_bytes=" << turn.rendered_working_memory_context.size()
+                   << " budget_bytes=" << kMaxRenderedWorkingMemoryContextBytes;
+        BestEffortTerminateAcceptedTurn(turn, "bad_request",
+                                        "rendered working memory context exceeds maximum length",
+                                        "oversized rendered context");
         return;
     }
 

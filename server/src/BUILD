@@ -293,6 +293,10 @@ cc_library(
     name = "openai_responses_test_utils",
     testonly = True,
     hdrs = ["openai_responses_test_utils.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+        "//client/src:__pkg__",
+    ],
     deps = [
         "//server/include/isla/server:server_headers",
         "@abseil-cpp//absl/status",

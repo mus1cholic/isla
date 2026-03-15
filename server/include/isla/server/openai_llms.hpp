@@ -2,7 +2,6 @@
 
 #include <memory>
 #include <string>
-#include <string_view>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -28,6 +27,8 @@ class OpenAiLLMs final {
                              const ExecutionRuntimeInput& runtime_input) const;
 
     std::string step_name_;
+    // Default step-level system prompt. A non-empty ExecutionRuntimeInput.system_prompt
+    // overrides this value for the current request.
     std::string system_prompt_;
     std::string model_;
     std::shared_ptr<const OpenAiResponsesClient> responses_client_;

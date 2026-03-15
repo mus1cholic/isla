@@ -19,7 +19,6 @@
 #include <functional>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -28,6 +27,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/openai_responses_client.hpp"
+#include "server/src/openai_responses_test_utils.hpp"
 
 namespace isla::client {
 namespace {
@@ -45,17 +45,6 @@ using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
 using isla::server::ai_gateway::SequentialSessionIdGenerator;
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
-
-std::string ExtractLatestPromptLine(std::string_view prompt_text) {
-    if (const std::size_t last_marker = prompt_text.rfind("] "); last_marker != std::string::npos) {
-        const std::size_t content_begin = last_marker + 2U;
-        const std::size_t content_end = prompt_text.find('\n', content_begin);
-        return std::string(prompt_text.substr(content_begin, content_end == std::string_view::npos
-                                                                 ? std::string_view::npos
-                                                                 : content_end - content_begin));
-    }
-    return std::string(prompt_text);
-}
 
 class FakeSdlRuntime final : public ISdlRuntime {
   public:
@@ -237,7 +226,8 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
         absl::Status status = on_event(OpenAiResponsesTextDeltaEvent{
-            .text_delta = "stub echo: " + ExtractLatestPromptLine(request.user_text),
+            .text_delta = "stub echo: " + isla::server::ai_gateway::test::ExtractLatestPromptLine(
+                                              request.user_text),
         });
         if (!status.ok()) {
             return status;
@@ -259,8 +249,9 @@ class CountingOpenAiResponsesClient final : public OpenAiResponsesClient {
                    const OpenAiResponsesEventCallback& on_event) const override {
         const int call_number = call_count_.fetch_add(1) + 1;
         absl::Status status = on_event(OpenAiResponsesTextDeltaEvent{
-            .text_delta = "stub echo " + std::to_string(call_number) + ": " +
-                          ExtractLatestPromptLine(request.user_text),
+            .text_delta =
+                "stub echo " + std::to_string(call_number) + ": " +
+                isla::server::ai_gateway::test::ExtractLatestPromptLine(request.user_text),
         });
         if (!status.ok()) {
             return status;

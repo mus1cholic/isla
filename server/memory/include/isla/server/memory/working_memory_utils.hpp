@@ -8,17 +8,20 @@
 
 namespace isla::server::memory {
 
+struct RenderedWorkingMemory {
+    std::string system_prompt;
+    std::string context;
+    std::string full_prompt;
+};
+
 void UpsertActiveModel(PersistentMemoryCache& cache, std::string entity_id, std::string text);
 void UpsertFamiliarLabel(PersistentMemoryCache& cache, std::string entity_id, std::string text);
 [[nodiscard]] std::string EscapePromptText(std::string_view text);
 
 void AppendPersistentMemoryCacheSection(std::string& output, const PersistentMemoryCache& cache);
 
-void AppendMidTermEpisodesSection(std::string& output,
-                                  const std::vector<Episode>& mid_term_episodes);
-void AppendRetrievedMemorySection(std::string& output,
-                                  const std::optional<RetrievedMemory>& retrieved_memory);
-absl::Status AppendConversationSection(std::string& output, const Conversation& conversation);
+[[nodiscard]] absl::StatusOr<RenderedWorkingMemory>
+RenderWorkingMemoryBundle(const WorkingMemoryState& working_memory);
 
 [[nodiscard]] absl::StatusOr<std::string>
 RenderWorkingMemoryContext(const WorkingMemoryState& working_memory);
