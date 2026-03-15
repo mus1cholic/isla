@@ -256,7 +256,16 @@ ReadDecodedBodyChunk(asio::io_context* io_context, Stream* stream,
     // need_buffer means the parser filled our buffer and needs more space;
     // this is normal for streaming reads — not an error.
     if (read_error && read_error != beast::http::error::need_buffer) {
-        if (read_error == asio::error::eof) {
+        if (read_error == asio::error::eof || read_error == beast::http::error::end_of_stream) {
+            // Connection closed by peer. Let the parser see EOF so it can
+            // decide whether the message was complete (e.g. indeterminate-
+            // length body terminated by close) or truncated (mid-chunk or
+            // short Content-Length).
+            boost::system::error_code eof_error;
+            parser->put_eof(eof_error);
+            if (eof_error || !parser->is_done()) {
+                return UnavailableTransportError(error_prefix, read_error);
+            }
             *http_done = true;
             const std::size_t decoded = buffer_size - parser->get().body().size;
             return decoded;
