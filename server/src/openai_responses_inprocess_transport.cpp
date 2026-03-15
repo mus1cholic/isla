@@ -316,6 +316,7 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
                          InProcessTransportDeadline deadline, bool keep_alive = false,
                          bool* request_written = nullptr, bool* server_keep_alive = nullptr) {
     TransportStreamResult result;
+    std::size_t decoded_chunk_count = 0U;
     const std::string raw_request = BuildRawHttpRequest(config, request_json, keep_alive);
     absl::Status write_status = WriteInProcessRequest(io_context, stream, deadline, raw_request);
     if (!write_status.ok()) {
@@ -371,9 +372,9 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
     }
     VLOG(1) << "AI gateway openai responses received response headers host='"
             << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
-            << "' status_code=" << status_code << " keep_alive="
-            << (http_parser.get().keep_alive() ? "true" : "false") << " request_id='"
-            << SanitizeForLog(FindHeaderValue(http_parser, "x-request-id"))
+            << "' status_code=" << status_code
+            << " keep_alive=" << (http_parser.get().keep_alive() ? "true" : "false")
+            << " request_id='" << SanitizeForLog(FindHeaderValue(http_parser, "x-request-id"))
             << "' openai_processing_ms='"
             << SanitizeForLog(FindHeaderValue(http_parser, "openai-processing-ms")) << "'";
 
@@ -396,6 +397,25 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
             if (*decoded > 0U) {
                 if (!result.first_body_byte_at.has_value()) {
                     result.first_body_byte_at = TurnTelemetryContext::Clock::now();
+                }
+                ++decoded_chunk_count;
+                if (decoded_chunk_count <= 3U) {
+                    const auto now = TurnTelemetryContext::Clock::now();
+                    const auto since_headers_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - *result.response_headers_at)
+                            .count();
+                    const auto since_first_body_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - *result.first_body_byte_at)
+                            .count();
+                    VLOG(1) << "AI gateway openai responses decoded body chunk host='"
+                            << SanitizeForLog(config.host) << "' target='"
+                            << SanitizeForLog(config.target)
+                            << "' chunk_index=" << decoded_chunk_count << " bytes=" << *decoded
+                            << " http_done=" << (http_done ? "true" : "false")
+                            << " since_headers_ms=" << since_headers_ms
+                            << " since_first_body_ms=" << since_first_body_ms;
                 }
                 absl::Status append_status = AppendTransportBytes(
                     config, std::string_view(chunk_buffer.data(), *decoded), &body_text);
@@ -427,6 +447,23 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
         if (*decoded > 0U && !sse_completed) {
             if (!result.first_body_byte_at.has_value()) {
                 result.first_body_byte_at = TurnTelemetryContext::Clock::now();
+            }
+            ++decoded_chunk_count;
+            if (decoded_chunk_count <= 5U) {
+                const auto now = TurnTelemetryContext::Clock::now();
+                const auto since_headers_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  now - *result.response_headers_at)
+                                                  .count();
+                const auto since_first_body_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - *result.first_body_byte_at)
+                        .count();
+                VLOG(1) << "AI gateway openai responses decoded body chunk host='"
+                        << SanitizeForLog(config.host) << "' target='"
+                        << SanitizeForLog(config.target) << "' chunk_index=" << decoded_chunk_count
+                        << " bytes=" << *decoded << " http_done=" << (http_done ? "true" : "false")
+                        << " since_headers_ms=" << since_headers_ms
+                        << " since_first_body_ms=" << since_first_body_ms;
             }
             const absl::StatusOr<SseFeedDisposition> disposition =
                 ConsumeTransportChunk(config, std::string_view(chunk_buffer.data(), *decoded),

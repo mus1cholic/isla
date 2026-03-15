@@ -270,6 +270,15 @@ IncrementalSseParser::FlushBufferedEvent(const OpenAiResponsesEventCallback& on_
         return internal_error("openai responses stream contained invalid JSON");
     }
 
+    const absl::StatusOr<std::optional<std::string>> type_field =
+        ReadOptionalStringField(event_json, "type");
+    const std::string event_type =
+        type_field.ok() ? type_field->value_or("") : std::string("<unreadable>");
+    VLOG(1) << "AI gateway openai responses assembled SSE event event_index="
+            << (summary_.event_count + 1U) << " type='" << SanitizeForLog(event_type)
+            << "' event_name='" << SanitizeForLog(event_name_) << "' payload_bytes=" << data_.size()
+            << " first_event=" << (summary_.event_count == 0U ? "true" : "false");
+
     event_name_.clear();
     data_.clear();
     absl::Status dispatch_status = DispatchStreamEvent(event_json, &summary_, on_event);
