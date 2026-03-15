@@ -37,10 +37,12 @@ TEST_F(WorkingMemoryTest, CreateBuildsEmptyWorkingMemoryShape) {
 
     ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
 {
-  "system_prompt": "You are Isla.",
-  "persistent_memory_cache": {
-    "active_models": [],
-    "familiar_labels": []
+  "system_prompt": {
+    "base_instructions": "You are Isla.",
+    "persistent_memory_cache": {
+      "active_models": [],
+      "familiar_labels": []
+    }
   },
   "mid_term_episodes": [],
   "retrieved_memory": null,
@@ -61,7 +63,7 @@ TEST_F(WorkingMemoryTest, CreateWithoutExplicitSystemPromptUsesBundledPrompt) {
     ASSERT_TRUE(memory.ok()) << memory.status();
     const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
     ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
-    EXPECT_EQ(memory->snapshot().system_prompt, *system_prompt);
+    EXPECT_EQ(memory->snapshot().system_prompt.base_instructions, *system_prompt);
 }
 
 TEST_F(WorkingMemoryTest, RenderWithoutExplicitSystemPromptStartsWithBundledPrompt) {
@@ -136,20 +138,22 @@ TEST_F(WorkingMemoryTest, RendersPromptInDocumentSectionOrder) {
 
     ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
 {
-  "system_prompt": "You are Isla.",
-  "persistent_memory_cache": {
-    "active_models": [
-      {
-        "entity_id": "entity_user",
-        "text": "Airi, the user."
-      }
-    ],
-    "familiar_labels": [
-      {
-        "entity_id": "entity_mochi",
-        "text": "Airi's cat"
-      }
-    ]
+  "system_prompt": {
+    "base_instructions": "You are Isla.",
+    "persistent_memory_cache": {
+      "active_models": [
+        {
+          "entity_id": "entity_user",
+          "text": "Airi, the user."
+        }
+      ],
+      "familiar_labels": [
+        {
+          "entity_id": "entity_mochi",
+          "text": "Airi's cat"
+        }
+      ]
+    }
   },
   "mid_term_episodes": [
     {
@@ -233,23 +237,27 @@ TEST_F(WorkingMemoryTest, WriteBackCoreEntityPromotesToActiveCache) {
     ASSERT_TRUE(memory->WriteBackCoreEntity(kUserEntityId, "Airi, the user.").ok());
 
     const WorkingMemoryState& state = memory->snapshot();
-    ASSERT_EQ(state.persistent_memory_cache.active_models.size(), 1U);
-    EXPECT_EQ(state.persistent_memory_cache.active_models.front().entity_id, "entity_user");
-    EXPECT_EQ(state.persistent_memory_cache.active_models.front().text, "Airi, the user.");
-    EXPECT_TRUE(state.persistent_memory_cache.familiar_labels.empty());
+    ASSERT_EQ(state.system_prompt.persistent_memory_cache.active_models.size(), 1U);
+    EXPECT_EQ(state.system_prompt.persistent_memory_cache.active_models.front().entity_id,
+              "entity_user");
+    EXPECT_EQ(state.system_prompt.persistent_memory_cache.active_models.front().text,
+              "Airi, the user.");
+    EXPECT_TRUE(state.system_prompt.persistent_memory_cache.familiar_labels.empty());
     EXPECT_FALSE(memory->WriteBackCoreEntity("entity_sarah", "Sarah").ok());
 
     ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
 {
-  "system_prompt": "You are Isla.",
-  "persistent_memory_cache": {
-    "active_models": [
-      {
-        "entity_id": "entity_user",
-        "text": "Airi, the user."
-      }
-    ],
-    "familiar_labels": []
+  "system_prompt": {
+    "base_instructions": "You are Isla.",
+    "persistent_memory_cache": {
+      "active_models": [
+        {
+          "entity_id": "entity_user",
+          "text": "Airi, the user."
+        }
+      ],
+      "familiar_labels": []
+    }
   },
   "mid_term_episodes": [],
   "retrieved_memory": null,
@@ -327,10 +335,12 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTer
 
     ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
 {
-  "system_prompt": "You are Isla.",
-  "persistent_memory_cache": {
-    "active_models": [],
-    "familiar_labels": []
+  "system_prompt": {
+    "base_instructions": "You are Isla.",
+    "persistent_memory_cache": {
+      "active_models": [],
+      "familiar_labels": []
+    }
   },
   "mid_term_episodes": [
     {

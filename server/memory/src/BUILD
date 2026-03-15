@@ -87,6 +87,7 @@ cc_library(
 cc_library(
     name = "working_memory",
     srcs = [
+        "system_prompt.cpp",
         "working_memory.cpp",
         "working_memory_utils.cpp",
     ],
@@ -132,6 +133,15 @@ cc_test(
     srcs = ["prompt_loader_test.cpp"],
     deps = [
         ":prompt_loader",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "system_prompt_test",
+    srcs = ["system_prompt_test.cpp"],
+    deps = [
+        ":working_memory",
         "@googletest//:gtest_main",
     ],
 )

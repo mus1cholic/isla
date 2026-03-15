@@ -15,20 +15,22 @@ TEST(MemoryTypesTest, ParsesSessionJsonUsingDocumentShape) {
 {
   "session_id": "session_001",
   "working_memory": {
-    "system_prompt": "You are Isla.",
-    "persistent_memory_cache": {
-      "active_models": [
-        {
-          "entity_id": "entity_sarah",
-          "text": "Airi's close friend."
-        }
-      ],
-      "familiar_labels": [
-        {
-          "entity_id": "entity_mochi",
-          "text": "Airi's cat"
-        }
-      ]
+    "system_prompt": {
+      "base_instructions": "You are Isla.",
+      "persistent_memory_cache": {
+        "active_models": [
+          {
+            "entity_id": "entity_sarah",
+            "text": "Airi's close friend."
+          }
+        ],
+        "familiar_labels": [
+          {
+            "entity_id": "entity_mochi",
+            "text": "Airi's cat"
+          }
+        ]
+      }
     },
     "mid_term_episodes": [
       {
@@ -76,9 +78,10 @@ TEST(MemoryTypesTest, ParsesSessionJsonUsingDocumentShape) {
     const Session session = input.get<Session>();
 
     EXPECT_EQ(session.session_id, "session_001");
-    EXPECT_EQ(session.working_memory.system_prompt, "You are Isla.");
-    ASSERT_EQ(session.working_memory.persistent_memory_cache.active_models.size(), 1);
-    EXPECT_EQ(session.working_memory.persistent_memory_cache.active_models.front().entity_id,
+    EXPECT_EQ(session.working_memory.system_prompt.base_instructions, "You are Isla.");
+    ASSERT_EQ(session.working_memory.system_prompt.persistent_memory_cache.active_models.size(), 1);
+    EXPECT_EQ(session.working_memory.system_prompt.persistent_memory_cache.active_models.front()
+                  .entity_id,
               "entity_sarah");
     ASSERT_EQ(session.working_memory.mid_term_episodes.size(), 1);
     EXPECT_EQ(session.working_memory.mid_term_episodes.front().salience, 9);
