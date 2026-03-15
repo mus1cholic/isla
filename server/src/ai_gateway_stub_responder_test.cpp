@@ -254,7 +254,7 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
         absl::OkStatus(), "reply", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            const absl::Status delta_status =
+            absl::Status delta_status =
                 on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = "reply" });
             if (!delta_status.ok()) {
                 return delta_status;
@@ -314,7 +314,7 @@ TEST_F(GatewayStubResponderTest,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
             const std::string reply = std::string("stub echo: ") + latest_text;
-            const absl::Status delta_status =
+            absl::Status delta_status =
                 on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = reply });
             if (!delta_status.ok()) {
                 return delta_status;

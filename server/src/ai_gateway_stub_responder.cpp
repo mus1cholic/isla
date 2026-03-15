@@ -1,6 +1,7 @@
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <exception>
 #include <future>
 #include <optional>
@@ -19,8 +20,10 @@ namespace isla::server::ai_gateway {
 namespace {
 
 using namespace std::chrono_literals;
-inline constexpr std::size_t kMaxRenderedSystemPromptBytes = 64U * 1024U;
-inline constexpr std::size_t kMaxRenderedWorkingMemoryContextBytes = 64U * 1024U;
+inline constexpr std::size_t kMaxRenderedSystemPromptBytes =
+    static_cast<const std::size_t>(64U * 1024U);
+inline constexpr std::size_t kMaxRenderedWorkingMemoryContextBytes =
+    static_cast<const std::size_t>(64U * 1024U);
 inline constexpr std::size_t kMaxRenderedPromptBytes =
     kMaxRenderedSystemPromptBytes + kMaxRenderedWorkingMemoryContextBytes;
 
