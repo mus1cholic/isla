@@ -532,6 +532,8 @@ absl::StatusOr<HttpResponse> PersistentHttpClient::Execute(const HttpRequestSpec
     }
 
     // If the request failed with a transport error, reconnect and retry once.
+    // NOTE: this assumes all requests are idempotent (e.g. Supabase upserts). If
+    // non-idempotent callers are added, retry should be made opt-in per request.
     if (!absl::IsUnavailable(result.status()) && !absl::IsDeadlineExceeded(result.status())) {
         return result;
     }

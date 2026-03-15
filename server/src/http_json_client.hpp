@@ -51,6 +51,10 @@ BuildHttpQueryString(const std::vector<std::pair<std::string, std::string>>& que
                                                               const HttpClientConfig& config,
                                                               const HttpRequestSpec& request);
 
+// Maintains a persistent HTTP(S) connection to a single host for reuse across
+// requests. Thread-safe via internal mutex. The owner must ensure this object
+// outlives all concurrent Execute() calls; destroying it while a call is
+// in-flight is undefined behavior that cannot be fixed by locking the destructor.
 class PersistentHttpClient {
   public:
     PersistentHttpClient(ParsedHttpUrl parsed_url, HttpClientConfig config);

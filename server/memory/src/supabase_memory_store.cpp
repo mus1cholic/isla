@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
-#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -473,11 +472,10 @@ class SupabaseMemoryStore final : public MemoryStore {
             return ParseJsonArrayResponse(*episodes_response, "supabase mid_term_episodes");
         };
 
-        auto item_rows_future = std::async(std::launch::async, fetch_item_rows);
-        auto message_rows_future = std::async(std::launch::async, fetch_message_rows);
-        auto episode_rows_future = std::async(std::launch::async, fetch_episode_rows);
-
-        const absl::StatusOr<json> item_rows = item_rows_future.get();
+        // These run sequentially on the same persistent connection. Using
+        // std::async would only add thread overhead since PersistentHttpClient
+        // serializes requests via its internal mutex.
+        const absl::StatusOr<json> item_rows = fetch_item_rows();
         if (!item_rows.ok()) {
             return item_rows.status();
         }
@@ -502,7 +500,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                 std::string("supabase conversation_items row was malformed: ") + error.what());
         }
 
-        const absl::StatusOr<json> message_rows = message_rows_future.get();
+        const absl::StatusOr<json> message_rows = fetch_message_rows();
         if (!message_rows.ok()) {
             return message_rows.status();
         }
@@ -533,7 +531,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                 std::string("supabase conversation_messages row was malformed: ") + error.what());
         }
 
-        const absl::StatusOr<json> episode_rows = episode_rows_future.get();
+        const absl::StatusOr<json> episode_rows = fetch_episode_rows();
         if (!episode_rows.ok()) {
             return episode_rows.status();
         }
