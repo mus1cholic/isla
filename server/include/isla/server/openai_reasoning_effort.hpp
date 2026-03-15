@@ -29,7 +29,7 @@ OpenAiReasoningEffortToString(OpenAiReasoningEffort effort) {
     case OpenAiReasoningEffort::kXHigh:
         return "xhigh";
     }
-    return "none";
+    return "unknown";
 }
 
 } // namespace isla::server::ai_gateway
