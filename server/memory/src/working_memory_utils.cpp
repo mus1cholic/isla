@@ -150,7 +150,8 @@ void AppendPersistentMemoryCacheSection(std::string& output, const PersistentMem
 }
 
 absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
-    absl::StatusOr<std::string> rendered_system_prompt = RenderSystemPrompt(working_memory.system_prompt);
+    absl::StatusOr<std::string> rendered_system_prompt =
+        RenderSystemPrompt(working_memory.system_prompt);
     if (!rendered_system_prompt.ok()) {
         return rendered_system_prompt.status();
     }

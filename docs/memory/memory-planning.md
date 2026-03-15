@@ -37,10 +37,12 @@ Session {
 WorkingMemoryState {
 
   // Working memory components (always present in context window)
-  system_prompt:            "...",
-  persistent_memory_cache:  {
-    active_models:          [ActiveModel, ...],
-    familiar_labels:        [FamiliarLabel, ...]
+  system_prompt:            {
+    base_instructions:      "...",
+    persistent_memory_cache: {
+      active_models:        [ActiveModel, ...],
+      familiar_labels:      [FamiliarLabel, ...]
+    }
   },
   mid_term_episodes:        [Episode, ...],     // always injected at Tier 2
 
@@ -277,25 +279,23 @@ Either when the threshold is reached, or an Episode is finished and a new Episod
 
 The layout of the working memory at all times:
 
-```
-┌─────────────────────────────────────────────━E
-━E{system_prompt}                             ━E
-├─────────────────────────────────────────────┤
-━E{persistent_memory_cache}                   ━E
-━E ├─ Active Models (rich, ~2-3 entities)     ━E
-━E └─ Familiar Labels (thin, ~20-50 entities) ━E
-├─────────────────────────────────────────────┤
-━E{mid_term_episodes}  (always present)       ━E
-━E └─ All episodes at Tier 2 summaries        ━E
-├─────────────────────────────────────────────┤
-━E{retrieved_memory}  (filtered by re-ranker) ━E
-━E ├─ KG facts (spreading activation)         ━E
-━E └─ Episodic narratives                     ━E
-├─────────────────────────────────────────────┤
-━E{conversation}                              ━E
-━E ├─ EpisodeStubs for flushed episodes       ━E
-━E └─ Current OngoingEpisodes + messages           ━E
-└─────────────────────────────────────────────━E
+```text
+{system_prompt}
+  Base instructions
+  Persistent Memory Cache
+    Active Models (rich, ~2-3 entities)
+    Familiar Labels (thin, ~20-50 entities)
+
+{mid_term_episodes}  (always present)
+  All episodes at Tier 2 summaries
+
+{retrieved_memory}  (filtered by re-ranker)
+  KG facts (spreading activation)
+  Episodic narratives
+
+{conversation}
+  EpisodeStubs for flushed episodes
+  Current OngoingEpisodes + messages
 ```
 
 ---
@@ -744,15 +744,15 @@ Filtered results are merged with what's already in the context window. The assis
 
 ```
 {system_prompt}
-
-{persistent_memory_cache}
-  Active Models:
-    [Airi] - the user. Casual, technical. Currently planning Sarah's birthday.
-    [Sarah] - Airi's close friend. Birthday March 20. Peanut allergy.
-  Familiar Labels:
-    [Mochi] - Airi's cat
-    [Takeshi] - Airi's cousin
-    [Luna Bakery] - bakery Airi has used before
+  Base instructions: ...
+  Persistent Memory Cache:
+    Active Models:
+      [Airi] - the user. Casual, technical. Currently planning Sarah's birthday.
+      [Sarah] - Airi's close friend. Birthday March 20. Peanut allergy.
+    Familiar Labels:
+      [Mochi] - Airi's cat
+      [Takeshi] - Airi's cousin
+      [Luna Bakery] - bakery Airi has used before
 
 {mid_term_episodes}  (always present)
    - [Today] Discussed restaurant options for Sarah's birthday.

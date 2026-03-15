@@ -18,7 +18,7 @@ class SystemPrompt {
         return state_;
     }
 
-    [[nodiscard]] PersistentMemoryCache& mutable_persistent_memory_cache() {
+    PersistentMemoryCache& mutable_persistent_memory_cache() {
         return state_.persistent_memory_cache;
     }
 
@@ -35,6 +35,7 @@ class SystemPrompt {
 [[nodiscard]] absl::StatusOr<SystemPromptState>
 CreateSystemPromptState(std::string_view configured_prompt);
 
-[[nodiscard]] absl::StatusOr<std::string> RenderSystemPrompt(const SystemPromptState& system_prompt);
+[[nodiscard]] absl::StatusOr<std::string>
+RenderSystemPrompt(const SystemPromptState& system_prompt);
 
 } // namespace isla::server::memory

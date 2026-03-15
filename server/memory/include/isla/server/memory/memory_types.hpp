@@ -88,6 +88,8 @@ struct Conversation {
 };
 
 struct WorkingMemoryState {
+    // Stable high-priority prompt context: bundled/configured base instructions plus
+    // persistent-memory cache entries that should ride alongside those instructions.
     SystemPromptState system_prompt;
     std::vector<Episode> mid_term_episodes;
     // TODO: Replace this placeholder string with structured retrieved-memory
