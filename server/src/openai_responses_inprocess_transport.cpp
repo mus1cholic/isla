@@ -179,6 +179,26 @@ absl::Status ConnectInProcessStream(asio::io_context* io_context, Stream* stream
         return UnavailableTransportError("failed to connect to openai responses host",
                                          connect_error);
     }
+
+    // Disable Nagle's algorithm so request bytes are sent immediately rather
+    // than waiting up to ~200ms for more data to coalesce.
+    tcp::socket* tcp_socket = nullptr;
+    if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
+        tcp_socket = &stream->socket();
+    }
+#if !defined(_WIN32)
+    else if constexpr (std::is_same_v<Stream, beast::ssl_stream<beast::tcp_stream>>) {
+        tcp_socket = &beast::get_lowest_layer(*stream).socket();
+    }
+#endif
+    if (tcp_socket) {
+        boost::system::error_code nodelay_error;
+        tcp_socket->set_option(tcp::no_delay(true), nodelay_error);
+        if (nodelay_error) {
+            LOG(WARNING) << "AI gateway failed to set TCP_NODELAY: " << nodelay_error.message();
+        }
+    }
+
     return absl::OkStatus();
 }
 
