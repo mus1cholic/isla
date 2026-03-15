@@ -1,5 +1,6 @@
 #include "isla/server/ai_gateway_session_handler.hpp"
 
+#include <memory>
 #include <string>
 #include <variant>
 
@@ -15,6 +16,15 @@ namespace protocol = isla::shared::ai_gateway;
 absl::StatusOr<protocol::GatewayMessage> parse_frame(const std::string& frame) {
     return protocol::parse_json_message(frame);
 }
+
+class RecordingTelemetrySink final : public TelemetrySink {
+  public:
+    void OnTurnAccepted(const TurnTelemetryContext& context) const override {
+        accepted_turns.push_back({ .session_id = context.session_id, .turn_id = context.turn_id });
+    }
+
+    mutable std::vector<TurnAcceptedEvent> accepted_turns;
+};
 
 TEST(AiGatewaySessionHandlerTest, SessionStartEmitsSessionStarted) {
     GatewaySessionHandler handler("srv_test");
@@ -85,6 +95,26 @@ TEST(AiGatewaySessionHandlerTest, AcceptsTextInputAsApplicationEvent) {
     EXPECT_EQ(result.accepted_turn->session_id, "srv_test");
     EXPECT_EQ(result.accepted_turn->turn_id, "turn_1");
     EXPECT_EQ(result.accepted_turn->text, "hello");
+    ASSERT_NE(result.accepted_turn->telemetry_context, nullptr);
+    EXPECT_EQ(result.accepted_turn->telemetry_context->session_id, "srv_test");
+    EXPECT_EQ(result.accepted_turn->telemetry_context->turn_id, "turn_1");
+}
+
+TEST(AiGatewaySessionHandlerTest, AcceptedTurnNotifiesCustomTelemetrySink) {
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    GatewaySessionHandler handler("srv_test", telemetry_sink);
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json");
+
+    ASSERT_TRUE(result.ok);
+    ASSERT_TRUE(result.accepted_turn.has_value());
+    ASSERT_NE(result.accepted_turn->telemetry_context, nullptr);
+    EXPECT_EQ(result.accepted_turn->telemetry_context->sink, telemetry_sink);
+    ASSERT_EQ(telemetry_sink->accepted_turns.size(), 1U);
+    EXPECT_EQ(telemetry_sink->accepted_turns.front().session_id, "srv_test");
+    EXPECT_EQ(telemetry_sink->accepted_turns.front().turn_id, "turn_1");
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {

@@ -12,6 +12,7 @@ exports_files([
 cc_library(
     name = "server_headers",
     hdrs = [
+        "ai_gateway_telemetry.hpp",
         "ai_gateway_executor.hpp",
         "ai_gateway_logging_utils.hpp",
         "ai_gateway_planner.hpp",

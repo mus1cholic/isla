@@ -497,6 +497,10 @@ The current implementation suggests these first instrumentation targets:
 
 ## Changelog
 
+- 2026-03-14: implemented Phase 1 with a local telemetry seam in the gateway codebase, including a
+  shared `TurnTelemetryContext`, a default no-op `TelemetrySink`, gateway-boundary context creation
+  at accepted-turn time, and propagation of that turn-scoped context through the responder,
+  executor, and provider request surfaces.
 - 2026-03-14: added the initial telemetry Phase 0 baseline covering root turn timing, canonical
   latency segments, metric/span naming, privacy and cardinality rules, clock policy, and a phased
   implementation path toward an OpenTelemetry-backed export layer and later user-perceived

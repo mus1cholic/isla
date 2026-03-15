@@ -142,6 +142,7 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
             .system_prompt = std::string(effective_system_prompt),
             .user_text = runtime_input.user_text,
             .reasoning_effort = reasoning_effort_,
+            .telemetry_context = runtime_input.telemetry_context,
         },
         [this, &output_text,
          &logged_first_token](const OpenAiResponsesEvent& event) -> absl::Status {

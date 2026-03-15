@@ -273,11 +273,14 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
     responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    const std::shared_ptr<const TurnTelemetryContext> telemetry_context =
+        MakeTurnTelemetryContext("srv_test", "turn_1");
 
     responder.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = "srv_test",
         .turn_id = "turn_1",
         .text = "hello",
+        .telemetry_context = telemetry_context,
     });
 
     ASSERT_TRUE(session->WaitForEventCount(2U));
@@ -296,6 +299,7 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
               std::string::npos);
     EXPECT_EQ(capturing_client->last_request.user_text.find("You are Isla."), std::string::npos);
     EXPECT_NE(capturing_client->last_request.user_text.find("] hello"), std::string::npos);
+    EXPECT_EQ(capturing_client->last_request.telemetry_context, telemetry_context);
 }
 
 TEST(GatewayStubResponderStandaloneTest,

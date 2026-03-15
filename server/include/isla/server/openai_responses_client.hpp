@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/openai_reasoning_effort.hpp"
 
 namespace isla::server::ai_gateway {
@@ -32,6 +33,7 @@ struct OpenAiResponsesRequest {
     std::string system_prompt;
     std::string user_text;
     OpenAiReasoningEffort reasoning_effort = OpenAiReasoningEffort::kNone;
+    std::shared_ptr<const TurnTelemetryContext> telemetry_context;
 };
 
 struct OpenAiResponsesTextDeltaEvent {
