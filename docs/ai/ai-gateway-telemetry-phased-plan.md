@@ -497,6 +497,11 @@ The current implementation suggests these first instrumentation targets:
 
 ## Changelog
 
+- 2026-03-14: implemented Phase 2 for the current gateway path by recording `gateway.accept`,
+  `memory.user_query`, `queue.wait`, `plan.create`, `executor.total`, `emit.text_output`,
+  `memory.assistant_reply`, `emit.turn_completed`, `emit.error`, and `emit.turn_cancelled`, along
+  with the corresponding canonical timestamp events and terminal turn outcomes through the local
+  telemetry seam.
 - 2026-03-14: implemented Phase 1 with a local telemetry seam in the gateway codebase, including a
   shared `TurnTelemetryContext`, a default no-op `TelemetrySink`, gateway-boundary context creation
   at accepted-turn time, and propagation of that turn-scoped context through the responder,

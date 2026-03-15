@@ -31,6 +31,8 @@ GatewaySessionHandler::GatewaySessionHandler(std::string session_id,
 
 HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view json_text) {
     HandleIncomingResult result{};
+    const TurnTelemetryContext::Clock::time_point gateway_accept_started =
+        TurnTelemetryContext::Clock::now();
     const absl::StatusOr<protocol::GatewayMessage> parsed = protocol::parse_json_message(json_text);
     if (!parsed.ok()) {
         return RejectIncoming(std::nullopt, "bad_request", parsed.status().message());
@@ -77,13 +79,20 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
             return RejectIncoming(text_input.turn_id, "bad_request", status.message());
         }
 
+        const TurnTelemetryContext::Clock::time_point accepted_at =
+            TurnTelemetryContext::Clock::now();
+        const std::shared_ptr<const TurnTelemetryContext> telemetry_context =
+            MakeTurnTelemetryContext(current_session_id(), text_input.turn_id, telemetry_sink_,
+                                     accepted_at);
+        RecordTelemetryPhase(telemetry_context, telemetry::kPhaseGatewayAccept,
+                             gateway_accept_started, accepted_at);
+        RecordTelemetryEvent(telemetry_context, telemetry::kEventTurnAccepted, accepted_at);
         result.ok = true;
         result.accepted_turn = TurnAcceptedEvent{
             .session_id = current_session_id(),
             .turn_id = text_input.turn_id,
             .text = text_input.text,
-            .telemetry_context =
-                MakeTurnTelemetryContext(current_session_id(), text_input.turn_id, telemetry_sink_),
+            .telemetry_context = telemetry_context,
         };
         return result;
     }

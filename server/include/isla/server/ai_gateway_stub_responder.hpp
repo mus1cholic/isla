@@ -69,12 +69,14 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
         std::string rendered_system_prompt;
         std::string rendered_working_memory_context;
         std::shared_ptr<const TurnTelemetryContext> telemetry_context;
+        Clock::time_point enqueued_at = Clock::time_point::min();
         Clock::time_point ready_at = Clock::time_point::min();
         bool cancel_requested = false;
     };
 
     void StopWorker();
     void WorkerLoop();
+    void RecordDequeueTelemetry(const PendingTurn& turn, Clock::time_point dequeued_at) const;
     [[nodiscard]] bool TryMarkTrackedTurnCancelled(std::string_view session_id,
                                                    std::string_view turn_id);
     [[nodiscard]] bool IsTrackedTurnCancelled(std::string_view session_id,

@@ -101,6 +101,9 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
         return;
     }
 
+    ScopedTelemetryPhase memory_user_query_phase(
+        event.telemetry_context, telemetry::kPhaseMemoryUserQuery,
+        telemetry::kEventMemoryUserQueryStarted, telemetry::kEventMemoryUserQueryCompleted);
     const absl::StatusOr<isla::server::memory::UserQueryMemoryResult> memory_result =
         HandleAcceptedTurnMemory(event);
     if (!memory_result.ok()) {
@@ -125,9 +128,14 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
     VLOG(1) << "AI gateway stub prepared working memory session="
             << SanitizeForLog(event.session_id) << " turn_id=" << SanitizeForLog(event.turn_id)
             << " working_memory_bytes=" << memory_result->rendered_working_memory.size();
+    memory_user_query_phase.Finish();
 
+    Clock::time_point enqueued_at = Clock::time_point::min();
+    std::shared_ptr<const TurnTelemetryContext> enqueued_telemetry_context =
+        event.telemetry_context;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        enqueued_at = Clock::now();
         VLOG(1) << "AI gateway stub queued turn session=" << event.session_id
                 << " turn_id=" << SanitizeForLog(event.turn_id)
                 << " delay_ms=" << config_.response_delay.count();
@@ -140,10 +148,12 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
                 .rendered_system_prompt = memory_result->rendered_system_prompt,
                 .rendered_working_memory_context = memory_result->rendered_working_memory_context,
                 .telemetry_context = event.telemetry_context,
+                .enqueued_at = enqueued_at,
                 .ready_at = Clock::now() + config_.response_delay,
                 .cancel_requested = false,
             });
     }
+    RecordTelemetryEvent(enqueued_telemetry_context, telemetry::kEventTurnEnqueued, enqueued_at);
 
     cv_.notify_all();
 }
@@ -214,10 +224,21 @@ void GatewayStubResponder::StopWorker() {
     }
 }
 
+void GatewayStubResponder::RecordDequeueTelemetry(const PendingTurn& turn,
+                                                  Clock::time_point dequeued_at) const {
+    if (turn.enqueued_at != Clock::time_point::min()) {
+        RecordTelemetryPhase(turn.telemetry_context, telemetry::kPhaseQueueWait, turn.enqueued_at,
+                             dequeued_at);
+    }
+    RecordTelemetryEvent(turn.telemetry_context, telemetry::kEventTurnDequeued, dequeued_at);
+}
+
 void GatewayStubResponder::WorkerLoop() {
     for (;;) {
         std::optional<PendingTurn> next_turn;
         std::optional<Clock::time_point> next_deadline;
+        std::optional<PendingTurn> dequeued_turn;
+        Clock::time_point dequeued_at = Clock::time_point::min();
 
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -231,6 +252,8 @@ void GatewayStubResponder::WorkerLoop() {
                     PendingTurn& turn = it->second;
                     if (turn.cancel_requested) {
                         next_turn = turn;
+                        dequeued_turn = turn;
+                        dequeued_at = now;
                         VLOG(1) << "AI gateway stub dequeued cancellation session="
                                 << SanitizeForLog(it->first)
                                 << " turn_id=" << SanitizeForLog(turn.turn_id);
@@ -240,6 +263,8 @@ void GatewayStubResponder::WorkerLoop() {
                     }
                     if (turn.ready_at <= now) {
                         next_turn = turn;
+                        dequeued_turn = turn;
+                        dequeued_at = now;
                         VLOG(1) << "AI gateway stub dequeued ready turn session="
                                 << SanitizeForLog(it->first)
                                 << " turn_id=" << SanitizeForLog(turn.turn_id);
@@ -263,6 +288,10 @@ void GatewayStubResponder::WorkerLoop() {
                 }
                 next_deadline.reset();
             }
+        }
+
+        if (dequeued_turn.has_value()) {
+            RecordDequeueTelemetry(*dequeued_turn, dequeued_at);
         }
 
         if (!next_turn.has_value()) {
@@ -411,6 +440,7 @@ void GatewayStubResponder::BestEffortTerminateAcceptedTurn(const PendingTurn& tu
                                                            std::string_view message,
                                                            std::string_view log_context) noexcept {
     try {
+        RecordTelemetryEvent(turn.telemetry_context, telemetry::kEventTurnFailed);
         GatewaySessionRegistry* registry = session_registry();
         if (registry == nullptr) {
             LOG(WARNING) << "AI gateway stub missing session registry during " << log_context
@@ -429,11 +459,15 @@ void GatewayStubResponder::BestEffortTerminateAcceptedTurn(const PendingTurn& tu
         }
 
         if (!code.empty() && !message.empty()) {
+            ScopedTelemetryPhase emit_error_phase(
+                turn.telemetry_context, telemetry::kPhaseEmitError,
+                telemetry::kEventErrorEmitStarted, telemetry::kEventErrorEmitCompleted);
             const absl::Status error_status =
                 await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
                     live_session->AsyncEmitError(turn.turn_id, std::string(code),
                                                  std::string(message), std::move(on_complete));
                 });
+            emit_error_phase.Finish();
             if (!error_status.ok()) {
                 LOG(WARNING) << "AI gateway stub failed to emit follow-up error during "
                              << log_context << " session=" << SanitizeForLog(turn.session_id)
@@ -442,10 +476,16 @@ void GatewayStubResponder::BestEffortTerminateAcceptedTurn(const PendingTurn& tu
             }
         }
 
+        ScopedTelemetryPhase completion_phase(
+            turn.telemetry_context, telemetry::kPhaseEmitTurnCompleted,
+            telemetry::kEventTurnCompletedEmitStarted, telemetry::kEventTurnCompletedEmitCompleted);
         const absl::Status completion_status =
             await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
                 live_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
             });
+        const Clock::time_point finished_at = Clock::now();
+        completion_phase.Finish(finished_at);
+        RecordTurnFinished(turn.telemetry_context, telemetry::kOutcomeFailed, finished_at);
         if (!completion_status.ok()) {
             LOG(WARNING) << "AI gateway stub failed to emit follow-up completion during "
                          << log_context << " session=" << SanitizeForLog(turn.session_id)
@@ -532,7 +572,11 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
+    ScopedTelemetryPhase plan_create_phase(turn.telemetry_context, telemetry::kPhasePlanCreate,
+                                           telemetry::kEventPlanCreateStarted,
+                                           telemetry::kEventPlanCreateCompleted);
     const absl::StatusOr<ExecutionPlan> execution_plan = CreateOpenAiPlan();
+    plan_create_phase.Finish();
     if (!execution_plan.ok()) {
         LOG(ERROR) << "AI gateway stub planner rejected accepted turn session="
                    << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
@@ -606,10 +650,14 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
     }
     VLOG(1) << "AI gateway stub emitting successful reply session="
             << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id);
+    ScopedTelemetryPhase emit_text_output_phase(
+        turn.telemetry_context, telemetry::kPhaseEmitTextOutput,
+        telemetry::kEventTextOutputEmitStarted, telemetry::kEventTextOutputEmitCompleted);
     absl::Status status =
         await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
             reply_session->AsyncEmitTextOutput(turn.turn_id, reply, std::move(on_complete));
         });
+    emit_text_output_phase.Finish();
     if (!status.ok()) {
         LOG(WARNING) << "AI gateway stub failed to emit text output session="
                      << SanitizeForLog(turn.session_id)
@@ -621,7 +669,12 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
+    ScopedTelemetryPhase memory_assistant_reply_phase(
+        turn.telemetry_context, telemetry::kPhaseMemoryAssistantReply,
+        telemetry::kEventMemoryAssistantReplyStarted,
+        telemetry::kEventMemoryAssistantReplyCompleted);
     status = HandleSuccessfulReplyMemory(turn, reply);
+    memory_assistant_reply_phase.Finish();
     if (!status.ok()) {
         LOG(WARNING) << "AI gateway stub failed to record assistant reply in memory session="
                      << SanitizeForLog(turn.session_id)
@@ -651,9 +704,15 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         return;
     }
 
+    ScopedTelemetryPhase completion_phase(
+        turn.telemetry_context, telemetry::kPhaseEmitTurnCompleted,
+        telemetry::kEventTurnCompletedEmitStarted, telemetry::kEventTurnCompletedEmitCompleted);
     status = await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
         completion_session->AsyncEmitTurnCompleted(turn.turn_id, std::move(on_complete));
     });
+    const Clock::time_point finished_at = Clock::now();
+    completion_phase.Finish(finished_at);
+    RecordTurnFinished(turn.telemetry_context, telemetry::kOutcomeSucceeded, finished_at);
     if (!status.ok()) {
         LOG(WARNING) << "AI gateway stub failed to emit turn completion session="
                      << SanitizeForLog(turn.session_id)
@@ -686,10 +745,16 @@ void GatewayStubResponder::FinishCancelledTurn(const PendingTurn& turn) {
 
     VLOG(1) << "AI gateway stub emitting cancellation session=" << SanitizeForLog(turn.session_id)
             << " turn_id=" << SanitizeForLog(turn.turn_id);
+    ScopedTelemetryPhase cancellation_phase(
+        turn.telemetry_context, telemetry::kPhaseEmitTurnCancelled,
+        telemetry::kEventTurnCancelledEmitStarted, telemetry::kEventTurnCancelledEmitCompleted);
     const absl::Status status =
         await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
             live_session->AsyncEmitTurnCancelled(turn.turn_id, std::move(on_complete));
         });
+    const Clock::time_point finished_at = Clock::now();
+    cancellation_phase.Finish(finished_at);
+    RecordTurnFinished(turn.telemetry_context, telemetry::kOutcomeCancelled, finished_at);
     if (!status.ok()) {
         LOG(WARNING) << "AI gateway stub failed to emit turn cancelled session="
                      << SanitizeForLog(turn.session_id)

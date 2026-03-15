@@ -12,6 +12,44 @@
 namespace isla::server::ai_gateway {
 namespace {
 
+class RecordingTelemetrySink final : public TelemetrySink {
+  public:
+    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
+                 TurnTelemetryContext::Clock::time_point at) const override {
+        static_cast<void>(context);
+        static_cast<void>(at);
+        events.emplace_back(event_name);
+    }
+
+    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
+                 TurnTelemetryContext::Clock::time_point started_at,
+                 TurnTelemetryContext::Clock::time_point completed_at) const override {
+        static_cast<void>(context);
+        phases.push_back(PhaseRecord{
+            .name = std::string(phase_name),
+            .started_at = started_at,
+            .completed_at = completed_at,
+        });
+    }
+
+    struct PhaseRecord {
+        std::string name;
+        TurnTelemetryContext::Clock::time_point started_at;
+        TurnTelemetryContext::Clock::time_point completed_at;
+    };
+
+    mutable std::vector<std::string> events;
+    mutable std::vector<PhaseRecord> phases;
+};
+
+void ExpectExecutorTelemetryRecorded(const RecordingTelemetrySink& telemetry_sink) {
+    ASSERT_EQ(telemetry_sink.events.size(), 2U);
+    EXPECT_EQ(telemetry_sink.events[0], telemetry::kEventExecutorStarted);
+    EXPECT_EQ(telemetry_sink.events[1], telemetry::kEventExecutorCompleted);
+    ASSERT_EQ(telemetry_sink.phases.size(), 1U);
+    EXPECT_EQ(telemetry_sink.phases[0].name, telemetry::kPhaseExecutorTotal);
+}
+
 class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
     explicit FailingOpenAiResponsesClient(absl::Status status) : status_(std::move(status)) {}
@@ -49,8 +87,7 @@ class SequencedOpenAiResponsesClient final : public OpenAiResponsesClient {
             return absl::InternalError("unexpected extra provider call");
         }
         const std::string& output = outputs_[next_index_++];
-        const absl::Status delta_status =
-            on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = output });
+        absl::Status delta_status = on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = output });
         if (!delta_status.ok()) {
             return delta_status;
         }
@@ -83,11 +120,14 @@ class ThrowingOpenAiResponsesClient final : public OpenAiResponsesClient {
 
 TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     GatewayPlanExecutor executor;
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
 
-    const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{},
-                                                      ExecutionRuntimeInput{
-                                                          .user_text = "shared input",
-                                                      });
+    const ExecutionOutcome outcome = executor.Execute(
+        ExecutionPlan{},
+        ExecutionRuntimeInput{
+            .user_text = "shared input",
+            .telemetry_context = MakeTurnTelemetryContext("srv_test", "turn_empty", telemetry_sink),
+        });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
     const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
@@ -96,11 +136,13 @@ TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     EXPECT_EQ(failure.code, "bad_request");
     EXPECT_EQ(failure.message, "execution plan must include at least one step");
     EXPECT_FALSE(failure.retryable);
+    ExpectExecutorTelemetryRecorded(*telemetry_sink);
 }
 
 TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
     auto client = std::make_shared<SequencedOpenAiResponsesClient>(
         std::vector<std::string>{ "alpha", "beta" });
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
         .openai_client = client,
     });
@@ -120,17 +162,21 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
                 },
             },
     },
-                                             ExecutionRuntimeInput{
-                                                 .user_text = "shared input",
-                                             });
+    ExecutionRuntimeInput{
+        .user_text = "shared input",
+        .telemetry_context =
+            MakeTurnTelemetryContext("srv_test", "turn_1",
+                                    telemetry_sink),
+    });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionResult>(outcome));
     EXPECT_EQ(client->call_order, std::vector<std::string>({ "model_a", "model_b" }));
 
-    const ExecutionResult& result = std::get<ExecutionResult>(outcome);
+    const auto& result = std::get<ExecutionResult>(outcome);
     ASSERT_EQ(result.step_results.size(), 2U);
     EXPECT_EQ(std::get<LlmCallResult>(result.step_results[0]).output_text, "alpha");
     EXPECT_EQ(std::get<LlmCallResult>(result.step_results[1]).output_text, "beta");
+    ExpectExecutorTelemetryRecorded(*telemetry_sink);
 }
 
 TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {
@@ -160,7 +206,7 @@ TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {
                                              });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
-    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    const auto& failure = std::get<ExecutionFailure>(outcome);
     EXPECT_EQ(failure.failed_step_index, 0U);
     EXPECT_EQ(failure.step_name, "step_a");
     EXPECT_EQ(failure.code, "bad_request");
@@ -213,7 +259,7 @@ TEST(GatewayPlanExecutorTest, MapsInternalStepFailuresToStablePublicError) {
                                              });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
-    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    const auto& failure = std::get<ExecutionFailure>(outcome);
     EXPECT_EQ(failure.failed_step_index, 0U);
     EXPECT_EQ(failure.step_name, "step_a");
     EXPECT_EQ(failure.code, "internal_error");
@@ -242,7 +288,7 @@ TEST(GatewayPlanExecutorTest, MapsUnauthenticatedProviderFailuresToAuthenticatio
                                              });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
-    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    const auto& failure = std::get<ExecutionFailure>(outcome);
     EXPECT_EQ(failure.code, "authentication_error");
     EXPECT_EQ(failure.message, "upstream authentication failed");
     EXPECT_FALSE(failure.retryable);
@@ -269,7 +315,7 @@ TEST(GatewayPlanExecutorTest, MapsPermissionDeniedProviderFailuresToPermissionDe
                                              });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
-    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    const auto& failure = std::get<ExecutionFailure>(outcome);
     EXPECT_EQ(failure.code, "permission_denied");
     EXPECT_EQ(failure.message, "upstream request was not permitted");
     EXPECT_FALSE(failure.retryable);
@@ -296,7 +342,7 @@ TEST(GatewayPlanExecutorTest, MapsResourceExhaustedProviderFailuresToResponseToo
                                              });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
-    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    const auto& failure = std::get<ExecutionFailure>(outcome);
     EXPECT_EQ(failure.code, "response_too_large");
     EXPECT_EQ(failure.message, "execution step produced too much output");
     EXPECT_FALSE(failure.retryable);
