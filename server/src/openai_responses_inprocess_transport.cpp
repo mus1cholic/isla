@@ -18,7 +18,6 @@
 #endif
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/write.hpp>
-#include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http.hpp>
@@ -54,11 +53,6 @@ absl::Status UnavailableTransportError(std::string_view prefix,
     }
     return absl::UnavailableError(std::string(prefix) + ": " + error.message());
 }
-
-struct ParsedHttpResponseHead {
-    unsigned int status_code = 0;
-    std::string buffered_body;
-};
 
 using InProcessTransportDeadline = std::chrono::steady_clock::time_point;
 
@@ -217,95 +211,71 @@ absl::Status WriteInProcessRequest(asio::io_context* io_context, Stream* stream,
     return absl::OkStatus();
 }
 
-template <typename Stream>
-absl::StatusOr<std::size_t> ReadInProcessChunk(asio::io_context* io_context, Stream* stream,
-                                               InProcessTransportDeadline deadline, char* buffer,
-                                               std::size_t buffer_size, bool* eof,
-                                               std::string_view prefix) {
-    io_context->restart();
-
-    boost::system::error_code read_error;
-    std::size_t bytes_read = 0U;
-    bool read_completed = false;
-    SetInProcessTransportDeadline(stream, deadline);
-    stream->async_read_some(asio::buffer(buffer, buffer_size),
-                            [&read_error, &bytes_read, &read_completed](
-                                const boost::system::error_code& error, std::size_t transferred) {
-                                read_error = error;
-                                bytes_read = transferred;
-                                read_completed = true;
-                            });
-
-    io_context->run();
-    io_context->restart();
-
-    if (!read_completed) {
-        return internal_error("openai responses transport read did not complete");
-    }
-    if (read_error == asio::error::eof) {
-        *eof = true;
-        return bytes_read;
-    }
-    if (read_error) {
-        return UnavailableTransportError(prefix, read_error);
-    }
-    return bytes_read;
-}
-
-template <typename Stream>
-absl::StatusOr<ParsedHttpResponseHead>
-ReadInProcessResponseHead(asio::io_context* io_context, Stream* stream,
-                          InProcessTransportDeadline deadline) {
-    io_context->restart();
-
-    boost::system::error_code read_error;
-    bool read_completed = false;
-    beast::flat_buffer response_buffer;
-    beast::http::response_parser<beast::http::empty_body> parser;
-    parser.header_limit(kMaxOpenAiTransportHeaderBytes);
-
-    SetInProcessTransportDeadline(stream, deadline);
-    beast::http::async_read_header(
-        *stream, response_buffer, parser,
-        [&read_error, &read_completed](const boost::system::error_code& error, std::size_t) {
-            read_error = error;
-            read_completed = true;
-        });
-
-    io_context->run();
-    io_context->restart();
-
-    if (!read_completed) {
-        return internal_error("openai responses HTTP response header read did not complete");
-    }
-    if (read_error == beast::http::error::header_limit) {
-        return absl::ResourceExhaustedError(
-            "openai responses transport response header exceeds maximum length");
-    }
-    if (read_error) {
-        return UnavailableTransportError("failed to read openai responses HTTP response header",
-                                         read_error);
-    }
-
-    return ParsedHttpResponseHead{
-        .status_code = parser.get().result_int(),
-        .buffered_body = beast::buffers_to_string(response_buffer.data()),
-    };
-}
-
-template <typename Stream>
-absl::StatusOr<std::size_t> ReadInProcessBodyChunk(asio::io_context* io_context, Stream* stream,
-                                                   InProcessTransportDeadline deadline,
-                                                   char* buffer, std::size_t buffer_size,
-                                                   bool* eof) {
-    return ReadInProcessChunk(io_context, stream, deadline, buffer, buffer_size, eof,
-                              "failed to read openai responses HTTP response body");
-}
-
 void CloseInProcessStream(beast::tcp_stream* stream) {
     boost::system::error_code ignored;
     stream->socket().shutdown(tcp::socket::shutdown_both, ignored);
     stream->socket().close(ignored);
+}
+
+// Reads one decoded body chunk through Beast's HTTP parser. Returns the number
+// of decoded bytes written into |buffer|. Uses buffer_body so Beast handles
+// chunked Transfer-Encoding transparently. Sets |*http_done| when the HTTP
+// message is fully consumed (chunk terminator for chunked, or Content-Length
+// bytes read, or EOF for indeterminate-length responses).
+template <typename Stream>
+absl::StatusOr<std::size_t>
+ReadDecodedBodyChunk(asio::io_context* io_context, Stream* stream,
+                     InProcessTransportDeadline deadline, beast::flat_buffer* read_buffer,
+                     beast::http::response_parser<beast::http::buffer_body>* parser, char* buffer,
+                     std::size_t buffer_size, bool* http_done, std::string_view error_prefix) {
+    if (parser->is_done()) {
+        *http_done = true;
+        return 0U;
+    }
+
+    parser->get().body().data = buffer;
+    parser->get().body().size = buffer_size;
+    parser->get().body().more = true;
+
+    io_context->restart();
+    boost::system::error_code read_error;
+    bool read_completed = false;
+    SetInProcessTransportDeadline(stream, deadline);
+    beast::http::async_read_some(
+        *stream, *read_buffer, *parser,
+        [&read_error, &read_completed](const boost::system::error_code& error, std::size_t) {
+            read_error = error;
+            read_completed = true;
+        });
+    io_context->run();
+    io_context->restart();
+
+    if (!read_completed) {
+        return internal_error("openai responses transport body read did not complete");
+    }
+    // need_buffer means the parser filled our buffer and needs more space;
+    // this is normal for streaming reads — not an error.
+    if (read_error && read_error != beast::http::error::need_buffer) {
+        if (read_error == asio::error::eof || read_error == beast::http::error::end_of_stream) {
+            // Connection closed by peer. Let the parser see EOF so it can
+            // decide whether the message was complete (e.g. indeterminate-
+            // length body terminated by close) or truncated (mid-chunk or
+            // short Content-Length).
+            boost::system::error_code eof_error;
+            parser->put_eof(eof_error);
+            if (eof_error || !parser->is_done()) {
+                return UnavailableTransportError(error_prefix, read_error);
+            }
+            *http_done = true;
+            const std::size_t decoded = buffer_size - parser->get().body().size;
+            return decoded;
+        }
+        return UnavailableTransportError(error_prefix, read_error);
+    }
+
+    *http_done = parser->is_done();
+    const std::size_t decoded = buffer_size - parser->get().body().size;
+    return decoded;
 }
 
 template <typename Stream>
@@ -313,101 +283,133 @@ absl::StatusOr<TransportStreamResult>
 ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
                          const OpenAiResponsesClientConfig& config, const std::string& request_json,
                          const OpenAiResponsesEventCallback& on_event,
-                         InProcessTransportDeadline deadline) {
-    const std::string raw_request = BuildRawHttpRequest(config, request_json);
+                         InProcessTransportDeadline deadline, bool keep_alive = false,
+                         bool* request_written = nullptr, bool* server_keep_alive = nullptr) {
+    const std::string raw_request = BuildRawHttpRequest(config, request_json, keep_alive);
     absl::Status write_status = WriteInProcessRequest(io_context, stream, deadline, raw_request);
     if (!write_status.ok()) {
         return write_status;
     }
-
-    const absl::StatusOr<ParsedHttpResponseHead> response_head =
-        ReadInProcessResponseHead(io_context, stream, deadline);
-    if (!response_head.ok()) {
-        return response_head.status();
+    if (request_written != nullptr) {
+        *request_written = true;
     }
 
-    std::string body_text;
-    IncrementalSseParser parser;
-    if (response_head->status_code == 200U && !response_head->buffered_body.empty()) {
-        const absl::StatusOr<SseFeedDisposition> disposition = ConsumeTransportChunk(
-            config, response_head->buffered_body, &parser, on_event, &body_text);
-        if (!disposition.ok()) {
-            return disposition.status();
+    // Use buffer_body parser for the full response so Beast handles chunked
+    // Transfer-Encoding transparently. This is critical for persistent
+    // connections: after SSE [DONE] we must drain the remaining HTTP response
+    // (e.g. chunk terminators) before the connection can be reused.
+    beast::flat_buffer read_buffer;
+    beast::http::response_parser<beast::http::buffer_body> http_parser;
+    http_parser.header_limit(kMaxOpenAiTransportHeaderBytes);
+    // No body_limit — AppendTransportBytes enforces our own budget
+    // (kMaxOpenAiTransportBodyBytes). Beast's default (8 MB) is well above
+    // our 256 KB limit, so our check fires first with the correct error.
+
+    // Read response headers.
+    {
+        io_context->restart();
+        boost::system::error_code read_error;
+        bool read_completed = false;
+        SetInProcessTransportDeadline(stream, deadline);
+        beast::http::async_read_header(
+            *stream, read_buffer, http_parser,
+            [&read_error, &read_completed](const boost::system::error_code& error, std::size_t) {
+                read_error = error;
+                read_completed = true;
+            });
+        io_context->run();
+        io_context->restart();
+
+        if (!read_completed) {
+            return internal_error("openai responses HTTP response header read did not complete");
         }
-        if (*disposition == SseFeedDisposition::kCompleted) {
-            const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
-            if (!parse_summary.ok()) {
-                return parse_summary.status();
-            }
-            return TransportStreamResult{
-                .parse_summary = *parse_summary,
-                .body_bytes = body_text.size(),
-            };
+        if (read_error == beast::http::error::header_limit) {
+            return absl::ResourceExhaustedError(
+                "openai responses transport response header exceeds maximum length");
+        }
+        if (read_error) {
+            return UnavailableTransportError("failed to read openai responses HTTP response header",
+                                             read_error);
         }
     }
 
+    const unsigned int status_code = http_parser.get().result_int();
+    if (server_keep_alive != nullptr) {
+        *server_keep_alive = http_parser.get().keep_alive();
+    }
+
+    // Read body through Beast's parser (decodes chunked encoding transparently).
     std::array<char, 4096> chunk_buffer{};
-    if (response_head->status_code != 200U) {
-        absl::Status append_status =
-            AppendTransportBytes(config, response_head->buffered_body, &body_text);
-        if (!append_status.ok()) {
-            return append_status;
-        }
+    constexpr std::string_view kBodyReadError =
+        "failed to read openai responses HTTP response body";
+
+    if (status_code != 200U) {
+        // Non-200: collect the full error body.
+        std::string body_text;
         for (;;) {
-            bool eof = false;
-            const absl::StatusOr<std::size_t> bytes_read = ReadInProcessBodyChunk(
-                io_context, stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
-            if (!bytes_read.ok()) {
-                return bytes_read.status();
+            bool http_done = false;
+            const absl::StatusOr<std::size_t> decoded = ReadDecodedBodyChunk(
+                io_context, stream, deadline, &read_buffer, &http_parser, chunk_buffer.data(),
+                chunk_buffer.size(), &http_done, kBodyReadError);
+            if (!decoded.ok()) {
+                return decoded.status();
             }
-            if (*bytes_read > 0U) {
-                append_status = AppendTransportBytes(
-                    config, std::string_view(chunk_buffer.data(), *bytes_read), &body_text);
+            if (*decoded > 0U) {
+                absl::Status append_status = AppendTransportBytes(
+                    config, std::string_view(chunk_buffer.data(), *decoded), &body_text);
                 if (!append_status.ok()) {
                     return append_status;
                 }
             }
-            if (eof) {
+            if (http_done) {
                 break;
             }
         }
-        return MapHttpErrorStatus(response_head->status_code,
-                                  BuildHttpErrorMessage(response_head->status_code, body_text));
+        return MapHttpErrorStatus(status_code, BuildHttpErrorMessage(status_code, body_text));
     }
 
+    // 200 OK: stream decoded body bytes through the SSE parser.
+    std::string body_text;
+    IncrementalSseParser sse_parser;
+    bool sse_completed = false;
+
     for (;;) {
-        bool eof = false;
-        const absl::StatusOr<std::size_t> bytes_read = ReadInProcessBodyChunk(
-            io_context, stream, deadline, chunk_buffer.data(), chunk_buffer.size(), &eof);
-        if (!bytes_read.ok()) {
-            return bytes_read.status();
+        bool http_done = false;
+        const absl::StatusOr<std::size_t> decoded = ReadDecodedBodyChunk(
+            io_context, stream, deadline, &read_buffer, &http_parser, chunk_buffer.data(),
+            chunk_buffer.size(), &http_done, kBodyReadError);
+        if (!decoded.ok()) {
+            return decoded.status();
         }
 
-        if (*bytes_read > 0U) {
+        if (*decoded > 0U && !sse_completed) {
             const absl::StatusOr<SseFeedDisposition> disposition =
-                ConsumeTransportChunk(config, std::string_view(chunk_buffer.data(), *bytes_read),
-                                      &parser, on_event, &body_text);
+                ConsumeTransportChunk(config, std::string_view(chunk_buffer.data(), *decoded),
+                                      &sse_parser, on_event, &body_text);
             if (!disposition.ok()) {
                 return disposition.status();
             }
             if (*disposition == SseFeedDisposition::kCompleted) {
-                const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
-                if (!parse_summary.ok()) {
-                    return parse_summary.status();
+                sse_completed = true;
+                // Only drain remaining HTTP response bytes when the connection
+                // will actually be reused: keep_alive must be requested AND the
+                // server must not have indicated Connection: close. For one-shot
+                // connections or Connection: close responses, the socket will be
+                // discarded so draining is unnecessary.
+                const bool should_drain =
+                    keep_alive && !http_done && http_parser.get().keep_alive();
+                if (!should_drain) {
+                    break;
                 }
-                return TransportStreamResult{
-                    .parse_summary = *parse_summary,
-                    .body_bytes = body_text.size(),
-                };
             }
         }
 
-        if (eof) {
+        if (http_done) {
             break;
         }
     }
 
-    const absl::StatusOr<SseParseSummary> parse_summary = parser.Finish(on_event);
+    const absl::StatusOr<SseParseSummary> parse_summary = sse_parser.Finish(on_event);
     if (!parse_summary.ok()) {
         return parse_summary.status();
     }
@@ -593,5 +595,184 @@ ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::stri
     return result;
 }
 #endif
+
+struct PersistentInProcessTransport::Impl {
+    boost::asio::io_context io_context;
+    bool connected = false;
+
+    std::unique_ptr<boost::beast::tcp_stream> tcp_stream;
+#if !defined(_WIN32)
+    std::unique_ptr<boost::asio::ssl::context> ssl_context;
+    std::unique_ptr<boost::beast::ssl_stream<boost::beast::tcp_stream>> ssl_stream;
+#endif
+};
+
+PersistentInProcessTransport::PersistentInProcessTransport(OpenAiResponsesClientConfig config)
+    : config_(std::move(config)), impl_(std::make_unique<Impl>()) {}
+
+PersistentInProcessTransport::~PersistentInProcessTransport() {
+    if (impl_->connected) {
+        if (impl_->tcp_stream) {
+            CloseInProcessStream(impl_->tcp_stream.get());
+        }
+#if !defined(_WIN32)
+        if (impl_->ssl_stream) {
+            CloseInProcessStream(impl_->ssl_stream.get());
+        }
+#endif
+    }
+}
+
+absl::StatusOr<TransportStreamResult>
+PersistentInProcessTransport::Execute(const std::string& request_json,
+                                      const OpenAiResponsesEventCallback& on_event) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // First attempt: connect if needed, then execute.
+    if (absl::Status status = EnsureConnected(); !status.ok()) {
+        return status;
+    }
+
+    bool request_written = false;
+    bool server_keep_alive = true;
+    absl::StatusOr<TransportStreamResult> result =
+        ExecuteOnce(request_json, on_event, &request_written, &server_keep_alive);
+
+    if (result.ok()) {
+        // Proactively disconnect when server indicates Connection: close, so the
+        // next Execute() starts with a fresh connection instead of writing to a
+        // half-closed socket (which on some platforms succeeds due to TCP
+        // buffering, then fails on the subsequent read with garbage data).
+        if (!server_keep_alive) {
+            VLOG(1) << "AI gateway openai responses persistent transport proactive disconnect "
+                       "host='"
+                    << SanitizeForLog(config_.host)
+                    << "' reason='server indicated Connection: close'";
+            Disconnect();
+        }
+        return result;
+    }
+
+    // Only retry if the request write itself failed (stale/broken connection).
+    // If the write succeeded, the server received the request and any error
+    // (malformed response, SSE parse failure, timeout) is not retriable.
+    if (request_written) {
+        Disconnect();
+        return result;
+    }
+    if (!absl::IsUnavailable(result.status()) && !absl::IsDeadlineExceeded(result.status())) {
+        return result;
+    }
+
+    VLOG(1) << "AI gateway openai responses persistent transport retrying on stale connection "
+               "host='"
+            << SanitizeForLog(config_.host)
+            << "' status_code=" << static_cast<int>(result.status().code()) << " detail='"
+            << SanitizeForLog(result.status().message()) << "'";
+    Disconnect();
+    if (absl::Status status = EnsureConnected(); !status.ok()) {
+        return status;
+    }
+    return ExecuteOnce(request_json, on_event, /*request_written=*/nullptr,
+                       /*server_keep_alive=*/nullptr);
+}
+
+absl::Status PersistentInProcessTransport::EnsureConnected() {
+    if (impl_->connected) {
+        return absl::OkStatus();
+    }
+
+    VLOG(1) << "AI gateway openai responses persistent transport connecting host='"
+            << SanitizeForLog(config_.host) << "' scheme='" << config_.scheme << "'";
+
+    const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config_);
+
+    const absl::StatusOr<tcp::resolver::results_type> endpoints =
+        GetOpenAiResponsesHostResolver()->Resolve(&impl_->io_context, config_, deadline);
+    if (!endpoints.ok()) {
+        return endpoints.status();
+    }
+
+    if (config_.scheme == "http") {
+        impl_->tcp_stream = std::make_unique<beast::tcp_stream>(impl_->io_context);
+        if (absl::Status status = ConnectInProcessStream(
+                &impl_->io_context, impl_->tcp_stream.get(), *endpoints, deadline);
+            !status.ok()) {
+            Disconnect();
+            return status;
+        }
+        impl_->connected = true;
+        return absl::OkStatus();
+    }
+
+#if defined(_WIN32)
+    return absl::FailedPreconditionError(
+        "persistent in-process https transport is unavailable in Windows builds");
+#else
+    impl_->ssl_context = std::make_unique<ssl::context>(ssl::context::tls_client);
+    if (absl::Status status = ConfigureLinuxTlsContext(config_, impl_->ssl_context.get());
+        !status.ok()) {
+        Disconnect();
+        return status;
+    }
+    impl_->ssl_stream = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(impl_->io_context,
+                                                                               *impl_->ssl_context);
+    if (absl::Status status = ConfigureLinuxTlsStream(config_, impl_->ssl_stream.get());
+        !status.ok()) {
+        Disconnect();
+        return status;
+    }
+    if (absl::Status status = ConnectInProcessStream(&impl_->io_context, impl_->ssl_stream.get(),
+                                                     *endpoints, deadline);
+        !status.ok()) {
+        Disconnect();
+        return status;
+    }
+    if (absl::Status status =
+            CompleteTlsHandshake(&impl_->io_context, impl_->ssl_stream.get(), deadline);
+        !status.ok()) {
+        Disconnect();
+        return status;
+    }
+    impl_->connected = true;
+    return absl::OkStatus();
+#endif
+}
+
+void PersistentInProcessTransport::Disconnect() {
+    if (impl_->tcp_stream) {
+        CloseInProcessStream(impl_->tcp_stream.get());
+        impl_->tcp_stream.reset();
+    }
+#if !defined(_WIN32)
+    if (impl_->ssl_stream) {
+        CloseInProcessStream(impl_->ssl_stream.get());
+        impl_->ssl_stream.reset();
+    }
+    impl_->ssl_context.reset();
+#endif
+    impl_->connected = false;
+}
+
+absl::StatusOr<TransportStreamResult>
+PersistentInProcessTransport::ExecuteOnce(const std::string& request_json,
+                                          const OpenAiResponsesEventCallback& on_event,
+                                          bool* request_written, bool* server_keep_alive) {
+    const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config_);
+
+    if (impl_->tcp_stream) {
+        return ExecuteStreamingResponse(&impl_->io_context, impl_->tcp_stream.get(), config_,
+                                        request_json, on_event, deadline,
+                                        /*keep_alive=*/true, request_written, server_keep_alive);
+    }
+#if !defined(_WIN32)
+    if (impl_->ssl_stream) {
+        return ExecuteStreamingResponse(&impl_->io_context, impl_->ssl_stream.get(), config_,
+                                        request_json, on_event, deadline,
+                                        /*keep_alive=*/true, request_written, server_keep_alive);
+    }
+#endif
+    return absl::InternalError("persistent transport has no active stream");
+}
 
 } // namespace isla::server::ai_gateway

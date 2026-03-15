@@ -29,6 +29,6 @@ ConsumeTransportChunk(const OpenAiResponsesClientConfig& config, std::string_vie
 
 std::string BuildHttpHostHeaderValue(const OpenAiResponsesClientConfig& config);
 std::string BuildRawHttpRequest(const OpenAiResponsesClientConfig& config,
-                                std::string_view request_json);
+                                std::string_view request_json, bool keep_alive = false);
 
 } // namespace isla::server::ai_gateway

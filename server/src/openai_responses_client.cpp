@@ -40,7 +40,16 @@ ExecuteTransport(const OpenAiResponsesClientConfig& config, const std::string& r
 class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
   public:
     explicit OpenAiResponsesClientImpl(OpenAiResponsesClientConfig config)
-        : config_(std::move(config)) {}
+        : config_(std::move(config)) {
+        const bool in_process_available = config_.scheme == "http"
+#if !defined(_WIN32)
+                                          || config_.scheme == "https"
+#endif
+            ;
+        if (in_process_available) {
+            transport_ = std::make_unique<PersistentInProcessTransport>(config_);
+        }
+    }
 
     [[nodiscard]] absl::Status Validate() const override {
         if (!config_.enabled) {
@@ -186,7 +195,8 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
                                              telemetry::kPhaseProviderTransport, "", "",
                                              transport_started_at);
         const absl::StatusOr<TransportStreamResult> stream_result =
-            ExecuteTransport(config_, request_json, telemetry_on_event);
+            transport_ != nullptr ? transport_->Execute(request_json, telemetry_on_event)
+                                  : ExecuteTransport(config_, request_json, telemetry_on_event);
         transport_phase.Finish();
         if (!stream_result.ok()) {
             LOG(ERROR) << "AI gateway openai responses request failed host='"
@@ -207,6 +217,7 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
 
   private:
     OpenAiResponsesClientConfig config_;
+    mutable std::unique_ptr<PersistentInProcessTransport> transport_;
 };
 
 } // namespace
