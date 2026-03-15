@@ -140,8 +140,7 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
 
     std::string output_text;
     std::optional<TurnTelemetryContext::Clock::time_point> first_aggregate_started_at;
-    TurnTelemetryContext::Clock::duration total_aggregate_duration =
-        TurnTelemetryContext::Clock::duration::zero();
+    std::optional<TurnTelemetryContext::Clock::time_point> last_aggregate_completed_at;
     absl::Status stream_status = responses_client_->StreamResponse(
         OpenAiResponsesRequest{
             .model = model_,
@@ -151,10 +150,10 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
             .telemetry_context = runtime_input.telemetry_context,
         },
         [this, &output_text, &runtime_input, &first_aggregate_started_at,
-         &total_aggregate_duration](const OpenAiResponsesEvent& event) -> absl::Status {
+         &last_aggregate_completed_at](const OpenAiResponsesEvent& event) -> absl::Status {
             return std::visit(
                 [this, &output_text, &runtime_input, &first_aggregate_started_at,
-                 &total_aggregate_duration](const auto& concrete_event) -> absl::Status {
+                 &last_aggregate_completed_at](const auto& concrete_event) -> absl::Status {
                     using Event = std::decay_t<decltype(concrete_event)>;
                     if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
                         if (concrete_event.text_delta.empty()) {
@@ -172,16 +171,16 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
                         if (!first_aggregate_started_at.has_value()) {
                             first_aggregate_started_at = aggregate_started_at;
                         }
-                        total_aggregate_duration += (aggregate_completed_at - aggregate_started_at);
+                        last_aggregate_completed_at = aggregate_completed_at;
                     }
                     return absl::OkStatus();
                 },
                 event);
         });
-    if (first_aggregate_started_at.has_value()) {
+    if (first_aggregate_started_at.has_value() && last_aggregate_completed_at.has_value()) {
         RecordTelemetryPhase(runtime_input.telemetry_context,
                              telemetry::kPhaseProviderAggregateText, *first_aggregate_started_at,
-                             *first_aggregate_started_at + total_aggregate_duration);
+                             *last_aggregate_completed_at);
     }
     if (!stream_status.ok()) {
         LOG(ERROR) << "AI gateway openai llms provider request failed step_name='"
