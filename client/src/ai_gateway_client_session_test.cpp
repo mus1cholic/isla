@@ -19,6 +19,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/openai_responses_client.hpp"
+#include "server/src/openai_responses_test_utils.hpp"
 
 namespace isla::client {
 namespace {
@@ -49,7 +50,8 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
         absl::Status delta_status = on_event(OpenAiResponsesTextDeltaEvent{
-            .text_delta = "stub echo: " + request.user_text,
+            .text_delta = "stub echo: " + isla::server::ai_gateway::test::ExtractLatestPromptLine(
+                                              request.user_text),
         });
         if (!delta_status.ok()) {
             return delta_status;

@@ -38,7 +38,7 @@ MakeEchoOpenAiResponsesClient(std::string prefix = "stub echo: ") {
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [prefix = std::move(prefix)](const OpenAiResponsesRequest& request,
                                      const OpenAiResponsesEventCallback& on_event) {
-            const std::string text = prefix + request.user_text;
+            const std::string text = prefix + test::ExtractLatestPromptLine(request.user_text);
             const std::size_t midpoint = text.size() / 2U;
             const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
                 .text_delta = text.substr(0, midpoint),
@@ -247,6 +247,117 @@ TEST_F(GatewayStubResponderTest, SessionStartCreatesMemoryPromptBeforeAnyTurn) {
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     EXPECT_NE(prompt->find("<conversation>"), std::string::npos);
     EXPECT_NE(prompt->find("- (empty)"), std::string::npos);
+}
+
+TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenAiClient) {
+    auto capturing_client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "reply", "resp_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = "reply" });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{ .response_id = "resp_test" });
+        });
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .memory_user_id = "gateway_user",
+        .openai_client = capturing_client,
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+    EXPECT_NE(capturing_client->last_request.system_prompt.find("<persistent_memory_cache>"),
+              std::string::npos);
+    EXPECT_EQ(capturing_client->last_request.system_prompt.find("- [user | "), std::string::npos);
+    EXPECT_EQ(capturing_client->last_request.system_prompt.find("- [assistant | "),
+              std::string::npos);
+    EXPECT_EQ(capturing_client->last_request.system_prompt.find("] hello"), std::string::npos);
+    EXPECT_NE(capturing_client->last_request.user_text.find("<conversation>"), std::string::npos);
+    EXPECT_NE(capturing_client->last_request.user_text.find("<mid_term_episodes>"),
+              std::string::npos);
+    EXPECT_NE(capturing_client->last_request.user_text.find("<retrieved_memory>"),
+              std::string::npos);
+    EXPECT_EQ(capturing_client->last_request.user_text.find("<persistent_memory_cache>"),
+              std::string::npos);
+    EXPECT_EQ(capturing_client->last_request.user_text.find("You are Isla."), std::string::npos);
+    EXPECT_NE(capturing_client->last_request.user_text.find("] hello"), std::string::npos);
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     ExtractLatestPromptLinePreservesBracketSpaceInsideConversationContent) {
+    EXPECT_EQ(test::ExtractLatestPromptLine(
+                  "<mid_term_episodes>\n- (none)\n<retrieved_memory>\n(none)\n<conversation>\n"
+                  "- [user | 2026-03-14T20:00:00.000Z] hello ] world\n"),
+              "hello ] world");
+}
+
+TEST_F(GatewayStubResponderTest,
+       SecondTurnRequestIncludesPriorConversationWithoutDuplicatingCurrentTurn) {
+    auto capturing_client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
+            const std::string reply = std::string("stub echo: ") + latest_text;
+            absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = reply });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{ .response_id = "resp_test" });
+        });
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .memory_user_id = "gateway_user",
+        .openai_client = capturing_client,
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_2",
+        .text = "how are you?",
+    });
+    ASSERT_TRUE(session->WaitForEventCount(4U));
+
+    const std::string& second_request_context = capturing_client->last_request.user_text;
+    EXPECT_NE(second_request_context.find("<conversation>"), std::string::npos);
+    EXPECT_NE(second_request_context.find("] hello"), std::string::npos);
+    EXPECT_NE(second_request_context.find("] stub echo: hello"), std::string::npos);
+    EXPECT_NE(second_request_context.find("] how are you?"), std::string::npos);
+
+    const std::size_t current_turn_pos = second_request_context.find("] how are you?");
+    ASSERT_NE(current_turn_pos, std::string::npos);
+    EXPECT_EQ(second_request_context.find("] how are you?", current_turn_pos + 1U),
+              std::string::npos);
 }
 
 TEST_F(GatewayStubResponderTest, SessionStartUsesBundledSystemPromptByDefault) {
@@ -559,6 +670,34 @@ TEST_F(GatewayStubResponderTest, OversizedTurnStillCompletesWhenErrorEmitFails) 
     EXPECT_EQ(events[0].turn_id, "turn_1");
 }
 
+TEST_F(GatewayStubResponderTest, OversizedRenderedWorkingMemoryContextIsTerminalizedWithoutReply) {
+    const std::string large_turn_text(24U * 1024U, 'x');
+
+    responder_.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = large_turn_text,
+    });
+
+    ASSERT_TRUE(session_->WaitForEventCount(2U));
+
+    responder_.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_2",
+        .text = large_turn_text,
+    });
+
+    ASSERT_TRUE(session_->WaitForEventCount(4U));
+    const std::vector<EmittedEvent> events = session_->events();
+    ASSERT_EQ(events.size(), 4U);
+    EXPECT_EQ(events[2].op, "error");
+    EXPECT_EQ(events[2].turn_id, "turn_2");
+    EXPECT_EQ(events[2].payload,
+              "bad_request:rendered working memory context exceeds maximum length");
+    EXPECT_EQ(events[3].op, "turn.completed");
+    EXPECT_EQ(events[3].turn_id, "turn_2");
+}
+
 TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndWorkerContinues) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
@@ -566,10 +705,11 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
             absl::OkStatus(), "", "resp_test", absl::OkStatus(),
             [](const OpenAiResponsesRequest& request,
                const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (request.user_text == "explode") {
+                const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
+                if (latest_text == "explode") {
                     throw std::runtime_error("synthetic reply builder failure");
                 }
-                const std::string text = std::string("stub echo: ") + request.user_text;
+                const std::string text = std::string("stub echo: ") + latest_text;
                 const absl::Status delta_status =
                     on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
                 if (!delta_status.ok()) {

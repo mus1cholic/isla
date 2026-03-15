@@ -144,8 +144,20 @@ WorkingMemory::ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFl
     return absl::OkStatus();
 }
 
+absl::StatusOr<RenderedWorkingMemory> WorkingMemory::RenderPromptBundle() const {
+    return RenderWorkingMemoryBundle(state_);
+}
+
 absl::StatusOr<std::string> WorkingMemory::RenderFullWorkingMemory() const {
     return RenderWorkingMemoryPrompt(state_);
+}
+
+absl::StatusOr<std::string> WorkingMemory::RenderSystemPrompt() const {
+    return isla::server::memory::RenderSystemPrompt(state_.system_prompt);
+}
+
+absl::StatusOr<std::string> WorkingMemory::RenderWorkingMemoryContext() const {
+    return isla::server::memory::RenderWorkingMemoryContext(state_);
 }
 
 } // namespace isla::server::memory

@@ -55,7 +55,8 @@ std::shared_ptr<test::FakeOpenAiResponsesClient> MakeEchoOpenAiResponsesClient()
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            const std::string text = std::string("stub echo: ") + request.user_text;
+            const std::string text =
+                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
             const absl::Status delta_status =
                 on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
             if (!delta_status.ok()) {
@@ -754,6 +755,7 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
             const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
                 .text_delta = "stub ",
             });
@@ -761,7 +763,7 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
                 return first_status;
             }
             const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
-                .text_delta = "echo: " + request.user_text,
+                .text_delta = "echo: " + latest_text,
             });
             if (!second_status.ok()) {
                 return second_status;

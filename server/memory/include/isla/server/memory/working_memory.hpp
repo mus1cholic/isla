@@ -9,6 +9,7 @@
 #include "absl/status/statusor.h"
 #include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/memory_types.hpp"
+#include "isla/server/memory/working_memory_utils.hpp"
 
 namespace isla::server::memory {
 
@@ -62,6 +63,9 @@ class WorkingMemory {
     CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index) const;
     [[nodiscard]] absl::Status
     ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
+    [[nodiscard]] absl::StatusOr<RenderedWorkingMemory> RenderPromptBundle() const;
+    [[nodiscard]] absl::StatusOr<std::string> RenderSystemPrompt() const;
+    [[nodiscard]] absl::StatusOr<std::string> RenderWorkingMemoryContext() const;
     [[nodiscard]] absl::StatusOr<std::string> RenderFullWorkingMemory() const;
 
   private:

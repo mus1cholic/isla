@@ -47,22 +47,23 @@ absl::Status OpenAiLLMs::Validate() const {
     return absl::OkStatus();
 }
 
-absl::Status OpenAiLLMs::ValidateInput(std::string_view user_text) const {
-    if (user_text.empty()) {
+absl::Status OpenAiLLMs::ValidateInput(const ExecutionRuntimeInput& runtime_input) const {
+    if (runtime_input.user_text.empty()) {
         return invalid_argument("openai llms input must include user_text");
     }
     return absl::OkStatus();
 }
 
 absl::StatusOr<ExecutionStepResult>
-OpenAiLLMs::GenerateContent(std::size_t item_index, const std::string& user_text) const {
+OpenAiLLMs::GenerateContent(std::size_t item_index,
+                            const ExecutionRuntimeInput& runtime_input) const {
     static_cast<void>(item_index);
 
     absl::Status status = Validate();
     if (!status.ok()) {
         return status;
     }
-    absl::Status input_status = ValidateInput(user_text);
+    absl::Status input_status = ValidateInput(runtime_input);
     if (!input_status.ok()) {
         return input_status;
     }
@@ -70,7 +71,7 @@ OpenAiLLMs::GenerateContent(std::size_t item_index, const std::string& user_text
     std::string output_text;
     try {
         const absl::StatusOr<std::string> provider_text =
-            GenerateProviderResponse(item_index, user_text);
+            GenerateProviderResponse(item_index, runtime_input);
         if (!provider_text.ok()) {
             return provider_text.status();
         }
@@ -93,8 +94,9 @@ OpenAiLLMs::GenerateContent(std::size_t item_index, const std::string& user_text
     });
 }
 
-absl::StatusOr<std::string> OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
-                                                                 std::string_view user_text) const {
+absl::StatusOr<std::string>
+OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
+                                     const ExecutionRuntimeInput& runtime_input) const {
     static_cast<void>(item_index);
 
     if (responses_client_ == nullptr) {
@@ -108,17 +110,21 @@ absl::StatusOr<std::string> OpenAiLLMs::GenerateProviderResponse(std::size_t ite
         return client_status;
     }
 
+    const std::string_view effective_system_prompt =
+        runtime_input.system_prompt.empty() ? std::string_view(system_prompt_)
+                                            : std::string_view(runtime_input.system_prompt);
+
     VLOG(1) << "AI gateway openai llms dispatching provider request step_name='"
             << SanitizeForLog(step_name_) << "' model='" << SanitizeForLog(model_)
-            << "' user_text_bytes=" << user_text.size()
-            << " system_prompt_present=" << (!system_prompt_.empty() ? "true" : "false");
+            << "' user_text_bytes=" << runtime_input.user_text.size()
+            << " system_prompt_present=" << (!effective_system_prompt.empty() ? "true" : "false");
 
     std::string output_text;
     absl::Status stream_status = responses_client_->StreamResponse(
         OpenAiResponsesRequest{
             .model = model_,
-            .system_prompt = system_prompt_,
-            .user_text = std::string(user_text),
+            .system_prompt = std::string(effective_system_prompt),
+            .user_text = runtime_input.user_text,
         },
         [&output_text](const OpenAiResponsesEvent& event) -> absl::Status {
             return std::visit(

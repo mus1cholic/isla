@@ -20,6 +20,7 @@ TEST(GatewayStepRegistryTest, RejectsMissingConfiguredResponsesClient) {
                                  .model = "gpt-4.1-mini",
                              }),
                              ExecutionRuntimeInput{
+                                 .system_prompt = "",
                                  .user_text = "hello",
                              });
 
@@ -53,6 +54,7 @@ TEST(GatewayStepRegistryTest, RejectsMissingRuntimeUserText) {
                                  .model = "gpt-4.1-mini",
                              }),
                              ExecutionRuntimeInput{
+                                 .system_prompt = "",
                                  .user_text = "",
                              });
 
@@ -75,12 +77,13 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
                                  .model = "gpt-5.4",
                              }),
                              ExecutionRuntimeInput{
+                                 .system_prompt = "runtime system",
                                  .user_text = "hello",
                              });
 
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_EQ(client->last_request.model, "gpt-5.4");
-    EXPECT_EQ(client->last_request.system_prompt, "system");
+    EXPECT_EQ(client->last_request.system_prompt, "runtime system");
     EXPECT_EQ(client->last_request.user_text, "hello");
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
 }

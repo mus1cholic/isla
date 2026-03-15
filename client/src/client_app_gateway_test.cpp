@@ -27,6 +27,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/openai_responses_client.hpp"
+#include "server/src/openai_responses_test_utils.hpp"
 
 namespace isla::client {
 namespace {
@@ -225,7 +226,8 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
         absl::Status status = on_event(OpenAiResponsesTextDeltaEvent{
-            .text_delta = "stub echo: " + request.user_text,
+            .text_delta = "stub echo: " + isla::server::ai_gateway::test::ExtractLatestPromptLine(
+                                              request.user_text),
         });
         if (!status.ok()) {
             return status;
@@ -247,7 +249,9 @@ class CountingOpenAiResponsesClient final : public OpenAiResponsesClient {
                    const OpenAiResponsesEventCallback& on_event) const override {
         const int call_number = call_count_.fetch_add(1) + 1;
         absl::Status status = on_event(OpenAiResponsesTextDeltaEvent{
-            .text_delta = "stub echo " + std::to_string(call_number) + ": " + request.user_text,
+            .text_delta =
+                "stub echo " + std::to_string(call_number) + ": " +
+                isla::server::ai_gateway::test::ExtractLatestPromptLine(request.user_text),
         });
         if (!status.ok()) {
             return status;

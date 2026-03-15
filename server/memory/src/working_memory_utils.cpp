@@ -149,37 +149,37 @@ void AppendPersistentMemoryCacheSection(std::string& output, const PersistentMem
     }
 }
 
-absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
-    absl::StatusOr<std::string> rendered_system_prompt =
-        RenderSystemPrompt(working_memory.system_prompt);
-    if (!rendered_system_prompt.ok()) {
-        return rendered_system_prompt.status();
-    }
+namespace {
 
-    std::string output = std::move(*rendered_system_prompt);
-
+void AppendMidTermEpisodesSection(std::string& output,
+                                  const std::vector<Episode>& mid_term_episodes) {
     AppendLine(output, "<mid_term_episodes>");
-    if (working_memory.mid_term_episodes.empty()) {
+    if (mid_term_episodes.empty()) {
         AppendLine(output, "- (none)");
     } else {
-        for (const Episode& episode : working_memory.mid_term_episodes) {
+        for (const Episode& episode : mid_term_episodes) {
             AppendEpisodeLine(output, episode);
         }
     }
+}
 
+void AppendRetrievedMemorySection(std::string& output,
+                                  const std::optional<RetrievedMemory>& retrieved_memory) {
     AppendLine(output, "<retrieved_memory>");
-    if (working_memory.retrieved_memory.has_value()) {
-        AppendEscapedPromptText(output, *working_memory.retrieved_memory);
+    if (retrieved_memory.has_value()) {
+        AppendEscapedPromptText(output, *retrieved_memory);
         output.push_back('\n');
     } else {
         AppendLine(output, "(none)");
     }
+}
 
+absl::Status AppendConversationSection(std::string& output, const Conversation& conversation) {
     AppendLine(output, "<conversation>");
-    if (working_memory.conversation.items.empty()) {
+    if (conversation.items.empty()) {
         AppendLine(output, "- (empty)");
     } else {
-        for (const ConversationItem& item : working_memory.conversation.items) {
+        for (const ConversationItem& item : conversation.items) {
             switch (item.type) {
             case ConversationItemType::OngoingEpisode:
                 if (!item.ongoing_episode.has_value()) {
@@ -200,8 +200,54 @@ absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& 
             }
         }
     }
+    return absl::OkStatus();
+}
 
+} // namespace
+
+absl::StatusOr<RenderedWorkingMemory>
+RenderWorkingMemoryBundle(const WorkingMemoryState& working_memory) {
+    absl::StatusOr<std::string> rendered_system_prompt =
+        RenderSystemPrompt(working_memory.system_prompt);
+    if (!rendered_system_prompt.ok()) {
+        return rendered_system_prompt.status();
+    }
+
+    absl::StatusOr<std::string> rendered_context = RenderWorkingMemoryContext(working_memory);
+    if (!rendered_context.ok()) {
+        return rendered_context.status();
+    }
+
+    std::string full_prompt;
+    full_prompt.reserve(rendered_system_prompt->size() + rendered_context->size());
+    full_prompt.append(*rendered_system_prompt);
+    full_prompt.append(*rendered_context);
+
+    return RenderedWorkingMemory{
+        .system_prompt = std::move(*rendered_system_prompt),
+        .context = std::move(*rendered_context),
+        .full_prompt = std::move(full_prompt),
+    };
+}
+
+absl::StatusOr<std::string> RenderWorkingMemoryContext(const WorkingMemoryState& working_memory) {
+    std::string output;
+    AppendMidTermEpisodesSection(output, working_memory.mid_term_episodes);
+    AppendRetrievedMemorySection(output, working_memory.retrieved_memory);
+    if (absl::Status status = AppendConversationSection(output, working_memory.conversation);
+        !status.ok()) {
+        return status;
+    }
     return output;
+}
+
+absl::StatusOr<std::string> RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory) {
+    absl::StatusOr<RenderedWorkingMemory> rendered_bundle =
+        RenderWorkingMemoryBundle(working_memory);
+    if (!rendered_bundle.ok()) {
+        return rendered_bundle.status();
+    }
+    return std::move(rendered_bundle->full_prompt);
 }
 
 } // namespace isla::server::memory

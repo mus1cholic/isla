@@ -1,6 +1,7 @@
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <exception>
 #include <future>
 #include <optional>
@@ -19,6 +20,12 @@ namespace isla::server::ai_gateway {
 namespace {
 
 using namespace std::chrono_literals;
+inline constexpr std::size_t kMaxRenderedSystemPromptBytes =
+    static_cast<const std::size_t>(64U * 1024U);
+inline constexpr std::size_t kMaxRenderedWorkingMemoryContextBytes =
+    static_cast<const std::size_t>(64U * 1024U);
+inline constexpr std::size_t kMaxRenderedPromptBytes =
+    kMaxRenderedSystemPromptBytes + kMaxRenderedWorkingMemoryContextBytes;
 
 template <typename StartFn>
 absl::Status await_emit(std::chrono::milliseconds timeout, StartFn&& start) {
@@ -85,6 +92,8 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             .session_id = event.session_id,
             .turn_id = event.turn_id,
             .text = event.text,
+            .rendered_system_prompt = "",
+            .rendered_working_memory_context = "",
             .ready_at = Clock::now(),
             .cancel_requested = false,
         });
@@ -103,6 +112,8 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
                 .session_id = event.session_id,
                 .turn_id = event.turn_id,
                 .text = event.text,
+                .rendered_system_prompt = "",
+                .rendered_working_memory_context = "",
                 .ready_at = Clock::now(),
                 .cancel_requested = false,
             },
@@ -118,14 +129,17 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
         VLOG(1) << "AI gateway stub queued turn session=" << event.session_id
                 << " turn_id=" << SanitizeForLog(event.turn_id)
                 << " delay_ms=" << config_.response_delay.count();
-        pending_turns_.insert_or_assign(event.session_id,
-                                        PendingTurn{
-                                            .session_id = event.session_id,
-                                            .turn_id = event.turn_id,
-                                            .text = event.text,
-                                            .ready_at = Clock::now() + config_.response_delay,
-                                            .cancel_requested = false,
-                                        });
+        pending_turns_.insert_or_assign(
+            event.session_id,
+            PendingTurn{
+                .session_id = event.session_id,
+                .turn_id = event.turn_id,
+                .text = event.text,
+                .rendered_system_prompt = memory_result->rendered_system_prompt,
+                .rendered_working_memory_context = memory_result->rendered_working_memory_context,
+                .ready_at = Clock::now() + config_.response_delay,
+                .cancel_requested = false,
+            });
     }
 
     cv_.notify_all();
@@ -482,6 +496,38 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
                                         "text.input text exceeds maximum length", "oversized turn");
         return;
     }
+    if (turn.rendered_system_prompt.size() > kMaxRenderedSystemPromptBytes) {
+        LOG(ERROR) << "AI gateway stub rejected oversized rendered system prompt session="
+                   << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
+                   << " system_prompt_bytes=" << turn.rendered_system_prompt.size()
+                   << " budget_bytes=" << kMaxRenderedSystemPromptBytes;
+        BestEffortTerminateAcceptedTurn(turn, "bad_request",
+                                        "rendered system prompt exceeds maximum length",
+                                        "oversized rendered system prompt");
+        return;
+    }
+    if (turn.rendered_working_memory_context.size() > kMaxRenderedWorkingMemoryContextBytes) {
+        LOG(ERROR) << "AI gateway stub rejected oversized rendered working memory context session="
+                   << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
+                   << " context_bytes=" << turn.rendered_working_memory_context.size()
+                   << " budget_bytes=" << kMaxRenderedWorkingMemoryContextBytes;
+        BestEffortTerminateAcceptedTurn(turn, "bad_request",
+                                        "rendered working memory context exceeds maximum length",
+                                        "oversized rendered context");
+        return;
+    }
+    if (turn.rendered_system_prompt.size() + turn.rendered_working_memory_context.size() >
+        kMaxRenderedPromptBytes) {
+        LOG(ERROR) << "AI gateway stub rejected oversized rendered prompt session="
+                   << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
+                   << " system_prompt_bytes=" << turn.rendered_system_prompt.size()
+                   << " context_bytes=" << turn.rendered_working_memory_context.size()
+                   << " budget_bytes=" << kMaxRenderedPromptBytes;
+        BestEffortTerminateAcceptedTurn(turn, "bad_request",
+                                        "rendered prompt exceeds maximum combined length",
+                                        "oversized rendered prompt");
+        return;
+    }
 
     const absl::StatusOr<ExecutionPlan> execution_plan = CreateOpenAiPlan();
     if (!execution_plan.ok()) {
@@ -510,7 +556,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
 
     const ExecutionOutcome executor_outcome =
         executor_.Execute(*execution_plan, ExecutionRuntimeInput{
-                                               .user_text = turn.text,
+                                               .system_prompt = turn.rendered_system_prompt,
+                                               .user_text = turn.rendered_working_memory_context,
                                            });
     if (const auto* failure = std::get_if<ExecutionFailure>(&executor_outcome)) {
         LOG(ERROR) << "AI gateway stub executor failed session=" << SanitizeForLog(turn.session_id)

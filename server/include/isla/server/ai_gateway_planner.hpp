@@ -10,6 +10,7 @@
 namespace isla::server::ai_gateway {
 
 struct ExecutionRuntimeInput {
+    std::string system_prompt;
     std::string user_text;
 };
 

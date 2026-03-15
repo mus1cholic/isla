@@ -290,12 +290,16 @@ MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
         return status;
     }
 
-    absl::StatusOr<std::string> rendered_working_memory = RenderFullWorkingMemory();
-    if (!rendered_working_memory.ok()) {
-        return rendered_working_memory.status();
+    absl::StatusOr<RenderedWorkingMemory> rendered_bundle = memory_.RenderPromptBundle();
+    if (!rendered_bundle.ok()) {
+        return rendered_bundle.status();
     }
 
-    return UserQueryMemoryResult{ .rendered_working_memory = std::move(*rendered_working_memory) };
+    return UserQueryMemoryResult{
+        .rendered_system_prompt = std::move(rendered_bundle->system_prompt),
+        .rendered_working_memory_context = std::move(rendered_bundle->context),
+        .rendered_working_memory = std::move(rendered_bundle->full_prompt),
+    };
 }
 
 absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantReply& reply) {
@@ -319,6 +323,14 @@ MemoryOrchestrator::ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlus
 
 absl::StatusOr<std::string> MemoryOrchestrator::RenderFullWorkingMemory() const {
     return memory_.RenderFullWorkingMemory();
+}
+
+absl::StatusOr<std::string> MemoryOrchestrator::RenderSystemPrompt() const {
+    return memory_.RenderSystemPrompt();
+}
+
+absl::StatusOr<std::string> MemoryOrchestrator::RenderWorkingMemoryContext() const {
+    return memory_.RenderWorkingMemoryContext();
 }
 
 } // namespace isla::server::memory
