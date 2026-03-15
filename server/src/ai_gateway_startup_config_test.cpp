@@ -537,17 +537,16 @@ TEST(AiGatewayStartupConfigTest, ParsesVerboseLevelFromCli) {
     auto kVerbose = std::to_array("--verbose=2");
     std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), kVerbose.data() };
 
-    // Reset to a known baseline before the test.
-    absl::SetGlobalVLogLevel(0);
+    // Save the original level and reset to a known baseline.
+    const int original = absl::SetGlobalVLogLevel(0);
 
     const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
         static_cast<int>(argv.size()), argv.data(), [](std::string_view) { return std::nullopt; });
 
+    // Restore the original level before any assertions that could terminate.
+    const int after_parse = absl::SetGlobalVLogLevel(original);
     ASSERT_TRUE(parsed.ok()) << parsed.status();
-    // SetGlobalVLogLevel returns the previous level; calling it again to read
-    // the current value and then restore it.
-    const int current = absl::SetGlobalVLogLevel(0);
-    EXPECT_EQ(current, 2);
+    EXPECT_EQ(after_parse, 2);
 }
 
 } // namespace
