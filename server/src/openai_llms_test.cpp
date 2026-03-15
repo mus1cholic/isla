@@ -33,7 +33,8 @@ TEST(OpenAiLlmstest, RejectsMissingModel) {
 TEST(OpenAiLlmstest, RejectsMissingUserText) {
     OpenAiLLMs openai_llms("main", "", "gpt-4.1-mini");
 
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "");
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "" });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
@@ -43,7 +44,8 @@ TEST(OpenAiLlmstest, RejectsMissingUserText) {
 TEST(OpenAiLlmstest, RejectsMissingConfiguredResponsesClient) {
     OpenAiLLMs openai_llms("main", "", "gpt-4.1-mini");
 
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hello");
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hello" });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
@@ -54,7 +56,8 @@ TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
     OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.4", client);
 
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
 
     ASSERT_TRUE(result.ok()) << result.status();
     ASSERT_EQ(client->last_request.model, "gpt-5.4");
@@ -63,11 +66,24 @@ TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "hello world");
 }
 
+TEST(OpenAiLlmstest, UsesRuntimeSystemPromptOverrideWhenProvided) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
+    OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.4", client);
+
+    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(
+        0, ExecutionRuntimeInput{ .system_prompt = "rendered system prompt", .user_text = "ctx" });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(client->last_request.system_prompt, "rendered system prompt");
+    ASSERT_EQ(client->last_request.user_text, "ctx");
+}
+
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("rate limited"));
     OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
 
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kUnavailable);
@@ -79,7 +95,8 @@ TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientValidationFailure) {
                                                       absl::UnauthenticatedError("bad api key"));
     OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
 
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kUnauthenticated);
@@ -97,7 +114,8 @@ TEST(OpenAiLlmstest, ConvertsResponsesClientExceptionToInternalError) {
         });
     OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
 
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hello");
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hello" });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
@@ -109,7 +127,8 @@ TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {
                                                       std::string(kMaxTextOutputBytes + 1U, 'x'));
     OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
 
-    const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(0, "hi");
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kResourceExhausted);

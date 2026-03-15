@@ -62,6 +62,8 @@ class WorkingMemory {
     CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index) const;
     [[nodiscard]] absl::Status
     ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
+    [[nodiscard]] absl::StatusOr<std::string> RenderSystemPrompt() const;
+    [[nodiscard]] absl::StatusOr<std::string> RenderWorkingMemoryContext() const;
     [[nodiscard]] absl::StatusOr<std::string> RenderFullWorkingMemory() const;
 
   private:

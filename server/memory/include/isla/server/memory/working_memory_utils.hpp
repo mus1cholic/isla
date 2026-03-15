@@ -14,6 +14,15 @@ void UpsertFamiliarLabel(PersistentMemoryCache& cache, std::string entity_id, st
 
 void AppendPersistentMemoryCacheSection(std::string& output, const PersistentMemoryCache& cache);
 
+void AppendMidTermEpisodesSection(std::string& output,
+                                  const std::vector<Episode>& mid_term_episodes);
+void AppendRetrievedMemorySection(std::string& output,
+                                  const std::optional<RetrievedMemory>& retrieved_memory);
+absl::Status AppendConversationSection(std::string& output, const Conversation& conversation);
+
+[[nodiscard]] absl::StatusOr<std::string>
+RenderWorkingMemoryContext(const WorkingMemoryState& working_memory);
+
 [[nodiscard]] absl::StatusOr<std::string>
 RenderWorkingMemoryPrompt(const WorkingMemoryState& working_memory);
 

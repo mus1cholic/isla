@@ -18,14 +18,14 @@ class OpenAiLLMs final {
 
     [[nodiscard]] const std::string& step_name() const;
     [[nodiscard]] absl::Status Validate() const;
-    [[nodiscard]] absl::StatusOr<ExecutionStepResult> GenerateContent(std::size_t item_index,
-                                                                      const std::string& user_text)
-        const;
+    [[nodiscard]] absl::StatusOr<ExecutionStepResult>
+    GenerateContent(std::size_t item_index, const ExecutionRuntimeInput& runtime_input) const;
 
   private:
-    [[nodiscard]] absl::Status ValidateInput(std::string_view user_text) const;
+    [[nodiscard]] absl::Status ValidateInput(const ExecutionRuntimeInput& runtime_input) const;
     [[nodiscard]] absl::StatusOr<std::string>
-    GenerateProviderResponse(std::size_t item_index, std::string_view user_text) const;
+    GenerateProviderResponse(std::size_t item_index,
+                             const ExecutionRuntimeInput& runtime_input) const;
 
     std::string step_name_;
     std::string system_prompt_;

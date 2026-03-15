@@ -44,6 +44,8 @@ struct GatewayAssistantReply : GatewayTurnText {
 };
 
 struct UserQueryMemoryResult {
+    std::string rendered_system_prompt;
+    std::string rendered_working_memory_context;
     std::string rendered_working_memory;
 };
 
@@ -68,6 +70,8 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status HandleAssistantReply(const GatewayAssistantReply& reply);
     [[nodiscard]] absl::Status
     ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
+    [[nodiscard]] absl::StatusOr<std::string> RenderSystemPrompt() const;
+    [[nodiscard]] absl::StatusOr<std::string> RenderWorkingMemoryContext() const;
     [[nodiscard]] absl::StatusOr<std::string> RenderFullWorkingMemory() const;
 
     [[nodiscard]] const std::string& session_id() const {

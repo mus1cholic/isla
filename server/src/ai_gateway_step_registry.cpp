@@ -29,7 +29,7 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
             << " step_name='" << SanitizeForLog(step.step_name) << "' model='"
             << SanitizeForLog(step.model) << "'";
     OpenAiLLMs openai_llms(step.step_name, step.system_prompt, step.model, config_.openai_client);
-    return openai_llms.GenerateContent(step_index, runtime_input.user_text);
+    return openai_llms.GenerateContent(step_index, runtime_input);
 }
 
 absl::StatusOr<ExecutionStepResult>
