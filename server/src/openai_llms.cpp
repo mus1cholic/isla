@@ -1,7 +1,9 @@
 #include "isla/server/openai_llms.hpp"
 
+#include <chrono>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -137,6 +139,9 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
             << " system_prompt_present=" << (!effective_system_prompt.empty() ? "true" : "false");
 
     std::string output_text;
+    std::optional<TurnTelemetryContext::Clock::time_point> first_aggregate_started_at;
+    TurnTelemetryContext::Clock::duration total_aggregate_duration =
+        TurnTelemetryContext::Clock::duration::zero();
     absl::Status stream_status = responses_client_->StreamResponse(
         OpenAiResponsesRequest{
             .model = model_,
@@ -145,29 +150,40 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
             .reasoning_effort = reasoning_effort_,
             .telemetry_context = runtime_input.telemetry_context,
         },
-        [this, &output_text, &runtime_input](const OpenAiResponsesEvent& event) -> absl::Status {
+        [this, &output_text, &runtime_input, &first_aggregate_started_at,
+         &total_aggregate_duration](const OpenAiResponsesEvent& event) -> absl::Status {
             return std::visit(
-                [this, &output_text, &runtime_input](const auto& concrete_event) -> absl::Status {
+                [this, &output_text, &runtime_input, &first_aggregate_started_at,
+                 &total_aggregate_duration](const auto& concrete_event) -> absl::Status {
                     using Event = std::decay_t<decltype(concrete_event)>;
                     if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
                         if (concrete_event.text_delta.empty()) {
                             return absl::OkStatus();
                         }
-                        const TurnTelemetryContext::Clock::time_point aggregate_started_at =
-                            TurnTelemetryContext::Clock::now();
                         if (output_text.size() + concrete_event.text_delta.size() >
                             kMaxTextOutputBytes) {
                             return resource_exhausted("openai llms output exceeds maximum length");
                         }
+                        const TurnTelemetryContext::Clock::time_point aggregate_started_at =
+                            TurnTelemetryContext::Clock::now();
                         output_text.append(concrete_event.text_delta);
-                        RecordTelemetryPhase(
-                            runtime_input.telemetry_context, telemetry::kPhaseProviderAggregateText,
-                            aggregate_started_at, TurnTelemetryContext::Clock::now());
+                        const TurnTelemetryContext::Clock::time_point aggregate_completed_at =
+                            TurnTelemetryContext::Clock::now();
+                        if (!first_aggregate_started_at.has_value()) {
+                            first_aggregate_started_at = aggregate_started_at;
+                        }
+                        total_aggregate_duration +=
+                            (aggregate_completed_at - aggregate_started_at);
                     }
                     return absl::OkStatus();
                 },
                 event);
         });
+    if (first_aggregate_started_at.has_value()) {
+        RecordTelemetryPhase(runtime_input.telemetry_context, telemetry::kPhaseProviderAggregateText,
+                             *first_aggregate_started_at,
+                             *first_aggregate_started_at + total_aggregate_duration);
+    }
     if (!stream_status.ok()) {
         LOG(ERROR) << "AI gateway openai llms provider request failed step_name='"
                    << SanitizeForLog(step_name_) << "' model='" << SanitizeForLog(model_)

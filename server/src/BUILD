@@ -302,6 +302,18 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "ai_gateway_telemetry_test_utils",
+    testonly = True,
+    hdrs = ["ai_gateway_telemetry_test_utils.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+    ],
+    deps = [
+        "//server/include/isla/server:server_headers",
+    ],
+)
+
 cc_test(
     name = "ai_gateway_logging_telemetry_sink_test",
     srcs = ["ai_gateway_logging_telemetry_sink_test.cpp"],
@@ -352,6 +364,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_step_registry",
+        ":ai_gateway_telemetry_test_utils",
         ":openai_responses_test_utils",
         "@googletest//:gtest_main",
     ],
@@ -376,6 +389,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_executor",
+        ":ai_gateway_telemetry_test_utils",
         ":openai_llms",
         "@googletest//:gtest_main",
     ],
@@ -386,6 +400,7 @@ cc_test(
     srcs = ["openai_responses_client_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_telemetry_test_utils",
         ":openai_responses_client",
         ":openai_responses_inprocess_transport_test_hooks",
         "@boost.beast//:boost.beast",
@@ -398,6 +413,7 @@ cc_test(
     srcs = ["openai_llms_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_telemetry_test_utils",
         ":openai_llms",
         ":openai_responses_test_utils",
         "@googletest//:gtest_main",

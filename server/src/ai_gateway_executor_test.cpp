@@ -9,54 +9,18 @@
 #include "absl/status/status.h"
 #include <gtest/gtest.h>
 
+#include "ai_gateway_telemetry_test_utils.hpp"
+
 namespace isla::server::ai_gateway {
 namespace {
 
-class RecordingTelemetrySink final : public TelemetrySink {
-  public:
-    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
-                 TurnTelemetryContext::Clock::time_point at) const override {
-        static_cast<void>(context);
-        static_cast<void>(at);
-        events.emplace_back(event_name);
-    }
-
-    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
-                 TurnTelemetryContext::Clock::time_point started_at,
-                 TurnTelemetryContext::Clock::time_point completed_at) const override {
-        static_cast<void>(context);
-        phases.push_back(PhaseRecord{
-            .name = std::string(phase_name),
-            .started_at = started_at,
-            .completed_at = completed_at,
-        });
-    }
-
-    struct PhaseRecord {
-        std::string name;
-        TurnTelemetryContext::Clock::time_point started_at;
-        TurnTelemetryContext::Clock::time_point completed_at;
-    };
-
-    mutable std::vector<std::string> events;
-    mutable std::vector<PhaseRecord> phases;
-};
-
-bool ContainsTelemetryPhase(const std::vector<RecordingTelemetrySink::PhaseRecord>& phases,
-                            std::string_view phase_name) {
-    for (const auto& phase : phases) {
-        if (phase.name == phase_name) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void ExpectExecutorTelemetryRecorded(const RecordingTelemetrySink& telemetry_sink) {
-    ASSERT_EQ(telemetry_sink.events.size(), 2U);
-    EXPECT_EQ(telemetry_sink.events[0], telemetry::kEventExecutorStarted);
-    EXPECT_EQ(telemetry_sink.events[1], telemetry::kEventExecutorCompleted);
-    EXPECT_TRUE(ContainsTelemetryPhase(telemetry_sink.phases, telemetry::kPhaseExecutorTotal));
+void ExpectExecutorTelemetryRecorded(const test::RecordingTelemetrySink& telemetry_sink) {
+    const std::vector<test::TelemetryEventRecord> events = telemetry_sink.events();
+    const std::vector<test::TelemetryPhaseRecord> phases = telemetry_sink.phases();
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].name, telemetry::kEventExecutorStarted);
+    EXPECT_EQ(events[1].name, telemetry::kEventExecutorCompleted);
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseExecutorTotal));
 }
 
 class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {
@@ -129,7 +93,7 @@ class ThrowingOpenAiResponsesClient final : public OpenAiResponsesClient {
 
 TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     GatewayPlanExecutor executor;
-    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
 
     const ExecutionOutcome outcome = executor.Execute(
         ExecutionPlan{},
@@ -151,7 +115,7 @@ TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
 TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
     auto client = std::make_shared<SequencedOpenAiResponsesClient>(
         std::vector<std::string>{ "alpha", "beta" });
-    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
         .openai_client = client,
     });

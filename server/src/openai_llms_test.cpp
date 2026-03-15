@@ -1,5 +1,6 @@
 #include "isla/server/openai_llms.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -9,43 +10,12 @@
 
 #include <gtest/gtest.h>
 
+#include "ai_gateway_telemetry_test_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "openai_responses_test_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
-
-class RecordingTelemetrySink final : public TelemetrySink {
-  public:
-    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
-                 TurnTelemetryContext::Clock::time_point started_at,
-                 TurnTelemetryContext::Clock::time_point completed_at) const override {
-        static_cast<void>(context);
-        phases.push_back(PhaseRecord{
-            .name = std::string(phase_name),
-            .started_at = started_at,
-            .completed_at = completed_at,
-        });
-    }
-
-    struct PhaseRecord {
-        std::string name;
-        TurnTelemetryContext::Clock::time_point started_at;
-        TurnTelemetryContext::Clock::time_point completed_at;
-    };
-
-    mutable std::vector<PhaseRecord> phases;
-};
-
-bool ContainsTelemetryPhase(const std::vector<RecordingTelemetrySink::PhaseRecord>& phases,
-                            std::string_view phase_name) {
-    for (const auto& phase : phases) {
-        if (phase.name == phase_name) {
-            return true;
-        }
-    }
-    return false;
-}
 
 TEST(OpenAiReasoningEffortTest, MapsAllSupportedEffortValuesToSchemaStrings) {
     ASSERT_TRUE(TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kNone).has_value());
@@ -166,7 +136,7 @@ TEST(OpenAiLlmstest, PropagatesTelemetryContextToResponsesClient) {
 
 TEST(OpenAiLlmstest, RecordsProviderTotalAndAggregationPhases) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
-    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
     OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =
@@ -178,9 +148,14 @@ TEST(OpenAiLlmstest, RecordsProviderTotalAndAggregationPhases) {
                                        });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_TRUE(ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseLlmProviderTotal));
-    EXPECT_TRUE(
-        ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseProviderAggregateText));
+    const std::vector<test::TelemetryPhaseRecord> phases = telemetry_sink->phases();
+    const std::size_t aggregate_phase_count = static_cast<std::size_t>(std::count_if(
+        phases.begin(), phases.end(), [](const test::TelemetryPhaseRecord& phase) {
+            return phase.name == telemetry::kPhaseProviderAggregateText;
+        }));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseLlmProviderTotal));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderAggregateText));
+    EXPECT_EQ(aggregate_phase_count, 1U);
 }
 
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {

@@ -7,42 +7,11 @@
 
 #include <gtest/gtest.h>
 
+#include "ai_gateway_telemetry_test_utils.hpp"
 #include "openai_responses_test_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
-
-class RecordingTelemetrySink final : public TelemetrySink {
-  public:
-    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
-                 TurnTelemetryContext::Clock::time_point started_at,
-                 TurnTelemetryContext::Clock::time_point completed_at) const override {
-        static_cast<void>(context);
-        phases.push_back(PhaseRecord{
-            .name = std::string(phase_name),
-            .started_at = started_at,
-            .completed_at = completed_at,
-        });
-    }
-
-    struct PhaseRecord {
-        std::string name;
-        TurnTelemetryContext::Clock::time_point started_at;
-        TurnTelemetryContext::Clock::time_point completed_at;
-    };
-
-    mutable std::vector<PhaseRecord> phases;
-};
-
-bool ContainsTelemetryPhase(const std::vector<RecordingTelemetrySink::PhaseRecord>& phases,
-                            std::string_view phase_name) {
-    for (const auto& phase : phases) {
-        if (phase.name == phase_name) {
-            return true;
-        }
-    }
-    return false;
-}
 
 TEST(GatewayStepRegistryTest, RejectsMissingConfiguredResponsesClient) {
     GatewayStepRegistry registry;
@@ -126,7 +95,7 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
 
 TEST(GatewayStepRegistryTest, RecordsExecutorStepPhaseWhenTelemetryContextPresent) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "provider response");
-    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
     GatewayStepRegistry registry(GatewayStepRegistryConfig{
         .openai_client = client,
     });
@@ -145,7 +114,8 @@ TEST(GatewayStepRegistryTest, RecordsExecutorStepPhaseWhenTelemetryContextPresen
         });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_TRUE(ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseExecutorStep));
+    EXPECT_TRUE(
+        test::ContainsTelemetryPhase(telemetry_sink->phases(), telemetry::kPhaseExecutorStep));
 }
 
 } // namespace

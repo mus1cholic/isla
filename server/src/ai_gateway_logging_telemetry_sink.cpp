@@ -38,14 +38,7 @@ class LoggingTelemetrySink final : public TelemetrySink {
     void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
                  TurnTelemetryContext::Clock::time_point at) const override {
         const std::optional<std::int64_t> offset_ms = DurationMillis(context.accepted_at, at);
-        if (event_name == telemetry::kEventProviderFirstToken) {
-            LOG(INFO) << "AI gateway telemetry event session=" << SanitizeForLog(context.session_id)
-                      << " turn_id=" << SanitizeForLog(context.turn_id)
-                      << " name=" << SanitizeForLog(event_name) << " offset_ms="
-                      << (offset_ms.has_value() ? std::to_string(*offset_ms) : std::string("n/a"));
-            return;
-        }
-        if (!config_.log_events) {
+        if (event_name != telemetry::kEventProviderFirstToken && !config_.log_events) {
             return;
         }
         LOG(INFO) << "AI gateway telemetry event session=" << SanitizeForLog(context.session_id)

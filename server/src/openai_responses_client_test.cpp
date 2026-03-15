@@ -31,6 +31,7 @@
 
 #include <gtest/gtest.h>
 
+#include "ai_gateway_telemetry_test_utils.hpp"
 #include "openai_responses_inprocess_transport_test_hooks.hpp"
 
 namespace isla::server::ai_gateway {
@@ -44,55 +45,6 @@ namespace ssl = asio::ssl;
 #endif
 
 constexpr auto kEarlyAbortTimeout = 2s;
-
-class RecordingTelemetrySink final : public TelemetrySink {
-  public:
-    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
-                 TurnTelemetryContext::Clock::time_point at) const override {
-        static_cast<void>(context);
-        static_cast<void>(at);
-        events.push_back(std::string(event_name));
-    }
-
-    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
-                 TurnTelemetryContext::Clock::time_point started_at,
-                 TurnTelemetryContext::Clock::time_point completed_at) const override {
-        static_cast<void>(context);
-        phases.push_back(PhaseRecord{
-            .name = std::string(phase_name),
-            .started_at = started_at,
-            .completed_at = completed_at,
-        });
-    }
-
-    struct PhaseRecord {
-        std::string name;
-        TurnTelemetryContext::Clock::time_point started_at;
-        TurnTelemetryContext::Clock::time_point completed_at;
-    };
-
-    mutable std::vector<std::string> events;
-    mutable std::vector<PhaseRecord> phases;
-};
-
-bool ContainsTelemetryEvent(const std::vector<std::string>& events, std::string_view event_name) {
-    for (const auto& event : events) {
-        if (event == event_name) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool ContainsTelemetryPhase(const std::vector<RecordingTelemetrySink::PhaseRecord>& phases,
-                            std::string_view phase_name) {
-    for (const auto& phase : phases) {
-        if (phase.name == phase_name) {
-            return true;
-        }
-    }
-    return false;
-}
 
 void ReportTestServerThreadException(std::string_view server_name) {
     try {
@@ -704,7 +656,7 @@ TEST(OpenAiResponsesClientTest, RecordsPhaseThreeProviderTelemetryForSuccessfulS
                                  "Connection: close\r\n\r\n" +
                                  body;
     OneShotHttpServer server(response);
-    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
         .api_key = "test_key",
@@ -737,15 +689,14 @@ TEST(OpenAiResponsesClientTest, RecordsPhaseThreeProviderTelemetryForSuccessfulS
 
     ASSERT_TRUE(status.ok()) << status;
     EXPECT_EQ(output_text, "hello world");
-    EXPECT_TRUE(
-        ContainsTelemetryEvent(telemetry_sink->events, telemetry::kEventProviderDispatched));
-    EXPECT_TRUE(
-        ContainsTelemetryEvent(telemetry_sink->events, telemetry::kEventProviderFirstToken));
-    EXPECT_TRUE(ContainsTelemetryEvent(telemetry_sink->events, telemetry::kEventProviderCompleted));
-    EXPECT_TRUE(
-        ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseProviderSerializeRequest));
-    EXPECT_TRUE(ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseProviderTransport));
-    EXPECT_TRUE(ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseProviderStream));
+    const std::vector<test::TelemetryEventRecord> events = telemetry_sink->events();
+    const std::vector<test::TelemetryPhaseRecord> phases = telemetry_sink->phases();
+    EXPECT_TRUE(test::ContainsTelemetryEvent(events, telemetry::kEventProviderDispatched));
+    EXPECT_TRUE(test::ContainsTelemetryEvent(events, telemetry::kEventProviderFirstToken));
+    EXPECT_TRUE(test::ContainsTelemetryEvent(events, telemetry::kEventProviderCompleted));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderSerializeRequest));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderTransport));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderStream));
 }
 
 TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody) {
