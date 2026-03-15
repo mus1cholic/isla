@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/globals.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -539,6 +540,20 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                                     parsed.supabase_config.enabled = true;
                                     return absl::OkStatus();
                                 });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
+                argument, "--verbose=", "verbose",
+                [](int level) -> absl::Status {
+                    if (level < 0) {
+                        return absl::InvalidArgumentError("verbose must be non-negative");
+                    }
+                    absl::SetGlobalVLogLevel(level);
+                    return absl::OkStatus();
+                });
             !handled.ok()) {
             return handled.status();
         } else if (*handled) {
