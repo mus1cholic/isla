@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -238,8 +239,11 @@ class SequentialHttpServer {
 
 class RoutingHttpServer {
   public:
-    explicit RoutingHttpServer(std::unordered_map<std::string, std::string> responses_by_target)
+    explicit RoutingHttpServer(std::unordered_map<std::string, std::string> responses_by_target,
+                               std::size_t expected_request_count = 0U)
         : responses_by_target_(std::move(responses_by_target)),
+          expected_request_count_(expected_request_count == 0U ? responses_by_target_.size()
+                                                               : expected_request_count),
           acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
         port_ = acceptor_.local_endpoint().port();
         thread_ = std::thread([this] { Run(); });
@@ -251,6 +255,20 @@ class RoutingHttpServer {
 
     [[nodiscard]] std::uint16_t port() const {
         return port_;
+    }
+
+    [[nodiscard]] bool WaitForRequestCount(std::size_t expected_count) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (requests_.size() >= expected_count) {
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
     }
 
   private:
@@ -269,12 +287,18 @@ class RoutingHttpServer {
     void Run() {
         try {
             while (!stopped_.load()) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (requests_.size() >= expected_request_count_) {
+                        break;
+                    }
+                }
                 tcp::socket socket(io_context_);
                 boost::system::error_code accept_error;
                 acceptor_.accept(socket, accept_error);
                 if (accept_error) {
                     if (stopped_.load()) {
-                        return;
+                        break;
                     }
                     throw std::runtime_error("RoutingHttpServer accept failed: " +
                                              accept_error.message());
@@ -295,10 +319,14 @@ class RoutingHttpServer {
                                                      : request.substr(0, first_line_end);
 
                 std::string response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-                for (const auto& [target_path, candidate_response] : responses_by_target_) {
-                    if (request_line.find(target_path) != std::string::npos) {
-                        response = candidate_response;
-                        break;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    requests_.push_back(request_line);
+                    for (const auto& [target_path, candidate_response] : responses_by_target_) {
+                        if (request_line.find(target_path) != std::string::npos) {
+                            response = candidate_response;
+                            break;
+                        }
                     }
                 }
 
@@ -313,6 +341,9 @@ class RoutingHttpServer {
     }
 
     std::unordered_map<std::string, std::string> responses_by_target_;
+    std::size_t expected_request_count_ = 0U;
+    mutable std::mutex mutex_;
+    std::vector<std::string> requests_;
     asio::io_context io_context_;
     tcp::acceptor acceptor_;
     std::thread thread_;
@@ -598,6 +629,7 @@ TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes
 
     ASSERT_TRUE(snapshot.ok()) << snapshot.status();
     ASSERT_TRUE(snapshot->has_value());
+    ASSERT_TRUE(server.WaitForRequestCount(4U));
     ASSERT_EQ(snapshot->value().conversation_items.size(), 2U);
     EXPECT_EQ(snapshot->value().conversation_items[0].type, ConversationItemType::EpisodeStub);
     EXPECT_EQ(snapshot->value().conversation_items[0].episode_stub->content, "summary ref");
