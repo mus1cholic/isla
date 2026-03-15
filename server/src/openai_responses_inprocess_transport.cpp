@@ -57,6 +57,7 @@ absl::Status UnavailableTransportError(std::string_view prefix,
 
 struct ParsedHttpResponseHead {
     unsigned int status_code = 0;
+    bool keep_alive = false;
     std::string buffered_body;
 };
 
@@ -289,6 +290,7 @@ ReadInProcessResponseHead(asio::io_context* io_context, Stream* stream,
 
     return ParsedHttpResponseHead{
         .status_code = parser.get().result_int(),
+        .keep_alive = parser.get().keep_alive(),
         .buffered_body = beast::buffers_to_string(response_buffer.data()),
     };
 }
@@ -313,17 +315,24 @@ absl::StatusOr<TransportStreamResult>
 ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
                          const OpenAiResponsesClientConfig& config, const std::string& request_json,
                          const OpenAiResponsesEventCallback& on_event,
-                         InProcessTransportDeadline deadline) {
-    const std::string raw_request = BuildRawHttpRequest(config, request_json);
+                         InProcessTransportDeadline deadline, bool keep_alive = false,
+                         bool* request_written = nullptr, bool* server_keep_alive = nullptr) {
+    const std::string raw_request = BuildRawHttpRequest(config, request_json, keep_alive);
     absl::Status write_status = WriteInProcessRequest(io_context, stream, deadline, raw_request);
     if (!write_status.ok()) {
         return write_status;
+    }
+    if (request_written != nullptr) {
+        *request_written = true;
     }
 
     const absl::StatusOr<ParsedHttpResponseHead> response_head =
         ReadInProcessResponseHead(io_context, stream, deadline);
     if (!response_head.ok()) {
         return response_head.status();
+    }
+    if (server_keep_alive != nullptr) {
+        *server_keep_alive = response_head->keep_alive;
     }
 
     std::string body_text;
@@ -593,5 +602,184 @@ ExecuteInProcessHttps(const OpenAiResponsesClientConfig& config, const std::stri
     return result;
 }
 #endif
+
+struct PersistentInProcessTransport::Impl {
+    boost::asio::io_context io_context;
+    bool connected = false;
+
+    std::unique_ptr<boost::beast::tcp_stream> tcp_stream;
+#if !defined(_WIN32)
+    std::unique_ptr<boost::asio::ssl::context> ssl_context;
+    std::unique_ptr<boost::beast::ssl_stream<boost::beast::tcp_stream>> ssl_stream;
+#endif
+};
+
+PersistentInProcessTransport::PersistentInProcessTransport(OpenAiResponsesClientConfig config)
+    : config_(std::move(config)), impl_(std::make_unique<Impl>()) {}
+
+PersistentInProcessTransport::~PersistentInProcessTransport() {
+    if (impl_->connected) {
+        if (impl_->tcp_stream) {
+            CloseInProcessStream(impl_->tcp_stream.get());
+        }
+#if !defined(_WIN32)
+        if (impl_->ssl_stream) {
+            CloseInProcessStream(impl_->ssl_stream.get());
+        }
+#endif
+    }
+}
+
+absl::StatusOr<TransportStreamResult>
+PersistentInProcessTransport::Execute(const std::string& request_json,
+                                      const OpenAiResponsesEventCallback& on_event) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // First attempt: connect if needed, then execute.
+    if (absl::Status status = EnsureConnected(); !status.ok()) {
+        return status;
+    }
+
+    bool request_written = false;
+    bool server_keep_alive = true;
+    absl::StatusOr<TransportStreamResult> result =
+        ExecuteOnce(request_json, on_event, &request_written, &server_keep_alive);
+
+    if (result.ok()) {
+        // Proactively disconnect when server indicates Connection: close, so the
+        // next Execute() starts with a fresh connection instead of writing to a
+        // half-closed socket (which on some platforms succeeds due to TCP
+        // buffering, then fails on the subsequent read with garbage data).
+        if (!server_keep_alive) {
+            VLOG(1) << "AI gateway openai responses persistent transport proactive disconnect "
+                       "host='"
+                    << SanitizeForLog(config_.host)
+                    << "' reason='server indicated Connection: close'";
+            Disconnect();
+        }
+        return result;
+    }
+
+    // Only retry if the request write itself failed (stale/broken connection).
+    // If the write succeeded, the server received the request and any error
+    // (malformed response, SSE parse failure, timeout) is not retriable.
+    if (request_written) {
+        Disconnect();
+        return result;
+    }
+    if (!absl::IsUnavailable(result.status()) && !absl::IsDeadlineExceeded(result.status())) {
+        return result;
+    }
+
+    VLOG(1) << "AI gateway openai responses persistent transport retrying on stale connection "
+               "host='"
+            << SanitizeForLog(config_.host)
+            << "' status_code=" << static_cast<int>(result.status().code()) << " detail='"
+            << SanitizeForLog(result.status().message()) << "'";
+    Disconnect();
+    if (absl::Status status = EnsureConnected(); !status.ok()) {
+        return status;
+    }
+    return ExecuteOnce(request_json, on_event, /*request_written=*/nullptr,
+                       /*server_keep_alive=*/nullptr);
+}
+
+absl::Status PersistentInProcessTransport::EnsureConnected() {
+    if (impl_->connected) {
+        return absl::OkStatus();
+    }
+
+    VLOG(1) << "AI gateway openai responses persistent transport connecting host='"
+            << SanitizeForLog(config_.host) << "' scheme='" << config_.scheme << "'";
+
+    const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config_);
+
+    const absl::StatusOr<tcp::resolver::results_type> endpoints =
+        GetOpenAiResponsesHostResolver()->Resolve(&impl_->io_context, config_, deadline);
+    if (!endpoints.ok()) {
+        return endpoints.status();
+    }
+
+    if (config_.scheme == "http") {
+        impl_->tcp_stream = std::make_unique<beast::tcp_stream>(impl_->io_context);
+        if (absl::Status status = ConnectInProcessStream(
+                &impl_->io_context, impl_->tcp_stream.get(), *endpoints, deadline);
+            !status.ok()) {
+            Disconnect();
+            return status;
+        }
+        impl_->connected = true;
+        return absl::OkStatus();
+    }
+
+#if defined(_WIN32)
+    return absl::FailedPreconditionError(
+        "persistent in-process https transport is unavailable in Windows builds");
+#else
+    impl_->ssl_context = std::make_unique<ssl::context>(ssl::context::tls_client);
+    if (absl::Status status = ConfigureLinuxTlsContext(config_, impl_->ssl_context.get());
+        !status.ok()) {
+        Disconnect();
+        return status;
+    }
+    impl_->ssl_stream = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(impl_->io_context,
+                                                                               *impl_->ssl_context);
+    if (absl::Status status = ConfigureLinuxTlsStream(config_, impl_->ssl_stream.get());
+        !status.ok()) {
+        Disconnect();
+        return status;
+    }
+    if (absl::Status status = ConnectInProcessStream(&impl_->io_context, impl_->ssl_stream.get(),
+                                                     *endpoints, deadline);
+        !status.ok()) {
+        Disconnect();
+        return status;
+    }
+    if (absl::Status status =
+            CompleteTlsHandshake(&impl_->io_context, impl_->ssl_stream.get(), deadline);
+        !status.ok()) {
+        Disconnect();
+        return status;
+    }
+    impl_->connected = true;
+    return absl::OkStatus();
+#endif
+}
+
+void PersistentInProcessTransport::Disconnect() {
+    if (impl_->tcp_stream) {
+        CloseInProcessStream(impl_->tcp_stream.get());
+        impl_->tcp_stream.reset();
+    }
+#if !defined(_WIN32)
+    if (impl_->ssl_stream) {
+        CloseInProcessStream(impl_->ssl_stream.get());
+        impl_->ssl_stream.reset();
+    }
+    impl_->ssl_context.reset();
+#endif
+    impl_->connected = false;
+}
+
+absl::StatusOr<TransportStreamResult>
+PersistentInProcessTransport::ExecuteOnce(const std::string& request_json,
+                                          const OpenAiResponsesEventCallback& on_event,
+                                          bool* request_written, bool* server_keep_alive) {
+    const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config_);
+
+    if (impl_->tcp_stream) {
+        return ExecuteStreamingResponse(&impl_->io_context, impl_->tcp_stream.get(), config_,
+                                        request_json, on_event, deadline,
+                                        /*keep_alive=*/true, request_written, server_keep_alive);
+    }
+#if !defined(_WIN32)
+    if (impl_->ssl_stream) {
+        return ExecuteStreamingResponse(&impl_->io_context, impl_->ssl_stream.get(), config_,
+                                        request_json, on_event, deadline,
+                                        /*keep_alive=*/true, request_written, server_keep_alive);
+    }
+#endif
+    return absl::InternalError("persistent transport has no active stream");
+}
 
 } // namespace isla::server::ai_gateway

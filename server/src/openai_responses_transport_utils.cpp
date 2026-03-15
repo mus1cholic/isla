@@ -55,7 +55,7 @@ std::string BuildHttpHostHeaderValue(const OpenAiResponsesClientConfig& config) 
 }
 
 std::string BuildRawHttpRequest(const OpenAiResponsesClientConfig& config,
-                                std::string_view request_json) {
+                                std::string_view request_json, bool keep_alive) {
     std::ostringstream request;
     request << "POST " << config.target << " HTTP/1.1\r\n";
     request << "Host: " << BuildHttpHostHeaderValue(config) << "\r\n";
@@ -69,7 +69,7 @@ std::string BuildRawHttpRequest(const OpenAiResponsesClientConfig& config,
     if (config.project.has_value()) {
         request << "OpenAI-Project: " << *config.project << "\r\n";
     }
-    request << "Connection: close\r\n";
+    request << "Connection: " << (keep_alive ? "keep-alive" : "close") << "\r\n";
     request << "Content-Length: " << request_json.size() << "\r\n\r\n";
     request << request_json;
     return request.str();
