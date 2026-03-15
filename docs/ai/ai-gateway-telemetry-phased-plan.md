@@ -1,6 +1,6 @@
 # AI Gateway Telemetry Phased Plan
 
-Last updated: 2026-03-14
+Last updated: 2026-03-15
 
 ## Purpose
 
@@ -497,6 +497,13 @@ The current implementation suggests these first instrumentation targets:
 
 ## Changelog
 
+- 2026-03-15: added an optional development logging sink that surfaces recorded telemetry through
+  normal server logs when startup enables `--telemetry-log` or `--telemetry-log-events`, without
+  changing the underlying telemetry call sites or the later OpenTelemetry adapter plan.
+- 2026-03-15: implemented Phase 3 for the current executor and provider path by recording
+  `executor.step`, `llm.provider.total`, `provider.serialize_request`, `provider.transport`,
+  `provider.stream`, and `provider.aggregate_text`, along with the canonical
+  `provider.dispatched`, `provider.first_token`, and `provider.completed` timestamp events.
 - 2026-03-14: implemented Phase 2 for the current gateway path by recording `gateway.accept`,
   `memory.user_query`, `queue.wait`, `plan.create`, `executor.total`, `emit.text_output`,
   `memory.assistant_reply`, `emit.turn_completed`, `emit.error`, and `emit.turn_cancelled`, along

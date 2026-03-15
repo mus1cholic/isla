@@ -15,6 +15,7 @@ cc_library(
         "ai_gateway_telemetry.hpp",
         "ai_gateway_executor.hpp",
         "ai_gateway_logging_utils.hpp",
+        "ai_gateway_logging_telemetry_sink.hpp",
         "ai_gateway_planner.hpp",
         "ai_gateway_step_registry.hpp",
         "openai_reasoning_effort.hpp",

@@ -52,6 +52,8 @@ cc_library(
         ":memory_types",
         "//server/memory/include/isla/server/memory:memory_headers",
         "//server/src:http_json_client",
+        "//server/src:ai_gateway_logging_utils",
+        "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@nlohmann_json_upstream//:nlohmann_json",
@@ -180,7 +182,9 @@ cc_test(
     name = "supabase_memory_store_test",
     srcs = ["supabase_memory_store_test.cpp"],
     deps = [
+        "//server/src:ai_gateway_log_test_utils",
         ":supabase_memory_store",
+        "@abseil-cpp//absl/log:log_sink_registry",
         "@boost.beast//:boost.beast",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",

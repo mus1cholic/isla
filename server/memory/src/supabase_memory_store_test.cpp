@@ -4,10 +4,12 @@
 #include <chrono>
 #include <cstdint>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -24,6 +26,9 @@
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+
+#include "absl/log/log_sink_registry.h"
+#include "ai_gateway_log_test_utils.hpp"
 
 namespace isla::server::memory {
 namespace {
@@ -231,6 +236,120 @@ class SequentialHttpServer {
     std::uint16_t port_ = 0;
 };
 
+class RoutingHttpServer {
+  public:
+    explicit RoutingHttpServer(std::unordered_map<std::string, std::string> responses_by_target,
+                               std::size_t expected_request_count = 0U)
+        : responses_by_target_(std::move(responses_by_target)),
+          expected_request_count_(expected_request_count == 0U ? responses_by_target_.size()
+                                                               : expected_request_count),
+          acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
+        port_ = acceptor_.local_endpoint().port();
+        thread_ = std::thread([this] { Run(); });
+    }
+
+    ~RoutingHttpServer() {
+        Stop();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return port_;
+    }
+
+    [[nodiscard]] bool WaitForRequestCount(std::size_t expected_count) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (requests_.size() >= expected_count) {
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    }
+
+  private:
+    void Stop() {
+        if (stopped_.exchange(true)) {
+            return;
+        }
+        boost::system::error_code error;
+        acceptor_.close(error);
+        io_context_.stop();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void Run() {
+        try {
+            while (!stopped_.load()) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (requests_.size() >= expected_request_count_) {
+                        break;
+                    }
+                }
+                tcp::socket socket(io_context_);
+                boost::system::error_code accept_error;
+                acceptor_.accept(socket, accept_error);
+                if (accept_error) {
+                    if (stopped_.load()) {
+                        break;
+                    }
+                    throw std::runtime_error("RoutingHttpServer accept failed: " +
+                                             accept_error.message());
+                }
+
+                asio::streambuf buffer;
+                asio::read_until(socket, buffer, "\r\n\r\n");
+                std::string request;
+                {
+                    std::istream request_stream(&buffer);
+                    request.assign(std::istreambuf_iterator<char>(request_stream),
+                                   std::istreambuf_iterator<char>());
+                }
+
+                const std::size_t first_line_end = request.find("\r\n");
+                const std::string request_line = first_line_end == std::string::npos
+                                                     ? request
+                                                     : request.substr(0, first_line_end);
+
+                std::string response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    requests_.push_back(request_line);
+                    for (const auto& [target_path, candidate_response] : responses_by_target_) {
+                        if (request_line.find(target_path) != std::string::npos) {
+                            response = candidate_response;
+                            break;
+                        }
+                    }
+                }
+
+                asio::write(socket, asio::buffer(response.data(), response.size()));
+                boost::system::error_code error;
+                socket.shutdown(tcp::socket::shutdown_both, error);
+                socket.close(error);
+            }
+        } catch (...) {
+            ReportTestServerThreadException("RoutingHttpServer");
+        }
+    }
+
+    std::unordered_map<std::string, std::string> responses_by_target_;
+    std::size_t expected_request_count_ = 0U;
+    mutable std::mutex mutex_;
+    std::vector<std::string> requests_;
+    asio::io_context io_context_;
+    tcp::acceptor acceptor_;
+    std::thread thread_;
+    std::atomic<bool> stopped_{ false };
+    std::uint16_t port_ = 0;
+};
+
 #if !defined(_WIN32)
 class OneShotHttpsServer {
   public:
@@ -405,6 +524,42 @@ TEST(SupabaseMemoryStoreTest, AppendConversationMessageCreatesConversationItemTh
     EXPECT_EQ(body[0]["content"], "hello");
 }
 
+TEST(SupabaseMemoryStoreTest, LogsRequestAndOperationLatencyWhenTelemetryEnabled) {
+    SequentialHttpServer server({
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .telemetry_logging_enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    isla::server::test::CapturingLogSink log_sink;
+    absl::AddLogSink(&log_sink);
+
+    const absl::Status status = (*store)->UpsertSession(MemorySessionRecord{
+        .session_id = "session_telemetry",
+        .user_id = "user_001",
+        .system_prompt = "You are Isla.",
+        .created_at = Ts("2026-03-08T14:00:00Z"),
+        .ended_at = std::nullopt,
+    });
+
+    absl::RemoveLogSink(&log_sink);
+
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_TRUE(log_sink.Contains("AI gateway supabase latency kind=request"));
+    EXPECT_TRUE(log_sink.Contains("target=/rest/v1/memory_sessions"));
+    EXPECT_TRUE(log_sink.Contains("AI gateway supabase latency kind=operation"));
+    EXPECT_TRUE(log_sink.Contains("op=upsert_session"));
+    EXPECT_TRUE(log_sink.Contains("session_id=session_telemetry"));
+}
+
 TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes) {
     const std::string session_body =
         "[{\"session_id\":\"session_001\",\"user_id\":\"user_001\",\"system_prompt\":\"You are "
@@ -422,15 +577,19 @@ TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes
                                       "summary\":\"summary\",\"tier3_ref\":\"summary "
                                       "ref\",\"tier3_keywords\":[\"memory\"],\"salience\":7,"
                                       "\"embedding\":[],\"created_at\":\"2026-03-08T14:00:02Z\"}]";
-    SequentialHttpServer server({
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(session_body.size()) + "\r\n\r\n" + session_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(items_body.size()) + "\r\n\r\n" + items_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(messages_body.size()) + "\r\n\r\n" + messages_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body,
+    RoutingHttpServer server({
+        { "/rest/v1/memory_sessions",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(session_body.size()) + "\r\n\r\n" + session_body },
+        { "/rest/v1/conversation_items",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(items_body.size()) + "\r\n\r\n" + items_body },
+        { "/rest/v1/conversation_messages",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(messages_body.size()) + "\r\n\r\n" + messages_body },
+        { "/rest/v1/mid_term_episodes",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body },
     });
     const absl::StatusOr<MemoryStorePtr> store =
         CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
@@ -447,6 +606,7 @@ TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes
 
     ASSERT_TRUE(snapshot.ok()) << snapshot.status();
     ASSERT_TRUE(snapshot->has_value());
+    ASSERT_TRUE(server.WaitForRequestCount(4U));
     ASSERT_EQ(snapshot->value().conversation_items.size(), 2U);
     EXPECT_EQ(snapshot->value().conversation_items[0].type, ConversationItemType::EpisodeStub);
     EXPECT_EQ(snapshot->value().conversation_items[0].episode_stub->content, "summary ref");

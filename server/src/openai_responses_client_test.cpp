@@ -31,6 +31,7 @@
 
 #include <gtest/gtest.h>
 
+#include "ai_gateway_telemetry_test_utils.hpp"
 #include "openai_responses_inprocess_transport_test_hooks.hpp"
 
 namespace isla::server::ai_gateway {
@@ -639,6 +640,63 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.3-chat-latest\""), std::string::npos);
     EXPECT_NE(server.request_text().find("\"reasoning\":{\"effort\":\"none\"}"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"instructions\":\"system prompt\""), std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, RecordsPhaseThreeProviderTelemetryForSuccessfulStream) {
+    const std::string body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\r\n\r\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world\"}\r\n\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
+    OneShotHttpServer server(response);
+    auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    std::string output_text;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.3-chat-latest",
+            .system_prompt = "system prompt",
+            .user_text = "hello",
+            .telemetry_context =
+                MakeTurnTelemetryContext("srv_test", "turn_telemetry", telemetry_sink),
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            return std::visit(
+                [&](const auto& concrete_event) -> absl::Status {
+                    using Event = std::decay_t<decltype(concrete_event)>;
+                    if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += concrete_event.text_delta;
+                    }
+                    return absl::OkStatus();
+                },
+                event);
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_EQ(output_text, "hello world");
+    const std::vector<test::TelemetryEventRecord> events = telemetry_sink->events();
+    const std::vector<test::TelemetryPhaseRecord> phases = telemetry_sink->phases();
+    EXPECT_TRUE(test::ContainsTelemetryEvent(events, telemetry::kEventProviderDispatched));
+    EXPECT_TRUE(test::ContainsTelemetryEvent(events, telemetry::kEventProviderFirstToken));
+    EXPECT_TRUE(test::ContainsTelemetryEvent(events, telemetry::kEventProviderCompleted));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderSerializeRequest));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderTransport));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderStream));
 }
 
 TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody) {

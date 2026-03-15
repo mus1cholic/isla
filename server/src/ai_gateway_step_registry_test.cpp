@@ -1,9 +1,13 @@
 #include "isla/server/ai_gateway_step_registry.hpp"
 
 #include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "ai_gateway_telemetry_test_utils.hpp"
 #include "openai_responses_test_utils.hpp"
 
 namespace isla::server::ai_gateway {
@@ -87,6 +91,31 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
     EXPECT_EQ(client->last_request.user_text, "hello");
     EXPECT_EQ(client->last_request.reasoning_effort, OpenAiReasoningEffort::kNone);
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
+}
+
+TEST(GatewayStepRegistryTest, RecordsExecutorStepPhaseWhenTelemetryContextPresent) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "provider response");
+    auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
+    GatewayStepRegistry registry(GatewayStepRegistryConfig{
+        .openai_client = client,
+    });
+
+    const absl::StatusOr<ExecutionStepResult> result = registry.ExecuteStep(
+        0,
+        ExecutionStep(OpenAiLlmStep{
+            .step_name = "main",
+            .system_prompt = "system",
+            .model = "gpt-5.3-chat-latest",
+        }),
+        ExecutionRuntimeInput{
+            .system_prompt = "runtime system",
+            .user_text = "hello",
+            .telemetry_context = MakeTurnTelemetryContext("srv_test", "turn_1", telemetry_sink),
+        });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_TRUE(
+        test::ContainsTelemetryPhase(telemetry_sink->phases(), telemetry::kPhaseExecutorStep));
 }
 
 } // namespace

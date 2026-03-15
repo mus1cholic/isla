@@ -75,7 +75,11 @@ int main(int argc, char** argv) {
               << " api_key_source=" << log_context.api_key_source << " organization_configured="
               << (log_context.organization_configured ? "true" : "false")
               << " project_configured=" << (log_context.project_configured ? "true" : "false")
-              << " supabase_configured=" << (log_context.supabase_configured ? "true" : "false");
+              << " supabase_configured=" << (log_context.supabase_configured ? "true" : "false")
+              << " telemetry_logging_enabled="
+              << (log_context.telemetry_logging_enabled ? "true" : "false")
+              << " telemetry_event_logging_enabled="
+              << (log_context.telemetry_event_logging_enabled ? "true" : "false");
     LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
               << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.host) << ":"
               << startup_config->openai_config.port << " scheme="

@@ -14,9 +14,11 @@
 #include <boost/beast/http/verb.hpp>
 #include <nlohmann/json.hpp>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "http_json_client.hpp"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::memory {
 namespace {
@@ -27,7 +29,10 @@ using isla::server::HttpRequestSpec;
 using isla::server::HttpResponse;
 using isla::server::ParsedHttpUrl;
 using isla::server::ParseHttpUrl;
+using isla::server::ai_gateway::SanitizeForLog;
 using nlohmann::json;
+
+using Clock = std::chrono::steady_clock;
 
 json BuildSessionJson(const MemorySessionRecord& record) {
     return json{
@@ -165,9 +170,76 @@ absl::Status MapSupabaseHttpError(unsigned int status_code, std::string_view bod
     }
 }
 
+std::int64_t DurationMillis(Clock::time_point started_at, Clock::time_point completed_at) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(completed_at - started_at).count();
+}
+
+std::string HttpVerbForLog(boost::beast::http::verb method) {
+    return std::string(boost::beast::http::to_string(method));
+}
+
+void LogSupabaseRequestLatency(const SupabaseMemoryStoreConfig& config,
+                               const HttpRequestSpec& request, Clock::time_point started_at,
+                               Clock::time_point completed_at, std::string_view outcome) {
+    if (!config.telemetry_logging_enabled) {
+        return;
+    }
+    LOG(INFO) << "AI gateway supabase latency kind=request method="
+              << SanitizeForLog(HttpVerbForLog(request.method))
+              << " target=" << SanitizeForLog(request.target_path)
+              << " duration_ms=" << DurationMillis(started_at, completed_at)
+              << " outcome=" << SanitizeForLog(outcome);
+}
+
+void LogSupabaseOperationLatency(const SupabaseMemoryStoreConfig& config,
+                                 std::string_view operation,
+                                 std::optional<std::string_view> session_id,
+                                 Clock::time_point started_at, Clock::time_point completed_at,
+                                 std::string_view outcome) {
+    if (!config.telemetry_logging_enabled) {
+        return;
+    }
+    LOG(INFO) << "AI gateway supabase latency kind=operation op=" << SanitizeForLog(operation)
+              << " session_id="
+              << (session_id.has_value() ? SanitizeForLog(*session_id) : std::string("<none>"))
+              << " duration_ms=" << DurationMillis(started_at, completed_at)
+              << " outcome=" << SanitizeForLog(outcome);
+}
+
+class ScopedSupabaseOperationLatency final {
+  public:
+    ScopedSupabaseOperationLatency(const SupabaseMemoryStoreConfig& config,
+                                   std::string_view operation,
+                                   std::optional<std::string_view> session_id)
+        : config_(config), operation_(operation),
+          session_id_(session_id.has_value() ? std::optional<std::string>(*session_id)
+                                             : std::nullopt),
+          started_at_(Clock::now()) {}
+
+    ScopedSupabaseOperationLatency(const ScopedSupabaseOperationLatency&) = delete;
+    ScopedSupabaseOperationLatency& operator=(const ScopedSupabaseOperationLatency&) = delete;
+
+    ~ScopedSupabaseOperationLatency() noexcept {
+        LogSupabaseOperationLatency(config_, operation_, session_id_, started_at_, Clock::now(),
+                                    outcome_);
+    }
+
+    void SetOutcome(std::string_view outcome) {
+        outcome_ = std::string(outcome);
+    }
+
+  private:
+    const SupabaseMemoryStoreConfig& config_;
+    std::string operation_;
+    std::optional<std::string> session_id_;
+    Clock::time_point started_at_;
+    std::string outcome_ = "error";
+};
+
 absl::StatusOr<std::string> ExecuteSupabaseRequest(const ParsedHttpUrl& parsed_url,
                                                    const SupabaseMemoryStoreConfig& config,
                                                    const HttpRequestSpec& request) {
+    const Clock::time_point started_at = Clock::now();
     const HttpClientConfig http_config{
         .request_timeout = config.request_timeout,
         .user_agent = config.user_agent,
@@ -176,11 +248,17 @@ absl::StatusOr<std::string> ExecuteSupabaseRequest(const ParsedHttpUrl& parsed_u
     const absl::StatusOr<HttpResponse> response =
         ExecuteHttpRequest(parsed_url, http_config, request);
     if (!response.ok()) {
+        const Clock::time_point completed_at = Clock::now();
+        LogSupabaseRequestLatency(config, request, started_at, completed_at, "transport_error");
         return response.status();
     }
     if (response->status_code < 200U || response->status_code >= 300U) {
+        const Clock::time_point completed_at = Clock::now();
+        LogSupabaseRequestLatency(config, request, started_at, completed_at, "http_error");
         return MapSupabaseHttpError(response->status_code, response->body);
     }
+    const Clock::time_point completed_at = Clock::now();
+    LogSupabaseRequestLatency(config, request, started_at, completed_at, "ok");
     return response->body;
 }
 
@@ -204,7 +282,9 @@ class SupabaseMemoryStore final : public MemoryStore {
         : config_(std::move(config)), parsed_url_(std::move(parsed_url)) {}
 
     [[nodiscard]] absl::Status UpsertSession(const MemorySessionRecord& record) override {
+        ScopedSupabaseOperationLatency latency(config_, "upsert_session", record.session_id);
         if (absl::Status status = ValidateMemorySessionRecord(record); !status.ok()) {
+            latency.SetOutcome("validation_error");
             return status;
         }
         const HttpRequestSpec request =
@@ -215,12 +295,16 @@ class SupabaseMemoryStore final : public MemoryStore {
         if (!response.ok()) {
             return response.status();
         }
+        latency.SetOutcome("ok");
         return absl::OkStatus();
     }
 
     [[nodiscard]] absl::Status
     AppendConversationMessage(const ConversationMessageWrite& write) override {
+        ScopedSupabaseOperationLatency latency(config_, "append_conversation_message",
+                                               write.session_id);
         if (absl::Status status = ValidateConversationMessageWrite(write); !status.ok()) {
+            latency.SetOutcome("validation_error");
             return status;
         }
 
@@ -244,12 +328,16 @@ class SupabaseMemoryStore final : public MemoryStore {
         if (!message_response.ok()) {
             return message_response.status();
         }
+        latency.SetOutcome("ok");
         return absl::OkStatus();
     }
 
     [[nodiscard]] absl::Status
     ReplaceConversationItemWithEpisodeStub(const EpisodeStubWrite& write) override {
+        ScopedSupabaseOperationLatency latency(
+            config_, "replace_conversation_item_with_episode_stub", write.session_id);
         if (absl::Status status = ValidateEpisodeStubWrite(write); !status.ok()) {
+            latency.SetOutcome("validation_error");
             return status;
         }
         const HttpRequestSpec request = BuildUpsertRequest(
@@ -263,11 +351,15 @@ class SupabaseMemoryStore final : public MemoryStore {
         if (!response.ok()) {
             return response.status();
         }
+        latency.SetOutcome("ok");
         return absl::OkStatus();
     }
 
     [[nodiscard]] absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) override {
+        ScopedSupabaseOperationLatency latency(config_, "upsert_mid_term_episode",
+                                               write.session_id);
         if (absl::Status status = ValidateMidTermEpisodeWrite(write); !status.ok()) {
+            latency.SetOutcome("validation_error");
             return status;
         }
         const HttpRequestSpec request =
@@ -278,12 +370,15 @@ class SupabaseMemoryStore final : public MemoryStore {
         if (!response.ok()) {
             return response.status();
         }
+        latency.SetOutcome("ok");
         return absl::OkStatus();
     }
 
     [[nodiscard]] absl::StatusOr<std::optional<MemoryStoreSnapshot>>
     LoadSnapshot(std::string_view session_id) const override {
+        ScopedSupabaseOperationLatency latency(config_, "load_snapshot", session_id);
         if (session_id.empty()) {
+            latency.SetOutcome("validation_error");
             return absl::InvalidArgumentError("LoadSnapshot requires session_id to be non-empty");
         }
 
@@ -305,6 +400,7 @@ class SupabaseMemoryStore final : public MemoryStore {
             return session_rows.status();
         }
         if (session_rows->empty()) {
+            latency.SetOutcome("not_found");
             return std::nullopt;
         }
         if (session_rows->size() != 1U) {
@@ -470,6 +566,7 @@ class SupabaseMemoryStore final : public MemoryStore {
         if (absl::Status status = ValidateMemoryStoreSnapshot(snapshot); !status.ok()) {
             return status;
         }
+        latency.SetOutcome("ok");
         return snapshot;
     }
 

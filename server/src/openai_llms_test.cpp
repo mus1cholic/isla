@@ -1,11 +1,16 @@
 #include "isla/server/openai_llms.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "ai_gateway_telemetry_test_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "openai_responses_test_utils.hpp"
 
@@ -127,6 +132,30 @@ TEST(OpenAiLlmstest, PropagatesTelemetryContextToResponsesClient) {
 
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_EQ(client->last_request.telemetry_context, telemetry_context);
+}
+
+TEST(OpenAiLlmstest, RecordsProviderTotalAndAggregationPhases) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
+    auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
+    OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.3-chat-latest", client);
+
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{
+                                           .system_prompt = "rendered system prompt",
+                                           .user_text = "ctx",
+                                           .telemetry_context = MakeTurnTelemetryContext(
+                                               "srv_test", "turn_telemetry", telemetry_sink),
+                                       });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    const std::vector<test::TelemetryPhaseRecord> phases = telemetry_sink->phases();
+    const auto aggregate_phase_count = static_cast<std::size_t>(
+        std::count_if(phases.begin(), phases.end(), [](const test::TelemetryPhaseRecord& phase) {
+            return phase.name == telemetry::kPhaseProviderAggregateText;
+        }));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseLlmProviderTotal));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderAggregateText));
+    EXPECT_EQ(aggregate_phase_count, 1U);
 }
 
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
