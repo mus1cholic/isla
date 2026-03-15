@@ -44,6 +44,8 @@ auto kSupabaseUrl = std::to_array("--supabase-url=https://project.supabase.co");
 auto kSupabaseKey = std::to_array("--supabase-service-role-key=service_role_key");
 auto kSupabaseSchema = std::to_array("--supabase-schema=private_mem");
 auto kSupabaseTimeout = std::to_array("--supabase-timeout-ms=2500");
+auto kTelemetryLog = std::to_array("--telemetry-log");
+auto kTelemetryLogEvents = std::to_array("--telemetry-log-events");
 auto kBadScheme = std::to_array("--openai-scheme=ftp");
 auto kBadPort = std::to_array("--openai-port=70000");
 
@@ -190,6 +192,19 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     EXPECT_EQ(parsed->supabase_config.request_timeout, std::chrono::milliseconds(2500));
 }
 
+TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFlagsFromCli) {
+    std::array<char*, 4> argv = { kArg0.data(), kApiKey.data(), kTelemetryLog.data(),
+                                  kTelemetryLogEvents.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_TRUE(parsed->telemetry_logging_enabled);
+    EXPECT_TRUE(parsed->telemetry_event_logging_enabled);
+}
+
 TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     std::array<char*, 1> argv = { kArg0.data() };
 
@@ -225,6 +240,26 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     EXPECT_EQ(parsed->openai_config.request_timeout, std::chrono::milliseconds(2500));
     ASSERT_TRUE(parsed->openai_config.project.has_value());
     EXPECT_EQ(*parsed->openai_config.project, "proj_env_123");
+}
+
+TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFromEnvironmentDefaults) {
+    std::array<char*, 2> argv = { kArg0.data(), kApiKey.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "AI_GATEWAY_TELEMETRY_LOG") {
+                                          return "true";
+                                      }
+                                      if (name == "AI_GATEWAY_TELEMETRY_LOG_EVENTS") {
+                                          return "1";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_TRUE(parsed->telemetry_logging_enabled);
+    EXPECT_TRUE(parsed->telemetry_event_logging_enabled);
 }
 
 TEST(AiGatewayStartupConfigTest, ParseGatewayStartupConfigAcceptsDotEnvFallback) {
@@ -384,6 +419,8 @@ TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsEnvOnlySource) {
     EXPECT_FALSE(context.organization_configured);
     EXPECT_TRUE(context.project_configured);
     EXPECT_FALSE(context.supabase_configured);
+    EXPECT_FALSE(context.telemetry_logging_enabled);
+    EXPECT_FALSE(context.telemetry_event_logging_enabled);
 }
 
 TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsMixedSourceWhenCliOverridesEnv) {
@@ -456,6 +493,23 @@ TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsSupabaseConfigured
 
     EXPECT_EQ(context.config_source, "cli");
     EXPECT_TRUE(context.supabase_configured);
+}
+
+TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsTelemetryLoggingFlags) {
+    std::array<char*, 4> argv = { kArg0.data(), kApiKey.data(), kTelemetryLog.data(),
+                                  kTelemetryLogEvents.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    const StartupLogContext context = BuildStartupLogContext(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; }, *parsed);
+
+    EXPECT_TRUE(context.telemetry_logging_enabled);
+    EXPECT_TRUE(context.telemetry_event_logging_enabled);
 }
 
 TEST(AiGatewayStartupConfigTest, RejectsPartialSupabaseConfig) {

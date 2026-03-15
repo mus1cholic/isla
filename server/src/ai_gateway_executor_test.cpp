@@ -42,12 +42,21 @@ class RecordingTelemetrySink final : public TelemetrySink {
     mutable std::vector<PhaseRecord> phases;
 };
 
+bool ContainsTelemetryPhase(const std::vector<RecordingTelemetrySink::PhaseRecord>& phases,
+                            std::string_view phase_name) {
+    for (const auto& phase : phases) {
+        if (phase.name == phase_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ExpectExecutorTelemetryRecorded(const RecordingTelemetrySink& telemetry_sink) {
     ASSERT_EQ(telemetry_sink.events.size(), 2U);
     EXPECT_EQ(telemetry_sink.events[0], telemetry::kEventExecutorStarted);
     EXPECT_EQ(telemetry_sink.events[1], telemetry::kEventExecutorCompleted);
-    ASSERT_EQ(telemetry_sink.phases.size(), 1U);
-    EXPECT_EQ(telemetry_sink.phases[0].name, telemetry::kPhaseExecutorTotal);
+    EXPECT_TRUE(ContainsTelemetryPhase(telemetry_sink.phases, telemetry::kPhaseExecutorTotal));
 }
 
 class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {

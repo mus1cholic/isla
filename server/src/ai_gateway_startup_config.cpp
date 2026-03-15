@@ -20,6 +20,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "ai_gateway_string_utils.hpp"
+#include "isla/server/ai_gateway_logging_telemetry_sink.hpp"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::ai_gateway {
@@ -62,6 +63,16 @@ StartupEnvLookup StartupEnvLookupFromMap(StartupEnvMap values) {
         }
         return it->second;
     };
+}
+
+bool ParseEnabledFlagValue(std::string_view value) {
+    std::string normalized = TrimAscii(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (normalized.empty()) {
+        return false;
+    }
+    return normalized != "0" && normalized != "false" && normalized != "off" && normalized != "no";
 }
 
 void AppendIfMissing(std::vector<std::filesystem::path>* paths,
@@ -197,6 +208,19 @@ void ApplySupabaseEnvDefaults(isla::server::memory::SupabaseMemoryStoreConfig* c
         }
     }
     config->enabled = !config->url.empty() || !config->service_role_key.empty();
+}
+
+void ApplyTelemetryEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> enabled = env_lookup("AI_GATEWAY_TELEMETRY_LOG");
+        enabled.has_value()) {
+        parsed->telemetry_logging_enabled = ParseEnabledFlagValue(*enabled);
+    }
+    if (const std::optional<std::string> log_events = env_lookup("AI_GATEWAY_TELEMETRY_LOG_EVENTS");
+        log_events.has_value()) {
+        parsed->telemetry_event_logging_enabled = ParseEnabledFlagValue(*log_events);
+        parsed->telemetry_logging_enabled =
+            parsed->telemetry_logging_enabled || parsed->telemetry_event_logging_enabled;
+    }
 }
 
 } // namespace
@@ -375,6 +399,8 @@ StartupLogContext BuildStartupLogContext(int argc, char** argv, const StartupEnv
     context.organization_configured = parsed.openai_config.organization.has_value();
     context.project_configured = parsed.openai_config.project.has_value();
     context.supabase_configured = parsed.supabase_config.enabled;
+    context.telemetry_logging_enabled = parsed.telemetry_logging_enabled;
+    context.telemetry_event_logging_enabled = parsed.telemetry_event_logging_enabled;
     return context;
 }
 
@@ -383,6 +409,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     ParsedStartupConfig parsed;
     ApplyOpenAiEnvDefaults(&parsed.openai_config, env_lookup);
     ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
+    ApplyTelemetryEnvDefaults(&parsed, env_lookup);
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -416,6 +443,15 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             !handled.ok()) {
             return handled.status();
         } else if (*handled) {
+            continue;
+        }
+        if (argument == "--telemetry-log") {
+            parsed.telemetry_logging_enabled = true;
+            continue;
+        }
+        if (argument == "--telemetry-log-events") {
+            parsed.telemetry_logging_enabled = true;
+            parsed.telemetry_event_logging_enabled = true;
             continue;
         }
         if (argument.starts_with("--openai-api-key=")) {
@@ -525,6 +561,11 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         if (!supabase_status.ok()) {
             return supabase_status;
         }
+    }
+    if (parsed.telemetry_logging_enabled) {
+        parsed.server_config.telemetry_sink = CreateLoggingTelemetrySink(LoggingTelemetrySinkConfig{
+            .log_events = parsed.telemetry_event_logging_enabled,
+        });
     }
     return parsed;
 }

@@ -20,6 +20,8 @@ struct ParsedStartupConfig {
     GatewayServerConfig server_config;
     OpenAiResponsesClientConfig openai_config;
     isla::server::memory::SupabaseMemoryStoreConfig supabase_config;
+    bool telemetry_logging_enabled = false;
+    bool telemetry_event_logging_enabled = false;
 };
 
 struct StartupLogContext {
@@ -28,6 +30,8 @@ struct StartupLogContext {
     bool organization_configured = false;
     bool project_configured = false;
     bool supabase_configured = false;
+    bool telemetry_logging_enabled = false;
+    bool telemetry_event_logging_enabled = false;
 };
 
 using StartupEnvLookup = std::function<std::optional<std::string>(std::string_view)>;

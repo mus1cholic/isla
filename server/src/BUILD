@@ -18,6 +18,7 @@ cc_library(
     deps = [
         "//server/include/isla/server:server_headers",
         "//server/memory/src:supabase_memory_store",
+        ":ai_gateway_logging_telemetry_sink",
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
         "@abseil-cpp//absl/log:log",
@@ -202,6 +203,17 @@ cc_library(
 )
 
 cc_library(
+    name = "ai_gateway_logging_telemetry_sink",
+    srcs = ["ai_gateway_logging_telemetry_sink.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_logging_utils",
+        "@abseil-cpp//absl/log:log",
+    ],
+)
+
+cc_library(
     name = "ai_gateway_websocket_session",
     srcs = ["ai_gateway_websocket_session.cpp"],
     visibility = ["//visibility:public"],
@@ -267,6 +279,7 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_logging_telemetry_sink",
         ":ai_gateway_startup_config",
         ":ai_gateway_logging_utils",
         ":ai_gateway_server",
@@ -285,6 +298,17 @@ cc_test(
     srcs = ["ai_gateway_telemetry_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "ai_gateway_logging_telemetry_sink_test",
+    srcs = ["ai_gateway_logging_telemetry_sink_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_logging_telemetry_sink",
+        "@abseil-cpp//absl/log:log_sink_registry",
         "@googletest//:gtest_main",
     ],
 )

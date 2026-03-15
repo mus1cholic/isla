@@ -45,6 +45,55 @@ namespace ssl = asio::ssl;
 
 constexpr auto kEarlyAbortTimeout = 2s;
 
+class RecordingTelemetrySink final : public TelemetrySink {
+  public:
+    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
+                 TurnTelemetryContext::Clock::time_point at) const override {
+        static_cast<void>(context);
+        static_cast<void>(at);
+        events.push_back(std::string(event_name));
+    }
+
+    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
+                 TurnTelemetryContext::Clock::time_point started_at,
+                 TurnTelemetryContext::Clock::time_point completed_at) const override {
+        static_cast<void>(context);
+        phases.push_back(PhaseRecord{
+            .name = std::string(phase_name),
+            .started_at = started_at,
+            .completed_at = completed_at,
+        });
+    }
+
+    struct PhaseRecord {
+        std::string name;
+        TurnTelemetryContext::Clock::time_point started_at;
+        TurnTelemetryContext::Clock::time_point completed_at;
+    };
+
+    mutable std::vector<std::string> events;
+    mutable std::vector<PhaseRecord> phases;
+};
+
+bool ContainsTelemetryEvent(const std::vector<std::string>& events, std::string_view event_name) {
+    for (const auto& event : events) {
+        if (event == event_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ContainsTelemetryPhase(const std::vector<RecordingTelemetrySink::PhaseRecord>& phases,
+                            std::string_view phase_name) {
+    for (const auto& phase : phases) {
+        if (phase.name == phase_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ReportTestServerThreadException(std::string_view server_name) {
     try {
         throw;
@@ -639,6 +688,64 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.3-chat-latest\""), std::string::npos);
     EXPECT_NE(server.request_text().find("\"reasoning\":{\"effort\":\"none\"}"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"instructions\":\"system prompt\""), std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, RecordsPhaseThreeProviderTelemetryForSuccessfulStream) {
+    const std::string body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\r\n\r\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world\"}\r\n\r\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    const std::string response = "HTTP/1.1 200 OK\r\n"
+                                 "Content-Type: text/event-stream\r\n"
+                                 "Content-Length: " +
+                                 std::to_string(body.size()) +
+                                 "\r\n"
+                                 "Connection: close\r\n\r\n" +
+                                 body;
+    OneShotHttpServer server(response);
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    std::string output_text;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.3-chat-latest",
+            .system_prompt = "system prompt",
+            .user_text = "hello",
+            .telemetry_context =
+                MakeTurnTelemetryContext("srv_test", "turn_telemetry", telemetry_sink),
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            return std::visit(
+                [&](const auto& concrete_event) -> absl::Status {
+                    using Event = std::decay_t<decltype(concrete_event)>;
+                    if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += concrete_event.text_delta;
+                    }
+                    return absl::OkStatus();
+                },
+                event);
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_EQ(output_text, "hello world");
+    EXPECT_TRUE(
+        ContainsTelemetryEvent(telemetry_sink->events, telemetry::kEventProviderDispatched));
+    EXPECT_TRUE(
+        ContainsTelemetryEvent(telemetry_sink->events, telemetry::kEventProviderFirstToken));
+    EXPECT_TRUE(ContainsTelemetryEvent(telemetry_sink->events, telemetry::kEventProviderCompleted));
+    EXPECT_TRUE(
+        ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseProviderSerializeRequest));
+    EXPECT_TRUE(ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseProviderTransport));
+    EXPECT_TRUE(ContainsTelemetryPhase(telemetry_sink->phases, telemetry::kPhaseProviderStream));
 }
 
 TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody) {

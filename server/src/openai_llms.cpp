@@ -107,6 +107,8 @@ absl::StatusOr<std::string>
 OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
                                      const ExecutionRuntimeInput& runtime_input) const {
     static_cast<void>(item_index);
+    ScopedTelemetryPhase provider_total_phase(runtime_input.telemetry_context,
+                                              telemetry::kPhaseLlmProviderTotal);
 
     if (responses_client_ == nullptr) {
         LOG(ERROR) << "AI gateway openai llms missing responses client step_name='"
@@ -135,7 +137,6 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
             << " system_prompt_present=" << (!effective_system_prompt.empty() ? "true" : "false");
 
     std::string output_text;
-    bool logged_first_token = false;
     absl::Status stream_status = responses_client_->StreamResponse(
         OpenAiResponsesRequest{
             .model = model_,
@@ -144,25 +145,24 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
             .reasoning_effort = reasoning_effort_,
             .telemetry_context = runtime_input.telemetry_context,
         },
-        [this, &output_text,
-         &logged_first_token](const OpenAiResponsesEvent& event) -> absl::Status {
+        [this, &output_text, &runtime_input](const OpenAiResponsesEvent& event) -> absl::Status {
             return std::visit(
-                [this, &output_text,
-                 &logged_first_token](const auto& concrete_event) -> absl::Status {
+                [this, &output_text, &runtime_input](const auto& concrete_event) -> absl::Status {
                     using Event = std::decay_t<decltype(concrete_event)>;
                     if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
-                        if (!logged_first_token && !concrete_event.text_delta.empty()) {
-                            logged_first_token = true;
-                            LOG(INFO) << "AI gateway openai llms received first provider token "
-                                      << "step_name='" << SanitizeForLog(step_name_) << "' model='"
-                                      << SanitizeForLog(model_)
-                                      << "' first_delta_bytes=" << concrete_event.text_delta.size();
+                        if (concrete_event.text_delta.empty()) {
+                            return absl::OkStatus();
                         }
+                        const TurnTelemetryContext::Clock::time_point aggregate_started_at =
+                            TurnTelemetryContext::Clock::now();
                         if (output_text.size() + concrete_event.text_delta.size() >
                             kMaxTextOutputBytes) {
                             return resource_exhausted("openai llms output exceeds maximum length");
                         }
                         output_text.append(concrete_event.text_delta);
+                        RecordTelemetryPhase(
+                            runtime_input.telemetry_context, telemetry::kPhaseProviderAggregateText,
+                            aggregate_started_at, TurnTelemetryContext::Clock::now());
                     }
                     return absl::OkStatus();
                 },
