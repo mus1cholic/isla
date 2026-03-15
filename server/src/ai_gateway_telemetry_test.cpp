@@ -1,6 +1,7 @@
 #include "isla/server/ai_gateway_telemetry.hpp"
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,6 +49,35 @@ class RecordingTelemetrySink final : public TelemetrySink {
     mutable std::vector<std::string> outcomes;
 };
 
+class ThrowingTelemetrySink final : public TelemetrySink {
+  public:
+    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
+                 TurnTelemetryContext::Clock::time_point at) const override {
+        static_cast<void>(context);
+        static_cast<void>(event_name);
+        static_cast<void>(at);
+        throw std::runtime_error("event failure");
+    }
+
+    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
+                 TurnTelemetryContext::Clock::time_point started_at,
+                 TurnTelemetryContext::Clock::time_point completed_at) const override {
+        static_cast<void>(context);
+        static_cast<void>(phase_name);
+        static_cast<void>(started_at);
+        static_cast<void>(completed_at);
+        throw std::runtime_error("phase failure");
+    }
+
+    void OnTurnFinished(const TurnTelemetryContext& context, std::string_view outcome,
+                        TurnTelemetryContext::Clock::time_point finished_at) const override {
+        static_cast<void>(context);
+        static_cast<void>(outcome);
+        static_cast<void>(finished_at);
+        throw std::runtime_error("finished failure");
+    }
+};
+
 TEST(AiGatewayTelemetryTest, ScopedPhaseExplicitFinishDoesNotDoubleRecordOnDestruction) {
     auto sink = std::make_shared<RecordingTelemetrySink>();
     const std::shared_ptr<const TurnTelemetryContext> context =
@@ -93,6 +123,22 @@ TEST(AiGatewayTelemetryTest, RecordingHelpersNoOpForNullContext) {
     RecordTelemetryPhase(context, telemetry::kPhaseGatewayAccept,
                          TurnTelemetryContext::Clock::now(), TurnTelemetryContext::Clock::now());
     RecordTurnFinished(context, telemetry::kOutcomeSucceeded);
+}
+
+TEST(AiGatewayTelemetryTest, RecordingHelpersSwallowSinkExceptions) {
+    const std::shared_ptr<const TurnTelemetryContext> context =
+        MakeTurnTelemetryContext("srv_test", "turn_1", std::make_shared<ThrowingTelemetrySink>());
+
+    EXPECT_NO_THROW(RecordTelemetryEvent(context, telemetry::kEventTurnAccepted));
+    EXPECT_NO_THROW(RecordTelemetryPhase(context, telemetry::kPhaseGatewayAccept,
+                                         TurnTelemetryContext::Clock::now(),
+                                         TurnTelemetryContext::Clock::now()));
+    EXPECT_NO_THROW(RecordTurnFinished(context, telemetry::kOutcomeSucceeded));
+    EXPECT_NO_THROW({
+        ScopedTelemetryPhase phase(context, telemetry::kPhaseExecutorTotal,
+                                   telemetry::kEventExecutorStarted,
+                                   telemetry::kEventExecutorCompleted);
+    });
 }
 
 } // namespace

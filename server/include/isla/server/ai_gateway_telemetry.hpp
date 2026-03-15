@@ -99,6 +99,11 @@ namespace internal {
 
 class NoOpTelemetrySink final : public TelemetrySink {};
 
+inline void SwallowTelemetryException() noexcept {
+    // Telemetry must never terminate gateway control flow, especially from noexcept paths such as
+    // destructors and move operations.
+}
+
 } // namespace internal
 
 [[nodiscard]] inline std::shared_ptr<const TelemetrySink> CreateNoOpTelemetrySink() {
@@ -118,7 +123,11 @@ inline void RecordTelemetryEvent(
     if (context == nullptr || context->sink == nullptr) {
         return;
     }
-    context->sink->OnEvent(*context, event_name, at);
+    try {
+        context->sink->OnEvent(*context, event_name, at);
+    } catch (...) {
+        internal::SwallowTelemetryException();
+    }
 }
 
 inline void RecordTelemetryPhase(const std::shared_ptr<const TurnTelemetryContext>& context,
@@ -128,7 +137,11 @@ inline void RecordTelemetryPhase(const std::shared_ptr<const TurnTelemetryContex
     if (context == nullptr || context->sink == nullptr) {
         return;
     }
-    context->sink->OnPhase(*context, phase_name, started_at, completed_at);
+    try {
+        context->sink->OnPhase(*context, phase_name, started_at, completed_at);
+    } catch (...) {
+        internal::SwallowTelemetryException();
+    }
 }
 
 inline void RecordTurnFinished(
@@ -137,9 +150,17 @@ inline void RecordTurnFinished(
     if (context == nullptr || context->sink == nullptr) {
         return;
     }
-    context->sink->OnTurnFinished(*context, outcome, finished_at);
+    try {
+        context->sink->OnTurnFinished(*context, outcome, finished_at);
+    } catch (...) {
+        internal::SwallowTelemetryException();
+    }
 }
 
+// ScopedTelemetryPhase emits the optional started event at construction time and records the phase
+// exactly once on Finish() or destruction. If a caller finishes the phase early, later destruction
+// is a no-op. When provided, the completed event is emitted at the same timestamp as the recorded
+// phase completion.
 class ScopedTelemetryPhase {
   public:
     ScopedTelemetryPhase(
@@ -167,7 +188,11 @@ class ScopedTelemetryPhase {
         if (this == &other) {
             return *this;
         }
-        Finish();
+        try {
+            Finish();
+        } catch (...) {
+            internal::SwallowTelemetryException();
+        }
         context_ = std::move(other.context_);
         phase_name_ = other.phase_name_;
         started_event_ = other.started_event_;
@@ -178,8 +203,12 @@ class ScopedTelemetryPhase {
         return *this;
     }
 
-    ~ScopedTelemetryPhase() {
-        Finish();
+    ~ScopedTelemetryPhase() noexcept {
+        try {
+            Finish();
+        } catch (...) {
+            internal::SwallowTelemetryException();
+        }
     }
 
     void Finish(

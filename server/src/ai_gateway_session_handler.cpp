@@ -31,6 +31,8 @@ GatewaySessionHandler::GatewaySessionHandler(std::string session_id,
 
 HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view json_text) {
     HandleIncomingResult result{};
+    const TurnTelemetryContext::Clock::time_point gateway_accept_started =
+        TurnTelemetryContext::Clock::now();
     const absl::StatusOr<protocol::GatewayMessage> parsed = protocol::parse_json_message(json_text);
     if (!parsed.ok()) {
         return RejectIncoming(std::nullopt, "bad_request", parsed.status().message());
@@ -67,8 +69,6 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
         return result;
     }
     case protocol::MessageType::TextInput: {
-        const TurnTelemetryContext::Clock::time_point gateway_accept_started =
-            TurnTelemetryContext::Clock::now();
         const auto& text_input = std::get<protocol::TextInputMessage>(message);
         if (text_input.text.size() > kMaxTextInputBytes) {
             return RejectIncoming(text_input.turn_id, "bad_request",
