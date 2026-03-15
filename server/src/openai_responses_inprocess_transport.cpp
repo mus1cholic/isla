@@ -182,17 +182,21 @@ absl::Status ConnectInProcessStream(asio::io_context* io_context, Stream* stream
 
     // Disable Nagle's algorithm so request bytes are sent immediately rather
     // than waiting up to ~200ms for more data to coalesce.
-    boost::system::error_code nodelay_error;
+    tcp::socket* tcp_socket = nullptr;
     if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
-        stream->socket().set_option(tcp::no_delay(true), nodelay_error);
+        tcp_socket = &stream->socket();
     }
 #if !defined(_WIN32)
     else if constexpr (std::is_same_v<Stream, beast::ssl_stream<beast::tcp_stream>>) {
-        beast::get_lowest_layer(*stream).socket().set_option(tcp::no_delay(true), nodelay_error);
+        tcp_socket = &beast::get_lowest_layer(*stream).socket();
     }
 #endif
-    if (nodelay_error) {
-        LOG(WARNING) << "AI gateway failed to set TCP_NODELAY: " << nodelay_error.message();
+    if (tcp_socket) {
+        boost::system::error_code nodelay_error;
+        tcp_socket->set_option(tcp::no_delay(true), nodelay_error);
+        if (nodelay_error) {
+            LOG(WARNING) << "AI gateway failed to set TCP_NODELAY: " << nodelay_error.message();
+        }
     }
 
     return absl::OkStatus();
