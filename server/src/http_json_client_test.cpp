@@ -527,13 +527,19 @@ class MultiRequestHttpServer {
 
     void Run() {
         try {
+            acceptor_.non_blocking(true);
             while (!stopped_.load()) {
-                boost::system::error_code accept_error;
                 tcp::socket socket(io_context_);
+                boost::system::error_code accept_error;
                 acceptor_.accept(socket, accept_error);
+                if (accept_error == boost::asio::error::would_block) {
+                    std::this_thread::sleep_for(10ms);
+                    continue;
+                }
                 if (accept_error) {
                     break;
                 }
+                socket.non_blocking(false);
                 connections_accepted_.fetch_add(1);
                 HandleConnection(std::move(socket));
             }
