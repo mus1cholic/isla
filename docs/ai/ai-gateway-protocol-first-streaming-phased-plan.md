@@ -291,7 +291,8 @@ ownership clear for memory persistence and terminalization.
   - cancellation -> `turn.cancelled`
   - accepted-turn error -> `error` then `turn.completed`
 - Accumulate the final assistant text server-side for memory write-back only.
-- Re-check cancellation and session liveness between streamed emits.
+- Re-check cancellation before buffering or flushing additional streamed text.
+- Re-check session liveness before each outbound delta emit or coalesced emit batch.
 - Introduce bounded emit coalescing if needed so the client is not sent one websocket frame per
   token under pathological provider chunking.
 - Preserve deterministic stop-time terminalization behavior during `server.Stop()`.
@@ -308,6 +309,9 @@ ownership clear for memory persistence and terminalization.
   - by byte threshold
   - by short time window
   - or both
+- If coalescing is added, treat the coalesced batch as the transport-level emission unit for
+  liveness and ordering checks rather than requiring a full transport check on every raw provider
+  delta.
 
 ### Exit Criteria
 
