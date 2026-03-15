@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -2243,6 +2244,201 @@ class ReconnectingSseServer {
 TEST(PersistentInProcessTransportTest, ReusesConnectionForMultipleStreamingRequests) {
     constexpr std::size_t kNumRequests = 3;
     MultiRequestSseServer server(kNumRequests);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    for (std::size_t i = 0; i < kNumRequests; ++i) {
+        std::string output_text;
+        const absl::Status status = client->StreamResponse(
+            OpenAiResponsesRequest{
+                .model = "test-model",
+                .user_text = "hello",
+            },
+            [&](const OpenAiResponsesEvent& event) -> absl::Status {
+                std::visit(
+                    [&](const auto& e) {
+                        using E = std::decay_t<decltype(e)>;
+                        if constexpr (std::is_same_v<E, OpenAiResponsesTextDeltaEvent>) {
+                            output_text += e.text_delta;
+                        }
+                    },
+                    event);
+                return absl::OkStatus();
+            });
+        ASSERT_TRUE(status.ok()) << "request " << i << " failed: " << status;
+        EXPECT_EQ(output_text, "hi");
+    }
+
+    ASSERT_TRUE(server.WaitForCompletion());
+    EXPECT_EQ(server.connections_accepted(), 1U);
+    EXPECT_EQ(server.requests_served(), kNumRequests);
+}
+
+// Like MultiRequestSseServer but uses Transfer-Encoding: chunked (matching the
+// real OpenAI API). The client must drain the chunk terminator (0\r\n\r\n) after
+// SSE [DONE] before reusing the connection, otherwise the next request reads
+// leftover chunk bytes as HTTP headers and fails with "bad version".
+class ChunkedMultiRequestSseServer {
+  public:
+    explicit ChunkedMultiRequestSseServer(std::size_t expected_requests)
+        : expected_requests_(expected_requests),
+          acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
+        port_ = acceptor_.local_endpoint().port();
+        thread_ = std::thread([this] { Run(); });
+    }
+
+    ~ChunkedMultiRequestSseServer() {
+        Stop();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return port_;
+    }
+
+    [[nodiscard]] bool WaitForCompletion() {
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (requests_served_ >= expected_requests_) {
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    }
+
+    [[nodiscard]] std::size_t connections_accepted() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return connections_accepted_;
+    }
+
+    [[nodiscard]] std::size_t requests_served() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requests_served_;
+    }
+
+  private:
+    // Wraps |data| in a single HTTP chunked encoding chunk.
+    static std::string EncodeChunk(std::string_view data) {
+        std::ostringstream chunk;
+        chunk << std::hex << data.size() << "\r\n" << data << "\r\n";
+        return chunk.str();
+    }
+
+    static std::string BuildChunkedSseResponse() {
+        const std::string event1 =
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\r\n\r\n";
+        const std::string event2 =
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_chunked\"}}"
+            "\r\n\r\n";
+        const std::string event3 = "data: [DONE]\r\n\r\n";
+        return "HTTP/1.1 200 OK\r\n"
+               "Content-Type: text/event-stream\r\n"
+               "Transfer-Encoding: chunked\r\n"
+               "Connection: keep-alive\r\n\r\n" +
+               EncodeChunk(event1) + EncodeChunk(event2) + EncodeChunk(event3) +
+               "0\r\n\r\n"; // chunk terminator
+    }
+
+    void DrainRequestOnConnection(tcp::socket& socket, asio::streambuf& buffer) {
+        asio::read_until(socket, buffer, "\r\n\r\n");
+        std::string request;
+        {
+            std::istream request_stream(&buffer);
+            request.assign(std::istreambuf_iterator<char>(request_stream),
+                           std::istreambuf_iterator<char>());
+        }
+
+        std::size_t content_length = 0;
+        const std::size_t header_end = request.find("\r\n\r\n");
+        if (header_end != std::string::npos) {
+            const std::string headers = request.substr(0, header_end);
+            const std::string prefix = "Content-Length:";
+            const std::size_t pos = headers.find(prefix);
+            if (pos != std::string::npos) {
+                const std::size_t value_begin = pos + prefix.size();
+                const std::size_t value_end = headers.find("\r\n", value_begin);
+                content_length = static_cast<std::size_t>(
+                    std::stoul(headers.substr(value_begin, value_end - value_begin)));
+            }
+        }
+
+        const std::size_t body_already =
+            header_end == std::string::npos ? 0U : request.size() - (header_end + 4U);
+        if (body_already < content_length) {
+            const std::size_t remaining = content_length - body_already;
+            std::string tail(remaining, '\0');
+            asio::read(socket, asio::buffer(tail.data(), tail.size()));
+        }
+    }
+
+    void Stop() {
+        if (stopped_.exchange(true)) {
+            return;
+        }
+        boost::system::error_code error;
+        acceptor_.close(error);
+        io_context_.stop();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void Run() {
+        try {
+            tcp::socket socket(io_context_);
+            acceptor_.accept(socket);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                ++connections_accepted_;
+            }
+
+            const std::string response = BuildChunkedSseResponse();
+            asio::streambuf buffer;
+
+            for (std::size_t i = 0; i < expected_requests_; ++i) {
+                DrainRequestOnConnection(socket, buffer);
+                asio::write(socket, asio::buffer(response.data(), response.size()));
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    ++requests_served_;
+                }
+            }
+
+            boost::system::error_code error;
+            socket.shutdown(tcp::socket::shutdown_both, error);
+            socket.close(error);
+        } catch (...) {
+            ReportTestServerThreadException("ChunkedMultiRequestSseServer");
+        }
+    }
+
+    std::size_t expected_requests_;
+    mutable std::mutex mutex_;
+    std::size_t connections_accepted_ = 0;
+    std::size_t requests_served_ = 0;
+    asio::io_context io_context_;
+    tcp::acceptor acceptor_;
+    std::thread thread_;
+    std::atomic<bool> stopped_{ false };
+    std::uint16_t port_ = 0;
+};
+
+TEST(PersistentInProcessTransportTest, ReusesConnectionWithChunkedTransferEncoding) {
+    // Uses Transfer-Encoding: chunked (like the real OpenAI API). The client
+    // must drain the chunk terminator after SSE [DONE] before reusing the
+    // connection. Without proper draining, the next request reads leftover
+    // chunk bytes as HTTP headers and fails with "bad version".
+    constexpr std::size_t kNumRequests = 3;
+    ChunkedMultiRequestSseServer server(kNumRequests);
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
         .api_key = "test_key",
