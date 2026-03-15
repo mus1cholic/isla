@@ -21,6 +21,7 @@ cc_library(
         ":ai_gateway_logging_telemetry_sink",
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
+        "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -344,6 +345,7 @@ cc_test(
     srcs = ["ai_gateway_startup_config_test.cpp"],
     deps = [
         ":ai_gateway_startup_config",
+        "@abseil-cpp//absl/log:globals",
         "@googletest//:gtest_main",
     ],
 )

@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 
+#include "absl/log/globals.h"
 #include <gtest/gtest.h>
 
 namespace isla::server::ai_gateway {
@@ -530,6 +531,23 @@ TEST(AiGatewayStartupConfigTest, RejectsPartialSupabaseConfig) {
     EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_EQ(parsed.status().message(),
               "supabase service_role_key must not be empty when the store is enabled");
+}
+
+TEST(AiGatewayStartupConfigTest, ParsesVerboseLevelFromCli) {
+    auto kVerbose = std::to_array("--verbose=2");
+    std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), kVerbose.data() };
+
+    // Reset to a known baseline before the test.
+    absl::SetGlobalVLogLevel(0);
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(), [](std::string_view) { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    // SetGlobalVLogLevel returns the previous level; calling it again to read
+    // the current value and then restore it.
+    const int current = absl::SetGlobalVLogLevel(0);
+    EXPECT_EQ(current, 2);
 }
 
 } // namespace
