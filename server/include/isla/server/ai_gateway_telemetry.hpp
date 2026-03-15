@@ -196,9 +196,9 @@ class ScopedTelemetryPhase {
 
   private:
     std::shared_ptr<const TurnTelemetryContext> context_;
-    std::string_view phase_name_;
-    std::string_view started_event_;
-    std::string_view completed_event_;
+    std::string phase_name_;
+    std::string started_event_;
+    std::string completed_event_;
     TurnTelemetryContext::Clock::time_point started_at_;
     bool active_ = true;
 };

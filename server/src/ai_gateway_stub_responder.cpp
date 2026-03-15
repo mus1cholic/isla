@@ -130,13 +130,15 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             << " working_memory_bytes=" << memory_result->rendered_working_memory.size();
     memory_user_query_phase.Finish();
 
+    Clock::time_point enqueued_at = Clock::time_point::min();
+    std::shared_ptr<const TurnTelemetryContext> enqueued_telemetry_context =
+        event.telemetry_context;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const Clock::time_point enqueued_at = Clock::now();
+        enqueued_at = Clock::now();
         VLOG(1) << "AI gateway stub queued turn session=" << event.session_id
                 << " turn_id=" << SanitizeForLog(event.turn_id)
                 << " delay_ms=" << config_.response_delay.count();
-        RecordTelemetryEvent(event.telemetry_context, telemetry::kEventTurnEnqueued, enqueued_at);
         pending_turns_.insert_or_assign(
             event.session_id,
             PendingTurn{
@@ -151,6 +153,7 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
                 .cancel_requested = false,
             });
     }
+    RecordTelemetryEvent(enqueued_telemetry_context, telemetry::kEventTurnEnqueued, enqueued_at);
 
     cv_.notify_all();
 }
@@ -234,6 +237,8 @@ void GatewayStubResponder::WorkerLoop() {
     for (;;) {
         std::optional<PendingTurn> next_turn;
         std::optional<Clock::time_point> next_deadline;
+        std::optional<PendingTurn> dequeued_turn;
+        Clock::time_point dequeued_at = Clock::time_point::min();
 
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -247,7 +252,8 @@ void GatewayStubResponder::WorkerLoop() {
                     PendingTurn& turn = it->second;
                     if (turn.cancel_requested) {
                         next_turn = turn;
-                        RecordDequeueTelemetry(turn, now);
+                        dequeued_turn = turn;
+                        dequeued_at = now;
                         VLOG(1) << "AI gateway stub dequeued cancellation session="
                                 << SanitizeForLog(it->first)
                                 << " turn_id=" << SanitizeForLog(turn.turn_id);
@@ -257,7 +263,8 @@ void GatewayStubResponder::WorkerLoop() {
                     }
                     if (turn.ready_at <= now) {
                         next_turn = turn;
-                        RecordDequeueTelemetry(turn, now);
+                        dequeued_turn = turn;
+                        dequeued_at = now;
                         VLOG(1) << "AI gateway stub dequeued ready turn session="
                                 << SanitizeForLog(it->first)
                                 << " turn_id=" << SanitizeForLog(turn.turn_id);
@@ -281,6 +288,10 @@ void GatewayStubResponder::WorkerLoop() {
                 }
                 next_deadline.reset();
             }
+        }
+
+        if (dequeued_turn.has_value()) {
+            RecordDequeueTelemetry(*dequeued_turn, dequeued_at);
         }
 
         if (!next_turn.has_value()) {
