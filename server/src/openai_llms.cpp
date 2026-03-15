@@ -172,16 +172,15 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
                         if (!first_aggregate_started_at.has_value()) {
                             first_aggregate_started_at = aggregate_started_at;
                         }
-                        total_aggregate_duration +=
-                            (aggregate_completed_at - aggregate_started_at);
+                        total_aggregate_duration += (aggregate_completed_at - aggregate_started_at);
                     }
                     return absl::OkStatus();
                 },
                 event);
         });
     if (first_aggregate_started_at.has_value()) {
-        RecordTelemetryPhase(runtime_input.telemetry_context, telemetry::kPhaseProviderAggregateText,
-                             *first_aggregate_started_at,
+        RecordTelemetryPhase(runtime_input.telemetry_context,
+                             telemetry::kPhaseProviderAggregateText, *first_aggregate_started_at,
                              *first_aggregate_started_at + total_aggregate_duration);
     }
     if (!stream_status.ok()) {

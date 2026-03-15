@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -228,6 +229,90 @@ class SequentialHttpServer {
     std::vector<std::string> responses_;
     mutable std::mutex mutex_;
     std::vector<std::string> requests_;
+    asio::io_context io_context_;
+    tcp::acceptor acceptor_;
+    std::thread thread_;
+    std::atomic<bool> stopped_{ false };
+    std::uint16_t port_ = 0;
+};
+
+class RoutingHttpServer {
+  public:
+    explicit RoutingHttpServer(std::unordered_map<std::string, std::string> responses_by_target)
+        : responses_by_target_(std::move(responses_by_target)),
+          acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
+        port_ = acceptor_.local_endpoint().port();
+        thread_ = std::thread([this] { Run(); });
+    }
+
+    ~RoutingHttpServer() {
+        Stop();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return port_;
+    }
+
+  private:
+    void Stop() {
+        if (stopped_.exchange(true)) {
+            return;
+        }
+        boost::system::error_code error;
+        acceptor_.close(error);
+        io_context_.stop();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void Run() {
+        try {
+            while (!stopped_.load()) {
+                tcp::socket socket(io_context_);
+                boost::system::error_code accept_error;
+                acceptor_.accept(socket, accept_error);
+                if (accept_error) {
+                    if (stopped_.load()) {
+                        return;
+                    }
+                    throw std::runtime_error("RoutingHttpServer accept failed: " +
+                                             accept_error.message());
+                }
+
+                asio::streambuf buffer;
+                asio::read_until(socket, buffer, "\r\n\r\n");
+                std::string request;
+                {
+                    std::istream request_stream(&buffer);
+                    request.assign(std::istreambuf_iterator<char>(request_stream),
+                                   std::istreambuf_iterator<char>());
+                }
+
+                const std::size_t first_line_end = request.find("\r\n");
+                const std::string request_line = first_line_end == std::string::npos
+                                                     ? request
+                                                     : request.substr(0, first_line_end);
+
+                std::string response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                for (const auto& [target_path, candidate_response] : responses_by_target_) {
+                    if (request_line.find(target_path) != std::string::npos) {
+                        response = candidate_response;
+                        break;
+                    }
+                }
+
+                asio::write(socket, asio::buffer(response.data(), response.size()));
+                boost::system::error_code error;
+                socket.shutdown(tcp::socket::shutdown_both, error);
+                socket.close(error);
+            }
+        } catch (...) {
+            ReportTestServerThreadException("RoutingHttpServer");
+        }
+    }
+
+    std::unordered_map<std::string, std::string> responses_by_target_;
     asio::io_context io_context_;
     tcp::acceptor acceptor_;
     std::thread thread_;
@@ -484,15 +569,19 @@ TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes
                                       "summary\":\"summary\",\"tier3_ref\":\"summary "
                                       "ref\",\"tier3_keywords\":[\"memory\"],\"salience\":7,"
                                       "\"embedding\":[],\"created_at\":\"2026-03-08T14:00:02Z\"}]";
-    SequentialHttpServer server({
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(session_body.size()) + "\r\n\r\n" + session_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(items_body.size()) + "\r\n\r\n" + items_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(messages_body.size()) + "\r\n\r\n" + messages_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body,
+    RoutingHttpServer server({
+        { "/rest/v1/memory_sessions",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(session_body.size()) + "\r\n\r\n" + session_body },
+        { "/rest/v1/conversation_items",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(items_body.size()) + "\r\n\r\n" + items_body },
+        { "/rest/v1/conversation_messages",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(messages_body.size()) + "\r\n\r\n" + messages_body },
+        { "/rest/v1/mid_term_episodes",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body },
     });
     const absl::StatusOr<MemoryStorePtr> store =
         CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{

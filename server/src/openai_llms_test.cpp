@@ -149,8 +149,8 @@ TEST(OpenAiLlmstest, RecordsProviderTotalAndAggregationPhases) {
 
     ASSERT_TRUE(result.ok()) << result.status();
     const std::vector<test::TelemetryPhaseRecord> phases = telemetry_sink->phases();
-    const std::size_t aggregate_phase_count = static_cast<std::size_t>(std::count_if(
-        phases.begin(), phases.end(), [](const test::TelemetryPhaseRecord& phase) {
+    const auto aggregate_phase_count = static_cast<std::size_t>(
+        std::count_if(phases.begin(), phases.end(), [](const test::TelemetryPhaseRecord& phase) {
             return phase.name == telemetry::kPhaseProviderAggregateText;
         }));
     EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseLlmProviderTotal));

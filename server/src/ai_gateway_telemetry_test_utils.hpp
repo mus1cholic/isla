@@ -87,9 +87,9 @@ class RecordingTelemetrySink final : public TelemetrySink {
         return finished_;
     }
 
-    [[nodiscard]] bool WaitForFinishedCount(
-        std::size_t expected_count,
-        std::chrono::milliseconds timeout = std::chrono::seconds(2)) const {
+    [[nodiscard]] bool
+    WaitForFinishedCount(std::size_t expected_count,
+                         std::chrono::milliseconds timeout = std::chrono::seconds(2)) const {
         std::unique_lock<std::mutex> lock(mutex_);
         return cv_.wait_for(lock, timeout, [&] { return finished_.size() >= expected_count; });
     }
