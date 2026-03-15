@@ -239,8 +239,10 @@ IncrementalSseParser::ProcessLine(const std::string& line,
         // Continuation line without a `data:` prefix. This can happen when the provider
         // leaks a literal newline into a `data:` field value (e.g. inside a long JSON
         // string such as `instructions` echoed in `response.created`). The Feed loop
-        // splits on '\n', so the remainder lands here as a bare line. Append it to the
-        // in-progress event buffer so the full JSON payload is preserved.
+        // splits on '\n', so the remainder lands here as a bare line. Insert a space to
+        // replace the consumed newline (harmless between JSON tokens, and prevents word-
+        // merging inside JSON strings) then append the continuation.
+        data_ += ' ';
         data_.append(line);
     }
     return SseFeedDisposition::kContinue;
