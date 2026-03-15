@@ -539,6 +539,24 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryRendersBundledDefaultPromptWhenCon
               std::string::npos);
 }
 
+TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsSplitRenderedPromptPieces) {
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandler();
+    ASSERT_TRUE(handler.ok()) << handler.status();
+    handler->mutable_memory().UpsertActiveModel("entity_user", "Airi, the user.");
+
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "hello", Ts("2026-03-08T14:00:00Z")));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_NE(result->rendered_system_prompt.find("<persistent_memory_cache>"), std::string::npos);
+    EXPECT_NE(result->rendered_system_prompt.find("- [entity_user] Airi, the user."),
+              std::string::npos);
+    EXPECT_NE(result->rendered_working_memory_context.find("<conversation>"), std::string::npos);
+    EXPECT_NE(result->rendered_working_memory_context.find("] hello"), std::string::npos);
+    EXPECT_EQ(result->rendered_working_memory,
+              result->rendered_system_prompt + result->rendered_working_memory_context);
+}
+
 TEST_F(MemoryOrchestratorTest, CreateRejectsEmptySessionId) {
     const absl::StatusOr<MemoryOrchestrator> handler =
         MemoryOrchestrator::Create("", MemoryOrchestratorInit{

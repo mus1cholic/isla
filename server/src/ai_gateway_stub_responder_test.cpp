@@ -298,6 +298,60 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
     EXPECT_NE(capturing_client->last_request.user_text.find("] hello"), std::string::npos);
 }
 
+TEST_F(GatewayStubResponderTest,
+       SecondTurnRequestIncludesPriorConversationWithoutDuplicatingCurrentTurn) {
+    auto capturing_client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            const std::string latest_text = ExtractLatestPromptLine(request.user_text);
+            const std::string reply = std::string("stub echo: ") + latest_text;
+            const absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = reply });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{ .response_id = "resp_test" });
+        });
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .memory_user_id = "gateway_user",
+        .openai_client = capturing_client,
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_2",
+        .text = "how are you?",
+    });
+    ASSERT_TRUE(session->WaitForEventCount(4U));
+
+    const std::string& second_request_context = capturing_client->last_request.user_text;
+    EXPECT_NE(second_request_context.find("<conversation>"), std::string::npos);
+    EXPECT_NE(second_request_context.find("] hello"), std::string::npos);
+    EXPECT_NE(second_request_context.find("] stub echo: hello"), std::string::npos);
+    EXPECT_NE(second_request_context.find("] how are you?"), std::string::npos);
+
+    const std::size_t current_turn_pos = second_request_context.find("] how are you?");
+    ASSERT_NE(current_turn_pos, std::string::npos);
+    EXPECT_EQ(second_request_context.find("] how are you?", current_turn_pos + 1U),
+              std::string::npos);
+}
+
 TEST_F(GatewayStubResponderTest, SessionStartUsesBundledSystemPromptByDefault) {
     const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
     const absl::StatusOr<std::string> system_prompt = isla::server::memory::LoadSystemPrompt();
