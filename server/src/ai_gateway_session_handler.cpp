@@ -26,8 +26,8 @@ absl::Status invalid_argument(std::string_view message) {
 
 GatewaySessionHandler::GatewaySessionHandler(std::string session_id,
                                              std::shared_ptr<const TelemetrySink> telemetry_sink)
-    : session_id_(std::move(session_id)), telemetry_sink_(NormalizeTelemetrySink(
-                                        std::move(telemetry_sink))) {}
+    : session_id_(std::move(session_id)),
+      telemetry_sink_(NormalizeTelemetrySink(std::move(telemetry_sink))) {}
 
 HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view json_text) {
     HandleIncomingResult result{};

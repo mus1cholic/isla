@@ -118,8 +118,17 @@ class RecordingApplicationSink final : public GatewayApplicationEventSink {
 class RecordingTelemetrySink final : public TelemetrySink {
   public:
     void OnTurnAccepted(const TurnTelemetryContext& context) const override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        accepted_turns.push_back({ .session_id = context.session_id, .turn_id = context.turn_id });
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            accepted_turns.push_back(
+                { .session_id = context.session_id, .turn_id = context.turn_id });
+        }
+        cv_.notify_all();
+    }
+
+    bool WaitForAcceptedTurnCount(std::size_t expected_count) const {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, 2s, [&] { return accepted_turns.size() >= expected_count; });
     }
 
     [[nodiscard]] std::vector<TurnAcceptedEvent> snapshot() const {
@@ -129,6 +138,7 @@ class RecordingTelemetrySink final : public TelemetrySink {
 
   private:
     mutable std::mutex mutex_;
+    mutable std::condition_variable cv_;
     mutable std::vector<TurnAcceptedEvent> accepted_turns;
 };
 
@@ -486,16 +496,11 @@ TEST(AiGatewayServerIntegrationTest, RealSocketTurnIngressUsesConfiguredTelemetr
         EXPECT_EQ(sink.accepted_turns.front().telemetry_context->turn_id, "turn_1");
         EXPECT_EQ(sink.accepted_turns.front().telemetry_context->sink, telemetry_sink);
 
-        for (;;) {
-            const std::vector<TurnAcceptedEvent> telemetry_turns = telemetry_sink->snapshot();
-            if (!telemetry_turns.empty()) {
-                ASSERT_EQ(telemetry_turns.size(), 1U);
-                EXPECT_EQ(telemetry_turns.front().session_id, session_id);
-                EXPECT_EQ(telemetry_turns.front().turn_id, "turn_1");
-                break;
-            }
-            std::this_thread::sleep_for(10ms);
-        }
+        ASSERT_TRUE(telemetry_sink->WaitForAcceptedTurnCount(1U));
+        const std::vector<TurnAcceptedEvent> telemetry_turns = telemetry_sink->snapshot();
+        ASSERT_EQ(telemetry_turns.size(), 1U);
+        EXPECT_EQ(telemetry_turns.front().session_id, session_id);
+        EXPECT_EQ(telemetry_turns.front().turn_id, "turn_1");
 
         client.CloseTransport();
         ASSERT_TRUE(sink.WaitFor([&] { return sink.closed_sessions.size() == 1U; }));

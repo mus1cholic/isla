@@ -9,8 +9,8 @@
 #include <vector>
 
 #include "absl/status/status.h"
-#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/shared/ai_gateway_session.hpp"
 
 namespace isla::server::ai_gateway {
@@ -80,10 +80,10 @@ class UuidSessionIdGenerator final : public SessionIdGenerator {
 
 class GatewayWebSocketSessionAdapter {
   public:
-    GatewayWebSocketSessionAdapter(std::string session_id, GatewayWebSocketConnection& connection,
-                                   GatewaySessionEventSink* event_sink = nullptr,
-                                   std::shared_ptr<const TelemetrySink> telemetry_sink =
-                                       CreateNoOpTelemetrySink());
+    GatewayWebSocketSessionAdapter(
+        std::string session_id, GatewayWebSocketConnection& connection,
+        GatewaySessionEventSink* event_sink = nullptr,
+        std::shared_ptr<const TelemetrySink> telemetry_sink = CreateNoOpTelemetrySink());
 
     [[nodiscard]] absl::Status HandleIncomingTextFrame(std::string_view frame);
     [[nodiscard]] absl::Status EmitTextOutput(std::string_view turn_id, std::string_view text);
