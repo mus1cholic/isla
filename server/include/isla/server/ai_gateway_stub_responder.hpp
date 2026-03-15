@@ -69,6 +69,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
         std::string rendered_system_prompt;
         std::string rendered_working_memory_context;
         std::shared_ptr<const TurnTelemetryContext> telemetry_context;
+        Clock::time_point enqueued_at = Clock::time_point::min();
         Clock::time_point ready_at = Clock::time_point::min();
         bool cancel_requested = false;
     };

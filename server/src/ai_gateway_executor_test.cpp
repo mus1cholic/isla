@@ -12,6 +12,36 @@
 namespace isla::server::ai_gateway {
 namespace {
 
+class RecordingTelemetrySink final : public TelemetrySink {
+  public:
+    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
+                 TurnTelemetryContext::Clock::time_point at) const override {
+        static_cast<void>(context);
+        static_cast<void>(at);
+        events.push_back(std::string(event_name));
+    }
+
+    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
+                 TurnTelemetryContext::Clock::time_point started_at,
+                 TurnTelemetryContext::Clock::time_point completed_at) const override {
+        static_cast<void>(context);
+        phases.push_back(PhaseRecord{
+            .name = std::string(phase_name),
+            .started_at = started_at,
+            .completed_at = completed_at,
+        });
+    }
+
+    struct PhaseRecord {
+        std::string name;
+        TurnTelemetryContext::Clock::time_point started_at;
+        TurnTelemetryContext::Clock::time_point completed_at;
+    };
+
+    mutable std::vector<std::string> events;
+    mutable std::vector<PhaseRecord> phases;
+};
+
 class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
     explicit FailingOpenAiResponsesClient(absl::Status status) : status_(std::move(status)) {}
@@ -83,11 +113,14 @@ class ThrowingOpenAiResponsesClient final : public OpenAiResponsesClient {
 
 TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     GatewayPlanExecutor executor;
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
 
-    const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{},
-                                                      ExecutionRuntimeInput{
-                                                          .user_text = "shared input",
-                                                      });
+    const ExecutionOutcome outcome = executor.Execute(
+        ExecutionPlan{},
+        ExecutionRuntimeInput{
+            .user_text = "shared input",
+            .telemetry_context = MakeTurnTelemetryContext("srv_test", "turn_empty", telemetry_sink),
+        });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
     const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
@@ -96,11 +129,17 @@ TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     EXPECT_EQ(failure.code, "bad_request");
     EXPECT_EQ(failure.message, "execution plan must include at least one step");
     EXPECT_FALSE(failure.retryable);
+    ASSERT_EQ(telemetry_sink->events.size(), 2U);
+    EXPECT_EQ(telemetry_sink->events[0], telemetry::kEventExecutorStarted);
+    EXPECT_EQ(telemetry_sink->events[1], telemetry::kEventExecutorCompleted);
+    ASSERT_EQ(telemetry_sink->phases.size(), 1U);
+    EXPECT_EQ(telemetry_sink->phases[0].name, telemetry::kPhaseExecutorTotal);
 }
 
 TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
     auto client = std::make_shared<SequencedOpenAiResponsesClient>(
         std::vector<std::string>{ "alpha", "beta" });
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
         .openai_client = client,
     });
@@ -122,6 +161,9 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
     },
                                              ExecutionRuntimeInput{
                                                  .user_text = "shared input",
+                                                 .telemetry_context =
+                                                     MakeTurnTelemetryContext("srv_test", "turn_1",
+                                                                              telemetry_sink),
                                              });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionResult>(outcome));
@@ -131,6 +173,11 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
     ASSERT_EQ(result.step_results.size(), 2U);
     EXPECT_EQ(std::get<LlmCallResult>(result.step_results[0]).output_text, "alpha");
     EXPECT_EQ(std::get<LlmCallResult>(result.step_results[1]).output_text, "beta");
+    ASSERT_EQ(telemetry_sink->events.size(), 2U);
+    EXPECT_EQ(telemetry_sink->events[0], telemetry::kEventExecutorStarted);
+    EXPECT_EQ(telemetry_sink->events[1], telemetry::kEventExecutorCompleted);
+    ASSERT_EQ(telemetry_sink->phases.size(), 1U);
+    EXPECT_EQ(telemetry_sink->phases[0].name, telemetry::kPhaseExecutorTotal);
 }
 
 TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {

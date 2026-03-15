@@ -10,6 +10,50 @@ namespace isla::server::ai_gateway {
 
 class TelemetrySink;
 
+namespace telemetry {
+
+inline constexpr std::string_view kPhaseGatewayAccept = "gateway.accept";
+inline constexpr std::string_view kPhaseMemoryUserQuery = "memory.user_query";
+inline constexpr std::string_view kPhaseQueueWait = "queue.wait";
+inline constexpr std::string_view kPhasePlanCreate = "plan.create";
+inline constexpr std::string_view kPhaseExecutorTotal = "executor.total";
+inline constexpr std::string_view kPhaseEmitTextOutput = "emit.text_output";
+inline constexpr std::string_view kPhaseMemoryAssistantReply = "memory.assistant_reply";
+inline constexpr std::string_view kPhaseEmitTurnCompleted = "emit.turn_completed";
+inline constexpr std::string_view kPhaseEmitError = "emit.error";
+inline constexpr std::string_view kPhaseEmitTurnCancelled = "emit.turn_cancelled";
+
+inline constexpr std::string_view kEventTurnAccepted = "turn.accepted";
+inline constexpr std::string_view kEventMemoryUserQueryStarted = "memory.user_query.started";
+inline constexpr std::string_view kEventMemoryUserQueryCompleted = "memory.user_query.completed";
+inline constexpr std::string_view kEventTurnEnqueued = "turn.enqueued";
+inline constexpr std::string_view kEventTurnDequeued = "turn.dequeued";
+inline constexpr std::string_view kEventPlanCreateStarted = "plan.create.started";
+inline constexpr std::string_view kEventPlanCreateCompleted = "plan.create.completed";
+inline constexpr std::string_view kEventExecutorStarted = "executor.started";
+inline constexpr std::string_view kEventExecutorCompleted = "executor.completed";
+inline constexpr std::string_view kEventTextOutputEmitStarted = "text_output.emit.started";
+inline constexpr std::string_view kEventTextOutputEmitCompleted = "text_output.emit.completed";
+inline constexpr std::string_view kEventErrorEmitStarted = "error.emit.started";
+inline constexpr std::string_view kEventErrorEmitCompleted = "error.emit.completed";
+inline constexpr std::string_view kEventMemoryAssistantReplyStarted =
+    "memory.assistant_reply.started";
+inline constexpr std::string_view kEventMemoryAssistantReplyCompleted =
+    "memory.assistant_reply.completed";
+inline constexpr std::string_view kEventTurnCancelledEmitStarted = "turn.cancelled.emit.started";
+inline constexpr std::string_view kEventTurnCancelledEmitCompleted =
+    "turn.cancelled.emit.completed";
+inline constexpr std::string_view kEventTurnCompletedEmitStarted = "turn.completed.emit.started";
+inline constexpr std::string_view kEventTurnCompletedEmitCompleted =
+    "turn.completed.emit.completed";
+inline constexpr std::string_view kEventTurnFailed = "turn.failed";
+
+inline constexpr std::string_view kOutcomeSucceeded = "succeeded";
+inline constexpr std::string_view kOutcomeFailed = "failed";
+inline constexpr std::string_view kOutcomeCancelled = "cancelled";
+
+} // namespace telemetry
+
 struct TurnTelemetryContext {
     using Clock = std::chrono::steady_clock;
 
@@ -33,6 +77,22 @@ class TelemetrySink {
         static_cast<void>(event_name);
         static_cast<void>(at);
     }
+
+    virtual void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
+                         TurnTelemetryContext::Clock::time_point started_at,
+                         TurnTelemetryContext::Clock::time_point completed_at) const {
+        static_cast<void>(context);
+        static_cast<void>(phase_name);
+        static_cast<void>(started_at);
+        static_cast<void>(completed_at);
+    }
+
+    virtual void OnTurnFinished(const TurnTelemetryContext& context, std::string_view outcome,
+                                TurnTelemetryContext::Clock::time_point finished_at) const {
+        static_cast<void>(context);
+        static_cast<void>(outcome);
+        static_cast<void>(finished_at);
+    }
 };
 
 namespace internal {
@@ -51,6 +111,97 @@ class NoOpTelemetrySink final : public TelemetrySink {};
 NormalizeTelemetrySink(std::shared_ptr<const TelemetrySink> sink) {
     return sink != nullptr ? std::move(sink) : CreateNoOpTelemetrySink();
 }
+
+inline void RecordTelemetryEvent(
+    const std::shared_ptr<const TurnTelemetryContext>& context, std::string_view event_name,
+    TurnTelemetryContext::Clock::time_point at = TurnTelemetryContext::Clock::now()) {
+    if (context == nullptr || context->sink == nullptr) {
+        return;
+    }
+    context->sink->OnEvent(*context, event_name, at);
+}
+
+inline void RecordTelemetryPhase(const std::shared_ptr<const TurnTelemetryContext>& context,
+                                 std::string_view phase_name,
+                                 TurnTelemetryContext::Clock::time_point started_at,
+                                 TurnTelemetryContext::Clock::time_point completed_at) {
+    if (context == nullptr || context->sink == nullptr) {
+        return;
+    }
+    context->sink->OnPhase(*context, phase_name, started_at, completed_at);
+}
+
+inline void RecordTurnFinished(
+    const std::shared_ptr<const TurnTelemetryContext>& context, std::string_view outcome,
+    TurnTelemetryContext::Clock::time_point finished_at = TurnTelemetryContext::Clock::now()) {
+    if (context == nullptr || context->sink == nullptr) {
+        return;
+    }
+    context->sink->OnTurnFinished(*context, outcome, finished_at);
+}
+
+class ScopedTelemetryPhase {
+  public:
+    ScopedTelemetryPhase(
+        std::shared_ptr<const TurnTelemetryContext> context, std::string_view phase_name,
+        std::string_view started_event = {}, std::string_view completed_event = {},
+        TurnTelemetryContext::Clock::time_point started_at = TurnTelemetryContext::Clock::now())
+        : context_(std::move(context)), phase_name_(phase_name), started_event_(started_event),
+          completed_event_(completed_event), started_at_(started_at) {
+        if (!started_event_.empty()) {
+            RecordTelemetryEvent(context_, started_event_, started_at_);
+        }
+    }
+
+    ScopedTelemetryPhase(const ScopedTelemetryPhase&) = delete;
+    ScopedTelemetryPhase& operator=(const ScopedTelemetryPhase&) = delete;
+
+    ScopedTelemetryPhase(ScopedTelemetryPhase&& other) noexcept
+        : context_(std::move(other.context_)), phase_name_(other.phase_name_),
+          started_event_(other.started_event_), completed_event_(other.completed_event_),
+          started_at_(other.started_at_), active_(other.active_) {
+        other.active_ = false;
+    }
+
+    ScopedTelemetryPhase& operator=(ScopedTelemetryPhase&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+        Finish();
+        context_ = std::move(other.context_);
+        phase_name_ = other.phase_name_;
+        started_event_ = other.started_event_;
+        completed_event_ = other.completed_event_;
+        started_at_ = other.started_at_;
+        active_ = other.active_;
+        other.active_ = false;
+        return *this;
+    }
+
+    ~ScopedTelemetryPhase() {
+        Finish();
+    }
+
+    void Finish(
+        TurnTelemetryContext::Clock::time_point completed_at = TurnTelemetryContext::Clock::now()) {
+        if (!active_) {
+            return;
+        }
+        active_ = false;
+        RecordTelemetryPhase(context_, phase_name_, started_at_, completed_at);
+        if (!completed_event_.empty()) {
+            RecordTelemetryEvent(context_, completed_event_, completed_at);
+        }
+    }
+
+  private:
+    std::shared_ptr<const TurnTelemetryContext> context_;
+    std::string_view phase_name_;
+    std::string_view started_event_;
+    std::string_view completed_event_;
+    TurnTelemetryContext::Clock::time_point started_at_;
+    bool active_ = true;
+};
 
 [[nodiscard]] inline std::shared_ptr<const TurnTelemetryContext> MakeTurnTelemetryContext(
     std::string_view session_id, std::string_view turn_id,

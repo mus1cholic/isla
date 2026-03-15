@@ -281,6 +281,15 @@ cc_binary(
 )
 
 cc_test(
+    name = "ai_gateway_telemetry_test",
+    srcs = ["ai_gateway_telemetry_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "ai_gateway_startup_config_test",
     srcs = ["ai_gateway_startup_config_test.cpp"],
     deps = [

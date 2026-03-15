@@ -85,6 +85,9 @@ GatewayPlanExecutor::GatewayPlanExecutor(GatewayStepRegistryConfig config)
 
 ExecutionOutcome GatewayPlanExecutor::Execute(const ExecutionPlan& plan,
                                               const ExecutionRuntimeInput& runtime_input) const {
+    ScopedTelemetryPhase executor_phase(
+        runtime_input.telemetry_context, telemetry::kPhaseExecutorTotal,
+        telemetry::kEventExecutorStarted, telemetry::kEventExecutorCompleted);
     if (plan.steps.empty()) {
         return ExecutionFailure{
             .failed_step_index = 0,

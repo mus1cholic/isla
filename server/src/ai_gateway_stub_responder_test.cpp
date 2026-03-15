@@ -1,5 +1,6 @@
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -32,6 +33,20 @@ struct EmittedEvent {
     std::string payload;
 };
 
+struct TelemetryEventRecord {
+    std::string name;
+};
+
+struct TelemetryPhaseRecord {
+    std::string name;
+    TurnTelemetryContext::Clock::time_point started_at;
+    TurnTelemetryContext::Clock::time_point completed_at;
+};
+
+struct TurnFinishedRecord {
+    std::string outcome;
+};
+
 std::shared_ptr<test::FakeOpenAiResponsesClient>
 MakeEchoOpenAiResponsesClient(std::string prefix = "stub echo: ") {
     return test::MakeFakeOpenAiResponsesClient(
@@ -57,6 +72,85 @@ MakeEchoOpenAiResponsesClient(std::string prefix = "stub echo: ") {
             });
         });
 }
+
+bool ContainsTelemetryName(const std::vector<TelemetryEventRecord>& events, std::string_view name) {
+    return std::find_if(events.begin(), events.end(), [name](const TelemetryEventRecord& event) {
+               return event.name == name;
+           }) != events.end();
+}
+
+bool ContainsTelemetryName(const std::vector<TelemetryPhaseRecord>& phases, std::string_view name) {
+    return std::find_if(phases.begin(), phases.end(), [name](const TelemetryPhaseRecord& phase) {
+               return phase.name == name;
+           }) != phases.end();
+}
+
+class RecordingTelemetrySink final : public TelemetrySink {
+  public:
+    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
+                 TurnTelemetryContext::Clock::time_point at) const override {
+        static_cast<void>(context);
+        static_cast<void>(at);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            events_.push_back(TelemetryEventRecord{ .name = std::string(event_name) });
+        }
+        cv_.notify_all();
+    }
+
+    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
+                 TurnTelemetryContext::Clock::time_point started_at,
+                 TurnTelemetryContext::Clock::time_point completed_at) const override {
+        static_cast<void>(context);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            phases_.push_back(TelemetryPhaseRecord{
+                .name = std::string(phase_name),
+                .started_at = started_at,
+                .completed_at = completed_at,
+            });
+        }
+        cv_.notify_all();
+    }
+
+    void OnTurnFinished(const TurnTelemetryContext& context, std::string_view outcome,
+                        TurnTelemetryContext::Clock::time_point finished_at) const override {
+        static_cast<void>(context);
+        static_cast<void>(finished_at);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            finished_.push_back(TurnFinishedRecord{ .outcome = std::string(outcome) });
+        }
+        cv_.notify_all();
+    }
+
+    bool WaitForFinishedCount(std::size_t expected_count) const {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, 2s, [&] { return finished_.size() >= expected_count; });
+    }
+
+    [[nodiscard]] std::vector<TelemetryEventRecord> events() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return events_;
+    }
+
+    [[nodiscard]] std::vector<TelemetryPhaseRecord> phases() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return phases_;
+    }
+
+    [[nodiscard]] std::vector<TurnFinishedRecord> finished() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return finished_;
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    mutable std::condition_variable cv_;
+    mutable std::vector<TelemetryEventRecord> events_;
+    mutable std::vector<TelemetryPhaseRecord> phases_;
+    mutable std::vector<TurnFinishedRecord> finished_;
+};
 
 class RecordingLiveSession final : public GatewayLiveSession {
   public:
@@ -390,6 +484,54 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnEmitsStubTextAndCompletion) {
     EXPECT_EQ(events[1].turn_id, "turn_1");
 }
 
+TEST_F(GatewayStubResponderTest, SuccessfulTurnEmitsPhaseTwoTelemetrySlices) {
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+
+    responder_.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_telemetry_success",
+        .text = "hello",
+        .telemetry_context =
+            MakeTurnTelemetryContext("srv_test", "turn_telemetry_success", telemetry_sink),
+    });
+
+    ASSERT_TRUE(session_->WaitForEventCount(2U));
+    ASSERT_TRUE(telemetry_sink->WaitForFinishedCount(1U));
+
+    const std::vector<TelemetryEventRecord> events = telemetry_sink->events();
+    const std::vector<TelemetryPhaseRecord> phases = telemetry_sink->phases();
+    const std::vector<TurnFinishedRecord> finished = telemetry_sink->finished();
+
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryUserQueryStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryUserQueryCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnEnqueued));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnDequeued));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventPlanCreateStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventPlanCreateCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventExecutorStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventExecutorCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTextOutputEmitStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTextOutputEmitCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryAssistantReplyStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryAssistantReplyCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitCompleted));
+
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseMemoryUserQuery));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseQueueWait));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhasePlanCreate));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseExecutorTotal));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTextOutput));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseMemoryAssistantReply));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTurnCompleted));
+    for (const TelemetryPhaseRecord& phase : phases) {
+        EXPECT_LE(phase.started_at, phase.completed_at);
+    }
+
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeSucceeded);
+}
+
 TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecutorBoundary) {
     std::optional<ExecutionPlan> execution_plan;
 
@@ -428,6 +570,54 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecu
     EXPECT_EQ(events[1].op, "turn.completed");
 }
 
+TEST(GatewayStubResponderStandaloneTest, MissingSessionMemoryStillEmitsFailureTelemetry) {
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .memory_user_id = "gateway_user",
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_missing_memory",
+        .text = "hello",
+        .telemetry_context =
+            MakeTurnTelemetryContext("srv_test", "turn_missing_memory", telemetry_sink),
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+    ASSERT_TRUE(telemetry_sink->WaitForFinishedCount(1U));
+
+    const std::vector<EmittedEvent> emitted = session->events();
+    ASSERT_EQ(emitted.size(), 2U);
+    EXPECT_EQ(emitted[0].op, "error");
+    EXPECT_EQ(emitted[0].turn_id, "turn_missing_memory");
+    EXPECT_EQ(emitted[1].op, "turn.completed");
+
+    const std::vector<TelemetryEventRecord> events = telemetry_sink->events();
+    const std::vector<TelemetryPhaseRecord> phases = telemetry_sink->phases();
+    const std::vector<TurnFinishedRecord> finished = telemetry_sink->finished();
+
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryUserQueryStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryUserQueryCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnFailed));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventErrorEmitStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventErrorEmitCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseMemoryUserQuery));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitError));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTurnCompleted));
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeFailed);
+}
+
 TEST_F(GatewayStubResponderTest, AcceptedTurnUpdatesSessionMemoryPrompt) {
     responder_.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = "srv_test",
@@ -460,6 +650,35 @@ TEST_F(GatewayStubResponderTest, CancelBeforeReplyEmitsTurnCancelled) {
     ASSERT_EQ(events.size(), 1U);
     EXPECT_EQ(events[0].op, "turn.cancelled");
     EXPECT_EQ(events[0].turn_id, "turn_1");
+}
+
+TEST_F(GatewayStubResponderTest, CancelledTurnEmitsCancellationTelemetry) {
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+
+    responder_.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_telemetry_cancel",
+        .text = "hello",
+        .telemetry_context =
+            MakeTurnTelemetryContext("srv_test", "turn_telemetry_cancel", telemetry_sink),
+    });
+    responder_.OnTurnCancelRequested(TurnCancelRequestedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_telemetry_cancel",
+    });
+
+    ASSERT_TRUE(session_->WaitForEventCount(1U));
+    ASSERT_TRUE(telemetry_sink->WaitForFinishedCount(1U));
+
+    const std::vector<TelemetryEventRecord> events = telemetry_sink->events();
+    const std::vector<TelemetryPhaseRecord> phases = telemetry_sink->phases();
+    const std::vector<TurnFinishedRecord> finished = telemetry_sink->finished();
+
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCancelledEmitStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCancelledEmitCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTurnCancelled));
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeCancelled);
 }
 
 TEST_F(GatewayStubResponderTest, MismatchedCancelRequestDoesNotAffectTrackedTurn) {
@@ -609,6 +828,36 @@ TEST_F(GatewayStubResponderTest, EmitFailureDoesNotBlockLaterTurns) {
     EXPECT_EQ(events[2].payload, "stub echo: second");
     EXPECT_EQ(events[3].op, "turn.completed");
     EXPECT_EQ(events[3].turn_id, "turn_2");
+}
+
+TEST_F(GatewayStubResponderTest, FailedTurnEmitsFailureTelemetry) {
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    session_->FailNextTextOutput();
+
+    responder_.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_telemetry_failure",
+        .text = "hello",
+        .telemetry_context =
+            MakeTurnTelemetryContext("srv_test", "turn_telemetry_failure", telemetry_sink),
+    });
+
+    ASSERT_TRUE(session_->WaitForEventCount(2U));
+    ASSERT_TRUE(telemetry_sink->WaitForFinishedCount(1U));
+
+    const std::vector<TelemetryEventRecord> events = telemetry_sink->events();
+    const std::vector<TelemetryPhaseRecord> phases = telemetry_sink->phases();
+    const std::vector<TurnFinishedRecord> finished = telemetry_sink->finished();
+
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnFailed));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventErrorEmitStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventErrorEmitCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitStarted));
+    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitCompleted));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitError));
+    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTurnCompleted));
+    ASSERT_EQ(finished.size(), 1U);
+    EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeFailed);
 }
 
 TEST_F(GatewayStubResponderTest, CompletionHookCanQueueNextTurnForSameSession) {

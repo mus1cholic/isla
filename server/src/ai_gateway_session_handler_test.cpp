@@ -19,11 +19,41 @@ absl::StatusOr<protocol::GatewayMessage> parse_frame(const std::string& frame) {
 
 class RecordingTelemetrySink final : public TelemetrySink {
   public:
+    struct EventRecord {
+        std::string name;
+    };
+
+    struct PhaseRecord {
+        std::string name;
+        TurnTelemetryContext::Clock::time_point started_at;
+        TurnTelemetryContext::Clock::time_point completed_at;
+    };
+
     void OnTurnAccepted(const TurnTelemetryContext& context) const override {
         accepted_turns.push_back({ .session_id = context.session_id, .turn_id = context.turn_id });
     }
 
+    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
+                 TurnTelemetryContext::Clock::time_point at) const override {
+        static_cast<void>(context);
+        static_cast<void>(at);
+        events.push_back(EventRecord{ .name = std::string(event_name) });
+    }
+
+    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
+                 TurnTelemetryContext::Clock::time_point started_at,
+                 TurnTelemetryContext::Clock::time_point completed_at) const override {
+        static_cast<void>(context);
+        phases.push_back(PhaseRecord{
+            .name = std::string(phase_name),
+            .started_at = started_at,
+            .completed_at = completed_at,
+        });
+    }
+
     mutable std::vector<TurnAcceptedEvent> accepted_turns;
+    mutable std::vector<EventRecord> events;
+    mutable std::vector<PhaseRecord> phases;
 };
 
 TEST(AiGatewaySessionHandlerTest, SessionStartEmitsSessionStarted) {
@@ -115,6 +145,12 @@ TEST(AiGatewaySessionHandlerTest, AcceptedTurnNotifiesCustomTelemetrySink) {
     ASSERT_EQ(telemetry_sink->accepted_turns.size(), 1U);
     EXPECT_EQ(telemetry_sink->accepted_turns.front().session_id, "srv_test");
     EXPECT_EQ(telemetry_sink->accepted_turns.front().turn_id, "turn_1");
+    ASSERT_EQ(telemetry_sink->events.size(), 1U);
+    EXPECT_EQ(telemetry_sink->events.front().name, telemetry::kEventTurnAccepted);
+    ASSERT_EQ(telemetry_sink->phases.size(), 1U);
+    EXPECT_EQ(telemetry_sink->phases.front().name, telemetry::kPhaseGatewayAccept);
+    EXPECT_LE(telemetry_sink->phases.front().started_at,
+              telemetry_sink->phases.front().completed_at);
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
