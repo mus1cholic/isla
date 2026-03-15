@@ -221,6 +221,15 @@ void GatewayStubResponder::StopWorker() {
     }
 }
 
+void GatewayStubResponder::RecordDequeueTelemetry(const PendingTurn& turn,
+                                                  Clock::time_point dequeued_at) const {
+    if (turn.enqueued_at != Clock::time_point::min()) {
+        RecordTelemetryPhase(turn.telemetry_context, telemetry::kPhaseQueueWait, turn.enqueued_at,
+                             dequeued_at);
+    }
+    RecordTelemetryEvent(turn.telemetry_context, telemetry::kEventTurnDequeued, dequeued_at);
+}
+
 void GatewayStubResponder::WorkerLoop() {
     for (;;) {
         std::optional<PendingTurn> next_turn;
@@ -238,12 +247,7 @@ void GatewayStubResponder::WorkerLoop() {
                     PendingTurn& turn = it->second;
                     if (turn.cancel_requested) {
                         next_turn = turn;
-                        if (turn.enqueued_at != Clock::time_point::min()) {
-                            RecordTelemetryPhase(turn.telemetry_context, telemetry::kPhaseQueueWait,
-                                                 turn.enqueued_at, now);
-                        }
-                        RecordTelemetryEvent(turn.telemetry_context, telemetry::kEventTurnDequeued,
-                                             now);
+                        RecordDequeueTelemetry(turn, now);
                         VLOG(1) << "AI gateway stub dequeued cancellation session="
                                 << SanitizeForLog(it->first)
                                 << " turn_id=" << SanitizeForLog(turn.turn_id);
@@ -253,12 +257,7 @@ void GatewayStubResponder::WorkerLoop() {
                     }
                     if (turn.ready_at <= now) {
                         next_turn = turn;
-                        if (turn.enqueued_at != Clock::time_point::min()) {
-                            RecordTelemetryPhase(turn.telemetry_context, telemetry::kPhaseQueueWait,
-                                                 turn.enqueued_at, now);
-                        }
-                        RecordTelemetryEvent(turn.telemetry_context, telemetry::kEventTurnDequeued,
-                                             now);
+                        RecordDequeueTelemetry(turn, now);
                         VLOG(1) << "AI gateway stub dequeued ready turn session="
                                 << SanitizeForLog(it->first)
                                 << " turn_id=" << SanitizeForLog(turn.turn_id);

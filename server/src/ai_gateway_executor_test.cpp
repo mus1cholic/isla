@@ -42,6 +42,14 @@ class RecordingTelemetrySink final : public TelemetrySink {
     mutable std::vector<PhaseRecord> phases;
 };
 
+void ExpectExecutorTelemetryRecorded(const RecordingTelemetrySink& telemetry_sink) {
+    ASSERT_EQ(telemetry_sink.events.size(), 2U);
+    EXPECT_EQ(telemetry_sink.events[0], telemetry::kEventExecutorStarted);
+    EXPECT_EQ(telemetry_sink.events[1], telemetry::kEventExecutorCompleted);
+    ASSERT_EQ(telemetry_sink.phases.size(), 1U);
+    EXPECT_EQ(telemetry_sink.phases[0].name, telemetry::kPhaseExecutorTotal);
+}
+
 class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
     explicit FailingOpenAiResponsesClient(absl::Status status) : status_(std::move(status)) {}
@@ -129,11 +137,7 @@ TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     EXPECT_EQ(failure.code, "bad_request");
     EXPECT_EQ(failure.message, "execution plan must include at least one step");
     EXPECT_FALSE(failure.retryable);
-    ASSERT_EQ(telemetry_sink->events.size(), 2U);
-    EXPECT_EQ(telemetry_sink->events[0], telemetry::kEventExecutorStarted);
-    EXPECT_EQ(telemetry_sink->events[1], telemetry::kEventExecutorCompleted);
-    ASSERT_EQ(telemetry_sink->phases.size(), 1U);
-    EXPECT_EQ(telemetry_sink->phases[0].name, telemetry::kPhaseExecutorTotal);
+    ExpectExecutorTelemetryRecorded(*telemetry_sink);
 }
 
 TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
@@ -169,15 +173,11 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
     ASSERT_TRUE(std::holds_alternative<ExecutionResult>(outcome));
     EXPECT_EQ(client->call_order, std::vector<std::string>({ "model_a", "model_b" }));
 
-    const ExecutionResult& result = std::get<ExecutionResult>(outcome);
+    const auto& result = std::get<ExecutionResult>(outcome);
     ASSERT_EQ(result.step_results.size(), 2U);
     EXPECT_EQ(std::get<LlmCallResult>(result.step_results[0]).output_text, "alpha");
     EXPECT_EQ(std::get<LlmCallResult>(result.step_results[1]).output_text, "beta");
-    ASSERT_EQ(telemetry_sink->events.size(), 2U);
-    EXPECT_EQ(telemetry_sink->events[0], telemetry::kEventExecutorStarted);
-    EXPECT_EQ(telemetry_sink->events[1], telemetry::kEventExecutorCompleted);
-    ASSERT_EQ(telemetry_sink->phases.size(), 1U);
-    EXPECT_EQ(telemetry_sink->phases[0].name, telemetry::kPhaseExecutorTotal);
+    ExpectExecutorTelemetryRecorded(*telemetry_sink);
 }
 
 TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {

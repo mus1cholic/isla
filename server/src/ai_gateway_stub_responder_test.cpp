@@ -1,6 +1,7 @@
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -502,28 +503,35 @@ TEST_F(GatewayStubResponderTest, SuccessfulTurnEmitsPhaseTwoTelemetrySlices) {
     const std::vector<TelemetryPhaseRecord> phases = telemetry_sink->phases();
     const std::vector<TurnFinishedRecord> finished = telemetry_sink->finished();
 
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryUserQueryStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryUserQueryCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnEnqueued));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnDequeued));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventPlanCreateStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventPlanCreateCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventExecutorStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventExecutorCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTextOutputEmitStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTextOutputEmitCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryAssistantReplyStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryAssistantReplyCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitCompleted));
+    const std::array expected_event_names = {
+        telemetry::kEventMemoryUserQueryStarted,
+        telemetry::kEventMemoryUserQueryCompleted,
+        telemetry::kEventTurnEnqueued,
+        telemetry::kEventTurnDequeued,
+        telemetry::kEventPlanCreateStarted,
+        telemetry::kEventPlanCreateCompleted,
+        telemetry::kEventExecutorStarted,
+        telemetry::kEventExecutorCompleted,
+        telemetry::kEventTextOutputEmitStarted,
+        telemetry::kEventTextOutputEmitCompleted,
+        telemetry::kEventMemoryAssistantReplyStarted,
+        telemetry::kEventMemoryAssistantReplyCompleted,
+        telemetry::kEventTurnCompletedEmitStarted,
+        telemetry::kEventTurnCompletedEmitCompleted,
+    };
+    for (std::string_view name : expected_event_names) {
+        EXPECT_TRUE(ContainsTelemetryName(events, name)) << name;
+    }
 
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseMemoryUserQuery));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseQueueWait));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhasePlanCreate));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseExecutorTotal));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTextOutput));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseMemoryAssistantReply));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTurnCompleted));
+    const std::array expected_phase_names = {
+        telemetry::kPhaseMemoryUserQuery,   telemetry::kPhaseQueueWait,
+        telemetry::kPhasePlanCreate,        telemetry::kPhaseExecutorTotal,
+        telemetry::kPhaseEmitTextOutput,    telemetry::kPhaseMemoryAssistantReply,
+        telemetry::kPhaseEmitTurnCompleted,
+    };
+    for (std::string_view name : expected_phase_names) {
+        EXPECT_TRUE(ContainsTelemetryName(phases, name)) << name;
+    }
     for (const TelemetryPhaseRecord& phase : phases) {
         EXPECT_LE(phase.started_at, phase.completed_at);
     }
@@ -604,16 +612,26 @@ TEST(GatewayStubResponderStandaloneTest, MissingSessionMemoryStillEmitsFailureTe
     const std::vector<TelemetryPhaseRecord> phases = telemetry_sink->phases();
     const std::vector<TurnFinishedRecord> finished = telemetry_sink->finished();
 
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryUserQueryStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventMemoryUserQueryCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnFailed));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventErrorEmitStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventErrorEmitCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseMemoryUserQuery));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitError));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTurnCompleted));
+    const std::array expected_event_names = {
+        telemetry::kEventMemoryUserQueryStarted,
+        telemetry::kEventMemoryUserQueryCompleted,
+        telemetry::kEventTurnFailed,
+        telemetry::kEventErrorEmitStarted,
+        telemetry::kEventErrorEmitCompleted,
+        telemetry::kEventTurnCompletedEmitStarted,
+        telemetry::kEventTurnCompletedEmitCompleted,
+    };
+    for (std::string_view name : expected_event_names) {
+        EXPECT_TRUE(ContainsTelemetryName(events, name)) << name;
+    }
+    const std::array expected_phase_names = {
+        telemetry::kPhaseMemoryUserQuery,
+        telemetry::kPhaseEmitError,
+        telemetry::kPhaseEmitTurnCompleted,
+    };
+    for (std::string_view name : expected_phase_names) {
+        EXPECT_TRUE(ContainsTelemetryName(phases, name)) << name;
+    }
     ASSERT_EQ(finished.size(), 1U);
     EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeFailed);
 }
@@ -674,9 +692,19 @@ TEST_F(GatewayStubResponderTest, CancelledTurnEmitsCancellationTelemetry) {
     const std::vector<TelemetryPhaseRecord> phases = telemetry_sink->phases();
     const std::vector<TurnFinishedRecord> finished = telemetry_sink->finished();
 
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCancelledEmitStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCancelledEmitCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTurnCancelled));
+    const std::array expected_event_names = {
+        telemetry::kEventTurnCancelledEmitStarted,
+        telemetry::kEventTurnCancelledEmitCompleted,
+    };
+    for (std::string_view name : expected_event_names) {
+        EXPECT_TRUE(ContainsTelemetryName(events, name)) << name;
+    }
+    const std::array expected_phase_names = {
+        telemetry::kPhaseEmitTurnCancelled,
+    };
+    for (std::string_view name : expected_phase_names) {
+        EXPECT_TRUE(ContainsTelemetryName(phases, name)) << name;
+    }
     ASSERT_EQ(finished.size(), 1U);
     EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeCancelled);
 }
@@ -849,13 +877,23 @@ TEST_F(GatewayStubResponderTest, FailedTurnEmitsFailureTelemetry) {
     const std::vector<TelemetryPhaseRecord> phases = telemetry_sink->phases();
     const std::vector<TurnFinishedRecord> finished = telemetry_sink->finished();
 
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnFailed));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventErrorEmitStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventErrorEmitCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitStarted));
-    EXPECT_TRUE(ContainsTelemetryName(events, telemetry::kEventTurnCompletedEmitCompleted));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitError));
-    EXPECT_TRUE(ContainsTelemetryName(phases, telemetry::kPhaseEmitTurnCompleted));
+    const std::array expected_event_names = {
+        telemetry::kEventTurnFailed,
+        telemetry::kEventErrorEmitStarted,
+        telemetry::kEventErrorEmitCompleted,
+        telemetry::kEventTurnCompletedEmitStarted,
+        telemetry::kEventTurnCompletedEmitCompleted,
+    };
+    for (std::string_view name : expected_event_names) {
+        EXPECT_TRUE(ContainsTelemetryName(events, name)) << name;
+    }
+    const std::array expected_phase_names = {
+        telemetry::kPhaseEmitError,
+        telemetry::kPhaseEmitTurnCompleted,
+    };
+    for (std::string_view name : expected_phase_names) {
+        EXPECT_TRUE(ContainsTelemetryName(phases, name)) << name;
+    }
     ASSERT_EQ(finished.size(), 1U);
     EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeFailed);
 }

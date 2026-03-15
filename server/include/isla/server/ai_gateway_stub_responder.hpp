@@ -76,6 +76,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
     void StopWorker();
     void WorkerLoop();
+    void RecordDequeueTelemetry(const PendingTurn& turn, Clock::time_point dequeued_at) const;
     [[nodiscard]] bool TryMarkTrackedTurnCancelled(std::string_view session_id,
                                                    std::string_view turn_id);
     [[nodiscard]] bool IsTrackedTurnCancelled(std::string_view session_id,
