@@ -196,11 +196,26 @@ Phase names below are the canonical initial latency slices for the current v1 im
 - `provider.serialize_request`
   - request-shaping and JSON serialization before transport dispatch
 - `provider.transport`
-  - transport execution around the OpenAI Responses client
+  - total provider-client transport call from dispatch into the OpenAI Responses client until that
+    client returns control to the caller
 - `provider.stream`
-  - streamed SSE consumption from first transport response byte through terminal provider event
+  - streamed SSE response consumption from first response byte through terminal provider event
 - `provider.aggregate_text`
-  - local buffering and final-output assembly work
+  - local buffering and final-output assembly from provider text deltas into the final text result
+
+Relationship rules:
+
+- `llm.provider.total` is the enclosing provider phase.
+- `provider.serialize_request` is a sequential precursor to transport dispatch.
+- In the long-term target model, `provider.transport` is the enclosing transport phase and
+  `provider.stream` plus `provider.aggregate_text` are finer-grained sub-spans within that provider
+  leg.
+- In the current implementation, these finer-grained phases MAY be emitted sequentially if that
+  matches the available instrumentation points more closely than true nesting.
+- Dashboards and regressions MUST NOT assume that `provider.transport`, `provider.stream`, and
+  `provider.aggregate_text` are always additive sibling durations.
+- If nested instrumentation is available, prefer nested spans and treat `provider.transport` as the
+  total wall-clock duration of the provider client call.
 
 ### Future Memory Retrieval
 
@@ -231,12 +246,15 @@ The following event names are the initial canonical timestamps inside the root t
 - `provider.completed`
 - `text_output.emit.started`
 - `text_output.emit.completed`
+- `error.emit.started`
+- `error.emit.completed`
 - `memory.assistant_reply.started`
 - `memory.assistant_reply.completed`
+- `turn.cancelled.emit.started`
+- `turn.cancelled.emit.completed`
 - `turn.completed.emit.started`
 - `turn.completed.emit.completed`
 - `turn.failed`
-- `turn.cancelled`
 
 Span events SHOULD carry small diagnostic attributes when helpful, such as `step_name`, `model`,
 `reasoning_effort`, or `outcome`, but MUST NOT capture prompt text or provider raw bodies.
