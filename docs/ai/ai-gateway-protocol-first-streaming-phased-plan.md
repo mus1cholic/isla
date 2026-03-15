@@ -293,8 +293,10 @@ ownership clear for memory persistence and terminalization.
 - Accumulate the final assistant text server-side for memory write-back only.
 - Re-check cancellation before buffering or flushing additional streamed text.
 - Re-check session liveness before each outbound delta emit or coalesced emit batch.
-- Introduce bounded emit coalescing if needed so the client is not sent one websocket frame per
-  token under pathological provider chunking.
+- Introduce a gateway-owned bounded emit coalescing policy so the client is not sent one websocket
+  frame per token under pathological provider chunking.
+- Prefer transport emission by small deterministic batches rather than by raw provider token or raw
+  provider delta.
 - Preserve deterministic stop-time terminalization behavior during `server.Stop()`.
 
 ### Design Notes
@@ -305,13 +307,24 @@ ownership clear for memory persistence and terminalization.
   - whether a delta should still be emitted
   - whether the turn has been cancelled
   - whether memory persistence should run
-- If coalescing is added, keep it deterministic and testable:
-  - by byte threshold
-  - by short time window
-  - or both
-- If coalescing is added, treat the coalesced batch as the transport-level emission unit for
-  liveness and ordering checks rather than requiring a full transport check on every raw provider
-  delta.
+- The professional default is to decouple provider token granularity from client transport
+  granularity:
+  - provider deltas may arrive at token-scale
+  - gateway transport emits should be batched at a small deterministic cadence
+- Keep the coalescing policy deterministic and testable:
+  - flush on a small byte threshold
+  - always flush immediately on completion, cancellation, accepted-turn terminal error handling, or
+    other terminal turn boundaries
+- Prefer an initial production-oriented policy in the range of:
+  - roughly `32-64` buffered bytes
+- Intentionally defer any time-based flush policy until real usage shows that byte-threshold-only
+  batching is insufficient for user-perceived responsiveness.
+- Treat the coalesced batch as the transport-level emission unit for liveness and ordering checks
+  rather than requiring a full transport check on every raw provider delta.
+- Add lightweight observability for later tuning, for example:
+  - emitted batch count
+  - emitted batch byte size
+  - flush latency
 
 ### Exit Criteria
 
