@@ -26,12 +26,18 @@ absl::Status resource_exhausted(std::string_view message) {
     return absl::ResourceExhaustedError(std::string(message));
 }
 
+absl::Status invalid_reasoning_effort() {
+    return absl::InvalidArgumentError("openai llms reasoning_effort is invalid");
+}
+
 } // namespace
 
 OpenAiLLMs::OpenAiLLMs(std::string step_name, std::string system_prompt, std::string model,
-                       std::shared_ptr<const OpenAiResponsesClient> responses_client)
+                       std::shared_ptr<const OpenAiResponsesClient> responses_client,
+                       OpenAiReasoningEffort reasoning_effort)
     : step_name_(std::move(step_name)), system_prompt_(std::move(system_prompt)),
-      model_(std::move(model)), responses_client_(std::move(responses_client)) {}
+      model_(std::move(model)), reasoning_effort_(reasoning_effort),
+      responses_client_(std::move(responses_client)) {}
 
 const std::string& OpenAiLLMs::step_name() const {
     return step_name_;
@@ -43,6 +49,9 @@ absl::Status OpenAiLLMs::Validate() const {
     }
     if (model_.empty()) {
         return invalid_argument("openai llms must include a model");
+    }
+    if (!TryOpenAiReasoningEffortToString(reasoning_effort_).has_value()) {
+        return invalid_reasoning_effort();
     }
     return absl::OkStatus();
 }
@@ -113,24 +122,41 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
     const std::string_view effective_system_prompt =
         runtime_input.system_prompt.empty() ? std::string_view(system_prompt_)
                                             : std::string_view(runtime_input.system_prompt);
+    const std::optional<std::string_view> reasoning_effort =
+        TryOpenAiReasoningEffortToString(reasoning_effort_);
+    if (!reasoning_effort.has_value()) {
+        return invalid_reasoning_effort();
+    }
 
     VLOG(1) << "AI gateway openai llms dispatching provider request step_name='"
             << SanitizeForLog(step_name_) << "' model='" << SanitizeForLog(model_)
+            << "' reasoning_effort='" << *reasoning_effort
             << "' user_text_bytes=" << runtime_input.user_text.size()
             << " system_prompt_present=" << (!effective_system_prompt.empty() ? "true" : "false");
 
     std::string output_text;
+    bool logged_first_token = false;
     absl::Status stream_status = responses_client_->StreamResponse(
         OpenAiResponsesRequest{
             .model = model_,
             .system_prompt = std::string(effective_system_prompt),
             .user_text = runtime_input.user_text,
+            .reasoning_effort = reasoning_effort_,
         },
-        [&output_text](const OpenAiResponsesEvent& event) -> absl::Status {
+        [this, &output_text,
+         &logged_first_token](const OpenAiResponsesEvent& event) -> absl::Status {
             return std::visit(
-                [&output_text](const auto& concrete_event) -> absl::Status {
+                [this, &output_text,
+                 &logged_first_token](const auto& concrete_event) -> absl::Status {
                     using Event = std::decay_t<decltype(concrete_event)>;
                     if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        if (!logged_first_token && !concrete_event.text_delta.empty()) {
+                            logged_first_token = true;
+                            LOG(INFO) << "AI gateway openai llms received first provider token "
+                                      << "step_name='" << SanitizeForLog(step_name_) << "' model='"
+                                      << SanitizeForLog(model_)
+                                      << "' first_delta_bytes=" << concrete_event.text_delta.size();
+                        }
                         if (output_text.size() + concrete_event.text_delta.size() >
                             kMaxTextOutputBytes) {
                             return resource_exhausted("openai llms output exceeds maximum length");

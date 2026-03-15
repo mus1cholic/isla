@@ -17,8 +17,9 @@ TEST(AiGatewayPlannerTest, CreateOpenAiPlanBuildsOneExecutableItem) {
     ASSERT_TRUE(std::holds_alternative<OpenAiLlmStep>(planned->steps.front()));
     const auto& openai_step = std::get<OpenAiLlmStep>(planned->steps.front());
     EXPECT_EQ(openai_step.step_name, "main");
-    EXPECT_EQ(openai_step.model, "gpt-5.4");
+    EXPECT_EQ(openai_step.model, "gpt-5.3-chat-latest");
     EXPECT_EQ(openai_step.system_prompt, *system_prompt);
+    EXPECT_EQ(openai_step.reasoning_effort, OpenAiReasoningEffort::kMinimal);
 }
 
 TEST(AiGatewayPlannerTest, CreateOpenAiPlanDoesNotRequireRuntimeUserText) {

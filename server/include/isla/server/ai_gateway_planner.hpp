@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "isla/server/openai_reasoning_effort.hpp"
 
 namespace isla::server::ai_gateway {
 
@@ -18,6 +19,7 @@ struct OpenAiLlmStep {
     std::string step_name;
     std::string system_prompt;
     std::string model;
+    OpenAiReasoningEffort reasoning_effort = OpenAiReasoningEffort::kNone;
 };
 
 using ExecutionStep = std::variant<OpenAiLlmStep>;

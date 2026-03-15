@@ -28,7 +28,8 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
     VLOG(1) << "AI gateway step registry dispatching openai llm step_index=" << step_index
             << " step_name='" << SanitizeForLog(step.step_name) << "' model='"
             << SanitizeForLog(step.model) << "'";
-    OpenAiLLMs openai_llms(step.step_name, step.system_prompt, step.model, config_.openai_client);
+    OpenAiLLMs openai_llms(step.step_name, step.system_prompt, step.model, config_.openai_client,
+                           step.reasoning_effort);
     return openai_llms.GenerateContent(step_index, runtime_input);
 }
 

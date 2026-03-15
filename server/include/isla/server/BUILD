@@ -16,6 +16,7 @@ cc_library(
         "ai_gateway_logging_utils.hpp",
         "ai_gateway_planner.hpp",
         "ai_gateway_step_registry.hpp",
+        "openai_reasoning_effort.hpp",
         "openai_llms.hpp",
         "openai_responses_client.hpp",
         "ai_gateway_server.hpp",
