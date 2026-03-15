@@ -561,7 +561,7 @@ absl::Status PersistentHttpClient::EnsureConnected() {
         if (absl::Status status =
                 ConnectStream(&impl_->io_context, impl_->tcp_stream.get(), *endpoints, deadline);
             !status.ok()) {
-            impl_->tcp_stream.reset();
+            Disconnect();
             return status;
         }
         impl_->connected = true;
@@ -576,30 +576,26 @@ absl::Status PersistentHttpClient::EnsureConnected() {
         std::make_unique<boost::asio::ssl::context>(boost::asio::ssl::context::tls_client);
     if (absl::Status status = ConfigureTlsContext(config_, impl_->ssl_context.get());
         !status.ok()) {
-        impl_->ssl_context.reset();
+        Disconnect();
         return status;
     }
     impl_->ssl_stream = std::make_unique<boost::beast::ssl_stream<boost::beast::tcp_stream>>(
         impl_->io_context, *impl_->ssl_context);
     if (absl::Status status = ConfigureTlsStream(parsed_url_, impl_->ssl_stream.get());
         !status.ok()) {
-        impl_->ssl_stream.reset();
-        impl_->ssl_context.reset();
+        Disconnect();
         return status;
     }
     if (absl::Status status =
             ConnectStream(&impl_->io_context, impl_->ssl_stream.get(), *endpoints, deadline);
         !status.ok()) {
-        impl_->ssl_stream.reset();
-        impl_->ssl_context.reset();
+        Disconnect();
         return status;
     }
     if (absl::Status status =
             CompleteTlsHandshake(&impl_->io_context, impl_->ssl_stream.get(), deadline);
         !status.ok()) {
-        CloseStream(impl_->ssl_stream.get());
-        impl_->ssl_stream.reset();
-        impl_->ssl_context.reset();
+        Disconnect();
         return status;
     }
     impl_->connected = true;

@@ -273,10 +273,9 @@ absl::StatusOr<json> ParseJsonArrayResponse(std::string_view body, std::string_v
 
 class SupabaseMemoryStore final : public MemoryStore {
   public:
-    SupabaseMemoryStore(SupabaseMemoryStoreConfig config, ParsedHttpUrl parsed_url,
+    SupabaseMemoryStore(SupabaseMemoryStoreConfig config,
                         std::unique_ptr<PersistentHttpClient> client)
-        : config_(std::move(config)), parsed_url_(std::move(parsed_url)),
-          client_(std::move(client)) {}
+        : config_(std::move(config)), client_(std::move(client)) {}
 
     [[nodiscard]] absl::Status UpsertSession(const MemorySessionRecord& record) override {
         ScopedSupabaseOperationLatency latency(config_, "upsert_session", record.session_id);
@@ -569,7 +568,6 @@ class SupabaseMemoryStore final : public MemoryStore {
 
   private:
     SupabaseMemoryStoreConfig config_;
-    ParsedHttpUrl parsed_url_;
     std::unique_ptr<PersistentHttpClient> client_;
 };
 
@@ -620,7 +618,7 @@ absl::StatusOr<MemoryStorePtr> CreateSupabaseMemoryStore(SupabaseMemoryStoreConf
         .trusted_ca_cert_pem = config.trusted_ca_cert_pem,
     };
     auto client = std::make_unique<PersistentHttpClient>(*parsed_url, http_config);
-    return std::make_shared<SupabaseMemoryStore>(std::move(config), *parsed_url, std::move(client));
+    return std::make_shared<SupabaseMemoryStore>(std::move(config), std::move(client));
 }
 
 } // namespace isla::server::memory
