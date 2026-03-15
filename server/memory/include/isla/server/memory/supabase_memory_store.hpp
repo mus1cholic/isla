@@ -13,6 +13,7 @@ namespace isla::server::memory {
 
 struct SupabaseMemoryStoreConfig {
     bool enabled = false;
+    bool telemetry_logging_enabled = false;
     std::string url;
     std::string service_role_key;
     std::string schema = "public";

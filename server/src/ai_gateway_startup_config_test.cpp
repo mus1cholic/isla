@@ -203,6 +203,7 @@ TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFlagsFromCli) {
     ASSERT_TRUE(parsed.ok()) << parsed.status();
     EXPECT_TRUE(parsed->telemetry_logging_enabled);
     EXPECT_TRUE(parsed->telemetry_event_logging_enabled);
+    EXPECT_TRUE(parsed->supabase_config.telemetry_logging_enabled);
 }
 
 TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
@@ -260,6 +261,7 @@ TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFromEnvironmentDefaults)
     ASSERT_TRUE(parsed.ok()) << parsed.status();
     EXPECT_TRUE(parsed->telemetry_logging_enabled);
     EXPECT_TRUE(parsed->telemetry_event_logging_enabled);
+    EXPECT_TRUE(parsed->supabase_config.telemetry_logging_enabled);
 }
 
 TEST(AiGatewayStartupConfigTest, ParseGatewayStartupConfigAcceptsDotEnvFallback) {

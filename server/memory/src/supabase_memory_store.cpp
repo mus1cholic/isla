@@ -14,9 +14,11 @@
 #include <boost/beast/http/verb.hpp>
 #include <nlohmann/json.hpp>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "http_json_client.hpp"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::memory {
 namespace {
@@ -27,7 +29,10 @@ using isla::server::HttpRequestSpec;
 using isla::server::HttpResponse;
 using isla::server::ParsedHttpUrl;
 using isla::server::ParseHttpUrl;
+using isla::server::ai_gateway::SanitizeForLog;
 using nlohmann::json;
+
+using Clock = std::chrono::steady_clock;
 
 json BuildSessionJson(const MemorySessionRecord& record) {
     return json{
@@ -165,9 +170,46 @@ absl::Status MapSupabaseHttpError(unsigned int status_code, std::string_view bod
     }
 }
 
+std::int64_t DurationMillis(Clock::time_point started_at, Clock::time_point completed_at) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(completed_at - started_at).count();
+}
+
+std::string HttpVerbForLog(boost::beast::http::verb method) {
+    return std::string(boost::beast::http::to_string(method));
+}
+
+void LogSupabaseRequestLatency(const SupabaseMemoryStoreConfig& config,
+                               const HttpRequestSpec& request, Clock::time_point started_at,
+                               Clock::time_point completed_at, std::string_view outcome) {
+    if (!config.telemetry_logging_enabled) {
+        return;
+    }
+    LOG(INFO) << "AI gateway supabase latency kind=request method="
+              << SanitizeForLog(HttpVerbForLog(request.method))
+              << " target=" << SanitizeForLog(request.target_path)
+              << " duration_ms=" << DurationMillis(started_at, completed_at)
+              << " outcome=" << SanitizeForLog(outcome);
+}
+
+void LogSupabaseOperationLatency(const SupabaseMemoryStoreConfig& config,
+                                 std::string_view operation,
+                                 std::optional<std::string_view> session_id,
+                                 Clock::time_point started_at, Clock::time_point completed_at,
+                                 std::string_view outcome) {
+    if (!config.telemetry_logging_enabled) {
+        return;
+    }
+    LOG(INFO) << "AI gateway supabase latency kind=operation op=" << SanitizeForLog(operation)
+              << " session_id="
+              << (session_id.has_value() ? SanitizeForLog(*session_id) : std::string("<none>"))
+              << " duration_ms=" << DurationMillis(started_at, completed_at)
+              << " outcome=" << SanitizeForLog(outcome);
+}
+
 absl::StatusOr<std::string> ExecuteSupabaseRequest(const ParsedHttpUrl& parsed_url,
                                                    const SupabaseMemoryStoreConfig& config,
                                                    const HttpRequestSpec& request) {
+    const Clock::time_point started_at = Clock::now();
     const HttpClientConfig http_config{
         .request_timeout = config.request_timeout,
         .user_agent = config.user_agent,
@@ -176,11 +218,14 @@ absl::StatusOr<std::string> ExecuteSupabaseRequest(const ParsedHttpUrl& parsed_u
     const absl::StatusOr<HttpResponse> response =
         ExecuteHttpRequest(parsed_url, http_config, request);
     if (!response.ok()) {
+        LogSupabaseRequestLatency(config, request, started_at, Clock::now(), "transport_error");
         return response.status();
     }
     if (response->status_code < 200U || response->status_code >= 300U) {
+        LogSupabaseRequestLatency(config, request, started_at, Clock::now(), "http_error");
         return MapSupabaseHttpError(response->status_code, response->body);
     }
+    LogSupabaseRequestLatency(config, request, started_at, Clock::now(), "ok");
     return response->body;
 }
 
@@ -204,7 +249,10 @@ class SupabaseMemoryStore final : public MemoryStore {
         : config_(std::move(config)), parsed_url_(std::move(parsed_url)) {}
 
     [[nodiscard]] absl::Status UpsertSession(const MemorySessionRecord& record) override {
+        const Clock::time_point started_at = Clock::now();
         if (absl::Status status = ValidateMemorySessionRecord(record); !status.ok()) {
+            LogSupabaseOperationLatency(config_, "upsert_session", record.session_id, started_at,
+                                        Clock::now(), "validation_error");
             return status;
         }
         const HttpRequestSpec request =
@@ -213,14 +261,21 @@ class SupabaseMemoryStore final : public MemoryStore {
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(parsed_url_, config_, request);
         if (!response.ok()) {
+            LogSupabaseOperationLatency(config_, "upsert_session", record.session_id, started_at,
+                                        Clock::now(), "error");
             return response.status();
         }
+        LogSupabaseOperationLatency(config_, "upsert_session", record.session_id, started_at,
+                                    Clock::now(), "ok");
         return absl::OkStatus();
     }
 
     [[nodiscard]] absl::Status
     AppendConversationMessage(const ConversationMessageWrite& write) override {
+        const Clock::time_point started_at = Clock::now();
         if (absl::Status status = ValidateConversationMessageWrite(write); !status.ok()) {
+            LogSupabaseOperationLatency(config_, "append_conversation_message", write.session_id,
+                                        started_at, Clock::now(), "validation_error");
             return status;
         }
 
@@ -233,6 +288,8 @@ class SupabaseMemoryStore final : public MemoryStore {
         const absl::StatusOr<std::string> item_response =
             ExecuteSupabaseRequest(parsed_url_, config_, item_request);
         if (!item_response.ok()) {
+            LogSupabaseOperationLatency(config_, "append_conversation_message", write.session_id,
+                                        started_at, Clock::now(), "error");
             return item_response.status();
         }
 
@@ -242,14 +299,22 @@ class SupabaseMemoryStore final : public MemoryStore {
         const absl::StatusOr<std::string> message_response =
             ExecuteSupabaseRequest(parsed_url_, config_, message_request);
         if (!message_response.ok()) {
+            LogSupabaseOperationLatency(config_, "append_conversation_message", write.session_id,
+                                        started_at, Clock::now(), "error");
             return message_response.status();
         }
+        LogSupabaseOperationLatency(config_, "append_conversation_message", write.session_id,
+                                    started_at, Clock::now(), "ok");
         return absl::OkStatus();
     }
 
     [[nodiscard]] absl::Status
     ReplaceConversationItemWithEpisodeStub(const EpisodeStubWrite& write) override {
+        const Clock::time_point started_at = Clock::now();
         if (absl::Status status = ValidateEpisodeStubWrite(write); !status.ok()) {
+            LogSupabaseOperationLatency(config_, "replace_conversation_item_with_episode_stub",
+                                        write.session_id, started_at, Clock::now(),
+                                        "validation_error");
             return status;
         }
         const HttpRequestSpec request = BuildUpsertRequest(
@@ -261,13 +326,20 @@ class SupabaseMemoryStore final : public MemoryStore {
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(parsed_url_, config_, request);
         if (!response.ok()) {
+            LogSupabaseOperationLatency(config_, "replace_conversation_item_with_episode_stub",
+                                        write.session_id, started_at, Clock::now(), "error");
             return response.status();
         }
+        LogSupabaseOperationLatency(config_, "replace_conversation_item_with_episode_stub",
+                                    write.session_id, started_at, Clock::now(), "ok");
         return absl::OkStatus();
     }
 
     [[nodiscard]] absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) override {
+        const Clock::time_point started_at = Clock::now();
         if (absl::Status status = ValidateMidTermEpisodeWrite(write); !status.ok()) {
+            LogSupabaseOperationLatency(config_, "upsert_mid_term_episode", write.session_id,
+                                        started_at, Clock::now(), "validation_error");
             return status;
         }
         const HttpRequestSpec request =
@@ -276,14 +348,21 @@ class SupabaseMemoryStore final : public MemoryStore {
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(parsed_url_, config_, request);
         if (!response.ok()) {
+            LogSupabaseOperationLatency(config_, "upsert_mid_term_episode", write.session_id,
+                                        started_at, Clock::now(), "error");
             return response.status();
         }
+        LogSupabaseOperationLatency(config_, "upsert_mid_term_episode", write.session_id,
+                                    started_at, Clock::now(), "ok");
         return absl::OkStatus();
     }
 
     [[nodiscard]] absl::StatusOr<std::optional<MemoryStoreSnapshot>>
     LoadSnapshot(std::string_view session_id) const override {
+        const Clock::time_point started_at = Clock::now();
         if (session_id.empty()) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "validation_error");
             return absl::InvalidArgumentError("LoadSnapshot requires session_id to be non-empty");
         }
 
@@ -297,17 +376,25 @@ class SupabaseMemoryStore final : public MemoryStore {
         const absl::StatusOr<std::string> session_response =
             ExecuteSupabaseRequest(parsed_url_, config_, session_request);
         if (!session_response.ok()) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return session_response.status();
         }
         const absl::StatusOr<json> session_rows =
             ParseJsonArrayResponse(*session_response, "supabase memory_sessions");
         if (!session_rows.ok()) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return session_rows.status();
         }
         if (session_rows->empty()) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "not_found");
             return std::nullopt;
         }
         if (session_rows->size() != 1U) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return absl::InternalError("supabase memory_sessions response returned multiple rows");
         }
 
@@ -325,6 +412,8 @@ class SupabaseMemoryStore final : public MemoryStore {
                         : std::optional<Timestamp>(session_json.at("ended_at").get<Timestamp>()),
             };
         } catch (const std::exception& error) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return absl::InternalError(std::string("supabase memory_sessions row was malformed: ") +
                                        error.what());
         }
@@ -387,6 +476,8 @@ class SupabaseMemoryStore final : public MemoryStore {
 
         const absl::StatusOr<json> item_rows = item_rows_future.get();
         if (!item_rows.ok()) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return item_rows.status();
         }
         try {
@@ -406,12 +497,16 @@ class SupabaseMemoryStore final : public MemoryStore {
                 snapshot.conversation_items.push_back(std::move(item));
             }
         } catch (const std::exception& error) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return absl::InternalError(
                 std::string("supabase conversation_items row was malformed: ") + error.what());
         }
 
         const absl::StatusOr<json> message_rows = message_rows_future.get();
         if (!message_rows.ok()) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return message_rows.status();
         }
         try {
@@ -437,12 +532,16 @@ class SupabaseMemoryStore final : public MemoryStore {
                 });
             }
         } catch (const std::exception& error) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return absl::InternalError(
                 std::string("supabase conversation_messages row was malformed: ") + error.what());
         }
 
         const absl::StatusOr<json> episode_rows = episode_rows_future.get();
         if (!episode_rows.ok()) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return episode_rows.status();
         }
         try {
@@ -463,13 +562,19 @@ class SupabaseMemoryStore final : public MemoryStore {
                 });
             }
         } catch (const std::exception& error) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return absl::InternalError(
                 std::string("supabase mid_term_episodes row was malformed: ") + error.what());
         }
 
         if (absl::Status status = ValidateMemoryStoreSnapshot(snapshot); !status.ok()) {
+            LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at,
+                                        Clock::now(), "error");
             return status;
         }
+        LogSupabaseOperationLatency(config_, "load_snapshot", session_id, started_at, Clock::now(),
+                                    "ok");
         return snapshot;
     }
 

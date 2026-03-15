@@ -25,6 +25,10 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include "absl/log/log_entry.h"
+#include "absl/log/log_sink.h"
+#include "absl/log/log_sink_registry.h"
+
 namespace isla::server::memory {
 namespace {
 
@@ -231,6 +235,28 @@ class SequentialHttpServer {
     std::uint16_t port_ = 0;
 };
 
+class CapturingLogSink final : public absl::LogSink {
+  public:
+    void Send(const absl::LogEntry& entry) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        messages_.push_back(std::string(entry.text_message()));
+    }
+
+    [[nodiscard]] bool Contains(std::string_view needle) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const std::string& message : messages_) {
+            if (message.find(needle) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    std::vector<std::string> messages_;
+};
+
 #if !defined(_WIN32)
 class OneShotHttpsServer {
   public:
@@ -403,6 +429,42 @@ TEST(SupabaseMemoryStoreTest, AppendConversationMessageCreatesConversationItemTh
     EXPECT_EQ(body[0]["message_index"], 0);
     EXPECT_EQ(body[0]["turn_id"], "turn_001");
     EXPECT_EQ(body[0]["content"], "hello");
+}
+
+TEST(SupabaseMemoryStoreTest, LogsRequestAndOperationLatencyWhenTelemetryEnabled) {
+    SequentialHttpServer server({
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .telemetry_logging_enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    CapturingLogSink log_sink;
+    absl::AddLogSink(&log_sink);
+
+    const absl::Status status = (*store)->UpsertSession(MemorySessionRecord{
+        .session_id = "session_telemetry",
+        .user_id = "user_001",
+        .system_prompt = "You are Isla.",
+        .created_at = Ts("2026-03-08T14:00:00Z"),
+        .ended_at = std::nullopt,
+    });
+
+    absl::RemoveLogSink(&log_sink);
+
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_TRUE(log_sink.Contains("AI gateway supabase latency kind=request"));
+    EXPECT_TRUE(log_sink.Contains("target=/rest/v1/memory_sessions"));
+    EXPECT_TRUE(log_sink.Contains("AI gateway supabase latency kind=operation"));
+    EXPECT_TRUE(log_sink.Contains("op=upsert_session"));
+    EXPECT_TRUE(log_sink.Contains("session_id=session_telemetry"));
 }
 
 TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes) {

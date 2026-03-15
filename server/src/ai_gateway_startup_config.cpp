@@ -567,6 +567,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             .log_events = parsed.telemetry_event_logging_enabled,
         });
     }
+    parsed.supabase_config.telemetry_logging_enabled = parsed.telemetry_logging_enabled;
     return parsed;
 }
 
