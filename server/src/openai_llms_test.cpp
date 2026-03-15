@@ -112,6 +112,23 @@ TEST(OpenAiLlmstest, UsesRuntimeSystemPromptOverrideWhenProvided) {
     EXPECT_EQ(client->last_request.reasoning_effort, OpenAiReasoningEffort::kNone);
 }
 
+TEST(OpenAiLlmstest, PropagatesTelemetryContextToResponsesClient) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
+    OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.3-chat-latest", client);
+    const std::shared_ptr<const TurnTelemetryContext> telemetry_context =
+        MakeTurnTelemetryContext("srv_test", "turn_telemetry");
+
+    const absl::StatusOr<ExecutionStepResult> result =
+        openai_llms.GenerateContent(0, ExecutionRuntimeInput{
+                                           .system_prompt = "rendered system prompt",
+                                           .user_text = "ctx",
+                                           .telemetry_context = telemetry_context,
+                                       });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(client->last_request.telemetry_context, telemetry_context);
+}
+
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("rate limited"));
     OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);

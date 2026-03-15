@@ -72,6 +72,15 @@ class RecordingEventSink final : public GatewaySessionEventSink {
     std::vector<SessionClosedEvent> closed_sessions;
 };
 
+class RecordingTelemetrySink final : public TelemetrySink {
+  public:
+    void OnTurnAccepted(const TurnTelemetryContext& context) const override {
+        accepted_turns.push_back({ .session_id = context.session_id, .turn_id = context.turn_id });
+    }
+
+    mutable std::vector<TurnAcceptedEvent> accepted_turns;
+};
+
 TEST(AiGatewayWebSocketSessionTest, UuidSessionIdGeneratorCreatesValidAndUniqueUUIDs) {
     UuidSessionIdGenerator generator;
 
@@ -177,6 +186,29 @@ TEST(AiGatewayWebSocketSessionTest, AcceptedTurnIsForwardedToEventSink) {
     EXPECT_EQ(sink.accepted_turns.front().session_id, "srv_test");
     EXPECT_EQ(sink.accepted_turns.front().turn_id, "turn_1");
     EXPECT_EQ(sink.accepted_turns.front().text, "hello");
+}
+
+TEST(AiGatewayWebSocketSessionTest, AcceptedTurnCreatesTelemetryContextAtGatewayBoundary) {
+    FakeWebSocketConnection connection;
+    RecordingEventSink sink;
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink, telemetry_sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session
+                    .HandleIncomingTextFrame(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok());
+
+    ASSERT_EQ(sink.accepted_turns.size(), 1U);
+    ASSERT_NE(sink.accepted_turns.front().telemetry_context, nullptr);
+    EXPECT_EQ(sink.accepted_turns.front().telemetry_context->session_id, "srv_test");
+    EXPECT_EQ(sink.accepted_turns.front().telemetry_context->turn_id, "turn_1");
+    EXPECT_EQ(sink.accepted_turns.front().telemetry_context->sink, telemetry_sink);
+
+    ASSERT_EQ(telemetry_sink->accepted_turns.size(), 1U);
+    EXPECT_EQ(telemetry_sink->accepted_turns.front().session_id, "srv_test");
+    EXPECT_EQ(telemetry_sink->accepted_turns.front().turn_id, "turn_1");
 }
 
 TEST(AiGatewayWebSocketSessionTest, RejectedClientFrameSendsErrorAndKeepsSessionOpen) {

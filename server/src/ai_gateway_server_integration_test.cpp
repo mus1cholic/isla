@@ -115,6 +115,23 @@ class RecordingApplicationSink final : public GatewayApplicationEventSink {
     std::vector<SessionClosedEvent> closed_sessions;
 };
 
+class RecordingTelemetrySink final : public TelemetrySink {
+  public:
+    void OnTurnAccepted(const TurnTelemetryContext& context) const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        accepted_turns.push_back({ .session_id = context.session_id, .turn_id = context.turn_id });
+    }
+
+    [[nodiscard]] std::vector<TurnAcceptedEvent> snapshot() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return accepted_turns;
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    mutable std::vector<TurnAcceptedEvent> accepted_turns;
+};
+
 class RealWebSocketClient {
   public:
     RealWebSocketClient() : websocket_(io_context_) {}
@@ -431,6 +448,60 @@ TEST_F(GatewayServerTest, RealSocketTurnIngressReachesTypedApplicationSink) {
         EXPECT_EQ(sink_.closed_sessions.back().reason, SessionCloseReason::ProtocolEnded);
         ASSERT_TRUE(sink_.WaitFor([&] { return server_.session_registry().SessionCount() == 0U; }));
     }
+}
+
+TEST(AiGatewayServerIntegrationTest, RealSocketTurnIngressUsesConfiguredTelemetrySink) {
+    RecordingApplicationSink sink;
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    GatewayServer server(
+        GatewayServerConfig{
+            .bind_host = "127.0.0.1",
+            .port = 0,
+            .listen_backlog = 4,
+            .telemetry_sink = telemetry_sink,
+        },
+        &sink, std::make_unique<SequentialSessionIdGenerator>("srv_tel_"));
+    ASSERT_TRUE(server.Start().ok());
+    ASSERT_TRUE(server.is_running());
+    ASSERT_NE(server.bound_port(), 0);
+
+    {
+        RealWebSocketClient client;
+        ASSERT_TRUE(client.Connect(server.bound_port()).ok());
+        ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+        const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+        ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+        ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+        const std::string session_id =
+            std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+        ASSERT_TRUE(
+            client.SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                .ok());
+        ASSERT_TRUE(sink.WaitFor([&] { return sink.accepted_turns.size() == 1U; }));
+        ASSERT_EQ(sink.accepted_turns.size(), 1U);
+        ASSERT_NE(sink.accepted_turns.front().telemetry_context, nullptr);
+        EXPECT_EQ(sink.accepted_turns.front().telemetry_context->session_id, session_id);
+        EXPECT_EQ(sink.accepted_turns.front().telemetry_context->turn_id, "turn_1");
+        EXPECT_EQ(sink.accepted_turns.front().telemetry_context->sink, telemetry_sink);
+
+        for (;;) {
+            const std::vector<TurnAcceptedEvent> telemetry_turns = telemetry_sink->snapshot();
+            if (!telemetry_turns.empty()) {
+                ASSERT_EQ(telemetry_turns.size(), 1U);
+                EXPECT_EQ(telemetry_turns.front().session_id, session_id);
+                EXPECT_EQ(telemetry_turns.front().turn_id, "turn_1");
+                break;
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+
+        client.CloseTransport();
+        ASSERT_TRUE(sink.WaitFor([&] { return sink.closed_sessions.size() == 1U; }));
+    }
+
+    server.Stop();
 }
 
 TEST_F(GatewayServerTest, RejectsInvalidHandshakeWithoutRegisteringSession) {

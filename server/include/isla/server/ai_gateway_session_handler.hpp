@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/shared/ai_gateway_protocol.hpp"
 #include "isla/shared/ai_gateway_session.hpp"
 
@@ -19,6 +21,7 @@ struct TurnAcceptedEvent {
     std::string session_id;
     std::string turn_id;
     std::string text;
+    std::shared_ptr<const TurnTelemetryContext> telemetry_context;
 };
 
 struct SessionStartedEvent {
@@ -46,7 +49,9 @@ struct EmitResult {
 
 class GatewaySessionHandler {
   public:
-    explicit GatewaySessionHandler(std::string session_id);
+    explicit GatewaySessionHandler(
+        std::string session_id,
+        std::shared_ptr<const TelemetrySink> telemetry_sink = CreateNoOpTelemetrySink());
 
     [[nodiscard]] HandleIncomingResult HandleIncomingJson(std::string_view json_text);
     [[nodiscard]] absl::StatusOr<EmitResult> EmitTextOutput(std::string_view turn_id,
@@ -72,6 +77,7 @@ class GatewaySessionHandler {
     [[nodiscard]] std::string encode(const isla::shared::ai_gateway::GatewayMessage& message) const;
 
     std::string session_id_;
+    std::shared_ptr<const TelemetrySink> telemetry_sink_;
     isla::shared::ai_gateway::SessionState session_state_{};
 };
 

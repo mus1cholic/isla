@@ -54,9 +54,9 @@ std::string UuidSessionIdGenerator::NextSessionId() {
 
 GatewayWebSocketSessionAdapter::GatewayWebSocketSessionAdapter(
     std::string session_id, GatewayWebSocketConnection& connection,
-    GatewaySessionEventSink* event_sink)
+    GatewaySessionEventSink* event_sink, std::shared_ptr<const TelemetrySink> telemetry_sink)
     : session_id_(std::move(session_id)), connection_(connection), event_sink_(event_sink),
-      handler_(session_id_) {}
+      handler_(session_id_, NormalizeTelemetrySink(std::move(telemetry_sink))) {}
 
 absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string_view frame) {
     if (closed_) {
@@ -335,14 +335,16 @@ std::optional<std::string> GatewayWebSocketSessionAdapter::active_turn_id() cons
 }
 
 GatewayWebSocketSessionFactory::GatewayWebSocketSessionFactory(
-    std::unique_ptr<SessionIdGenerator> session_id_generator)
-    : session_id_generator_(std::move(session_id_generator)) {}
+    std::unique_ptr<SessionIdGenerator> session_id_generator,
+    std::shared_ptr<const TelemetrySink> telemetry_sink)
+    : session_id_generator_(std::move(session_id_generator)),
+      telemetry_sink_(NormalizeTelemetrySink(std::move(telemetry_sink))) {}
 
 std::unique_ptr<GatewayWebSocketSessionAdapter>
 GatewayWebSocketSessionFactory::CreateSession(GatewayWebSocketConnection& connection,
                                               GatewaySessionEventSink* event_sink) {
-    return std::make_unique<GatewayWebSocketSessionAdapter>(session_id_generator_->NextSessionId(),
-                                                            connection, event_sink);
+    return std::make_unique<GatewayWebSocketSessionAdapter>(
+        session_id_generator_->NextSessionId(), connection, event_sink, telemetry_sink_);
 }
 
 } // namespace isla::server::ai_gateway

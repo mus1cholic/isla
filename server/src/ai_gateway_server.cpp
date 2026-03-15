@@ -702,8 +702,8 @@ class GatewayServer::Impl {
     Impl(GatewayServerConfig config, GatewayApplicationEventSink* application_sink,
          std::unique_ptr<SessionIdGenerator> session_id_generator)
         : config_(std::move(config)), io_context_(1), session_registry_(application_sink),
-          session_factory_(std::move(session_id_generator)), acceptor_(io_context_),
-          application_sink_(application_sink) {}
+          session_factory_(std::move(session_id_generator), config_.telemetry_sink),
+          acceptor_(io_context_), application_sink_(application_sink) {}
 
     ~Impl() {
         Stop();

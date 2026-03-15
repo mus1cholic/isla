@@ -94,6 +94,7 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
             .text = event.text,
             .rendered_system_prompt = "",
             .rendered_working_memory_context = "",
+            .telemetry_context = event.telemetry_context,
             .ready_at = Clock::now(),
             .cancel_requested = false,
         });
@@ -114,6 +115,7 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
                 .text = event.text,
                 .rendered_system_prompt = "",
                 .rendered_working_memory_context = "",
+                .telemetry_context = event.telemetry_context,
                 .ready_at = Clock::now(),
                 .cancel_requested = false,
             },
@@ -137,6 +139,7 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
                 .text = event.text,
                 .rendered_system_prompt = memory_result->rendered_system_prompt,
                 .rendered_working_memory_context = memory_result->rendered_working_memory_context,
+                .telemetry_context = event.telemetry_context,
                 .ready_at = Clock::now() + config_.response_delay,
                 .cancel_requested = false,
             });
@@ -558,6 +561,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         executor_.Execute(*execution_plan, ExecutionRuntimeInput{
                                                .system_prompt = turn.rendered_system_prompt,
                                                .user_text = turn.rendered_working_memory_context,
+                                               .telemetry_context = turn.telemetry_context,
                                            });
     if (const auto* failure = std::get_if<ExecutionFailure>(&executor_outcome)) {
         LOG(ERROR) << "AI gateway stub executor failed session=" << SanitizeForLog(turn.session_id)

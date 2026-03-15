@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/ai_gateway_websocket_session.hpp"
 
 namespace isla::server::ai_gateway {
@@ -22,6 +23,7 @@ struct GatewayServerConfig {
     std::uint16_t port = 0;
     int listen_backlog = 8;
     std::chrono::milliseconds shutdown_write_grace_period{ std::chrono::seconds(2) };
+    std::shared_ptr<const TelemetrySink> telemetry_sink = CreateNoOpTelemetrySink();
 };
 
 class GatewayApplicationEventSink {
