@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string_view>
 
 namespace isla::server::ai_gateway {
@@ -13,23 +14,23 @@ enum class OpenAiReasoningEffort {
     kXHigh,
 };
 
-[[nodiscard]] constexpr std::string_view
-OpenAiReasoningEffortToString(OpenAiReasoningEffort effort) {
+[[nodiscard]] constexpr std::optional<std::string_view>
+TryOpenAiReasoningEffortToString(OpenAiReasoningEffort effort) {
     switch (effort) {
     case OpenAiReasoningEffort::kNone:
-        return "none";
+        return std::string_view("none");
     case OpenAiReasoningEffort::kMinimal:
-        return "minimal";
+        return std::string_view("minimal");
     case OpenAiReasoningEffort::kLow:
-        return "low";
+        return std::string_view("low");
     case OpenAiReasoningEffort::kMedium:
-        return "medium";
+        return std::string_view("medium");
     case OpenAiReasoningEffort::kHigh:
-        return "high";
+        return std::string_view("high");
     case OpenAiReasoningEffort::kXHigh:
-        return "xhigh";
+        return std::string_view("xhigh");
     }
-    return "unknown";
+    return std::nullopt;
 }
 
 } // namespace isla::server::ai_gateway

@@ -26,6 +26,10 @@ absl::Status resource_exhausted(std::string_view message) {
     return absl::ResourceExhaustedError(std::string(message));
 }
 
+absl::Status invalid_reasoning_effort() {
+    return absl::InvalidArgumentError("openai llms reasoning_effort is invalid");
+}
+
 } // namespace
 
 OpenAiLLMs::OpenAiLLMs(std::string step_name, std::string system_prompt, std::string model,
@@ -45,6 +49,9 @@ absl::Status OpenAiLLMs::Validate() const {
     }
     if (model_.empty()) {
         return invalid_argument("openai llms must include a model");
+    }
+    if (!TryOpenAiReasoningEffortToString(reasoning_effort_).has_value()) {
+        return invalid_reasoning_effort();
     }
     return absl::OkStatus();
 }
@@ -115,10 +122,15 @@ OpenAiLLMs::GenerateProviderResponse(std::size_t item_index,
     const std::string_view effective_system_prompt =
         runtime_input.system_prompt.empty() ? std::string_view(system_prompt_)
                                             : std::string_view(runtime_input.system_prompt);
+    const std::optional<std::string_view> reasoning_effort =
+        TryOpenAiReasoningEffortToString(reasoning_effort_);
+    if (!reasoning_effort.has_value()) {
+        return invalid_reasoning_effort();
+    }
 
     VLOG(1) << "AI gateway openai llms dispatching provider request step_name='"
             << SanitizeForLog(step_name_) << "' model='" << SanitizeForLog(model_)
-            << "' reasoning_effort='" << OpenAiReasoningEffortToString(reasoning_effort_)
+            << "' reasoning_effort='" << *reasoning_effort
             << "' user_text_bytes=" << runtime_input.user_text.size()
             << " system_prompt_present=" << (!effective_system_prompt.empty() ? "true" : "false");
 

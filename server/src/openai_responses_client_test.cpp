@@ -611,7 +611,7 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     int completed_count = 0;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "system prompt",
             .user_text = "hello",
         },
@@ -636,20 +636,23 @@ TEST(OpenAiResponsesClientTest, StreamsSseDeltasAndCompletionOverHttp) {
     EXPECT_NE(server.request_text().find("POST /v1/responses HTTP/1.1"), std::string::npos);
     EXPECT_NE(server.request_text().find("Authorization: Bearer test_key"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"stream\":true"), std::string::npos);
-    EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.4\""), std::string::npos);
+    EXPECT_NE(server.request_text().find("\"model\":\"gpt-5.3-chat-latest\""), std::string::npos);
     EXPECT_NE(server.request_text().find("\"reasoning\":{\"effort\":\"none\"}"), std::string::npos);
     EXPECT_NE(server.request_text().find("\"instructions\":\"system prompt\""), std::string::npos);
 }
 
 TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody) {
-    OneShotHttpServer server(
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Content-Length: 109\r\n"
+    const std::string body =
+        "event: response.output_text.delta\r\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\r\n"
         "\r\n"
-        "event: response.output_text.delta\n"
-        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
-        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n");
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\r\n"
+        "\r\n";
+    OneShotHttpServer server("HTTP/1.1 200 OK\r\n"
+                             "Content-Type: text/event-stream\r\n"
+                             "Content-Length: " +
+                             std::to_string(body.size()) + "\r\n"
+                                                           "\r\n" + body);
 
     auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
         .enabled = true,
@@ -665,7 +668,7 @@ TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .user_text = "hello world",
             .reasoning_effort = OpenAiReasoningEffort::kXHigh,
         },
@@ -678,6 +681,33 @@ TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody
     ASSERT_TRUE(server.WaitForRequest());
     EXPECT_NE(server.request_text().find("\"reasoning\":{\"effort\":\"xhigh\"}"),
               std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, RejectsInvalidReasoningEffortBeforeRequestDispatch) {
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 1234,
+        .target = "/v1/responses",
+    });
+
+    ASSERT_TRUE(client != nullptr);
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.3-chat-latest",
+            .user_text = "hello world",
+            .reasoning_effort = static_cast<OpenAiReasoningEffort>(999),
+        },
+        [](const OpenAiResponsesEvent& event) -> absl::Status {
+            static_cast<void>(event);
+            return absl::OkStatus();
+        });
+
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(), "openai responses request reasoning_effort is invalid");
 }
 
 TEST(OpenAiResponsesClientTest, StreamsSseWhenEventPayloadIsSplitAcrossReadChunks) {
@@ -704,7 +734,7 @@ TEST(OpenAiResponsesClientTest, StreamsSseWhenEventPayloadIsSplitAcrossReadChunk
     int completed_count = 0;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -799,7 +829,7 @@ TEST(OpenAiResponsesClientTest, UsesRealDnsResolutionForLocalhostHttpTransport) 
     int completed_count = 0;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -848,7 +878,7 @@ TEST(OpenAiResponsesClientTest, PassesHeaderValuesWithShellMetacharactersLiteral
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -886,7 +916,7 @@ TEST(OpenAiResponsesClientTest, ExtractsFinalTextFromCompletedEventWhenNoDeltaAr
     std::string output_text;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -935,7 +965,7 @@ TEST(OpenAiResponsesClientTest, UsesRealDnsResolutionForLocalhostHttpsTransportW
     int completed_count = 0;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -984,7 +1014,7 @@ TEST(OpenAiResponsesClientTest, RejectsHttpsServerCertificateWithoutInjectedCa) 
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1017,7 +1047,7 @@ TEST(OpenAiResponsesClientTest, MapsHttpErrorResponsesToAbslStatus) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1044,7 +1074,7 @@ TEST(OpenAiResponsesClientTest, RejectsOversizedHttpResponseHeaders) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1070,7 +1100,7 @@ TEST(OpenAiResponsesClientTest, RejectsMalformedHttpResponseHeaders) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1176,7 +1206,7 @@ TEST(OpenAiResponsesClientTest, MapsAdditionalHttpErrorStatuses) {
 
         const absl::Status status = client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.4",
+                .model = "gpt-5.3-chat-latest",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -1212,7 +1242,7 @@ TEST(OpenAiResponsesClientTest, MapsResponseFailedEventToUnavailableStatus) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1245,7 +1275,7 @@ TEST(OpenAiResponsesClientTest, RejectsMalformedSseJson) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1278,7 +1308,7 @@ TEST(OpenAiResponsesClientTest, RejectsSseEventsWithWrongTypedStringFields) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1313,7 +1343,7 @@ TEST(OpenAiResponsesClientTest, PropagatesCallbackFailure) {
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1359,7 +1389,7 @@ TEST(OpenAiResponsesClientTest, RejectsCompletedEventWithoutRecoverableText) {
     std::string output_text;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1404,7 +1434,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenCallbackReturnsNonOk) {
     auto response_future = std::async(std::launch::async, [&] {
         return client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.4",
+                .model = "gpt-5.3-chat-latest",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -1458,7 +1488,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportAfterCompletedEventWithoutWaiting
     auto response_future = std::async(std::launch::async, [&] {
         return client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.4",
+                .model = "gpt-5.3-chat-latest",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -1507,7 +1537,7 @@ TEST(OpenAiResponsesClientTest, AbortsTransportWhenBodyBudgetIsExceeded) {
     auto response_future = std::async(std::launch::async, [&] {
         return client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.4",
+                .model = "gpt-5.3-chat-latest",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -1554,7 +1584,7 @@ TEST(OpenAiResponsesClientTest, DeterministicallyUsesInjectedResolverSuccessEndp
     int completed_count = 0;
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1604,7 +1634,7 @@ TEST(OpenAiResponsesClientTest, TimesOutWhenResponseHeadersDoNotArriveBeforeDead
     auto response_future = std::async(std::launch::async, [&] {
         return client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.4",
+                .model = "gpt-5.3-chat-latest",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -1638,7 +1668,7 @@ TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsTimeoutFromInjectedR
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1665,7 +1695,7 @@ TEST(OpenAiResponsesClientTest, DeterministicallySurfacesDnsResolutionFailureFro
 
     const absl::Status status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1696,7 +1726,7 @@ TEST(OpenAiResponsesClientTest, RestoresPreviousResolverOverrideWhenNestedScopes
         ScopedOpenAiResponsesHostResolverOverrideForTest inner_scope(inner_resolver);
         const absl::Status inner_status = client->StreamResponse(
             OpenAiResponsesRequest{
-                .model = "gpt-5.4",
+                .model = "gpt-5.3-chat-latest",
                 .system_prompt = "",
                 .user_text = "hello",
             },
@@ -1710,7 +1740,7 @@ TEST(OpenAiResponsesClientTest, RestoresPreviousResolverOverrideWhenNestedScopes
 
     const absl::Status restored_status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1744,7 +1774,7 @@ TEST(OpenAiResponsesClientTest, RemovesOnlyItsOwnResolverOverrideWhenScopesOverl
     outer_scope.reset();
     const absl::Status still_inner_status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1758,7 +1788,7 @@ TEST(OpenAiResponsesClientTest, RemovesOnlyItsOwnResolverOverrideWhenScopesOverl
     inner_scope.reset();
     const absl::Status default_status = client->StreamResponse(
         OpenAiResponsesRequest{
-            .model = "gpt-5.4",
+            .model = "gpt-5.3-chat-latest",
             .system_prompt = "",
             .user_text = "hello",
         },
@@ -1824,3 +1854,4 @@ TEST(OpenAiResponsesClientTest, RejectsTargetContainingSpaceBeforeStartingTransp
 
 } // namespace
 } // namespace isla::server::ai_gateway
+

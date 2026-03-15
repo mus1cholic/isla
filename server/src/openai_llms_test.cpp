@@ -13,12 +13,34 @@ namespace isla::server::ai_gateway {
 namespace {
 
 TEST(OpenAiReasoningEffortTest, MapsAllSupportedEffortValuesToSchemaStrings) {
-    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kNone), "none");
-    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kMinimal), "minimal");
-    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kLow), "low");
-    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kMedium), "medium");
-    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kHigh), "high");
-    EXPECT_EQ(OpenAiReasoningEffortToString(OpenAiReasoningEffort::kXHigh), "xhigh");
+    ASSERT_TRUE(TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kNone).has_value());
+    EXPECT_EQ(*TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kNone), "none");
+    ASSERT_TRUE(TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kMinimal).has_value());
+    EXPECT_EQ(*TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kMinimal), "minimal");
+    ASSERT_TRUE(TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kLow).has_value());
+    EXPECT_EQ(*TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kLow), "low");
+    ASSERT_TRUE(TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kMedium).has_value());
+    EXPECT_EQ(*TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kMedium), "medium");
+    ASSERT_TRUE(TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kHigh).has_value());
+    EXPECT_EQ(*TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kHigh), "high");
+    ASSERT_TRUE(TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kXHigh).has_value());
+    EXPECT_EQ(*TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kXHigh), "xhigh");
+}
+
+TEST(OpenAiReasoningEffortTest, ReturnsNulloptForUnknownEffortValue) {
+    EXPECT_FALSE(
+        TryOpenAiReasoningEffortToString(static_cast<OpenAiReasoningEffort>(999)).has_value());
+}
+
+TEST(OpenAiLlmstest, RejectsInvalidReasoningEffort) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
+    OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.3-chat-latest", client,
+                           static_cast<OpenAiReasoningEffort>(999));
+
+    const absl::Status status = openai_llms.Validate();
+
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(), "openai llms reasoning_effort is invalid");
 }
 
 TEST(OpenAiLlmstest, RejectsMissingStepName) {
@@ -63,14 +85,14 @@ TEST(OpenAiLlmstest, RejectsMissingConfiguredResponsesClient) {
 
 TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
-    OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.4", client,
+    OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.3-chat-latest", client,
                            OpenAiReasoningEffort::kMedium);
 
     const absl::StatusOr<ExecutionStepResult> result =
         openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    ASSERT_EQ(client->last_request.model, "gpt-5.4");
+    ASSERT_EQ(client->last_request.model, "gpt-5.3-chat-latest");
     ASSERT_EQ(client->last_request.system_prompt, "system prompt");
     ASSERT_EQ(client->last_request.user_text, "hi");
     EXPECT_EQ(client->last_request.reasoning_effort, OpenAiReasoningEffort::kMedium);
@@ -79,7 +101,7 @@ TEST(OpenAiLlmstest, UsesInjectedOpenAiResponsesClientWhenConfigured) {
 
 TEST(OpenAiLlmstest, UsesRuntimeSystemPromptOverrideWhenProvided) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "hello world");
-    OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.4", client);
+    OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(
         0, ExecutionRuntimeInput{ .system_prompt = "rendered system prompt", .user_text = "ctx" });
@@ -92,7 +114,7 @@ TEST(OpenAiLlmstest, UsesRuntimeSystemPromptOverrideWhenProvided) {
 
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("rate limited"));
-    OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
+    OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =
         openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
@@ -105,7 +127,7 @@ TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientFailure) {
 TEST(OpenAiLlmstest, PropagatesInjectedOpenAiResponsesClientValidationFailure) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test",
                                                       absl::UnauthenticatedError("bad api key"));
-    OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
+    OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =
         openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
@@ -124,7 +146,7 @@ TEST(OpenAiLlmstest, ConvertsResponsesClientExceptionToInternalError) {
             static_cast<void>(on_event);
             throw std::runtime_error("boom");
         });
-    OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
+    OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =
         openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hello" });
@@ -137,7 +159,7 @@ TEST(OpenAiLlmstest, ConvertsResponsesClientExceptionToInternalError) {
 TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {
     auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(),
                                                       std::string(kMaxTextOutputBytes + 1U, 'x'));
-    OpenAiLLMs openai_llms("main", "", "gpt-5.4", client);
+    OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =
         openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
@@ -149,3 +171,4 @@ TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {
 
 } // namespace
 } // namespace isla::server::ai_gateway
+

@@ -105,13 +105,18 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
         if (request.user_text.empty()) {
             return invalid_argument("openai responses request must include user_text");
         }
+        const std::optional<std::string_view> reasoning_effort =
+            TryOpenAiReasoningEffortToString(request.reasoning_effort);
+        if (!reasoning_effort.has_value()) {
+            return invalid_argument("openai responses request reasoning_effort is invalid");
+        }
 
         nlohmann::json body = {
             { "model", request.model },
             { "input", request.user_text },
             { "reasoning",
               {
-                  { "effort", OpenAiReasoningEffortToString(request.reasoning_effort) },
+                  { "effort", *reasoning_effort },
               } },
             { "stream", true },
         };
@@ -121,8 +126,7 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
 
         VLOG(1) << "AI gateway openai responses dispatching host='" << SanitizeForLog(config_.host)
                 << "' target='" << SanitizeForLog(config_.target) << "' model='"
-                << SanitizeForLog(request.model) << "' reasoning_effort='"
-                << OpenAiReasoningEffortToString(request.reasoning_effort)
+                << SanitizeForLog(request.model) << "' reasoning_effort='" << *reasoning_effort
                 << "' timeout_ms=" << config_.request_timeout.count()
                 << " user_text_bytes=" << request.user_text.size()
                 << " system_prompt_present=" << (!request.system_prompt.empty() ? "true" : "false");
