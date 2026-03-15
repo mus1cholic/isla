@@ -314,10 +314,24 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "ai_gateway_log_test_utils",
+    testonly = True,
+    hdrs = ["ai_gateway_log_test_utils.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+        "//server/memory/src:__pkg__",
+    ],
+    deps = [
+        "@abseil-cpp//absl/log:log_sink_registry",
+    ],
+)
+
 cc_test(
     name = "ai_gateway_logging_telemetry_sink_test",
     srcs = ["ai_gateway_logging_telemetry_sink_test.cpp"],
     deps = [
+        ":ai_gateway_log_test_utils",
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_telemetry_sink",
         "@abseil-cpp//absl/log:log_sink_registry",

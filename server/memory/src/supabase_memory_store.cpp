@@ -248,14 +248,17 @@ absl::StatusOr<std::string> ExecuteSupabaseRequest(const ParsedHttpUrl& parsed_u
     const absl::StatusOr<HttpResponse> response =
         ExecuteHttpRequest(parsed_url, http_config, request);
     if (!response.ok()) {
-        LogSupabaseRequestLatency(config, request, started_at, Clock::now(), "transport_error");
+        const Clock::time_point completed_at = Clock::now();
+        LogSupabaseRequestLatency(config, request, started_at, completed_at, "transport_error");
         return response.status();
     }
     if (response->status_code < 200U || response->status_code >= 300U) {
-        LogSupabaseRequestLatency(config, request, started_at, Clock::now(), "http_error");
+        const Clock::time_point completed_at = Clock::now();
+        LogSupabaseRequestLatency(config, request, started_at, completed_at, "http_error");
         return MapSupabaseHttpError(response->status_code, response->body);
     }
-    LogSupabaseRequestLatency(config, request, started_at, Clock::now(), "ok");
+    const Clock::time_point completed_at = Clock::now();
+    LogSupabaseRequestLatency(config, request, started_at, completed_at, "ok");
     return response->body;
 }
 
@@ -331,8 +334,8 @@ class SupabaseMemoryStore final : public MemoryStore {
 
     [[nodiscard]] absl::Status
     ReplaceConversationItemWithEpisodeStub(const EpisodeStubWrite& write) override {
-        ScopedSupabaseOperationLatency latency(config_, "replace_conversation_item_with_episode_stub",
-                                               write.session_id);
+        ScopedSupabaseOperationLatency latency(
+            config_, "replace_conversation_item_with_episode_stub", write.session_id);
         if (absl::Status status = ValidateEpisodeStubWrite(write); !status.ok()) {
             latency.SetOutcome("validation_error");
             return status;

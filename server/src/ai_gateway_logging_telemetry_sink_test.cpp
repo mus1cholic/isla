@@ -1,43 +1,18 @@
 #include "isla/server/ai_gateway_logging_telemetry_sink.hpp"
 
 #include <memory>
-#include <mutex>
-#include <string>
 #include <string_view>
-#include <vector>
 
-#include "absl/log/log_entry.h"
-#include "absl/log/log_sink.h"
 #include "absl/log/log_sink_registry.h"
 #include <gtest/gtest.h>
+
+#include "ai_gateway_log_test_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
 
-class CapturingLogSink final : public absl::LogSink {
-  public:
-    void Send(const absl::LogEntry& entry) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        messages_.push_back(std::string(entry.text_message()));
-    }
-
-    [[nodiscard]] bool Contains(std::string_view needle) const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (const std::string& message : messages_) {
-            if (message.find(needle) != std::string::npos) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-  private:
-    mutable std::mutex mutex_;
-    std::vector<std::string> messages_;
-};
-
 TEST(AiGatewayLoggingTelemetrySinkTest, LogsPhaseTurnTotalAndFirstTokenMarkers) {
-    CapturingLogSink capturing_sink;
+    isla::server::test::CapturingLogSink capturing_sink;
     absl::AddLogSink(&capturing_sink);
 
     const std::shared_ptr<const TelemetrySink> telemetry_sink = CreateLoggingTelemetrySink();
