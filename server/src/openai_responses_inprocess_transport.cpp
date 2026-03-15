@@ -237,6 +237,16 @@ void CloseInProcessStream(beast::tcp_stream* stream) {
     stream->socket().close(ignored);
 }
 
+std::string FindHeaderValue(const beast::http::response_parser<beast::http::buffer_body>& parser,
+                            std::string_view name) {
+    const auto& headers = parser.get().base();
+    const auto it = headers.find(beast::string_view(name.data(), name.size()));
+    if (it == headers.end()) {
+        return {};
+    }
+    return std::string(it->value());
+}
+
 // Reads one decoded body chunk through Beast's HTTP parser. Returns the number
 // of decoded bytes written into |buffer|. Uses buffer_body so Beast handles
 // chunked Transfer-Encoding transparently. Sets |*http_done| when the HTTP
@@ -305,6 +315,7 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
                          const OpenAiResponsesEventCallback& on_event,
                          InProcessTransportDeadline deadline, bool keep_alive = false,
                          bool* request_written = nullptr, bool* server_keep_alive = nullptr) {
+    TransportStreamResult result;
     const std::string raw_request = BuildRawHttpRequest(config, request_json, keep_alive);
     absl::Status write_status = WriteInProcessRequest(io_context, stream, deadline, raw_request);
     if (!write_status.ok()) {
@@ -354,9 +365,17 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
     }
 
     const unsigned int status_code = http_parser.get().result_int();
+    result.response_headers_at = TurnTelemetryContext::Clock::now();
     if (server_keep_alive != nullptr) {
         *server_keep_alive = http_parser.get().keep_alive();
     }
+    VLOG(1) << "AI gateway openai responses received response headers host='"
+            << SanitizeForLog(config.host) << "' target='" << SanitizeForLog(config.target)
+            << "' status_code=" << status_code << " keep_alive="
+            << (http_parser.get().keep_alive() ? "true" : "false") << " request_id='"
+            << SanitizeForLog(FindHeaderValue(http_parser, "x-request-id"))
+            << "' openai_processing_ms='"
+            << SanitizeForLog(FindHeaderValue(http_parser, "openai-processing-ms")) << "'";
 
     // Read body through Beast's parser (decodes chunked encoding transparently).
     std::array<char, 4096> chunk_buffer{};
@@ -375,6 +394,9 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
                 return decoded.status();
             }
             if (*decoded > 0U) {
+                if (!result.first_body_byte_at.has_value()) {
+                    result.first_body_byte_at = TurnTelemetryContext::Clock::now();
+                }
                 absl::Status append_status = AppendTransportBytes(
                     config, std::string_view(chunk_buffer.data(), *decoded), &body_text);
                 if (!append_status.ok()) {
@@ -403,6 +425,9 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
         }
 
         if (*decoded > 0U && !sse_completed) {
+            if (!result.first_body_byte_at.has_value()) {
+                result.first_body_byte_at = TurnTelemetryContext::Clock::now();
+            }
             const absl::StatusOr<SseFeedDisposition> disposition =
                 ConsumeTransportChunk(config, std::string_view(chunk_buffer.data(), *decoded),
                                       &sse_parser, on_event, &body_text);
@@ -433,10 +458,9 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
     if (!parse_summary.ok()) {
         return parse_summary.status();
     }
-    return TransportStreamResult{
-        .parse_summary = *parse_summary,
-        .body_bytes = body_text.size(),
-    };
+    result.parse_summary = *parse_summary;
+    result.body_bytes = body_text.size();
+    return result;
 }
 
 #if !defined(_WIN32)
