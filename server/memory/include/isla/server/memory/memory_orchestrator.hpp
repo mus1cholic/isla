@@ -117,6 +117,8 @@ class MemoryOrchestrator {
     [[nodiscard]] std::string NextEpisodeId();
 
     struct PendingMidTermFlush {
+        // Owned and polled only by the orchestrator thread. The future's async task may run on a
+        // worker thread, but pending_mid_term_flushes_ itself is not shared concurrently.
         std::size_t conversation_item_index = 0;
         std::future<absl::StatusOr<CompletedOngoingEpisodeFlush>> future;
     };
