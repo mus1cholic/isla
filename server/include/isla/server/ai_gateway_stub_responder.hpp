@@ -23,6 +23,8 @@ namespace isla::server::ai_gateway {
 struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
+    // Total number of attempts to persist a session on startup. A value of 0 is
+    // treated as 1. At least one attempt is always made if a memory store is configured.
     std::size_t session_start_persistence_max_attempts = 3;
     std::chrono::milliseconds session_start_persistence_retry_delay{ 100 };
     std::string memory_user_id = "gateway_user";

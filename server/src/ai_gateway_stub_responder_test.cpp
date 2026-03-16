@@ -480,6 +480,45 @@ TEST(GatewayStubResponderStandaloneTest, SessionStartDoesNotRetryNonRetryableFai
     EXPECT_EQ(events[0].payload, "internal_error:failed to initialize session memory");
 }
 
+TEST(GatewayStubResponderStandaloneTest, DuplicateSessionStartDoesNotPoisonHealthySession) {
+    auto store = std::make_shared<RecordingGatewayMemoryStore>();
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .memory_user_id = "gateway_user",
+        .memory_store = store,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    ASSERT_TRUE(session->WaitForEventCount(1U));
+    const std::vector<EmittedEvent> startup_events = session->events();
+    ASSERT_EQ(startup_events.size(), 1U);
+    EXPECT_EQ(startup_events[0].op, "error");
+    EXPECT_EQ(startup_events[0].payload, "internal_error:failed to initialize session memory");
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(3U));
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 3U);
+    EXPECT_EQ(events[1].op, "text.output");
+    EXPECT_EQ(events[1].turn_id, "turn_1");
+    EXPECT_EQ(events[1].payload, "stub echo: hello");
+    EXPECT_EQ(events[2].op, "turn.completed");
+    EXPECT_EQ(events[2].turn_id, "turn_1");
+}
+
 TEST(GatewayStubResponderStandaloneTest,
      SessionStartExhaustedRetriesEmitsErrorAndDoesNotRetryOnFirstTurn) {
     auto store = std::make_shared<RecordingGatewayMemoryStore>();

@@ -920,6 +920,7 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
                                              .store = config_.memory_store,
                                          });
         if (!orchestrator.ok()) {
+            failed_session_starts_.insert_or_assign(std::string(session_id), orchestrator.status());
             return orchestrator.status();
         }
         session_memory = std::make_shared<SessionMemoryState>(std::move(*orchestrator));
@@ -927,7 +928,10 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
             memory_by_session_.try_emplace(std::string(session_id), session_memory);
         static_cast<void>(it);
         if (!inserted) {
-            return absl::AlreadyExistsError("memory orchestrator already exists for session");
+            const absl::Status status =
+                absl::AlreadyExistsError("memory orchestrator already exists for session");
+            failed_session_starts_.insert_or_assign(std::string(session_id), status);
+            return status;
         }
         failed_session_starts_.erase(std::string(session_id));
     }
@@ -965,6 +969,11 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
                      << " max_attempts=" << max_attempts << " detail='"
                      << SanitizeForLog(final_status.message()) << "'";
         if (config_.session_start_persistence_retry_delay.count() > 0) {
+            // NOTICE: This blocks the shared gateway event thread between retries. We keep the
+            // startup path synchronous for now so session persistence either succeeds or fails
+            // before later turns rely on it. Replace this with an async timer-based retry once
+            // session.start supports app-level accept/reject without emitting `session.started`
+            // first.
             std::this_thread::sleep_for(config_.session_start_persistence_retry_delay);
         }
     }
@@ -994,6 +1003,18 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
 
 absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
 GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(event.session_id);
+    if (session_memory != nullptr) {
+        std::lock_guard<std::mutex> lock(session_memory->mutex);
+        absl::StatusOr<isla::server::memory::UserQueryMemoryResult> result =
+            session_memory->orchestrator.HandleUserQuery(isla::server::memory::GatewayUserQuery(
+                event.session_id, event.turn_id, event.text, NowTimestamp()));
+        if (result.ok() && config_.on_user_query_memory_ready) {
+            config_.on_user_query_memory_ready(event.session_id, *result);
+        }
+        return result;
+    }
+
     if (const std::optional<absl::Status> start_failure = FindSessionStartFailure(event.session_id);
         start_failure.has_value()) {
         LOG(WARNING) << "AI gateway stub rejecting turn because session startup previously failed "
@@ -1002,18 +1023,8 @@ GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
                      << SanitizeForLog(start_failure->message()) << "'";
         return *start_failure;
     }
-    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(event.session_id);
-    if (session_memory == nullptr) {
-        return absl::FailedPreconditionError("missing memory orchestrator for started session");
-    }
-    std::lock_guard<std::mutex> lock(session_memory->mutex);
-    absl::StatusOr<isla::server::memory::UserQueryMemoryResult> result =
-        session_memory->orchestrator.HandleUserQuery(isla::server::memory::GatewayUserQuery(
-            event.session_id, event.turn_id, event.text, NowTimestamp()));
-    if (result.ok() && config_.on_user_query_memory_ready) {
-        config_.on_user_query_memory_ready(event.session_id, *result);
-    }
-    return result;
+
+    return absl::FailedPreconditionError("missing memory orchestrator for started session");
 }
 
 absl::Status GatewayStubResponder::HandleSuccessfulReplyMemory(const PendingTurn& turn,
