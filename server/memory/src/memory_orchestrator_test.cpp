@@ -431,6 +431,7 @@ TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPersistsEpisodeAndStubW
     AppendAssistantMessage(memory->mutable_conversation(), "two", Ts("2026-03-08T14:00:01Z"));
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
 
     ASSERT_TRUE(handler
                     .ApplyCompletedEpisodeFlush(CompletedOngoingEpisodeFlush{
@@ -462,6 +463,40 @@ TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPersistsEpisodeAndStubW
     EXPECT_EQ(store->stub_writes[0].episode_stub_content, "stub ref");
 }
 
+TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushRequiresBeginSessionWhenStoreConfigured) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
+        .system_prompt = "You are Isla.",
+        .user_id = "user_001",
+    });
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    AppendUserMessage(memory->mutable_conversation(), "one", Ts("2026-03-08T14:00:00Z"));
+    AppendAssistantMessage(memory->mutable_conversation(), "two", Ts("2026-03-08T14:00:01Z"));
+
+    MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+
+    const absl::Status status = handler.ApplyCompletedEpisodeFlush(CompletedOngoingEpisodeFlush{
+        .conversation_item_index = 0,
+        .episode =
+            Episode{
+                .episode_id = "ep_001",
+                .tier1_detail = std::string("full detail"),
+                .tier2_summary = "summary",
+                .tier3_ref = "stub ref",
+                .tier3_keywords = { "memory" },
+                .salience = 8,
+                .embedding = {},
+                .created_at = Ts("2026-03-08T14:00:02Z"),
+            },
+        .stub_timestamp = Ts("2026-03-08T14:00:03Z"),
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kFailedPrecondition);
+    EXPECT_TRUE(store->episode_writes.empty());
+    EXPECT_TRUE(store->stub_writes.empty());
+}
+
 TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPropagatesMidTermPersistenceFailure) {
     auto store = std::make_shared<RecordingMemoryStore>();
     store->upsert_episode_status = absl::InternalError("episode write failed");
@@ -474,6 +509,7 @@ TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPropagatesMidTermPersis
     AppendAssistantMessage(memory->mutable_conversation(), "two", Ts("2026-03-08T14:00:01Z"));
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
 
     const absl::Status status = handler.ApplyCompletedEpisodeFlush(CompletedOngoingEpisodeFlush{
         .conversation_item_index = 0,
@@ -513,6 +549,7 @@ TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPropagatesStubPersisten
     AppendAssistantMessage(memory->mutable_conversation(), "two", Ts("2026-03-08T14:00:01Z"));
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
 
     const absl::Status status = handler.ApplyCompletedEpisodeFlush(CompletedOngoingEpisodeFlush{
         .conversation_item_index = 0,

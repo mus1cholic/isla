@@ -157,6 +157,9 @@ MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFl
     if (!store_) {
         return absl::OkStatus();
     }
+    if (absl::Status session_status = ValidateSessionReadyForPersistence(); !session_status.ok()) {
+        return session_status;
+    }
 
     const MidTermEpisodeWrite episode_write{
         .session_id = session_id_,
