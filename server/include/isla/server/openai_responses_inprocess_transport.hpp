@@ -45,10 +45,9 @@ class PersistentInProcessTransport {
   private:
     absl::Status EnsureConnected();
     void Disconnect();
-    absl::StatusOr<TransportStreamResult> ExecuteOnce(const std::string& request_json,
-                                                      const OpenAiResponsesEventCallback& on_event,
-                                                      bool* request_written,
-                                                      bool* server_keep_alive);
+    absl::StatusOr<TransportStreamResult>
+    ExecuteOnce(const std::string& request_json, const OpenAiResponsesEventCallback& on_event,
+                bool* request_written, bool* server_keep_alive, bool* response_started);
 
     struct Impl;
     OpenAiResponsesClientConfig config_;
