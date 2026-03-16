@@ -274,10 +274,7 @@ absl::StatusOr<Episode> ParseEpisodeRow(const json& episode_json) {
     try {
         return Episode{
             .episode_id = episode_json.at("episode_id").get<std::string>(),
-            .tier1_detail = episode_json.at("tier1_detail").is_null()
-                                ? std::nullopt
-                                : std::optional<std::string>(
-                                      episode_json.at("tier1_detail").get<std::string>()),
+            .tier1_detail = episode_json.at("tier1_detail").get<std::optional<std::string>>(),
             .tier2_summary = episode_json.at("tier2_summary").get<std::string>(),
             .tier3_ref = episode_json.at("tier3_ref").get<std::string>(),
             .tier3_keywords = episode_json.at("tier3_keywords").get<std::vector<std::string>>(),

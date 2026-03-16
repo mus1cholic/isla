@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -41,6 +40,8 @@ class MidTermMemory {
     GetExpandableDetail(std::string_view episode_id) const;
 
   private:
+    [[nodiscard]] absl::StatusOr<Episode> GetRequiredEpisode(std::string_view episode_id) const;
+
     std::string session_id_;
     MemoryStorePtr store_;
 };

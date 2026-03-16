@@ -107,7 +107,7 @@ MidTermMemory::FindEpisode(std::string_view episode_id) const {
     return episode;
 }
 
-absl::StatusOr<bool> MidTermMemory::HasExpandableDetail(std::string_view episode_id) const {
+absl::StatusOr<Episode> MidTermMemory::GetRequiredEpisode(std::string_view episode_id) const {
     const absl::StatusOr<std::optional<Episode>> episode = FindEpisode(episode_id);
     if (!episode.ok()) {
         return episode.status();
@@ -115,24 +115,29 @@ absl::StatusOr<bool> MidTermMemory::HasExpandableDetail(std::string_view episode
     if (!episode->has_value()) {
         return absl::NotFoundError("mid-term episode was not found");
     }
-    return IsExpandableEpisode(**episode);
+    return episode->value();
+}
+
+absl::StatusOr<bool> MidTermMemory::HasExpandableDetail(std::string_view episode_id) const {
+    const absl::StatusOr<Episode> episode = GetRequiredEpisode(episode_id);
+    if (!episode.ok()) {
+        return episode.status();
+    }
+    return IsExpandableEpisode(*episode);
 }
 
 absl::StatusOr<std::string> MidTermMemory::GetExpandableDetail(std::string_view episode_id) const {
-    const absl::StatusOr<std::optional<Episode>> episode = FindEpisode(episode_id);
+    const absl::StatusOr<Episode> episode = GetRequiredEpisode(episode_id);
     if (!episode.ok()) {
         return episode.status();
     }
-    if (!episode->has_value()) {
-        return absl::NotFoundError("mid-term episode was not found");
-    }
-    if (!IsExpandableEpisode(**episode)) {
+    if (!IsExpandableEpisode(*episode)) {
         return failed_precondition(
             "mid-term episode does not have expandable Tier 1 detail available");
     }
     VLOG(1) << "MidTermMemory served expandable detail"
             << " session_id=" << session_id_ << " episode_id=" << episode_id;
-    return *episode->value().tier1_detail;
+    return *episode->tier1_detail;
 }
 
 } // namespace isla::server::memory
