@@ -454,6 +454,7 @@ class SupabaseMemoryStore final : public MemoryStore {
                             "salience,embedding,created_at" },
                 { "session_id", "eq." + std::string(session_id) },
                 { "episode_id", "eq." + std::string(episode_id) },
+                { "limit", "2" },
             },
             config_.schema, config_);
         const absl::StatusOr<std::string> response =

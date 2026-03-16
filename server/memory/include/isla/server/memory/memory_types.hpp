@@ -12,6 +12,7 @@ namespace isla::server::memory {
 
 using Embedding = std::vector<double>;
 using RetrievedMemory = std::string;
+inline constexpr int kExpandableEpisodeSalienceThreshold = 8;
 
 enum class MessageRole {
     User,
@@ -142,8 +143,8 @@ struct Session {
 };
 
 [[nodiscard]] inline bool IsExpandableEpisode(const Episode& episode) {
-    return episode.salience >= 8 && episode.tier1_detail.has_value() &&
-           !episode.tier1_detail->empty();
+    return episode.salience >= kExpandableEpisodeSalienceThreshold &&
+           episode.tier1_detail.has_value() && !episode.tier1_detail->empty();
 }
 
 NLOHMANN_JSON_SERIALIZE_ENUM(MessageRole, {

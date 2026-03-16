@@ -7,9 +7,12 @@
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_logging_utils.hpp"
 
 namespace isla::server::memory {
 namespace {
+
+using isla::server::ai_gateway::SanitizeForLog;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
@@ -60,14 +63,16 @@ absl::Status MidTermMemory::StoreEpisode(std::int64_t source_conversation_item_i
     absl::Status status = store_->UpsertMidTermEpisode(write);
     if (!status.ok()) {
         LOG(WARNING) << "MidTermMemory failed to store episode"
-                     << " session_id=" << session_id_ << " episode_id=" << episode.episode_id
+                     << " session_id=" << SanitizeForLog(session_id_)
+                     << " episode_id=" << SanitizeForLog(episode.episode_id)
                      << " source_conversation_item_index=" << source_conversation_item_index
-                     << " detail='" << status.message() << "'";
+                     << " detail='" << SanitizeForLog(status.message()) << "'";
         return status;
     }
 
     LOG(INFO) << "MidTermMemory stored episode"
-              << " session_id=" << session_id_ << " episode_id=" << episode.episode_id
+              << " session_id=" << SanitizeForLog(session_id_)
+              << " episode_id=" << SanitizeForLog(episode.episode_id)
               << " source_conversation_item_index=" << source_conversation_item_index
               << " salience=" << episode.salience
               << " expandable=" << (IsExpandableEpisode(episode) ? "true" : "false");
@@ -81,8 +86,8 @@ absl::StatusOr<std::vector<Episode>> MidTermMemory::ListEpisodes() const {
     absl::StatusOr<std::vector<Episode>> episodes = store_->ListMidTermEpisodes(session_id_);
     if (!episodes.ok()) {
         LOG(WARNING) << "MidTermMemory failed to list episodes"
-                     << " session_id=" << session_id_ << " detail='" << episodes.status().message()
-                     << "'";
+                     << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                     << SanitizeForLog(episodes.status().message()) << "'";
         return episodes.status();
     }
     return episodes;
@@ -100,8 +105,9 @@ MidTermMemory::FindEpisode(std::string_view episode_id) const {
         store_->GetMidTermEpisode(session_id_, episode_id);
     if (!episode.ok()) {
         LOG(WARNING) << "MidTermMemory failed to fetch episode"
-                     << " session_id=" << session_id_ << " episode_id=" << episode_id << " detail='"
-                     << episode.status().message() << "'";
+                     << " session_id=" << SanitizeForLog(session_id_)
+                     << " episode_id=" << SanitizeForLog(episode_id) << " detail='"
+                     << SanitizeForLog(episode.status().message()) << "'";
         return episode.status();
     }
     return episode;
@@ -136,7 +142,8 @@ absl::StatusOr<std::string> MidTermMemory::GetExpandableDetail(std::string_view 
             "mid-term episode does not have expandable Tier 1 detail available");
     }
     VLOG(1) << "MidTermMemory served expandable detail"
-            << " session_id=" << session_id_ << " episode_id=" << episode_id;
+            << " session_id=" << SanitizeForLog(session_id_)
+            << " episode_id=" << SanitizeForLog(episode_id);
     return *episode->tier1_detail;
 }
 

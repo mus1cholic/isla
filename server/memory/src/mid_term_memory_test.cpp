@@ -129,7 +129,7 @@ TEST(MidTermMemoryTest, StoreEpisodePersistsSessionScopedWrite) {
     EXPECT_EQ(store->episode_writes[0].episode.episode_id, "ep_001");
 }
 
-TEST(MidTermMemoryTest, StoreEpisodeRejectsInvalidEpisodePayload) {
+TEST(MidTermMemoryTest, StoreEpisodeRejectsSalienceExceedingMaximum) {
     auto store = std::make_shared<RecordingMemoryStore>();
     absl::StatusOr<MidTermMemory> memory = MidTermMemory::Create(MidTermMemoryInit{
         .session_id = "session_001",
