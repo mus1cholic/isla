@@ -1,6 +1,8 @@
 #include "isla/server/memory/memory_orchestrator.hpp"
 
+#include <chrono>
 #include <cstdint>
+#include <future>
 #include <string_view>
 #include <utility>
 
@@ -18,12 +20,18 @@ absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
 }
 
+Timestamp NowTimestamp() {
+    return std::chrono::time_point_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now());
+}
+
 } // namespace
 
 MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory memory,
-                                       MemoryStorePtr store)
+                                       MemoryStorePtr store, MidTermCompactorPtr mid_term_compactor)
     : session_id_(std::move(session_id)), memory_(std::move(memory)), store_(std::move(store)),
-      session_persisted_(false) {}
+      mid_term_compactor_(std::move(mid_term_compactor)), pending_mid_term_flushes_(),
+      next_episode_sequence_(1), session_persisted_(false) {}
 
 absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
                                                               const MemoryOrchestratorInit& init) {
@@ -38,7 +46,8 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
     if (!memory.ok()) {
         return memory.status();
     }
-    return MemoryOrchestrator(std::move(session_id), std::move(*memory), init.store);
+    return MemoryOrchestrator(std::move(session_id), std::move(*memory), init.store,
+                              init.mid_term_compactor);
 }
 
 absl::Status MemoryOrchestrator::BeginSession(Timestamp create_time) {
@@ -214,10 +223,159 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
 }
 
 absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>>
-MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& user_message) {
-    static_cast<void>(user_message);
-    // TODO: Trigger semantic-boundary/threshold-based flush capture here.
-    return std::nullopt;
+MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& assistant_message) {
+    if (mid_term_compactor_ == nullptr) {
+        return std::nullopt;
+    }
+    if (assistant_message.role != MessageRole::Assistant) {
+        return invalid_argument("flush capture currently requires an assistant message");
+    }
+
+    const Conversation& conversation = memory_.conversation();
+    if (conversation.items.empty()) {
+        return std::nullopt;
+    }
+
+    const std::size_t conversation_item_index = conversation.items.size() - 1U;
+    for (const PendingMidTermFlush& pending_flush : pending_mid_term_flushes_) {
+        if (pending_flush.conversation_item_index == conversation_item_index) {
+            return std::nullopt;
+        }
+    }
+
+    const ConversationItem& item = conversation.items.back();
+    if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
+        return std::nullopt;
+    }
+    if (item.ongoing_episode->messages.size() < 2U) {
+        return std::nullopt;
+    }
+
+    return memory_.CaptureOngoingEpisodeForFlush(conversation_item_index);
+}
+
+std::string MemoryOrchestrator::NextEpisodeId() {
+    return "ep_" + session_id_ + "_" + std::to_string(next_episode_sequence_++);
+}
+
+absl::Status
+MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate) {
+    if (mid_term_compactor_ == nullptr) {
+        return absl::OkStatus();
+    }
+
+    const std::string session_id = session_id_;
+    const std::string episode_id = NextEpisodeId();
+    MidTermCompactorPtr compactor = mid_term_compactor_;
+    const OngoingEpisodeFlushCandidate flush_candidate_copy = flush_candidate;
+    pending_mid_term_flushes_.push_back(PendingMidTermFlush{
+        .conversation_item_index = flush_candidate.conversation_item_index,
+        .future = std::async(
+            std::launch::async,
+            [compactor = std::move(compactor), session_id, episode_id,
+             flush_candidate_copy]() -> absl::StatusOr<CompletedOngoingEpisodeFlush> {
+                const absl::StatusOr<CompactedMidTermEpisode> compacted =
+                    compactor->Compact(MidTermCompactionRequest{
+                        .session_id = session_id,
+                        .flush_candidate = flush_candidate_copy,
+                    });
+                if (!compacted.ok()) {
+                    return compacted.status();
+                }
+                if (compacted->tier2_summary.empty() || compacted->tier3_ref.empty()) {
+                    LOG(WARNING)
+                        << "MemoryOrchestrator rejected invalid mid-term compactor output"
+                        << " session_id=" << SanitizeForLog(session_id)
+                        << " episode_id=" << SanitizeForLog(episode_id)
+                        << " detail='mid-term compactor must produce non-empty tier2 and tier3 "
+                           "content'";
+                    return absl::InvalidArgumentError(
+                        "mid-term compactor must produce non-empty tier2 and tier3 content");
+                }
+                CompletedOngoingEpisodeFlush flush{
+                    .conversation_item_index = flush_candidate_copy.conversation_item_index,
+                    .episode =
+                        Episode{
+                            .episode_id = episode_id,
+                            .tier1_detail = compacted->tier1_detail,
+                            .tier2_summary = compacted->tier2_summary,
+                            .tier3_ref = compacted->tier3_ref,
+                            .tier3_keywords = compacted->tier3_keywords,
+                            .salience = compacted->salience,
+                            .embedding = compacted->embedding,
+                            .created_at =
+                                flush_candidate_copy.ongoing_episode.messages.back().create_time,
+                        },
+                    .stub_timestamp = NowTimestamp(),
+                };
+                if (absl::Status status = ValidateMidTermEpisodeWrite(MidTermEpisodeWrite{
+                        .session_id = session_id,
+                        .source_conversation_item_index =
+                            static_cast<std::int64_t>(flush.conversation_item_index),
+                        .episode = flush.episode,
+                    });
+                    !status.ok()) {
+                    return status;
+                }
+                return flush;
+            }),
+    });
+    VLOG(1) << "MemoryOrchestrator queued async mid-term flush session_id="
+            << SanitizeForLog(session_id_)
+            << " conversation_item_index=" << flush_candidate.conversation_item_index;
+    return absl::OkStatus();
+}
+
+absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions() {
+    std::size_t drained_count = 0;
+    for (auto it = pending_mid_term_flushes_.begin(); it != pending_mid_term_flushes_.end();) {
+        if (it->future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+
+        absl::StatusOr<CompletedOngoingEpisodeFlush> completed_flush = it->future.get();
+        it = pending_mid_term_flushes_.erase(it);
+        if (!completed_flush.ok()) {
+            LOG(WARNING) << "MemoryOrchestrator async mid-term flush failed session_id="
+                         << SanitizeForLog(session_id_) << " detail='"
+                         << SanitizeForLog(completed_flush.status().message()) << "'";
+            return completed_flush.status();
+        }
+        if (absl::Status apply_status = ApplyCompletedEpisodeFlush(*completed_flush);
+            !apply_status.ok()) {
+            return apply_status;
+        }
+        VLOG(1) << "MemoryOrchestrator drained completed async mid-term flush session_id="
+                << SanitizeForLog(session_id_)
+                << " episode_id=" << SanitizeForLog(completed_flush->episode.episode_id)
+                << " conversation_item_index=" << completed_flush->conversation_item_index;
+        ++drained_count;
+    }
+    return drained_count;
+}
+
+void MemoryOrchestrator::PrepareConversationForAppend() {
+    if (pending_mid_term_flushes_.empty()) {
+        return;
+    }
+
+    const Conversation& conversation = memory_.conversation();
+    if (conversation.items.empty()) {
+        return;
+    }
+
+    const std::size_t last_conversation_item_index = conversation.items.size() - 1U;
+    for (const PendingMidTermFlush& pending_flush : pending_mid_term_flushes_) {
+        if (pending_flush.conversation_item_index == last_conversation_item_index) {
+            VLOG(1) << "MemoryOrchestrator started a new ongoing episode before append because the "
+                       "tail conversation item is still flushing"
+                    << " session_id=" << SanitizeForLog(session_id_)
+                    << " pending_conversation_item_index=" << pending_flush.conversation_item_index;
+            BeginOngoingEpisode(memory_.mutable_conversation());
+            return;
+        }
+    }
 }
 
 absl::Status MemoryOrchestrator::AfterUserQueryAppended(const Message& user_message) {
@@ -227,23 +385,21 @@ absl::Status MemoryOrchestrator::AfterUserQueryAppended(const Message& user_mess
         return retrieved_memory.status();
     }
     memory_.SetRetrievedMemory(std::move(*retrieved_memory));
-
-    const absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>> flush_candidate =
-        MaybeCaptureFlushCandidate(user_message);
-    if (!flush_candidate.ok()) {
-        return flush_candidate.status();
-    }
-    if (flush_candidate->has_value()) {
-        // TODO: Queue async flush work when a candidate is returned.
-        VLOG(1) << "MemoryOrchestrator identified a flush candidate session_id="
-                << SanitizeForLog(session_id_)
-                << " conversation_item_index=" << flush_candidate->value().conversation_item_index;
-    }
     return absl::OkStatus();
 }
 
 absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assistant_message) {
-    static_cast<void>(assistant_message);
+    const absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>> flush_candidate =
+        MaybeCaptureFlushCandidate(assistant_message);
+    if (!flush_candidate.ok()) {
+        return flush_candidate.status();
+    }
+    if (flush_candidate->has_value()) {
+        if (absl::Status queue_status = QueueMidTermFlush(flush_candidate->value());
+            !queue_status.ok()) {
+            return queue_status;
+        }
+    }
     // TODO: Apply assistant-side memory updates here (write-back caching, salience updates, etc.).
     return absl::OkStatus();
 }
@@ -261,6 +417,11 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
     if (absl::Status session_status = ValidateSessionReadyForPersistence(); !session_status.ok()) {
         return session_status;
     }
+    const absl::StatusOr<std::size_t> drained_flushes = DrainCompletedMidTermCompactions();
+    if (!drained_flushes.ok()) {
+        return drained_flushes.status();
+    }
+    PrepareConversationForAppend();
 
     if (role == MessageRole::User) {
         AppendUserMessage(memory_.mutable_conversation(), std::string(text), create_time);

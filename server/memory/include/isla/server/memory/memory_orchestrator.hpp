@@ -1,13 +1,15 @@
 #pragma once
 
-#include <memory>
+#include <future>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/memory/memory_store.hpp"
+#include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
@@ -52,6 +54,7 @@ struct UserQueryMemoryResult {
 struct MemoryOrchestratorInit {
     std::string user_id;
     MemoryStorePtr store;
+    MidTermCompactorPtr mid_term_compactor = nullptr;
 };
 
 // Central entry point for gateway-delivered user turns. The gateway only forwards the raw user
@@ -59,8 +62,8 @@ struct MemoryOrchestratorInit {
 // coordinating future mid/long-term memory hooks.
 class MemoryOrchestrator {
   public:
-    MemoryOrchestrator(std::string session_id, WorkingMemory memory,
-                       MemoryStorePtr store = nullptr);
+    MemoryOrchestrator(std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr,
+                       MidTermCompactorPtr mid_term_compactor = nullptr);
 
     [[nodiscard]] static absl::StatusOr<MemoryOrchestrator>
     Create(std::string session_id, const MemoryOrchestratorInit& init);
@@ -71,6 +74,7 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status HandleAssistantReply(const GatewayAssistantReply& reply);
     [[nodiscard]] absl::Status
     ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
+    [[nodiscard]] absl::StatusOr<std::size_t> DrainCompletedMidTermCompactions();
     [[nodiscard]] absl::StatusOr<std::string> RenderSystemPrompt() const;
     [[nodiscard]] absl::StatusOr<std::string> RenderWorkingMemoryContext() const;
     [[nodiscard]] absl::StatusOr<std::string> RenderFullWorkingMemory() const;
@@ -101,16 +105,28 @@ class MemoryOrchestrator {
                                                          std::string_view turn_id,
                                                          std::string_view text,
                                                          Timestamp create_time, MessageRole role);
+    void PrepareConversationForAppend();
     [[nodiscard]] absl::Status AfterUserQueryAppended(const Message& user_message);
     [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
     [[nodiscard]] absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>>
-    MaybeCaptureFlushCandidate(const Message& user_message);
+    MaybeCaptureFlushCandidate(const Message& assistant_message);
+    [[nodiscard]] absl::Status
+    QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate);
+    [[nodiscard]] std::string NextEpisodeId();
+
+    struct PendingMidTermFlush {
+        std::size_t conversation_item_index = 0;
+        std::future<absl::StatusOr<CompletedOngoingEpisodeFlush>> future;
+    };
 
     std::string session_id_;
     WorkingMemory memory_;
     MemoryStorePtr store_;
+    MidTermCompactorPtr mid_term_compactor_;
+    std::vector<PendingMidTermFlush> pending_mid_term_flushes_;
+    std::size_t next_episode_sequence_ = 1;
     bool session_persisted_ = false;
 };
 

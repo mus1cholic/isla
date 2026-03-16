@@ -1,8 +1,13 @@
 #include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
+#include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 
+#include <chrono>
+#include <future>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -14,6 +19,7 @@ namespace isla::server::memory {
 namespace {
 
 using nlohmann::json;
+using namespace std::chrono_literals;
 
 class RecordingMemoryStore final : public MemoryStore {
   public:
@@ -78,6 +84,62 @@ class RecordingMemoryStore final : public MemoryStore {
     absl::Status upsert_episode_status = absl::OkStatus();
 };
 
+std::shared_future<void> MakeReadyFuture() {
+    std::promise<void> ready_promise;
+    ready_promise.set_value();
+    return ready_promise.get_future().share();
+}
+
+class RecordingMidTermCompactor final : public MidTermCompactor {
+  public:
+    explicit RecordingMidTermCompactor(absl::StatusOr<CompactedMidTermEpisode> result =
+                                           CompactedMidTermEpisode{
+                                               .tier1_detail = std::string("full detail"),
+                                               .tier2_summary = "summary",
+                                               .tier3_ref = "stub ref",
+                                               .tier3_keywords = { "memory" },
+                                               .salience = kExpandableEpisodeSalienceThreshold,
+                                               .embedding = {},
+                                           },
+                                       std::shared_future<void> release_signal = MakeReadyFuture())
+        : result_(std::move(result)), release_signal_(std::move(release_signal)) {}
+
+    absl::StatusOr<CompactedMidTermEpisode>
+    Compact(const MidTermCompactionRequest& request) override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            requests_.push_back(request);
+        }
+        release_signal_.wait();
+        return result_;
+    }
+
+    [[nodiscard]] bool WaitForRequestCount(std::size_t expected_count) const {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (requests_.size() >= expected_count) {
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    }
+
+    [[nodiscard]] std::vector<MidTermCompactionRequest> requests() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requests_;
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    std::vector<MidTermCompactionRequest> requests_;
+    absl::StatusOr<CompactedMidTermEpisode> result_;
+    std::shared_future<void> release_signal_;
+};
+
 class MemoryOrchestratorTest : public ::testing::Test {
   protected:
     static Timestamp Ts(std::string_view text) {
@@ -100,6 +162,34 @@ class MemoryOrchestratorTest : public ::testing::Test {
                                                           .user_id = "user_001",
                                                           .store = nullptr,
                                                       });
+    }
+
+    static absl::StatusOr<MemoryOrchestrator>
+    MakeHandlerWithCompactor(const MidTermCompactorPtr& compactor, MemoryStorePtr store = nullptr) {
+        absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
+            .system_prompt = "You are Isla.",
+            .user_id = "user_001",
+        });
+        if (!memory.ok()) {
+            return memory.status();
+        }
+        return MemoryOrchestrator("srv_test", std::move(*memory), std::move(store), compactor);
+    }
+
+    static absl::StatusOr<std::size_t> WaitForDrain(MemoryOrchestrator& orchestrator,
+                                                    std::size_t expected_count) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            absl::StatusOr<std::size_t> drained = orchestrator.DrainCompletedMidTermCompactions();
+            if (!drained.ok()) {
+                return drained.status();
+            }
+            if (*drained == expected_count) {
+                return drained;
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return absl::DeadlineExceededError("timed out waiting for completed mid-term compactions");
     }
 };
 
@@ -171,6 +261,221 @@ TEST_F(MemoryOrchestratorTest, HandleAssistantReplyAppendsAssistantMessage) {
     EXPECT_EQ(messages[0].role, MessageRole::User);
     EXPECT_EQ(messages[1].role, MessageRole::Assistant);
     EXPECT_EQ(messages[1].content, "hi there");
+}
+
+TEST_F(MemoryOrchestratorTest, DrainCompletedMidTermCompactionsReturnsZeroWhenNothingQueued) {
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandler();
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    const absl::StatusOr<std::size_t> drained = handler->DrainCompletedMidTermCompactions();
+
+    ASSERT_TRUE(drained.ok()) << drained.status();
+    EXPECT_EQ(*drained, 0U);
+}
+
+TEST_F(MemoryOrchestratorTest, ConversationStaysOnSingleEpisodeWhenNoCompactorConfigured) {
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandler();
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_002", "follow up",
+                                                       Ts("2026-03-08T14:00:02Z")))
+                    .ok());
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_TRUE(state.mid_term_episodes.empty());
+    ASSERT_EQ(state.conversation.items.size(), 1U);
+    ASSERT_TRUE(state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(state.conversation.items[0].ongoing_episode->messages.size(), 3U);
+    EXPECT_EQ(state.conversation.items[0].ongoing_episode->messages[2].content, "follow up");
+}
+
+TEST_F(MemoryOrchestratorTest, NextUserTurnDrainsCompletedAsyncFlushIntoMidTermMemory) {
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_002", "follow up",
+                                                       Ts("2026-03-08T14:00:02Z")))
+                    .ok());
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_EQ(state.mid_term_episodes.size(), 1U);
+    EXPECT_EQ(state.mid_term_episodes[0].episode_id, "ep_srv_test_1");
+    EXPECT_EQ(state.mid_term_episodes[0].tier2_summary, "summary");
+    ASSERT_EQ(state.conversation.items.size(), 2U);
+    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
+    ASSERT_TRUE(state.conversation.items[0].episode_stub.has_value());
+    EXPECT_EQ(state.conversation.items[0].episode_stub->content, "stub ref");
+    EXPECT_EQ(state.conversation.items[1].type, ConversationItemType::OngoingEpisode);
+    ASSERT_TRUE(state.conversation.items[1].ongoing_episode.has_value());
+    ASSERT_EQ(state.conversation.items[1].ongoing_episode->messages.size(), 1U);
+    EXPECT_EQ(state.conversation.items[1].ongoing_episode->messages[0].content, "follow up");
+}
+
+TEST_F(MemoryOrchestratorTest, PendingAsyncFlushStartsNewEpisodeBeforeNextUserMessageAppends) {
+    std::promise<void> release_promise;
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(
+        CompactedMidTermEpisode{
+            .tier1_detail = std::string("full detail"),
+            .tier2_summary = "summary",
+            .tier3_ref = "stub ref",
+            .tier3_keywords = { "memory" },
+            .salience = kExpandableEpisodeSalienceThreshold,
+            .embedding = {},
+        },
+        release_promise.get_future().share());
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_002", "follow up",
+                                                       Ts("2026-03-08T14:00:02Z")))
+                    .ok());
+
+    const WorkingMemoryState& pending_state = handler->memory().snapshot();
+    ASSERT_EQ(pending_state.mid_term_episodes.size(), 0U);
+    ASSERT_EQ(pending_state.conversation.items.size(), 2U);
+    EXPECT_EQ(pending_state.conversation.items[0].type, ConversationItemType::OngoingEpisode);
+    ASSERT_TRUE(pending_state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(pending_state.conversation.items[0].ongoing_episode->messages.size(), 2U);
+    EXPECT_EQ(pending_state.conversation.items[1].type, ConversationItemType::OngoingEpisode);
+    ASSERT_TRUE(pending_state.conversation.items[1].ongoing_episode.has_value());
+    ASSERT_EQ(pending_state.conversation.items[1].ongoing_episode->messages.size(), 1U);
+    EXPECT_EQ(pending_state.conversation.items[1].ongoing_episode->messages[0].content,
+              "follow up");
+
+    release_promise.set_value();
+    const absl::StatusOr<std::size_t> drained = WaitForDrain(*handler, 1U);
+    ASSERT_TRUE(drained.ok()) << drained.status();
+    EXPECT_EQ(*drained, 1U);
+
+    const WorkingMemoryState& drained_state = handler->memory().snapshot();
+    ASSERT_EQ(drained_state.mid_term_episodes.size(), 1U);
+    EXPECT_EQ(drained_state.conversation.items[0].type, ConversationItemType::EpisodeStub);
+    EXPECT_EQ(drained_state.conversation.items[1].type, ConversationItemType::OngoingEpisode);
+    ASSERT_TRUE(drained_state.conversation.items[1].ongoing_episode.has_value());
+    ASSERT_EQ(drained_state.conversation.items[1].ongoing_episode->messages.size(), 1U);
+    EXPECT_EQ(drained_state.conversation.items[1].ongoing_episode->messages[0].content,
+              "follow up");
+}
+
+TEST_F(MemoryOrchestratorTest, DrainCompletedMidTermCompactionsRejectsInvalidCompactorOutput) {
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "memory" },
+        .salience = kExpandableEpisodeSalienceThreshold,
+        .embedding = {},
+    });
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    const absl::StatusOr<std::size_t> drained = handler->DrainCompletedMidTermCompactions();
+    ASSERT_FALSE(drained.ok());
+    EXPECT_EQ(drained.status().code(), absl::StatusCode::kInvalidArgument);
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_TRUE(state.mid_term_episodes.empty());
+    ASSERT_EQ(state.conversation.items.size(), 1U);
+    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::OngoingEpisode);
+}
+
+TEST_F(MemoryOrchestratorTest, DrainCompletedMidTermCompactionsPropagatesCompactorFailure) {
+    auto compactor =
+        std::make_shared<RecordingMidTermCompactor>(absl::InternalError("compaction failed"));
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    const absl::StatusOr<std::size_t> drained = handler->DrainCompletedMidTermCompactions();
+    ASSERT_FALSE(drained.ok());
+    EXPECT_EQ(drained.status().code(), absl::StatusCode::kInternal);
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_TRUE(state.mid_term_episodes.empty());
+    ASSERT_EQ(state.conversation.items.size(), 1U);
+    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::OngoingEpisode);
+}
+
+TEST_F(MemoryOrchestratorTest, AsyncDrainPropagatesMidTermPersistenceFailureWithoutMutatingState) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->upsert_episode_status = absl::InternalError("episode write failed");
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    const absl::StatusOr<std::size_t> drained = handler->DrainCompletedMidTermCompactions();
+    ASSERT_FALSE(drained.ok());
+    EXPECT_EQ(drained.status().code(), absl::StatusCode::kInternal);
+    EXPECT_TRUE(store->stub_writes.empty());
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_TRUE(state.mid_term_episodes.empty());
+    ASSERT_EQ(state.conversation.items.size(), 1U);
+    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::OngoingEpisode);
+    ASSERT_TRUE(state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(state.conversation.items[0].ongoing_episode->messages.size(), 2U);
 }
 
 TEST_F(MemoryOrchestratorTest, RenderPromptEscapesPromptShapedConversationContent) {
