@@ -37,13 +37,17 @@ class PersistentInProcessTransport {
     [[nodiscard]] absl::StatusOr<TransportStreamResult>
     Execute(const std::string& request_json, const OpenAiResponsesEventCallback& on_event);
 
+    // Eagerly establishes the underlying TCP/TLS connection so that the first
+    // Execute() call does not pay the connection-setup latency. Safe to call
+    // multiple times; subsequent calls are no-ops while the connection is alive.
+    [[nodiscard]] absl::Status WarmUp();
+
   private:
     absl::Status EnsureConnected();
     void Disconnect();
-    absl::StatusOr<TransportStreamResult> ExecuteOnce(const std::string& request_json,
-                                                      const OpenAiResponsesEventCallback& on_event,
-                                                      bool* request_written,
-                                                      bool* server_keep_alive);
+    absl::StatusOr<TransportStreamResult>
+    ExecuteOnce(const std::string& request_json, const OpenAiResponsesEventCallback& on_event,
+                bool* request_written, bool* server_keep_alive, bool* response_started);
 
     struct Impl;
     OpenAiResponsesClientConfig config_;

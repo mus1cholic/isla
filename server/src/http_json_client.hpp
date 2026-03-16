@@ -65,6 +65,11 @@ class PersistentHttpClient {
 
     [[nodiscard]] absl::StatusOr<HttpResponse> Execute(const HttpRequestSpec& request);
 
+    // Eagerly establishes the underlying TCP/TLS connection so that the first
+    // Execute() call does not pay the connection-setup latency. Safe to call
+    // multiple times; subsequent calls are no-ops while the connection is alive.
+    [[nodiscard]] absl::Status WarmUp();
+
   private:
     absl::Status EnsureConnected();
     void Disconnect();

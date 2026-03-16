@@ -2472,5 +2472,213 @@ TEST(PersistentInProcessTransportTest, RetriesOnStaleConnectionWriteFailure) {
     EXPECT_EQ(server.requests_served(), kNumRequests);
 }
 
+TEST(PersistentInProcessTransportTest, WarmUpEstablishesConnectionBeforeFirstRequest) {
+    constexpr std::size_t kNumRequests = 1;
+    MultiRequestSseServer server(kNumRequests);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    // WarmUp eagerly establishes the TCP connection.
+    ASSERT_TRUE(client->WarmUp().ok());
+
+    // The subsequent StreamResponse reuses the warm connection.
+    std::string output_text;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "test-model",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            std::visit(
+                [&](const auto& e) {
+                    using E = std::decay_t<decltype(e)>;
+                    if constexpr (std::is_same_v<E, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += e.text_delta;
+                    }
+                },
+                event);
+            return absl::OkStatus();
+        });
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_EQ(output_text, "hi");
+
+    ASSERT_TRUE(server.WaitForCompletion());
+    // Only one TCP connection was opened (by WarmUp), and StreamResponse reused it.
+    EXPECT_EQ(server.connections_accepted(), 1U);
+    EXPECT_EQ(server.requests_served(), kNumRequests);
+}
+
+TEST(PersistentInProcessTransportTest, WarmUpIsIdempotentWhileConnectionIsAlive) {
+    constexpr std::size_t kNumRequests = 1;
+    MultiRequestSseServer server(kNumRequests);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    ASSERT_TRUE(client->WarmUp().ok());
+    ASSERT_TRUE(client->WarmUp().ok()); // Second call is a no-op.
+
+    std::string output_text;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "test-model",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            std::visit(
+                [&](const auto& e) {
+                    using E = std::decay_t<decltype(e)>;
+                    if constexpr (std::is_same_v<E, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += e.text_delta;
+                    }
+                },
+                event);
+            return absl::OkStatus();
+        });
+    ASSERT_TRUE(status.ok()) << status;
+
+    ASSERT_TRUE(server.WaitForCompletion());
+    // Still only one TCP connection despite two WarmUp calls.
+    EXPECT_EQ(server.connections_accepted(), 1U);
+}
+
+// Simulates the scenario where a warm connection goes stale because the remote
+// closed it gracefully (FIN) while idle. On the next request the client's write
+// appears to succeed (data buffered before the FIN is processed) but the
+// subsequent header read returns immediate EOF. The transport must detect this
+// and transparently retry on a fresh connection.
+class StaleHeaderEofSseServer final : public BaseSseTestServer {
+  public:
+    explicit StaleHeaderEofSseServer() : BaseSseTestServer(/*expected_requests=*/1) {
+        StartThread();
+    }
+
+  private:
+    static std::string BuildSseResponse() {
+        const std::string body =
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\r\n\r\n"
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_eof\"}}\r\n\r\n"
+            "data: [DONE]\r\n\r\n";
+        return "HTTP/1.1 200 OK\r\n"
+               "Content-Type: text/event-stream\r\n"
+               "Content-Length: " +
+               std::to_string(body.size()) +
+               "\r\n"
+               "Connection: keep-alive\r\n\r\n" +
+               body;
+    }
+
+    void Run() override {
+        try {
+            // Connection 1: accept, read the request, then close gracefully (FIN)
+            // WITHOUT sending a response. The client will see EOF on the next read.
+            {
+                tcp::socket socket(io_context_);
+                acceptor_.accept(socket);
+                IncrementConnectionsAccepted();
+
+                asio::streambuf buffer;
+                DrainRequestOnConnection(socket, buffer);
+
+                // Graceful shutdown — sends FIN, not RST.
+                boost::system::error_code error;
+                socket.shutdown(tcp::socket::shutdown_both, error);
+                socket.close(error);
+            }
+
+            // Connection 2: accept and serve the response normally (the retry).
+            {
+                tcp::socket socket(io_context_);
+                acceptor_.accept(socket);
+                IncrementConnectionsAccepted();
+
+                asio::streambuf buffer;
+                DrainRequestOnConnection(socket, buffer);
+
+                const std::string response = BuildSseResponse();
+                asio::write(socket, asio::buffer(response.data(), response.size()));
+                IncrementRequestsServed();
+
+                boost::system::error_code error;
+                socket.shutdown(tcp::socket::shutdown_both, error);
+                socket.close(error);
+            }
+        } catch (...) {
+            ReportTestServerThreadException("StaleHeaderEofSseServer");
+        }
+    }
+};
+
+TEST(PersistentInProcessTransportTest, RetriesOnStaleConnectionHeaderEof) {
+    // The server accepts the first connection, reads the request, and closes
+    // gracefully (FIN) without responding. The client's write succeeds (data
+    // buffered before FIN processed) but the header read returns EOF. The
+    // transport must detect this as a stale connection and retry automatically.
+    StaleHeaderEofSseServer server;
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    std::string output_text;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "test-model",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            std::visit(
+                [&](const auto& e) {
+                    using E = std::decay_t<decltype(e)>;
+                    if constexpr (std::is_same_v<E, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += e.text_delta;
+                    }
+                },
+                event);
+            return absl::OkStatus();
+        });
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_EQ(output_text, "hi");
+
+    ASSERT_TRUE(server.WaitForCompletion());
+    // Connection 1: client wrote request, server closed without responding (EOF).
+    // Connection 2: retry succeeded on fresh connection.
+    EXPECT_EQ(server.connections_accepted(), 2U);
+    EXPECT_EQ(server.requests_served(), 1U);
+}
+
+TEST(PersistentInProcessTransportTest, WarmUpReturnsErrorForUnreachableHost) {
+    auto resolver =
+        std::make_shared<FixedStatusHostResolver>(absl::UnavailableError("DNS resolution failed"));
+    ScopedOpenAiResponsesHostResolverOverrideForTest override_guard(resolver);
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "unreachable.invalid",
+        .port = 9999,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->WarmUp();
+    EXPECT_FALSE(status.ok());
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway

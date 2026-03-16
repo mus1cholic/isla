@@ -11,6 +11,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/memory/supabase_memory_store.hpp"
+#include "isla/server/openai_responses_client.hpp"
 
 namespace {
 
@@ -53,10 +54,53 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Create the OpenAI client eagerly so we can warm up its transport
+    // connection before any client session arrives.
+    std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client;
+    if (startup_config->openai_config.enabled) {
+        openai_client =
+            isla::server::ai_gateway::CreateOpenAiResponsesClient(startup_config->openai_config);
+        const auto openai_warmup_start = std::chrono::steady_clock::now();
+        const absl::Status openai_warmup_status = openai_client->WarmUp();
+        const auto openai_warmup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now() - openai_warmup_start)
+                                          .count();
+        if (openai_warmup_status.ok()) {
+            LOG(INFO) << "AI gateway OpenAI connection warmup succeeded duration_ms="
+                      << openai_warmup_ms;
+        } else {
+            LOG(WARNING) << "AI gateway OpenAI connection warmup failed duration_ms="
+                         << openai_warmup_ms << " detail='"
+                         << isla::server::ai_gateway::SanitizeForLog(openai_warmup_status.message())
+                         << "'";
+        }
+    }
+
+    // Warm up the Supabase persistent connection.
+    if (*memory_store != nullptr) {
+        const auto supabase_warmup_start = std::chrono::steady_clock::now();
+        const absl::Status supabase_warmup_status = (*memory_store)->WarmUp();
+        const auto supabase_warmup_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                  supabase_warmup_start)
+                .count();
+        if (supabase_warmup_status.ok()) {
+            LOG(INFO) << "AI gateway Supabase connection warmup succeeded duration_ms="
+                      << supabase_warmup_ms;
+        } else {
+            LOG(WARNING) << "AI gateway Supabase connection warmup failed duration_ms="
+                         << supabase_warmup_ms << " detail='"
+                         << isla::server::ai_gateway::SanitizeForLog(
+                                supabase_warmup_status.message())
+                         << "'";
+        }
+    }
+
     isla::server::ai_gateway::GatewayStubResponder responder(
         isla::server::ai_gateway::GatewayStubResponderConfig{
             .memory_store = *memory_store,
             .openai_config = startup_config->openai_config,
+            .openai_client = openai_client,
         });
     isla::server::ai_gateway::GatewayServer server(startup_config->server_config, &responder);
     responder.AttachSessionRegistry(&server.session_registry());

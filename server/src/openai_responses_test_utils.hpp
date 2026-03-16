@@ -20,13 +20,18 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
                                        std::string full_text = "",
                                        std::string response_id = "resp_test",
                                        absl::Status validate_status = absl::OkStatus(),
-                                       StreamHandler stream_handler = {})
+                                       StreamHandler stream_handler = {},
+                                       absl::Status warmup_status = absl::OkStatus())
         : status_(std::move(status)), full_text_(std::move(full_text)),
           response_id_(std::move(response_id)), validate_status_(std::move(validate_status)),
-          stream_handler_(std::move(stream_handler)) {}
+          stream_handler_(std::move(stream_handler)), warmup_status_(std::move(warmup_status)) {}
 
     [[nodiscard]] absl::Status Validate() const override {
         return validate_status_;
+    }
+
+    [[nodiscard]] absl::Status WarmUp() const override {
+        return warmup_status_;
     }
 
     [[nodiscard]] absl::Status
@@ -65,16 +70,18 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     std::string response_id_;
     absl::Status validate_status_;
     StreamHandler stream_handler_;
+    absl::Status warmup_status_;
 };
 
 [[nodiscard]] inline std::shared_ptr<FakeOpenAiResponsesClient>
 MakeFakeOpenAiResponsesClient(absl::Status status = absl::OkStatus(), std::string full_text = "",
                               std::string response_id = "resp_test",
                               absl::Status validate_status = absl::OkStatus(),
-                              FakeOpenAiResponsesClient::StreamHandler stream_handler = {}) {
+                              FakeOpenAiResponsesClient::StreamHandler stream_handler = {},
+                              absl::Status warmup_status = absl::OkStatus()) {
     return std::make_shared<FakeOpenAiResponsesClient>(
         std::move(status), std::move(full_text), std::move(response_id), std::move(validate_status),
-        std::move(stream_handler));
+        std::move(stream_handler), std::move(warmup_status));
 }
 
 [[nodiscard]] inline std::string ExtractLatestPromptLine(std::string_view prompt_text) {

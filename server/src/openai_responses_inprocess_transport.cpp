@@ -316,12 +316,11 @@ ReadDecodedBodyChunk(asio::io_context* io_context, Stream* stream,
 }
 
 template <typename Stream>
-absl::StatusOr<TransportStreamResult>
-ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
-                         const OpenAiResponsesClientConfig& config, const std::string& request_json,
-                         const OpenAiResponsesEventCallback& on_event,
-                         InProcessTransportDeadline deadline, bool keep_alive = false,
-                         bool* request_written = nullptr, bool* server_keep_alive = nullptr) {
+absl::StatusOr<TransportStreamResult> ExecuteStreamingResponse(
+    asio::io_context* io_context, Stream* stream, const OpenAiResponsesClientConfig& config,
+    const std::string& request_json, const OpenAiResponsesEventCallback& on_event,
+    InProcessTransportDeadline deadline, bool keep_alive = false, bool* request_written = nullptr,
+    bool* server_keep_alive = nullptr, bool* response_started = nullptr) {
     TransportStreamResult result;
     std::size_t decoded_chunk_count = 0U;
     const std::string raw_request = BuildRawHttpRequest(config, request_json, keep_alive);
@@ -363,10 +362,21 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
             return internal_error("openai responses HTTP response header read did not complete");
         }
         if (read_error == beast::http::error::header_limit) {
+            // Server sent data that exceeded the header size limit — not a stale connection.
+            if (response_started != nullptr) {
+                *response_started = true;
+            }
             return absl::ResourceExhaustedError(
                 "openai responses transport response header exceeds maximum length");
         }
         if (read_error) {
+            // Distinguish stale connections (immediate EOF, no data) from servers
+            // that responded with malformed data. Only EOF/end_of_stream means
+            // the remote closed the connection without sending anything.
+            if (response_started != nullptr && read_error != asio::error::eof &&
+                read_error != beast::http::error::end_of_stream) {
+                *response_started = true;
+            }
             return UnavailableTransportError("failed to read openai responses HTTP response header",
                                              read_error);
         }
@@ -374,6 +384,9 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
 
     const unsigned int status_code = http_parser.get().result_int();
     result.response_headers_at = TurnTelemetryContext::Clock::now();
+    if (response_started != nullptr) {
+        *response_started = true;
+    }
     if (server_keep_alive != nullptr) {
         *server_keep_alive = http_parser.get().keep_alive();
     }
@@ -719,8 +732,9 @@ PersistentInProcessTransport::Execute(const std::string& request_json,
 
     bool request_written = false;
     bool server_keep_alive = true;
-    absl::StatusOr<TransportStreamResult> result =
-        ExecuteOnce(request_json, on_event, &request_written, &server_keep_alive);
+    bool response_started = false;
+    absl::StatusOr<TransportStreamResult> result = ExecuteOnce(
+        request_json, on_event, &request_written, &server_keep_alive, &response_started);
 
     if (result.ok()) {
         // Proactively disconnect when server indicates Connection: close, so the
@@ -737,10 +751,19 @@ PersistentInProcessTransport::Execute(const std::string& request_json,
         return result;
     }
 
-    // Only retry if the request write itself failed (stale/broken connection).
-    // If the write succeeded, the server received the request and any error
-    // (malformed response, SSE parse failure, timeout) is not retriable.
-    if (request_written) {
+    // Determine whether the failed request is safe to retry.
+    //
+    // Retry when:
+    //   (a) The write itself failed (classic stale/broken connection), OR
+    //   (b) The write appeared to succeed but the server never sent any response
+    //       bytes (immediate EOF on header read). This happens when the remote
+    //       closed an idle connection and the OS buffered our write into the
+    //       dead socket before the FIN/RST was processed.
+    //
+    // Do NOT retry when the server already started responding
+    // (response_started == true), because the server received and began
+    // processing the request — retrying could cause duplicate side-effects.
+    if (request_written && response_started) {
         Disconnect();
         return result;
     }
@@ -748,17 +771,26 @@ PersistentInProcessTransport::Execute(const std::string& request_json,
         return result;
     }
 
-    VLOG(1) << "AI gateway openai responses persistent transport retrying on stale connection "
-               "host='"
-            << SanitizeForLog(config_.host)
-            << "' status_code=" << static_cast<int>(result.status().code()) << " detail='"
-            << SanitizeForLog(result.status().message()) << "'";
+    LOG(WARNING) << "AI gateway openai responses persistent transport retrying on stale connection "
+                    "host='"
+                 << SanitizeForLog(config_.host)
+                 << "' request_written=" << (request_written ? "true" : "false")
+                 << " response_started=" << (response_started ? "true" : "false")
+                 << " status_code=" << static_cast<int>(result.status().code()) << " detail='"
+                 << SanitizeForLog(result.status().message()) << "'";
     Disconnect();
+    const auto reconnect_start = std::chrono::steady_clock::now();
     if (absl::Status status = EnsureConnected(); !status.ok()) {
         return status;
     }
+    const auto reconnect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - reconnect_start)
+                                  .count();
+    LOG(INFO) << "AI gateway openai responses persistent transport reconnected after stale "
+                 "connection host='"
+              << SanitizeForLog(config_.host) << "' reconnect_ms=" << reconnect_ms;
     return ExecuteOnce(request_json, on_event, /*request_written=*/nullptr,
-                       /*server_keep_alive=*/nullptr);
+                       /*server_keep_alive=*/nullptr, /*response_started=*/nullptr);
 }
 
 absl::Status PersistentInProcessTransport::EnsureConnected() {
@@ -823,6 +855,11 @@ absl::Status PersistentInProcessTransport::EnsureConnected() {
 #endif
 }
 
+absl::Status PersistentInProcessTransport::WarmUp() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return EnsureConnected();
+}
+
 void PersistentInProcessTransport::Disconnect() {
     if (impl_->tcp_stream) {
         CloseInProcessStream(impl_->tcp_stream.get());
@@ -838,22 +875,21 @@ void PersistentInProcessTransport::Disconnect() {
     impl_->connected = false;
 }
 
-absl::StatusOr<TransportStreamResult>
-PersistentInProcessTransport::ExecuteOnce(const std::string& request_json,
-                                          const OpenAiResponsesEventCallback& on_event,
-                                          bool* request_written, bool* server_keep_alive) {
+absl::StatusOr<TransportStreamResult> PersistentInProcessTransport::ExecuteOnce(
+    const std::string& request_json, const OpenAiResponsesEventCallback& on_event,
+    bool* request_written, bool* server_keep_alive, bool* response_started) {
     const InProcessTransportDeadline deadline = ComputeInProcessTransportDeadline(config_);
 
     if (impl_->tcp_stream) {
-        return ExecuteStreamingResponse(&impl_->io_context, impl_->tcp_stream.get(), config_,
-                                        request_json, on_event, deadline,
-                                        /*keep_alive=*/true, request_written, server_keep_alive);
+        return ExecuteStreamingResponse(
+            &impl_->io_context, impl_->tcp_stream.get(), config_, request_json, on_event, deadline,
+            /*keep_alive=*/true, request_written, server_keep_alive, response_started);
     }
 #if !defined(_WIN32)
     if (impl_->ssl_stream) {
-        return ExecuteStreamingResponse(&impl_->io_context, impl_->ssl_stream.get(), config_,
-                                        request_json, on_event, deadline,
-                                        /*keep_alive=*/true, request_written, server_keep_alive);
+        return ExecuteStreamingResponse(
+            &impl_->io_context, impl_->ssl_stream.get(), config_, request_json, on_event, deadline,
+            /*keep_alive=*/true, request_written, server_keep_alive, response_started);
     }
 #endif
     return absl::InternalError("persistent transport has no active stream");
