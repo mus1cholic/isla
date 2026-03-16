@@ -65,6 +65,7 @@ class MemoryOrchestrator {
     [[nodiscard]] static absl::StatusOr<MemoryOrchestrator>
     Create(std::string session_id, const MemoryOrchestratorInit& init);
 
+    [[nodiscard]] absl::Status BeginSession(Timestamp create_time);
     [[nodiscard]] absl::StatusOr<UserQueryMemoryResult>
     HandleUserQuery(const GatewayUserQuery& query);
     [[nodiscard]] absl::Status HandleAssistantReply(const GatewayAssistantReply& reply);
@@ -90,6 +91,7 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status ValidateTurnText(std::string_view session_id,
                                                 std::string_view turn_id,
                                                 std::string_view role_label) const;
+    [[nodiscard]] absl::Status ValidateSessionReadyForPersistence() const;
     [[nodiscard]] absl::Status PersistSessionIfNeeded(Timestamp create_time);
     [[nodiscard]] absl::Status PersistConversationMessage(std::string_view turn_id,
                                                           const Message& message);

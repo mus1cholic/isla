@@ -1,6 +1,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -27,6 +28,7 @@
 #include <gtest/gtest.h>
 
 #include "isla/server/ai_gateway_stub_responder.hpp"
+#include "isla/server/memory/memory_store.hpp"
 #include "isla/shared/ai_gateway_protocol.hpp"
 #include "openai_responses_test_utils.hpp"
 
@@ -67,6 +69,75 @@ std::shared_ptr<test::FakeOpenAiResponsesClient> MakeEchoOpenAiResponsesClient()
             });
         });
 }
+
+class FailingSessionStartMemoryStore final : public isla::server::memory::MemoryStore {
+  public:
+    explicit FailingSessionStartMemoryStore(absl::Status failure_status)
+        : failure_status_(std::move(failure_status)) {}
+
+    absl::Status UpsertSession(const isla::server::memory::MemorySessionRecord& record) override {
+        ++upsert_session_attempts_;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            last_session_id_ = record.session_id;
+        }
+        return failure_status_;
+    }
+
+    absl::Status AppendConversationMessage(
+        const isla::server::memory::ConversationMessageWrite& write) override {
+        ++append_message_attempts_;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            last_turn_id_ = write.turn_id;
+        }
+        return absl::OkStatus();
+    }
+
+    absl::Status ReplaceConversationItemWithEpisodeStub(
+        const isla::server::memory::EpisodeStubWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::StatusOr<std::optional<isla::server::memory::MemoryStoreSnapshot>>
+    LoadSnapshot(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::size_t upsert_session_attempts() const {
+        return upsert_session_attempts_.load();
+    }
+
+    [[nodiscard]] std::size_t append_message_attempts() const {
+        return append_message_attempts_.load();
+    }
+
+    [[nodiscard]] std::string last_session_id() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_session_id_;
+    }
+
+    [[nodiscard]] std::string last_turn_id() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_turn_id_;
+    }
+
+  private:
+    absl::Status failure_status_;
+    std::atomic<std::size_t> upsert_session_attempts_{ 0 };
+    std::atomic<std::size_t> append_message_attempts_{ 0 };
+    mutable std::mutex mutex_;
+    std::string last_session_id_;
+    std::string last_turn_id_;
+};
 
 class RecordingApplicationSink final : public GatewayApplicationEventSink {
   public:
@@ -882,6 +953,83 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
     ASSERT_TRUE(second_frame.ok()) << second_frame.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*second_frame));
     EXPECT_EQ(std::get<protocol::TurnCompletedMessage>(*second_frame).turn_id, "turn_1");
+
+    client.CloseTransport();
+    server.Stop();
+}
+
+TEST(AiGatewayServerIntegrationTest,
+     SessionStartPersistenceFailureSendsStartedThenErrorAndDoesNotRetryOnTurnIngress) {
+    auto store =
+        std::make_shared<FailingSessionStartMemoryStore>(absl::UnavailableError("supabase down"));
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .session_start_persistence_max_attempts = 3,
+        .session_start_persistence_retry_delay = 0ms,
+        .memory_user_id = "gateway_user",
+        .memory_store = store,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    GatewayServer server(
+        GatewayServerConfig{ .bind_host = "127.0.0.1", .port = 0, .listen_backlog = 4 }, &responder,
+        std::make_unique<SequentialSessionIdGenerator>("srv_startfail_"));
+    responder.AttachSessionRegistry(&server.session_registry());
+
+    ASSERT_TRUE(server.Start().ok());
+
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    const std::string session_id =
+        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
+
+    const absl::StatusOr<protocol::GatewayMessage> startup_error = client.ReadJsonFrame();
+    ASSERT_TRUE(startup_error.ok()) << startup_error.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*startup_error));
+    const auto& startup_error_message = std::get<protocol::ErrorMessage>(*startup_error);
+    EXPECT_EQ(startup_error_message.session_id, session_id);
+    EXPECT_FALSE(startup_error_message.turn_id.has_value());
+    EXPECT_EQ(startup_error_message.code, "service_unavailable");
+    EXPECT_EQ(startup_error_message.message, "failed to initialize session memory");
+
+    EXPECT_EQ(store->upsert_session_attempts(), 3U);
+    EXPECT_EQ(store->append_message_attempts(), 0U);
+    EXPECT_EQ(store->last_session_id(), session_id);
+
+    ASSERT_TRUE(
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+            .ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> turn_error = client.ReadJsonFrame();
+    ASSERT_TRUE(turn_error.ok()) << turn_error.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*turn_error));
+    const auto& turn_error_message = std::get<protocol::ErrorMessage>(*turn_error);
+    EXPECT_EQ(turn_error_message.session_id, session_id);
+    ASSERT_TRUE(turn_error_message.turn_id.has_value());
+    EXPECT_EQ(*turn_error_message.turn_id, "turn_1");
+    EXPECT_EQ(turn_error_message.code, "internal_error");
+    EXPECT_EQ(turn_error_message.message, "stub responder failed to update memory");
+
+    const absl::StatusOr<protocol::GatewayMessage> turn_completed = client.ReadJsonFrame();
+    ASSERT_TRUE(turn_completed.ok()) << turn_completed.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*turn_completed));
+    EXPECT_EQ(std::get<protocol::TurnCompletedMessage>(*turn_completed).turn_id, "turn_1");
+
+    EXPECT_EQ(store->upsert_session_attempts(), 3U);
+    EXPECT_EQ(store->append_message_attempts(), 0U);
+
+    const std::string end_message =
+        std::string("{\"type\":\"session.end\",\"session_id\":\"") + session_id + "\"}";
+    ASSERT_TRUE(client.SendJson(end_message).ok());
+    const absl::StatusOr<protocol::GatewayMessage> ended_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*ended_frame));
 
     client.CloseTransport();
     server.Stop();

@@ -41,6 +41,10 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
     return MemoryOrchestrator(std::move(session_id), std::move(*memory), init.store);
 }
 
+absl::Status MemoryOrchestrator::BeginSession(Timestamp create_time) {
+    return PersistSessionIfNeeded(create_time);
+}
+
 absl::Status MemoryOrchestrator::ValidateTurnText(std::string_view session_id,
                                                   std::string_view turn_id,
                                                   std::string_view role_label) const {
@@ -57,6 +61,14 @@ absl::Status MemoryOrchestrator::ValidateTurnText(std::string_view session_id,
                      << " expected_session_id=" << SanitizeForLog(session_id_)
                      << " received_session_id=" << SanitizeForLog(session_id);
         return invalid_argument("gateway turn text session_id does not match orchestrator session");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status MemoryOrchestrator::ValidateSessionReadyForPersistence() const {
+    if (store_ != nullptr && !session_persisted_) {
+        return absl::FailedPreconditionError(
+            "memory orchestrator requires BeginSession before handling conversation messages");
     }
     return absl::OkStatus();
 }
@@ -79,8 +91,7 @@ absl::Status MemoryOrchestrator::PersistSessionIfNeeded(Timestamp create_time) {
     }
     if (absl::Status status = store_->UpsertSession(session_record); !status.ok()) {
         LOG(WARNING)
-            << "MemoryOrchestrator store.UpsertSession failed while creating the persisted session "
-               "record for the first observed turn"
+            << "MemoryOrchestrator store.UpsertSession failed while persisting the session record"
             << " session_id=" << SanitizeForLog(session_id_)
             << " user_id=" << SanitizeForLog(state.conversation.user_id)
             << " session_created_at=" << SanitizeForLog(FormatTimestamp(create_time)) << " detail='"
@@ -145,6 +156,9 @@ absl::Status
 MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush) {
     if (!store_) {
         return absl::OkStatus();
+    }
+    if (absl::Status session_status = ValidateSessionReadyForPersistence(); !session_status.ok()) {
+        return session_status;
     }
 
     const MidTermEpisodeWrite episode_write{
@@ -244,10 +258,8 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
         !validation_status.ok()) {
         return validation_status;
     }
-
-    if (absl::Status persistence_status = PersistSessionIfNeeded(create_time);
-        !persistence_status.ok()) {
-        return persistence_status;
+    if (absl::Status session_status = ValidateSessionReadyForPersistence(); !session_status.ok()) {
+        return session_status;
     }
 
     if (role == MessageRole::User) {
