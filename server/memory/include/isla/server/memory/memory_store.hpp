@@ -83,6 +83,10 @@ class MemoryStore {
     [[nodiscard]] virtual absl::Status
     ReplaceConversationItemWithEpisodeStub(const EpisodeStubWrite& write) = 0;
     [[nodiscard]] virtual absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) = 0;
+    [[nodiscard]] virtual absl::StatusOr<std::vector<Episode>>
+    ListMidTermEpisodes(std::string_view session_id) const = 0;
+    [[nodiscard]] virtual absl::StatusOr<std::optional<Episode>>
+    GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const = 0;
     [[nodiscard]] virtual absl::StatusOr<std::optional<MemoryStoreSnapshot>>
     LoadSnapshot(std::string_view session_id) const = 0;
 };

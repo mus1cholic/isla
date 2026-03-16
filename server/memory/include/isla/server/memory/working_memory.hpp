@@ -32,8 +32,6 @@ struct CompletedOngoingEpisodeFlush {
     Timestamp stub_timestamp;
 };
 
-[[nodiscard]] bool IsExpandableEpisode(const Episode& episode);
-
 class WorkingMemory {
   public:
     explicit WorkingMemory(WorkingMemoryState state);

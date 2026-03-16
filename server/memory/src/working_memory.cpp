@@ -18,11 +18,6 @@ absl::Status invalid_argument(std::string_view message) {
 
 } // namespace
 
-bool IsExpandableEpisode(const Episode& episode) {
-    return episode.salience >= 8 && episode.tier1_detail.has_value() &&
-           !episode.tier1_detail->empty();
-}
-
 absl::Status ValidateCompletedEpisode(const Episode& episode) {
     if (episode.episode_id.empty() || episode.tier2_summary.empty() || episode.tier3_ref.empty()) {
         return invalid_argument("completed flush episode must include id, tier2, and tier3 data");

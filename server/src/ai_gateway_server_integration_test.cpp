@@ -106,6 +106,19 @@ class FailingSessionStartMemoryStore final : public isla::server::memory::Memory
         return absl::OkStatus();
     }
 
+    absl::StatusOr<std::vector<isla::server::memory::Episode>>
+    ListMidTermEpisodes(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::vector<isla::server::memory::Episode>{};
+    }
+
+    absl::StatusOr<std::optional<isla::server::memory::Episode>>
+    GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const override {
+        static_cast<void>(session_id);
+        static_cast<void>(episode_id);
+        return std::nullopt;
+    }
+
     absl::StatusOr<std::optional<isla::server::memory::MemoryStoreSnapshot>>
     LoadSnapshot(std::string_view session_id) const override {
         static_cast<void>(session_id);

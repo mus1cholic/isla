@@ -270,6 +270,24 @@ absl::StatusOr<json> ParseJsonArrayResponse(std::string_view body, std::string_v
     return parsed;
 }
 
+absl::StatusOr<Episode> ParseEpisodeRow(const json& episode_json) {
+    try {
+        return Episode{
+            .episode_id = episode_json.at("episode_id").get<std::string>(),
+            .tier1_detail = episode_json.at("tier1_detail").get<std::optional<std::string>>(),
+            .tier2_summary = episode_json.at("tier2_summary").get<std::string>(),
+            .tier3_ref = episode_json.at("tier3_ref").get<std::string>(),
+            .tier3_keywords = episode_json.at("tier3_keywords").get<std::vector<std::string>>(),
+            .salience = episode_json.at("salience").get<int>(),
+            .embedding = episode_json.at("embedding").get<Embedding>(),
+            .created_at = episode_json.at("created_at").get<Timestamp>(),
+        };
+    } catch (const std::exception& error) {
+        return absl::InternalError(std::string("supabase mid_term_episodes row was malformed: ") +
+                                   error.what());
+    }
+}
+
 class SupabaseMemoryStore final : public MemoryStore {
   public:
     SupabaseMemoryStore(SupabaseMemoryStoreConfig config,
@@ -371,6 +389,99 @@ class SupabaseMemoryStore final : public MemoryStore {
         }
         latency.SetOutcome("ok");
         return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::StatusOr<std::vector<Episode>>
+    ListMidTermEpisodes(std::string_view session_id) const override {
+        ScopedSupabaseOperationLatency latency(config_, "list_mid_term_episodes", session_id);
+        if (session_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "ListMidTermEpisodes requires session_id to be non-empty");
+        }
+
+        const HttpRequestSpec request = BuildGetRequest(
+            "/rest/v1/mid_term_episodes",
+            {
+                { "select", "episode_id,tier1_detail,tier2_summary,tier3_ref,tier3_keywords,"
+                            "salience,embedding,created_at" },
+                { "session_id", "eq." + std::string(session_id) },
+                { "order", "created_at.asc" },
+            },
+            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        const absl::StatusOr<json> rows =
+            ParseJsonArrayResponse(*response, "supabase mid_term_episodes");
+        if (!rows.ok()) {
+            return rows.status();
+        }
+
+        std::vector<Episode> episodes;
+        episodes.reserve(rows->size());
+        for (const json& row : *rows) {
+            absl::StatusOr<Episode> episode = ParseEpisodeRow(row);
+            if (!episode.ok()) {
+                return episode.status();
+            }
+            episodes.push_back(std::move(*episode));
+        }
+        latency.SetOutcome("ok");
+        return episodes;
+    }
+
+    [[nodiscard]] absl::StatusOr<std::optional<Episode>>
+    GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const override {
+        ScopedSupabaseOperationLatency latency(config_, "get_mid_term_episode", session_id);
+        if (session_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "GetMidTermEpisode requires session_id to be non-empty");
+        }
+        if (episode_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "GetMidTermEpisode requires episode_id to be non-empty");
+        }
+
+        const HttpRequestSpec request = BuildGetRequest(
+            "/rest/v1/mid_term_episodes",
+            {
+                { "select", "episode_id,tier1_detail,tier2_summary,tier3_ref,tier3_keywords,"
+                            "salience,embedding,created_at" },
+                { "session_id", "eq." + std::string(session_id) },
+                { "episode_id", "eq." + std::string(episode_id) },
+                { "limit", "2" },
+            },
+            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        const absl::StatusOr<json> rows =
+            ParseJsonArrayResponse(*response, "supabase mid_term_episodes");
+        if (!rows.ok()) {
+            return rows.status();
+        }
+        if (rows->empty()) {
+            latency.SetOutcome("not_found");
+            return std::nullopt;
+        }
+        if (rows->size() != 1U) {
+            return absl::InternalError(
+                "supabase mid_term_episodes response returned multiple rows for one episode");
+        }
+
+        absl::StatusOr<Episode> episode = ParseEpisodeRow(rows->front());
+        if (!episode.ok()) {
+            return episode.status();
+        }
+        latency.SetOutcome("ok");
+        return std::optional<Episode>(std::move(*episode));
     }
 
     [[nodiscard]] absl::StatusOr<std::optional<MemoryStoreSnapshot>>
@@ -539,26 +650,12 @@ class SupabaseMemoryStore final : public MemoryStore {
         if (!episode_rows.ok()) {
             return episode_rows.status();
         }
-        try {
-            for (const json& episode_json : *episode_rows) {
-                snapshot.mid_term_episodes.push_back(Episode{
-                    .episode_id = episode_json.at("episode_id").get<std::string>(),
-                    .tier1_detail = episode_json.at("tier1_detail").is_null()
-                                        ? std::nullopt
-                                        : std::optional<std::string>(
-                                              episode_json.at("tier1_detail").get<std::string>()),
-                    .tier2_summary = episode_json.at("tier2_summary").get<std::string>(),
-                    .tier3_ref = episode_json.at("tier3_ref").get<std::string>(),
-                    .tier3_keywords =
-                        episode_json.at("tier3_keywords").get<std::vector<std::string>>(),
-                    .salience = episode_json.at("salience").get<int>(),
-                    .embedding = episode_json.at("embedding").get<Embedding>(),
-                    .created_at = episode_json.at("created_at").get<Timestamp>(),
-                });
+        for (const json& episode_json : *episode_rows) {
+            absl::StatusOr<Episode> episode = ParseEpisodeRow(episode_json);
+            if (!episode.ok()) {
+                return episode.status();
             }
-        } catch (const std::exception& error) {
-            return absl::InternalError(
-                std::string("supabase mid_term_episodes row was malformed: ") + error.what());
+            snapshot.mid_term_episodes.push_back(std::move(*episode));
         }
 
         if (absl::Status status = ValidateMemoryStoreSnapshot(snapshot); !status.ok()) {

@@ -560,6 +560,190 @@ TEST(SupabaseMemoryStoreTest, LogsRequestAndOperationLatencyWhenTelemetryEnabled
     EXPECT_TRUE(log_sink.Contains("session_id=session_telemetry"));
 }
 
+TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesReturnsOrderedEpisodesForSession) {
+    const std::string episodes_body =
+        "[{\"episode_id\":\"ep_older\",\"tier1_detail\":null,\"tier2_summary\":\"older "
+        "summary\",\"tier3_ref\":\"older ref\",\"tier3_keywords\":[\"older\"],\"salience\":3,"
+        "\"embedding\":[],\"created_at\":\"2026-03-08T14:00:00Z\"},"
+        "{\"episode_id\":\"ep_newer\",\"tier1_detail\":\"full detail\",\"tier2_summary\":\"newer "
+        "summary\",\"tier3_ref\":\"newer ref\",\"tier3_keywords\":[\"newer\"],\"salience\":9,"
+        "\"embedding\":[],\"created_at\":\"2026-03-08T14:01:00Z\"}]";
+    RoutingHttpServer server({
+        { "/rest/v1/mid_term_episodes",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body },
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<Episode>> episodes =
+        (*store)->ListMidTermEpisodes("session_001");
+
+    ASSERT_TRUE(episodes.ok()) << episodes.status();
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    ASSERT_EQ(episodes->size(), 2U);
+    EXPECT_EQ((*episodes)[0].episode_id, "ep_older");
+    EXPECT_EQ((*episodes)[1].episode_id, "ep_newer");
+    EXPECT_TRUE((*episodes)[1].tier1_detail.has_value());
+}
+
+TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesRejectsEmptySessionId) {
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:1",
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<Episode>> episodes = (*store)->ListMidTermEpisodes("");
+
+    ASSERT_FALSE(episodes.ok());
+    EXPECT_EQ(episodes.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesRejectsMalformedEpisodeRows) {
+    const std::string episodes_body =
+        "[{\"episode_id\":\"ep_001\",\"tier1_detail\":null,\"tier3_ref\":\"ref\","
+        "\"tier3_keywords\":[\"memory\"],\"salience\":8,\"embedding\":[],"
+        "\"created_at\":\"2026-03-08T14:00:02Z\"}]";
+    RoutingHttpServer server({
+        { "/rest/v1/mid_term_episodes",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body },
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<Episode>> episodes =
+        (*store)->ListMidTermEpisodes("session_001");
+
+    ASSERT_FALSE(episodes.ok());
+    EXPECT_EQ(episodes.status().code(), absl::StatusCode::kInternal);
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+}
+
+TEST(SupabaseMemoryStoreTest, GetMidTermEpisodeReturnsSingleSessionScopedEpisode) {
+    const std::string episode_body =
+        "[{\"episode_id\":\"ep_001\",\"tier1_detail\":\"full detail\",\"tier2_summary\":"
+        "\"summary\",\"tier3_ref\":\"ref\",\"tier3_keywords\":[\"memory\"],\"salience\":8,"
+        "\"embedding\":[],\"created_at\":\"2026-03-08T14:00:02Z\"}]";
+    RoutingHttpServer server({
+        { "/rest/v1/mid_term_episodes",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(episode_body.size()) + "\r\n\r\n" + episode_body },
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::optional<Episode>> episode =
+        (*store)->GetMidTermEpisode("session_001", "ep_001");
+
+    ASSERT_TRUE(episode.ok()) << episode.status();
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    ASSERT_TRUE(episode->has_value());
+    EXPECT_EQ(episode->value().episode_id, "ep_001");
+    EXPECT_EQ(episode->value().tier1_detail, std::optional<std::string>("full detail"));
+}
+
+TEST(SupabaseMemoryStoreTest, GetMidTermEpisodeReturnsNulloptWhenNoRowsMatch) {
+    const std::string episode_body = "[]";
+    RoutingHttpServer server({
+        { "/rest/v1/mid_term_episodes",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(episode_body.size()) + "\r\n\r\n" + episode_body },
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::optional<Episode>> episode =
+        (*store)->GetMidTermEpisode("session_001", "ep_missing");
+
+    ASSERT_TRUE(episode.ok()) << episode.status();
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    EXPECT_FALSE(episode->has_value());
+}
+
+TEST(SupabaseMemoryStoreTest, GetMidTermEpisodeRejectsMissingIdentifiers) {
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:1",
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::optional<Episode>> missing_session =
+        (*store)->GetMidTermEpisode("", "ep_001");
+    ASSERT_FALSE(missing_session.ok());
+    EXPECT_EQ(missing_session.status().code(), absl::StatusCode::kInvalidArgument);
+
+    const absl::StatusOr<std::optional<Episode>> missing_episode =
+        (*store)->GetMidTermEpisode("session_001", "");
+    ASSERT_FALSE(missing_episode.ok());
+    EXPECT_EQ(missing_episode.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(SupabaseMemoryStoreTest, GetMidTermEpisodeRejectsMalformedEpisodeRows) {
+    const std::string episode_body =
+        "[{\"episode_id\":\"ep_001\",\"tier1_detail\":null,\"tier3_ref\":\"ref\","
+        "\"tier3_keywords\":[\"memory\"],\"salience\":8,\"embedding\":[],"
+        "\"created_at\":\"2026-03-08T14:00:02Z\"}]";
+    RoutingHttpServer server({
+        { "/rest/v1/mid_term_episodes",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(episode_body.size()) + "\r\n\r\n" + episode_body },
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::optional<Episode>> episode =
+        (*store)->GetMidTermEpisode("session_001", "ep_001");
+
+    ASSERT_FALSE(episode.ok());
+    EXPECT_EQ(episode.status().code(), absl::StatusCode::kInternal);
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+}
+
 TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes) {
     const std::string session_body =
         "[{\"session_id\":\"session_001\",\"user_id\":\"user_001\",\"system_prompt\":\"You are "
