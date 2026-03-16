@@ -141,6 +141,11 @@ struct Session {
     std::optional<Timestamp> ended_at;
 };
 
+[[nodiscard]] inline bool IsExpandableEpisode(const Episode& episode) {
+    return episode.salience >= 8 && episode.tier1_detail.has_value() &&
+           !episode.tier1_detail->empty();
+}
+
 NLOHMANN_JSON_SERIALIZE_ENUM(MessageRole, {
                                               { MessageRole::User, "user" },
                                               { MessageRole::Assistant, "assistant" },

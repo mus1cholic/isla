@@ -49,6 +49,19 @@ class RecordingMemoryStore final : public MemoryStore {
         return absl::OkStatus();
     }
 
+    absl::StatusOr<std::vector<Episode>>
+    ListMidTermEpisodes(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::vector<Episode>{};
+    }
+
+    absl::StatusOr<std::optional<Episode>>
+    GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const override {
+        static_cast<void>(session_id);
+        static_cast<void>(episode_id);
+        return std::nullopt;
+    }
+
     absl::StatusOr<std::optional<MemoryStoreSnapshot>>
     LoadSnapshot(std::string_view session_id) const override {
         static_cast<void>(session_id);
