@@ -699,6 +699,10 @@ TEST(OpenAiResponsesClientTest, RecordsPhaseThreeProviderTelemetryForSuccessfulS
     EXPECT_TRUE(test::ContainsTelemetryEvent(events, telemetry::kEventProviderCompleted));
     EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderSerializeRequest));
     EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderTransport));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderResponseHeaders));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderFirstBodyByte));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderFirstSseEvent));
+    EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderFirstTextDelta));
     EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseProviderStream));
 }
 

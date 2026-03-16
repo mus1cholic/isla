@@ -150,24 +150,36 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
         RecordTelemetryPhase(request.telemetry_context, telemetry::kPhaseProviderSerializeRequest,
                              serialize_started_at, serialize_completed_at);
 
+        const TurnTelemetryContext::Clock::time_point transport_started_at =
+            TurnTelemetryContext::Clock::now();
         std::optional<ScopedTelemetryPhase> provider_stream_phase;
+        bool recorded_first_sse_event = false;
         bool recorded_first_token = false;
         const OpenAiResponsesEventCallback telemetry_on_event =
             [&request, &on_event, &provider_stream_phase,
-             &recorded_first_token](const OpenAiResponsesEvent& event) -> absl::Status {
+             &recorded_first_sse_event, &recorded_first_token,
+             &transport_started_at](const OpenAiResponsesEvent& event) -> absl::Status {
             const TurnTelemetryContext::Clock::time_point event_at =
                 TurnTelemetryContext::Clock::now();
             if (!provider_stream_phase.has_value()) {
                 provider_stream_phase.emplace(request.telemetry_context,
                                               telemetry::kPhaseProviderStream, "", "", event_at);
             }
+            if (!recorded_first_sse_event) {
+                recorded_first_sse_event = true;
+                RecordTelemetryPhase(request.telemetry_context, telemetry::kPhaseProviderFirstSseEvent,
+                                     transport_started_at, event_at);
+            }
             return std::visit(
                 [&request, &on_event, &provider_stream_phase, &recorded_first_token,
-                 event_at](const auto& concrete_event) -> absl::Status {
+                 &transport_started_at, event_at](const auto& concrete_event) -> absl::Status {
                     using Event = std::decay_t<decltype(concrete_event)>;
                     if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
                         if (!recorded_first_token && !concrete_event.text_delta.empty()) {
                             recorded_first_token = true;
+                            RecordTelemetryPhase(request.telemetry_context,
+                                                 telemetry::kPhaseProviderFirstTextDelta,
+                                                 transport_started_at, event_at);
                             RecordTelemetryEvent(request.telemetry_context,
                                                  telemetry::kEventProviderFirstToken, event_at);
                         }
@@ -187,8 +199,6 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
                 event);
         };
 
-        const TurnTelemetryContext::Clock::time_point transport_started_at =
-            TurnTelemetryContext::Clock::now();
         RecordTelemetryEvent(request.telemetry_context, telemetry::kEventProviderDispatched,
                              transport_started_at);
         ScopedTelemetryPhase transport_phase(request.telemetry_context,
@@ -204,6 +214,14 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
                        << SanitizeForLog(config_.target) << "' detail='"
                        << SanitizeForLog(stream_result.status().message()) << "'";
             return stream_result.status();
+        }
+        if (stream_result->response_headers_at.has_value()) {
+            RecordTelemetryPhase(request.telemetry_context, telemetry::kPhaseProviderResponseHeaders,
+                                 transport_started_at, *stream_result->response_headers_at);
+        }
+        if (stream_result->first_body_byte_at.has_value()) {
+            RecordTelemetryPhase(request.telemetry_context, telemetry::kPhaseProviderFirstBodyByte,
+                                 transport_started_at, *stream_result->first_body_byte_at);
         }
         VLOG(1) << "AI gateway openai responses completed host='" << SanitizeForLog(config_.host)
                 << "' target='" << SanitizeForLog(config_.target)

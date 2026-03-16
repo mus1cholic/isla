@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -17,6 +18,8 @@ constexpr std::size_t kMaxOpenAiTransportHeaderBytes = 16U * 1024U;
 struct TransportStreamResult {
     SseParseSummary parse_summary;
     std::size_t body_bytes = 0;
+    std::optional<TurnTelemetryContext::Clock::time_point> response_headers_at;
+    std::optional<TurnTelemetryContext::Clock::time_point> first_body_byte_at;
 };
 
 absl::Status AppendTransportBytes(const OpenAiResponsesClientConfig& config, std::string_view chunk,
