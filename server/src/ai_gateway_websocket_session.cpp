@@ -64,6 +64,10 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
     }
 
     const HandleIncomingResult result = handler_.HandleIncomingJson(frame);
+    // NOTICE: `session.started` is encoded inside HandleIncomingJson(), so the transport sends the
+    // frame before the application sink can finish startup side effects like session persistence.
+    // TODO: Rework session.start so the application sink can accept or reject startup before
+    // `session.started` is emitted; until then, startup failures are surfaced as a follow-up error.
     absl::Status send_status = SendFrames(result.outgoing_frames);
     if (!send_status.ok()) {
         return send_status;

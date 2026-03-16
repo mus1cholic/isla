@@ -259,6 +259,7 @@ TEST_F(MemoryOrchestratorTest, HandleConversationMessagesPersistSessionAndTransc
     ASSERT_TRUE(memory.ok()) << memory.status();
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
 
     ASSERT_TRUE(handler
                     .HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
@@ -272,7 +273,7 @@ TEST_F(MemoryOrchestratorTest, HandleConversationMessagesPersistSessionAndTransc
     ASSERT_EQ(store->session_records.size(), 1U);
     EXPECT_EQ(store->session_records[0].session_id, "srv_test");
     EXPECT_EQ(store->session_records[0].user_id, "user_001");
-    EXPECT_EQ(store->session_records[0].created_at, Ts("2026-03-08T14:00:00Z"));
+    EXPECT_EQ(store->session_records[0].created_at, Ts("2026-03-08T13:59:55Z"));
 
     ASSERT_EQ(store->message_writes.size(), 2U);
     EXPECT_EQ(store->message_writes[0].conversation_item_index, 0);
@@ -284,6 +285,28 @@ TEST_F(MemoryOrchestratorTest, HandleConversationMessagesPersistSessionAndTransc
     EXPECT_EQ(store->message_writes[1].content, "hi there");
 }
 
+TEST_F(MemoryOrchestratorTest, BeginSessionPersistsSessionBeforeAnyTurn) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
+        .system_prompt = "You are Isla.",
+        .user_id = "user_001",
+    });
+    ASSERT_TRUE(memory.ok()) << memory.status();
+
+    MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
+    ASSERT_TRUE(handler
+                    .HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                      Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+
+    ASSERT_EQ(store->session_records.size(), 1U);
+    EXPECT_EQ(store->session_records[0].created_at, Ts("2026-03-08T13:59:55Z"));
+    ASSERT_EQ(store->message_writes.size(), 1U);
+    EXPECT_EQ(store->message_writes[0].content, "hello");
+}
+
 TEST_F(MemoryOrchestratorTest, SessionPersistenceRunsOnlyOnFirstTurn) {
     auto store = std::make_shared<RecordingMemoryStore>();
     absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
@@ -293,6 +316,7 @@ TEST_F(MemoryOrchestratorTest, SessionPersistenceRunsOnlyOnFirstTurn) {
     ASSERT_TRUE(memory.ok()) << memory.status();
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
 
     ASSERT_TRUE(handler
                     .HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
@@ -308,12 +332,33 @@ TEST_F(MemoryOrchestratorTest, SessionPersistenceRunsOnlyOnFirstTurn) {
                     .ok());
 
     ASSERT_EQ(store->session_records.size(), 1U);
+    EXPECT_EQ(store->session_records[0].created_at, Ts("2026-03-08T13:59:55Z"));
+}
+
+TEST_F(MemoryOrchestratorTest, BeginSessionMayBeRetriedExplicitlyAfterFailure) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->upsert_session_status = absl::InternalError("session write failed");
+    absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
+        .system_prompt = "You are Isla.",
+        .user_id = "user_001",
+    });
+    ASSERT_TRUE(memory.ok()) << memory.status();
+
+    MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+
+    const absl::Status begin_status = handler.BeginSession(Ts("2026-03-08T13:59:55Z"));
+    ASSERT_FALSE(begin_status.ok());
+    EXPECT_EQ(begin_status.code(), absl::StatusCode::kInternal);
+
+    store->upsert_session_status = absl::OkStatus();
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T14:00:00Z")).ok());
+
+    ASSERT_EQ(store->session_records.size(), 1U);
     EXPECT_EQ(store->session_records[0].created_at, Ts("2026-03-08T14:00:00Z"));
 }
 
-TEST_F(MemoryOrchestratorTest, HandleUserQueryPropagatesSessionPersistenceFailure) {
+TEST_F(MemoryOrchestratorTest, HandleUserQueryRequiresBeginSessionWhenStoreConfigured) {
     auto store = std::make_shared<RecordingMemoryStore>();
-    store->upsert_session_status = absl::InternalError("session write failed");
     absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
         .system_prompt = "You are Isla.",
         .user_id = "user_001",
@@ -326,8 +371,9 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryPropagatesSessionPersistenceFailur
         GatewayUserQuery("srv_test", "turn_001", "hello", Ts("2026-03-08T14:00:00Z")));
 
     ASSERT_FALSE(result.ok());
-    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
     EXPECT_TRUE(store->message_writes.empty());
+    EXPECT_TRUE(store->session_records.empty());
 }
 
 TEST_F(MemoryOrchestratorTest, HandleUserQueryPropagatesMessagePersistenceFailure) {
@@ -340,6 +386,7 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryPropagatesMessagePersistenceFailur
     ASSERT_TRUE(memory.ok()) << memory.status();
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
 
     const absl::StatusOr<UserQueryMemoryResult> result = handler.HandleUserQuery(
         GatewayUserQuery("srv_test", "turn_001", "hello", Ts("2026-03-08T14:00:00Z")));
@@ -360,6 +407,7 @@ TEST_F(MemoryOrchestratorTest,
     ASSERT_TRUE(memory.ok()) << memory.status();
 
     MemoryOrchestrator handler("srv_test", std::move(*memory), store);
+    ASSERT_TRUE(handler.BeginSession(Ts("2026-03-08T13:59:55Z")).ok());
 
     const absl::StatusOr<UserQueryMemoryResult> result = handler.HandleUserQuery(
         GatewayUserQuery("srv_test", "turn_001", "hello", Ts("2026-03-08T14:00:00Z")));

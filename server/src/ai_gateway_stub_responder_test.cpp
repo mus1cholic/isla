@@ -20,6 +20,7 @@
 
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 #include "openai_responses_test_utils.hpp"
 
@@ -337,11 +338,161 @@ class GatewayStubResponderTest : public ::testing::Test {
     std::shared_ptr<RecordingLiveSession> session_;
 };
 
+class RecordingGatewayMemoryStore final : public isla::server::memory::MemoryStore {
+  public:
+    absl::Status UpsertSession(const isla::server::memory::MemorySessionRecord& record) override {
+        ++upsert_session_attempts;
+        if (next_upsert_session_status_index < upsert_session_statuses.size()) {
+            const absl::Status status = upsert_session_statuses[next_upsert_session_status_index++];
+            if (!status.ok()) {
+                return status;
+            }
+        }
+        session_records.push_back(record);
+        return absl::OkStatus();
+    }
+
+    absl::Status AppendConversationMessage(
+        const isla::server::memory::ConversationMessageWrite& write) override {
+        message_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status ReplaceConversationItemWithEpisodeStub(
+        const isla::server::memory::EpisodeStubWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::StatusOr<std::optional<isla::server::memory::MemoryStoreSnapshot>>
+    LoadSnapshot(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::nullopt;
+    }
+
+    std::vector<isla::server::memory::MemorySessionRecord> session_records;
+    std::vector<isla::server::memory::ConversationMessageWrite> message_writes;
+    std::vector<absl::Status> upsert_session_statuses;
+    std::size_t next_upsert_session_status_index = 0;
+    std::size_t upsert_session_attempts = 0;
+};
+
 TEST_F(GatewayStubResponderTest, SessionStartCreatesMemoryPromptBeforeAnyTurn) {
     const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
     ASSERT_TRUE(prompt.ok()) << prompt.status();
     EXPECT_NE(prompt->find("<conversation>"), std::string::npos);
     EXPECT_NE(prompt->find("- (empty)"), std::string::npos);
+}
+
+TEST(GatewayStubResponderStandaloneTest, SessionStartPersistsSessionBeforeFirstTurn) {
+    auto store = std::make_shared<RecordingGatewayMemoryStore>();
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .memory_user_id = "gateway_user",
+        .memory_store = store,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    ASSERT_EQ(store->session_records.size(), 1U);
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+    EXPECT_EQ(store->session_records.size(), 1U);
+    ASSERT_EQ(store->message_writes.size(), 2U);
+    EXPECT_EQ(store->message_writes[0].content, "hello");
+    EXPECT_EQ(store->message_writes[1].content, "stub echo: hello");
+}
+
+TEST(GatewayStubResponderStandaloneTest, SessionStartRetriesTransientPersistenceFailures) {
+    auto store = std::make_shared<RecordingGatewayMemoryStore>();
+    store->upsert_session_statuses = {
+        absl::UnavailableError("supabase unavailable"),
+        absl::DeadlineExceededError("supabase timeout"),
+    };
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .session_start_persistence_max_attempts = 3,
+        .session_start_persistence_retry_delay = 0ms,
+        .memory_user_id = "gateway_user",
+        .memory_store = store,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    EXPECT_EQ(store->upsert_session_attempts, 3U);
+    ASSERT_EQ(store->session_records.size(), 1U);
+    EXPECT_TRUE(session->events().empty());
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     SessionStartExhaustedRetriesEmitsErrorAndDoesNotRetryOnFirstTurn) {
+    auto store = std::make_shared<RecordingGatewayMemoryStore>();
+    store->upsert_session_statuses = {
+        absl::UnavailableError("supabase unavailable"),
+        absl::UnavailableError("supabase still unavailable"),
+        absl::UnavailableError("supabase unavailable again"),
+    };
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .session_start_persistence_max_attempts = 3,
+        .session_start_persistence_retry_delay = 0ms,
+        .memory_user_id = "gateway_user",
+        .memory_store = store,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    ASSERT_TRUE(session->WaitForEventCount(1U));
+    EXPECT_EQ(store->upsert_session_attempts, 3U);
+    ASSERT_EQ(store->session_records.size(), 0U);
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(3U));
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 3U);
+    EXPECT_EQ(events[0].op, "error");
+    EXPECT_EQ(events[0].turn_id, "");
+    EXPECT_EQ(events[0].payload, "service_unavailable:failed to initialize session memory");
+    EXPECT_EQ(events[1].op, "error");
+    EXPECT_EQ(events[1].turn_id, "turn_1");
+    EXPECT_EQ(events[1].payload, "internal_error:stub responder failed to update memory");
+    EXPECT_EQ(events[2].op, "turn.completed");
+    EXPECT_EQ(events[2].turn_id, "turn_1");
+    EXPECT_EQ(store->upsert_session_attempts, 3U);
 }
 
 TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenAiClient) {

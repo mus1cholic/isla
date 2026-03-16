@@ -23,6 +23,8 @@ namespace isla::server::ai_gateway {
 struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
+    std::size_t session_start_persistence_max_attempts = 3;
+    std::chrono::milliseconds session_start_persistence_retry_delay{ 100 };
     std::string memory_user_id = "gateway_user";
     isla::server::memory::MemoryStorePtr memory_store;
     OpenAiResponsesClientConfig openai_config;
@@ -91,11 +93,15 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void FinishProcessingExceptionTurn(const PendingTurn& turn, std::string_view detail) noexcept;
     void FinishSuccessfulTurn(const PendingTurn& turn);
     void FinishCancelledTurn(const PendingTurn& turn);
+    void BestEffortEmitSessionStartFailure(std::string_view session_id,
+                                           const absl::Status& status) noexcept;
     void FinishServerStoppingTurn(GatewaySessionRegistry& session_registry,
                                   const PendingTurn& turn);
     [[nodiscard]] GatewaySessionRegistry* session_registry() const;
     [[nodiscard]] std::shared_ptr<SessionMemoryState>
     FindSessionMemory(std::string_view session_id) const;
+    [[nodiscard]] std::optional<absl::Status>
+    FindSessionStartFailure(std::string_view session_id) const;
     [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id);
     [[nodiscard]] absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
     HandleAcceptedTurnMemory(const TurnAcceptedEvent& event);
@@ -111,6 +117,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     absl::flat_hash_map<std::string, PendingTurn> pending_turns_;
     absl::flat_hash_map<std::string, PendingTurn> in_progress_turns_;
     absl::flat_hash_map<std::string, std::shared_ptr<SessionMemoryState>> memory_by_session_;
+    absl::flat_hash_map<std::string, absl::Status> failed_session_starts_;
     bool stopping_ = false;
     bool worker_stop_requested_ = false;
     std::size_t accepted_turns_count_ = 0;
