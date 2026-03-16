@@ -247,6 +247,13 @@ std::string FindHeaderValue(const beast::http::response_parser<beast::http::buff
     return std::string(it->value());
 }
 
+void MaybeSetFirstBodyByteAt(TransportStreamResult* result) {
+    if (result == nullptr || result->first_body_byte_at.has_value()) {
+        return;
+    }
+    result->first_body_byte_at = TurnTelemetryContext::Clock::now();
+}
+
 // Reads one decoded body chunk through Beast's HTTP parser. Returns the number
 // of decoded bytes written into |buffer|. Uses buffer_body so Beast handles
 // chunked Transfer-Encoding transparently. Sets |*http_done| when the HTTP
@@ -395,9 +402,7 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
                 return decoded.status();
             }
             if (*decoded > 0U) {
-                if (!result.first_body_byte_at.has_value()) {
-                    result.first_body_byte_at = TurnTelemetryContext::Clock::now();
-                }
+                MaybeSetFirstBodyByteAt(&result);
                 ++decoded_chunk_count;
                 if (decoded_chunk_count <= 3U) {
                     const auto now = TurnTelemetryContext::Clock::now();
@@ -445,9 +450,7 @@ ExecuteStreamingResponse(asio::io_context* io_context, Stream* stream,
         }
 
         if (*decoded > 0U && !sse_completed) {
-            if (!result.first_body_byte_at.has_value()) {
-                result.first_body_byte_at = TurnTelemetryContext::Clock::now();
-            }
+            MaybeSetFirstBodyByteAt(&result);
             ++decoded_chunk_count;
             if (decoded_chunk_count <= 5U) {
                 const auto now = TurnTelemetryContext::Clock::now();
