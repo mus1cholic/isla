@@ -447,6 +447,39 @@ TEST(GatewayStubResponderStandaloneTest, SessionStartRetriesTransientPersistence
     EXPECT_TRUE(session->events().empty());
 }
 
+TEST(GatewayStubResponderStandaloneTest, SessionStartDoesNotRetryNonRetryableFailures) {
+    auto store = std::make_shared<RecordingGatewayMemoryStore>();
+    store->upsert_session_statuses = {
+        absl::PermissionDeniedError("supabase denied"),
+        absl::UnavailableError("should not be consumed"),
+    };
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .session_start_persistence_max_attempts = 3,
+        .session_start_persistence_retry_delay = 0ms,
+        .memory_user_id = "gateway_user",
+        .memory_store = store,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    GatewaySessionRegistry registry(&responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    responder.AttachSessionRegistry(&registry);
+    registry.RegisterSession(session);
+
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    ASSERT_TRUE(session->WaitForEventCount(1U));
+    EXPECT_EQ(store->upsert_session_attempts, 1U);
+    ASSERT_TRUE(store->session_records.empty());
+
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].op, "error");
+    EXPECT_EQ(events[0].turn_id, "");
+    EXPECT_EQ(events[0].payload, "internal_error:failed to initialize session memory");
+}
+
 TEST(GatewayStubResponderStandaloneTest,
      SessionStartExhaustedRetriesEmitsErrorAndDoesNotRetryOnFirstTurn) {
     auto store = std::make_shared<RecordingGatewayMemoryStore>();

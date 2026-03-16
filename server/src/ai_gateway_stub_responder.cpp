@@ -906,6 +906,7 @@ GatewayStubResponder::FindSessionStartFailure(std::string_view session_id) const
 
 absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view session_id) {
     std::shared_ptr<SessionMemoryState> session_memory;
+    const Clock::time_point initialization_started_at = Clock::now();
     {
         // Hold the lifecycle mutex across construction/insertion so OnSessionClosed cannot erase
         // the session and then have us recreate memory for an already-closed session. The store
@@ -942,8 +943,18 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
             final_status = session_memory->orchestrator.BeginSession(session_start_time);
         }
         if (final_status.ok()) {
-            VLOG(1) << "AI gateway stub initialized session memory session="
-                    << SanitizeForLog(session_id);
+            const auto attempts_used = attempt;
+            const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         Clock::now() - initialization_started_at)
+                                         .count();
+            if (attempts_used == 1U) {
+                VLOG(1) << "AI gateway stub initialized session memory session="
+                        << SanitizeForLog(session_id);
+            } else {
+                LOG(INFO) << "AI gateway stub initialized session memory after retry session="
+                          << SanitizeForLog(session_id) << " attempts=" << attempts_used
+                          << " max_attempts=" << max_attempts << " duration_ms=" << duration_ms;
+            }
             return absl::OkStatus();
         }
         if (!IsRetryableSessionStartStatus(final_status) || attempt == max_attempts) {
@@ -963,6 +974,21 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         memory_by_session_.erase(std::string(session_id));
         failed_session_starts_.insert_or_assign(std::string(session_id), final_status);
     }
+    const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 Clock::now() - initialization_started_at)
+                                 .count();
+    if (IsRetryableSessionStartStatus(final_status)) {
+        LOG(ERROR) << "AI gateway stub exhausted session memory initialization retries session="
+                   << SanitizeForLog(session_id) << " attempts=" << max_attempts
+                   << " duration_ms=" << duration_ms << " detail='"
+                   << SanitizeForLog(final_status.message()) << "'";
+    } else {
+        LOG(ERROR) << "AI gateway stub hit non-retryable session memory initialization failure "
+                      "session="
+                   << SanitizeForLog(session_id) << " attempts=1"
+                   << " duration_ms=" << duration_ms << " detail='"
+                   << SanitizeForLog(final_status.message()) << "'";
+    }
     return final_status;
 }
 
@@ -970,6 +996,10 @@ absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
 GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
     if (const std::optional<absl::Status> start_failure = FindSessionStartFailure(event.session_id);
         start_failure.has_value()) {
+        LOG(WARNING) << "AI gateway stub rejecting turn because session startup previously failed "
+                     << "session=" << SanitizeForLog(event.session_id)
+                     << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='"
+                     << SanitizeForLog(start_failure->message()) << "'";
         return *start_failure;
     }
     const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(event.session_id);
