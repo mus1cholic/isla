@@ -941,13 +941,14 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
                                          ? 1U
                                          : config_.session_start_persistence_max_attempts;
     absl::Status final_status = absl::OkStatus();
+    std::size_t attempts_used = 0;
     for (std::size_t attempt = 1; attempt <= max_attempts; ++attempt) {
+        attempts_used = attempt;
         {
             std::lock_guard<std::mutex> session_lock(session_memory->mutex);
             final_status = session_memory->orchestrator.BeginSession(session_start_time);
         }
         if (final_status.ok()) {
-            const auto attempts_used = attempt;
             const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                          Clock::now() - initialization_started_at)
                                          .count();
@@ -994,7 +995,7 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
     } else {
         LOG(ERROR) << "AI gateway stub hit non-retryable session memory initialization failure "
                       "session="
-                   << SanitizeForLog(session_id) << " attempts=1"
+                   << SanitizeForLog(session_id) << " attempts=" << attempts_used
                    << " duration_ms=" << duration_ms << " detail='"
                    << SanitizeForLog(final_status.message()) << "'";
     }
