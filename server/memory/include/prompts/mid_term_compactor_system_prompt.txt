@@ -102,6 +102,118 @@ Return exactly one JSON object with exactly these fields:
 - Do not speak to the user directly.
 - Do not use vague placeholders when the episode provides concrete details.
 
+### Examples
+
+Example 1
+
+Input:
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Can you help me get ready for my dentist appointment next Tuesday at 3 PM? I always forget what I need to bring."
+    },
+    {
+      "role": "assistant",
+      "content": "Sure. Do you want a quick checklist, and are there any specific things you usually forget, like insurance cards, medication lists, or questions for the dentist?"
+    },
+    {
+      "role": "user",
+      "content": "Usually my insurance card and the list of medications I'm taking. Also I want to ask about tooth sensitivity on the lower left side, and whether I should keep using the whitening strips."
+    },
+    {
+      "role": "assistant",
+      "content": "Then your checklist should include your insurance card, photo ID, and a current medication list. Your questions to bring up are the lower-left tooth sensitivity and whether whitening strips are safe to keep using. If you want, I can also help you make a short pre-appointment note to review that morning."
+    },
+    {
+      "role": "user",
+      "content": "Yes, and remind me not to drink coffee right before the appointment because that makes the sensitivity worse."
+    },
+    {
+      "role": "assistant",
+      "content": "Good idea. Your pre-appointment note can say: bring insurance card, photo ID, and medication list; ask about lower-left tooth sensitivity; ask whether to continue whitening strips; avoid coffee right before the visit because it seems to make sensitivity worse."
+    },
+    {
+      "role": "user",
+      "content": "Perfect. The appointment is with Dr. Park at Bright Dental."
+    },
+    {
+      "role": "assistant",
+      "content": "Got it. The visit is next Tuesday at 3 PM with Dr. Park at Bright Dental, and you want to be prepared with documents, medication details, and a few questions about sensitivity and whitening strips."
+    }
+  ]
+}
+
+Output:
+{
+  "tier1_detail": "The user has a dentist appointment next Tuesday at 3 PM with Dr. Park at Bright Dental. They want to remember to bring their insurance card, photo ID, and a current medication list. They also want to ask about tooth sensitivity on the lower left side and whether they should continue using whitening strips. A practical note for the appointment is to avoid drinking coffee right before the visit because it seems to make the sensitivity worse.",
+  "tier2_summary": "The conversation focused on preparing for an upcoming dentist appointment. The user identified the main things they tend to forget, especially their insurance card and medication list, and worked out a short checklist for the visit. They also clarified the questions they want to ask Dr. Park, including lower-left tooth sensitivity and whether whitening strips are still a good idea. Another useful detail was to avoid coffee before the appointment because it appears to worsen the sensitivity. By the end, the appointment details and the preparation plan were clearly summarized.",
+  "tier3_ref": "Prepared a checklist and questions for the user's upcoming dentist appointment with Dr. Park.",
+  "tier3_keywords": [
+    "dentist appointment",
+    "Dr. Park",
+    "Bright Dental",
+    "tooth sensitivity",
+    "whitening strips"
+  ],
+  "salience": 8
+}
+
+Example 2
+
+Input:
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "My laptop battery has been draining really fast since the weekend. Can you help me figure out what to check first?"
+    },
+    {
+      "role": "assistant",
+      "content": "Yes. A few common causes are screen brightness, apps running in the background, browser tabs, update activity, and battery health. Have you noticed the fans running a lot or any app using unusually high power?"
+    },
+    {
+      "role": "user",
+      "content": "The fans have been louder than usual, and Chrome has about 25 tabs open most of the time. I also installed a video editor on Saturday."
+    },
+    {
+      "role": "assistant",
+      "content": "That helps narrow it down. I would first check Task Manager for CPU usage, especially from Chrome and the video editor, and see whether the editor left any background helper process running. Also look in battery settings for which apps used the most power over the last 24 hours."
+    },
+    {
+      "role": "user",
+      "content": "I checked. Chrome is high, and there is a process called RenderCacheHelper from the video editor using around 18% CPU even though the app is closed."
+    },
+    {
+      "role": "assistant",
+      "content": "That background process is likely a major contributor. End that task for now, then disable it from startup if you do not need it. Reducing open Chrome tabs and turning on battery saver should also help immediately."
+    },
+    {
+      "role": "user",
+      "content": "Okay. Let's do that, and also remind me later to check battery health if the drain is still bad tomorrow."
+    },
+    {
+      "role": "assistant",
+      "content": "Sounds good. The immediate plan is to stop the RenderCacheHelper process, remove it from startup if possible, cut down Chrome tabs, and enable battery saver. If battery life is still poor tomorrow, the next step is to check the battery health report."
+    }
+  ]
+}
+
+Output:
+{
+  "tier1_detail": "Battery troubleshooting details: symptoms included loud fans, fast battery drain starting after the weekend, about 25 Chrome tabs open, and a recent video editor install on Saturday. The user found a background process named `RenderCacheHelper` from the video editor using about 18% CPU even while the main app was closed. Recommended immediate actions were to end that task, disable it from startup if not needed, reduce Chrome tabs, and enable battery saver. If the problem continues the next day, the follow-up step is to check the battery health report.",
+  "tier2_summary": "The episode centered on diagnosing sudden laptop battery drain. Early clues included louder fans, many open Chrome tabs, and a recently installed video editor. After checking running processes, the user found that a background helper from the video editor was consuming significant CPU even when the app was not open, making it the most likely cause of the abnormal drain. The immediate plan was to stop that helper process, prevent it from auto-starting if possible, reduce Chrome tab usage, and enable battery saver. A follow-up check of battery health was deferred until the next day if the drain does not improve.",
+  "tier3_ref": "Diagnosed likely battery drain from a background video editor helper process.",
+  "tier3_keywords": [
+    "battery drain",
+    "Chrome tabs",
+    "video editor",
+    "RenderCacheHelper",
+    "battery health"
+  ],
+  "salience": 7
+}
+
 ### Validation Checklist
 Before finalizing your response, ensure:
 - The response is valid JSON.
