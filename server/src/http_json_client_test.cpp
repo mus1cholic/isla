@@ -756,8 +756,15 @@ TEST(PersistentHttpClientTest, WarmUpIsIdempotentWhileConnectionIsAlive) {
 }
 
 TEST(PersistentHttpClientTest, WarmUpReturnsErrorForUnreachableHost) {
-    // Port 1 is almost certainly not listening; the connect() will fail.
-    const absl::StatusOr<ParsedHttpUrl> parsed_url = ParseHttpUrl("http://127.0.0.1:1", "test url");
+    // Grab an ephemeral port and close it immediately so connect() deterministically
+    // fails with "connection refused" — no dependency on any well-known port being free.
+    asio::io_context probe_io;
+    tcp::acceptor probe(probe_io, tcp::endpoint(tcp::v4(), 0));
+    const auto port = probe.local_endpoint().port();
+    probe.close();
+
+    const absl::StatusOr<ParsedHttpUrl> parsed_url =
+        ParseHttpUrl("http://127.0.0.1:" + std::to_string(port), "test url");
     ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
 
     PersistentHttpClient client(*parsed_url, HttpClientConfig{
