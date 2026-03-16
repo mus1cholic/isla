@@ -823,6 +823,11 @@ absl::Status PersistentInProcessTransport::EnsureConnected() {
 #endif
 }
 
+absl::Status PersistentInProcessTransport::WarmUp() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return EnsureConnected();
+}
+
 void PersistentInProcessTransport::Disconnect() {
     if (impl_->tcp_stream) {
         CloseInProcessStream(impl_->tcp_stream.get());

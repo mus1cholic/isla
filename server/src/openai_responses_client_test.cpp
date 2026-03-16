@@ -2472,5 +2472,104 @@ TEST(PersistentInProcessTransportTest, RetriesOnStaleConnectionWriteFailure) {
     EXPECT_EQ(server.requests_served(), kNumRequests);
 }
 
+TEST(PersistentInProcessTransportTest, WarmUpEstablishesConnectionBeforeFirstRequest) {
+    constexpr std::size_t kNumRequests = 1;
+    MultiRequestSseServer server(kNumRequests);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    // WarmUp eagerly establishes the TCP connection.
+    ASSERT_TRUE(client->WarmUp().ok());
+
+    // The subsequent StreamResponse reuses the warm connection.
+    std::string output_text;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "test-model",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            std::visit(
+                [&](const auto& e) {
+                    using E = std::decay_t<decltype(e)>;
+                    if constexpr (std::is_same_v<E, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += e.text_delta;
+                    }
+                },
+                event);
+            return absl::OkStatus();
+        });
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_EQ(output_text, "hi");
+
+    ASSERT_TRUE(server.WaitForCompletion());
+    // Only one TCP connection was opened (by WarmUp), and StreamResponse reused it.
+    EXPECT_EQ(server.connections_accepted(), 1U);
+    EXPECT_EQ(server.requests_served(), kNumRequests);
+}
+
+TEST(PersistentInProcessTransportTest, WarmUpIsIdempotentWhileConnectionIsAlive) {
+    constexpr std::size_t kNumRequests = 1;
+    MultiRequestSseServer server(kNumRequests);
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    ASSERT_TRUE(client->WarmUp().ok());
+    ASSERT_TRUE(client->WarmUp().ok()); // Second call is a no-op.
+
+    std::string output_text;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "test-model",
+            .user_text = "hello",
+        },
+        [&](const OpenAiResponsesEvent& event) -> absl::Status {
+            std::visit(
+                [&](const auto& e) {
+                    using E = std::decay_t<decltype(e)>;
+                    if constexpr (std::is_same_v<E, OpenAiResponsesTextDeltaEvent>) {
+                        output_text += e.text_delta;
+                    }
+                },
+                event);
+            return absl::OkStatus();
+        });
+    ASSERT_TRUE(status.ok()) << status;
+
+    ASSERT_TRUE(server.WaitForCompletion());
+    // Still only one TCP connection despite two WarmUp calls.
+    EXPECT_EQ(server.connections_accepted(), 1U);
+}
+
+TEST(PersistentInProcessTransportTest, WarmUpReturnsErrorForUnreachableHost) {
+    auto resolver =
+        std::make_shared<FixedStatusHostResolver>(absl::UnavailableError("DNS resolution failed"));
+    ScopedOpenAiResponsesHostResolverOverrideForTest override_guard(resolver);
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "unreachable.invalid",
+        .port = 9999,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->WarmUp();
+    EXPECT_FALSE(status.ok());
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway

@@ -103,6 +103,13 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
         return absl::OkStatus();
     }
 
+    [[nodiscard]] absl::Status WarmUp() const override {
+        if (transport_ != nullptr) {
+            return transport_->WarmUp();
+        }
+        return absl::OkStatus();
+    }
+
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
@@ -156,8 +163,8 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
         bool recorded_first_sse_event = false;
         bool recorded_first_token = false;
         const OpenAiResponsesEventCallback telemetry_on_event =
-            [&request, &on_event, &provider_stream_phase,
-             &recorded_first_sse_event, &recorded_first_token,
+            [&request, &on_event, &provider_stream_phase, &recorded_first_sse_event,
+             &recorded_first_token,
              &transport_started_at](const OpenAiResponsesEvent& event) -> absl::Status {
             const TurnTelemetryContext::Clock::time_point event_at =
                 TurnTelemetryContext::Clock::now();
@@ -167,8 +174,9 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
             }
             if (!recorded_first_sse_event) {
                 recorded_first_sse_event = true;
-                RecordTelemetryPhase(request.telemetry_context, telemetry::kPhaseProviderFirstSseEvent,
-                                     transport_started_at, event_at);
+                RecordTelemetryPhase(request.telemetry_context,
+                                     telemetry::kPhaseProviderFirstSseEvent, transport_started_at,
+                                     event_at);
             }
             return std::visit(
                 [&request, &on_event, &provider_stream_phase, &recorded_first_token,
@@ -216,8 +224,9 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
             return stream_result.status();
         }
         if (stream_result->response_headers_at.has_value()) {
-            RecordTelemetryPhase(request.telemetry_context, telemetry::kPhaseProviderResponseHeaders,
-                                 transport_started_at, *stream_result->response_headers_at);
+            RecordTelemetryPhase(request.telemetry_context,
+                                 telemetry::kPhaseProviderResponseHeaders, transport_started_at,
+                                 *stream_result->response_headers_at);
         }
         if (stream_result->first_body_byte_at.has_value()) {
             RecordTelemetryPhase(request.telemetry_context, telemetry::kPhaseProviderFirstBodyByte,

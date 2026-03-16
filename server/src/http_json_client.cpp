@@ -605,6 +605,11 @@ absl::Status PersistentHttpClient::EnsureConnected() {
 #endif
 }
 
+absl::Status PersistentHttpClient::WarmUp() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return EnsureConnected();
+}
+
 void PersistentHttpClient::Disconnect() {
     if (impl_->tcp_stream) {
         CloseStream(impl_->tcp_stream.get());

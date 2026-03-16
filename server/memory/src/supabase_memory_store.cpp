@@ -276,6 +276,10 @@ class SupabaseMemoryStore final : public MemoryStore {
                         std::unique_ptr<PersistentHttpClient> client)
         : config_(std::move(config)), client_(std::move(client)) {}
 
+    [[nodiscard]] absl::Status WarmUp() override {
+        return client_->WarmUp();
+    }
+
     [[nodiscard]] absl::Status UpsertSession(const MemorySessionRecord& record) override {
         ScopedSupabaseOperationLatency latency(config_, "upsert_session", record.session_id);
         if (absl::Status status = ValidateMemorySessionRecord(record); !status.ok()) {

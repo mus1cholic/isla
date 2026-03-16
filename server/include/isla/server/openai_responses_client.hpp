@@ -53,6 +53,15 @@ class OpenAiResponsesClient {
     virtual ~OpenAiResponsesClient() = default;
 
     [[nodiscard]] virtual absl::Status Validate() const = 0;
+
+    // Eagerly establishes the underlying transport connection (TCP/TLS) so that
+    // the first StreamResponse() call does not pay the connection-setup latency.
+    // Default implementation is a no-op for clients that do not maintain
+    // persistent connections. Safe to call multiple times.
+    [[nodiscard]] virtual absl::Status WarmUp() const {
+        return absl::OkStatus();
+    }
+
     // Streams response events in upstream order. Implementations must invoke `on_event`
     // synchronously and non-concurrently on the calling thread. Returning a non-OK status from
     // `on_event` must abort streaming and be propagated from `StreamResponse(...)`. A successful

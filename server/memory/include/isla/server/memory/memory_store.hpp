@@ -69,6 +69,14 @@ class MemoryStore {
   public:
     virtual ~MemoryStore() = default;
 
+    // Eagerly establishes the underlying transport connection so that the first
+    // data operation does not pay the connection-setup latency. Default
+    // implementation is a no-op for stores that connect lazily. Safe to call
+    // multiple times.
+    [[nodiscard]] virtual absl::Status WarmUp() {
+        return absl::OkStatus();
+    }
+
     [[nodiscard]] virtual absl::Status UpsertSession(const MemorySessionRecord& record) = 0;
     [[nodiscard]] virtual absl::Status
     AppendConversationMessage(const ConversationMessageWrite& write) = 0;

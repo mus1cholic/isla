@@ -693,6 +693,82 @@ TEST(PersistentHttpClientTest, HandlesPostRequestsWithBody) {
     EXPECT_EQ(server.connections_accepted(), 1);
 }
 
+TEST(PersistentHttpClientTest, WarmUpEstablishesConnectionBeforeFirstRequest) {
+    const std::string body = "{\"ok\":true}";
+    MultiRequestHttpServer server("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                  "Connection: keep-alive\r\nContent-Length: " +
+                                      std::to_string(body.size()) + "\r\n\r\n" + body,
+                                  5);
+
+    const absl::StatusOr<ParsedHttpUrl> parsed_url =
+        ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
+    ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
+
+    PersistentHttpClient client(*parsed_url, HttpClientConfig{
+                                                 .request_timeout = 2s,
+                                                 .user_agent = "isla-persistent-test",
+                                             });
+
+    // WarmUp eagerly establishes the TCP connection.
+    ASSERT_TRUE(client.WarmUp().ok());
+
+    // The subsequent Execute reuses the warm connection.
+    const absl::StatusOr<HttpResponse> response = client.Execute(HttpRequestSpec{
+        .method = boost::beast::http::verb::get,
+        .target_path = "/rest/v1/test",
+    });
+    ASSERT_TRUE(response.ok()) << response.status();
+    EXPECT_EQ(response->status_code, 200U);
+    EXPECT_EQ(response->body, body);
+
+    // Only one TCP connection was opened (by WarmUp), and Execute reused it.
+    EXPECT_EQ(server.connections_accepted(), 1);
+}
+
+TEST(PersistentHttpClientTest, WarmUpIsIdempotentWhileConnectionIsAlive) {
+    const std::string body = "{\"ok\":true}";
+    MultiRequestHttpServer server("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                  "Connection: keep-alive\r\nContent-Length: " +
+                                      std::to_string(body.size()) + "\r\n\r\n" + body,
+                                  5);
+
+    const absl::StatusOr<ParsedHttpUrl> parsed_url =
+        ParseHttpUrl("http://127.0.0.1:" + std::to_string(server.port()), "test url");
+    ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
+
+    PersistentHttpClient client(*parsed_url, HttpClientConfig{
+                                                 .request_timeout = 2s,
+                                                 .user_agent = "isla-persistent-test",
+                                             });
+
+    ASSERT_TRUE(client.WarmUp().ok());
+    ASSERT_TRUE(client.WarmUp().ok()); // Second call is a no-op.
+
+    const absl::StatusOr<HttpResponse> response = client.Execute(HttpRequestSpec{
+        .method = boost::beast::http::verb::get,
+        .target_path = "/rest/v1/test",
+    });
+    ASSERT_TRUE(response.ok()) << response.status();
+    EXPECT_EQ(response->status_code, 200U);
+
+    // Still only one TCP connection despite two WarmUp calls.
+    EXPECT_EQ(server.connections_accepted(), 1);
+}
+
+TEST(PersistentHttpClientTest, WarmUpReturnsErrorForUnreachableHost) {
+    // Port 1 is almost certainly not listening; the connect() will fail.
+    const absl::StatusOr<ParsedHttpUrl> parsed_url = ParseHttpUrl("http://127.0.0.1:1", "test url");
+    ASSERT_TRUE(parsed_url.ok()) << parsed_url.status();
+
+    PersistentHttpClient client(*parsed_url, HttpClientConfig{
+                                                 .request_timeout = 500ms,
+                                                 .user_agent = "isla-persistent-test",
+                                             });
+
+    const absl::Status status = client.WarmUp();
+    EXPECT_FALSE(status.ok());
+}
+
 #if !defined(_WIN32)
 TEST(HttpJsonClientTest, PerformsHttpsRequestWithInjectedTrust) {
     const std::string body = "{\"ok\":true}";

@@ -1184,5 +1184,69 @@ TEST(AiGatewayServerLifecycleTest, RejectsBindingToInUsePort) {
     first.Stop();
 }
 
+TEST(AiGatewayServerIntegrationTest, ServerOperatesNormallyAfterOpenAiClientWarmUpFailure) {
+    // Mirrors the main() pattern: warmup is attempted before server.Start() and its failure
+    // is only a warning. The server must still accept connections and process turns.
+    auto failing_warmup_client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            const std::string text =
+                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
+            const absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        },
+        absl::UnavailableError("simulated warmup failure"));
+
+    // Warmup fails — this is the scenario under test.
+    ASSERT_FALSE(failing_warmup_client->WarmUp().ok());
+
+    // The server starts and operates normally despite the warmup failure.
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = failing_warmup_client,
+    });
+    GatewayServer server(
+        GatewayServerConfig{ .bind_host = "127.0.0.1", .port = 0, .listen_backlog = 4 }, &responder,
+        std::make_unique<SequentialSessionIdGenerator>("srv_warmup_"));
+    responder.AttachSessionRegistry(&server.session_registry());
+
+    ASSERT_TRUE(server.Start().ok());
+    ASSERT_TRUE(server.is_running());
+
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+
+    ASSERT_TRUE(
+        client
+            .SendJson(
+                R"json({"type":"text.input","turn_id":"turn_1","text":"hello after warmup fail"})json")
+            .ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> text_output = client.ReadJsonFrame();
+    ASSERT_TRUE(text_output.ok()) << text_output.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(*text_output));
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_output).text,
+              "stub echo: hello after warmup fail");
+
+    const absl::StatusOr<protocol::GatewayMessage> turn_completed = client.ReadJsonFrame();
+    ASSERT_TRUE(turn_completed.ok()) << turn_completed.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*turn_completed));
+
+    client.CloseTransport();
+    server.Stop();
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway
