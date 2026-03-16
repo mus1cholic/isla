@@ -771,15 +771,24 @@ PersistentInProcessTransport::Execute(const std::string& request_json,
         return result;
     }
 
-    VLOG(1) << "AI gateway openai responses persistent transport retrying on stale connection "
-               "host='"
-            << SanitizeForLog(config_.host)
-            << "' status_code=" << static_cast<int>(result.status().code()) << " detail='"
-            << SanitizeForLog(result.status().message()) << "'";
+    LOG(WARNING) << "AI gateway openai responses persistent transport retrying on stale connection "
+                    "host='"
+                 << SanitizeForLog(config_.host)
+                 << "' request_written=" << (request_written ? "true" : "false")
+                 << " response_started=" << (response_started ? "true" : "false")
+                 << " status_code=" << static_cast<int>(result.status().code()) << " detail='"
+                 << SanitizeForLog(result.status().message()) << "'";
     Disconnect();
+    const auto reconnect_start = std::chrono::steady_clock::now();
     if (absl::Status status = EnsureConnected(); !status.ok()) {
         return status;
     }
+    const auto reconnect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - reconnect_start)
+                                  .count();
+    LOG(INFO) << "AI gateway openai responses persistent transport reconnected after stale "
+                 "connection host='"
+              << SanitizeForLog(config_.host) << "' reconnect_ms=" << reconnect_ms;
     return ExecuteOnce(request_json, on_event, /*request_written=*/nullptr,
                        /*server_keep_alive=*/nullptr, /*response_started=*/nullptr);
 }
