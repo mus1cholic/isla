@@ -22,8 +22,6 @@ struct MidTermMemoryInit {
 // the configured MemoryStore; callers materialize vectors only as read results.
 class MidTermMemory {
   public:
-    MidTermMemory(std::string session_id, MemoryStorePtr store);
-
     [[nodiscard]] static absl::StatusOr<MidTermMemory> Create(const MidTermMemoryInit& init);
 
     [[nodiscard]] const std::string& session_id() const {
@@ -40,6 +38,8 @@ class MidTermMemory {
     GetExpandableDetail(std::string_view episode_id) const;
 
   private:
+    MidTermMemory(std::string session_id, MemoryStorePtr store);
+
     [[nodiscard]] absl::StatusOr<Episode> GetRequiredEpisode(std::string_view episode_id) const;
 
     std::string session_id_;

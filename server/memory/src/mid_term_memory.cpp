@@ -57,7 +57,7 @@ absl::Status MidTermMemory::StoreEpisode(std::int64_t source_conversation_item_i
         return status;
     }
 
-    const absl::Status status = store_->UpsertMidTermEpisode(write);
+    absl::Status status = store_->UpsertMidTermEpisode(write);
     if (!status.ok()) {
         LOG(WARNING) << "MidTermMemory failed to store episode"
                      << " session_id=" << session_id_ << " episode_id=" << episode.episode_id
@@ -78,7 +78,7 @@ absl::StatusOr<std::vector<Episode>> MidTermMemory::ListEpisodes() const {
     if (store_ == nullptr) {
         return failed_precondition("mid-term memory is missing its MemoryStore");
     }
-    const absl::StatusOr<std::vector<Episode>> episodes = store_->ListMidTermEpisodes(session_id_);
+    absl::StatusOr<std::vector<Episode>> episodes = store_->ListMidTermEpisodes(session_id_);
     if (!episodes.ok()) {
         LOG(WARNING) << "MidTermMemory failed to list episodes"
                      << " session_id=" << session_id_ << " detail='" << episodes.status().message()
@@ -96,7 +96,7 @@ MidTermMemory::FindEpisode(std::string_view episode_id) const {
     if (absl::Status status = ValidateEpisodeId(episode_id); !status.ok()) {
         return status;
     }
-    const absl::StatusOr<std::optional<Episode>> episode =
+    absl::StatusOr<std::optional<Episode>> episode =
         store_->GetMidTermEpisode(session_id_, episode_id);
     if (!episode.ok()) {
         LOG(WARNING) << "MidTermMemory failed to fetch episode"
