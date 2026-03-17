@@ -54,8 +54,7 @@ TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptWithControlCharac
 
     ASSERT_FALSE(resolved_prompt.ok());
     EXPECT_EQ(resolved_prompt.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_EQ(resolved_prompt.status().message(),
-              "prompt contains unsupported control characters");
+    EXPECT_EQ(resolved_prompt.status().message(), "prompt contains unsupported control characters");
 }
 
 TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptThatIsTooLarge) {
@@ -65,6 +64,18 @@ TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptThatIsTooLarge) {
     ASSERT_FALSE(resolved_prompt.ok());
     EXPECT_EQ(resolved_prompt.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_EQ(resolved_prompt.status().message(), "prompt exceeds maximum length");
+}
+
+TEST(PromptLoaderTest, LoadMidTermFlushDeciderSystemPromptSucceeds) {
+    const absl::StatusOr<std::string> prompt =
+        LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
+
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
+    EXPECT_FALSE(prompt->empty());
+    // Verify this loaded a different asset than the main system prompt.
+    EXPECT_NE(*prompt, *system_prompt);
 }
 
 TEST(PromptLoaderTest, LoadPromptRejectsUnknownPromptAsset) {
