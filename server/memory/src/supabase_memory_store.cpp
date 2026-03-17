@@ -380,9 +380,11 @@ class SupabaseMemoryStore final : public MemoryStore {
             latency.SetOutcome("validation_error");
             return status;
         }
-        // TODO: Implement Supabase persistence for split episode stubs. Requires
-        // replacing the conversation item with a stub and inserting a new ongoing
-        // episode item with the remaining messages in a single transaction.
+        // TODO(layer-2): Implement Supabase persistence for split episode stubs.
+        // Requires replacing the conversation item with a stub and inserting a new
+        // ongoing episode item with the remaining messages in a single transaction.
+        // No production code path currently triggers split flushes — the concrete
+        // MidTermFlushDecider (layer 2) must land alongside or after this.
         latency.SetOutcome("unimplemented");
         return absl::UnimplementedError(
             "SplitConversationItemWithEpisodeStub is not yet implemented for Supabase");
