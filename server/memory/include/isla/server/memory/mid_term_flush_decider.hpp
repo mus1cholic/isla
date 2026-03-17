@@ -37,7 +37,7 @@ using MidTermFlushDeciderPtr = std::shared_ptr<MidTermFlushDecider>;
 // TODO: Introduce an LlmClient abstraction to decouple the flush decider (and
 // future LLM-based components) from the OpenAI-specific transport. The concrete
 // OpenAiResponsesClient would become one implementation of that interface.
-[[nodiscard]] MidTermFlushDeciderPtr CreateLlmMidTermFlushDecider(
+[[nodiscard]] absl::StatusOr<MidTermFlushDeciderPtr> CreateLlmMidTermFlushDecider(
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> responses_client,
     std::string model);
 

@@ -163,12 +163,6 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
         split_at_message_index = *parsed_split;
     }
 
-    // Log reasoning if present.
-    if (response.contains("reasoning") && response["reasoning"].is_string()) {
-        VLOG(1) << "MidTermFlushDecider reasoning: "
-                << SanitizeForLog(response["reasoning"].get<std::string>());
-    }
-
     return MidTermFlushDecision{
         .should_flush = true,
         .conversation_item_index = *conversation_item_index,
@@ -232,6 +226,32 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
             return decision.status();
         }
 
+        // Validate parsed indices against the actual conversation.
+        if (decision->should_flush && decision->conversation_item_index.has_value()) {
+            const std::size_t item_idx = *decision->conversation_item_index;
+            if (item_idx >= conversation.items.size()) {
+                return invalid_argument("flush decider returned item_id i" +
+                                        std::to_string(item_idx) + " but conversation only has " +
+                                        std::to_string(conversation.items.size()) + " items");
+            }
+            if (decision->split_at_message_index.has_value()) {
+                const ConversationItem& item = conversation.items[item_idx];
+                if (item.type != ConversationItemType::OngoingEpisode ||
+                    !item.ongoing_episode.has_value()) {
+                    return invalid_argument("flush decider returned split_at for item i" +
+                                            std::to_string(item_idx) +
+                                            " which is not an ongoing episode");
+                }
+                const std::size_t msg_idx = *decision->split_at_message_index;
+                if (msg_idx >= item.ongoing_episode->messages.size()) {
+                    return invalid_argument(
+                        "flush decider returned split_at m" + std::to_string(msg_idx) +
+                        " but ongoing episode only has " +
+                        std::to_string(item.ongoing_episode->messages.size()) + " messages");
+                }
+            }
+        }
+
         VLOG(1) << "LlmMidTermFlushDecider decided should_flush="
                 << (decision->should_flush ? "true" : "false") << " conversation_item_index="
                 << (decision->conversation_item_index.has_value()
@@ -256,19 +276,19 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
 // Factory function
 // ---------------------------------------------------------------------------
 
-MidTermFlushDeciderPtr CreateLlmMidTermFlushDecider(
+absl::StatusOr<MidTermFlushDeciderPtr> CreateLlmMidTermFlushDecider(
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> responses_client,
     std::string model) {
     if (!responses_client) {
-        LOG(ERROR) << "LlmMidTermFlushDecider requires a non-null responses client";
-        return nullptr;
+        return invalid_argument("LlmMidTermFlushDecider requires a non-null responses client");
+    }
+    if (model.empty()) {
+        return invalid_argument("LlmMidTermFlushDecider requires a non-empty model name");
     }
     absl::StatusOr<std::string> system_prompt =
         LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
     if (!system_prompt.ok()) {
-        LOG(ERROR) << "LlmMidTermFlushDecider failed to load system prompt detail='"
-                   << SanitizeForLog(system_prompt.status().message()) << "'";
-        return nullptr;
+        return system_prompt.status();
     }
     return std::make_shared<LlmMidTermFlushDecider>(std::move(responses_client), std::move(model),
                                                     std::move(*system_prompt));
