@@ -1,0 +1,231 @@
+You will receive one completed conversation episode as raw user/assistant messages.
+
+In this prompt, an "episode" means one self-contained chunk of conversation made up only of the messages you are given.
+
+Your task is to compress that episode into a structured JSON object.
+
+Do not answer the user. Do not continue the conversation. Do not add commentary. Only return the JSON object described below.
+
+Do not use markdown. Do not use code fences. Do not include any text before or after the JSON object.
+
+### Input Schema
+You will receive one JSON object with this shape:
+
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "message text"
+    }
+  ]
+}
+
+Interpretation:
+- `messages` is the actual content you must compress.
+- The messages are already provided in chronological order from earliest to latest.
+- Treat the message order as meaningful. Do not assume the messages were shuffled or randomly sampled.
+- Each `role` value will be either `"user"` or `"assistant"`.
+
+### Purpose
+The output should preserve:
+- a concise narrative summary of what happened
+- a short one-sentence reference string
+- a small set of topic keywords
+- an importance score from 1 to 10
+- the most useful exact details from the episode when concrete details are present
+
+### Output Schema
+Return exactly one JSON object with exactly these fields:
+
+{
+  "tier1_detail": "exact details if useful, otherwise null",
+  "tier2_summary": "max 4-6 sentence narrative summary",
+  "tier3_ref": "single-sentence bookmark",
+  "tier3_keywords": [
+    "keyword1",
+    "keyword2",
+    "keyword3",
+    "keyword4",
+    "keyword5"
+  ],
+  "salience": 6
+}
+
+### Field Definitions
+
+#### tier1_detail
+- Either `null` or a string.
+- Use this field for the most useful exact details that may need to be retrieved later.
+- Prefer a non-null string when the episode includes concrete details worth preserving.
+- Include exact commands, code, file names, error text, specific values, or precise step-by-step details when they appear and are relevant.
+- Use `null` only when the episode genuinely contains no meaningful exact details to preserve.
+- Never invent missing details.
+
+#### tier2_summary
+- Required.
+- A concise narrative summary of the episode.
+- Max 4-6 sentences.
+- Focus on:
+  - what the topic was
+  - what happened
+  - what result, decision, fix, lesson, or unresolved question came out of it
+- Use concrete language.
+- Do not include unnecessary filler.
+
+#### tier3_ref
+- Required.
+- A single-sentence bookmark for the episode.
+- It should be short, specific, and suitable as a quick inline reference to what the episode was about.
+- Do not include more than one sentence.
+
+#### tier3_keywords
+- Required.
+- An array of exactly 5 short keywords or keyphrases.
+- Use compact topic anchors such as tools, files, bugs, concepts, outcomes, people, or projects if they appear in the episode.
+- Do not use full sentences.
+
+#### salience
+- Required.
+- Integer from 1 to 10.
+- This is the importance score for the episode.
+- Use these guidelines:
+  - 1-3: low-importance exchange, disposable small talk, or minor coordination
+  - 4-6: normal useful discussion worth remembering in summarized form
+  - 7-8: important progress, decisions, preferences, or notable outcomes
+  - 9-10: highly important exact details, critical fixes, major decisions, precise implementation steps, or facts likely to be referenced later verbatim
+
+### Compression Rules
+- Preserve truth. Never hallucinate.
+- Only use information present in the episode.
+- If something is uncertain in the episode, preserve that uncertainty.
+- If the episode did not reach a conclusion, state that clearly in the summary.
+- If exact details are present but not central, leave them out of `tier2_summary`.
+- Do not mention that you are summarizing, compressing, or producing JSON.
+
+### Style Rules
+- Be concise, specific, and literal.
+- Prefer plain language.
+- Do not use dramatic or decorative phrasing.
+- Do not speak to the user directly.
+- Do not use vague placeholders when the episode provides concrete details.
+
+### Examples
+
+Example 1
+
+Input:
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Can you help me get ready for my dentist appointment next Tuesday at 3 PM? I always forget what I need to bring."
+    },
+    {
+      "role": "assistant",
+      "content": "Sure. Do you want a quick checklist, and are there any specific things you usually forget, like insurance cards, medication lists, or questions for the dentist?"
+    },
+    {
+      "role": "user",
+      "content": "Usually my insurance card and the list of medications I'm taking. Also I want to ask about tooth sensitivity on the lower left side, and whether I should keep using the whitening strips."
+    },
+    {
+      "role": "assistant",
+      "content": "Then your checklist should include your insurance card, photo ID, and a current medication list. Your questions to bring up are the lower-left tooth sensitivity and whether whitening strips are safe to keep using. If you want, I can also help you make a short pre-appointment note to review that morning."
+    },
+    {
+      "role": "user",
+      "content": "Yes, and remind me not to drink coffee right before the appointment because that makes the sensitivity worse."
+    },
+    {
+      "role": "assistant",
+      "content": "Good idea. Your pre-appointment note can say: bring insurance card, photo ID, and medication list; ask about lower-left tooth sensitivity; ask whether to continue whitening strips; avoid coffee right before the visit because it seems to make sensitivity worse."
+    },
+    {
+      "role": "user",
+      "content": "Perfect. The appointment is with Dr. Park at Bright Dental."
+    },
+    {
+      "role": "assistant",
+      "content": "Got it. The visit is next Tuesday at 3 PM with Dr. Park at Bright Dental, and you want to be prepared with documents, medication details, and a few questions about sensitivity and whitening strips."
+    }
+  ]
+}
+
+Output:
+{
+  "tier1_detail": "The user has a dentist appointment next Tuesday at 3 PM with Dr. Park at Bright Dental. They want to remember to bring their insurance card, photo ID, and a current medication list. They also want to ask about tooth sensitivity on the lower left side and whether they should continue using whitening strips. A practical note for the appointment is to avoid drinking coffee right before the visit because it seems to make the sensitivity worse.",
+  "tier2_summary": "The conversation focused on preparing for an upcoming dentist appointment. The user identified the main things they tend to forget, especially their insurance card and medication list, and worked out a short checklist for the visit. They also clarified the questions they want to ask Dr. Park, including lower-left tooth sensitivity and whether whitening strips are still a good idea. Another useful detail was to avoid coffee before the appointment because it appears to worsen the sensitivity. By the end, the appointment details and the preparation plan were clearly summarized.",
+  "tier3_ref": "Prepared a checklist and questions for the user's upcoming dentist appointment with Dr. Park.",
+  "tier3_keywords": [
+    "dentist appointment",
+    "Dr. Park",
+    "Bright Dental",
+    "tooth sensitivity",
+    "whitening strips"
+  ],
+  "salience": 8
+}
+
+Example 2
+
+Input:
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "I'm debugging a crash in my app. It only happens when I click Export after loading a large JSON file, and the error says `std::bad_optional_access`."
+    },
+    {
+      "role": "assistant",
+      "content": "That usually means something is calling `.value()` on an empty optional. Do you know which function or file the crash points to?"
+    },
+    {
+      "role": "user",
+      "content": "Yes, the debugger points to `export_report.cpp` inside `BuildExportPayload()`. There's an optional field called `selected_profile`, and I think it is empty for some imported files."
+    },
+    {
+      "role": "assistant",
+      "content": "That sounds like the likely cause. Search for `selected_profile.value()` or any direct dereference of that optional. If imported files can omit it, the export path needs a guard or fallback."
+    },
+    {
+      "role": "user",
+      "content": "Found it. The code does `payload.profile_name = selected_profile.value().name;` on line 214. I changed it to return an InvalidArgument error when `!selected_profile.has_value()`."
+    },
+    {
+      "role": "assistant",
+      "content": "Good fix. You should also include the file context in the error so it is easier to diagnose next time. Something like `return absl::InvalidArgumentError(\"selected_profile is required for export\")` would be better than crashing."
+    },
+    {
+      "role": "user",
+      "content": "I did that and added a test named `ExportFailsWhenSelectedProfileMissing`. It loads a large imported JSON fixture without the profile field and now expects an InvalidArgument status instead of a crash."
+    },
+    {
+      "role": "assistant",
+      "content": "Nice. So the root cause was an unchecked optional in `BuildExportPayload()` in `export_report.cpp`, and the resolution was to guard the missing profile case and cover it with a regression test."
+    }
+  ]
+}
+
+Output:
+{
+  "tier1_detail": "The crash occurred when exporting after loading a large imported JSON file and produced `std::bad_optional_access`. The debugger traced it to `BuildExportPayload()` in `export_report.cpp`, where the code on line 214 did `payload.profile_name = selected_profile.value().name;`. The issue was that `selected_profile` could be empty for imported files. The fix was to guard the optional with `!selected_profile.has_value()` and return `absl::InvalidArgumentError(\"selected_profile is required for export\")` instead of crashing. A regression test named `ExportFailsWhenSelectedProfileMissing` was added to load a large JSON fixture without the profile field and verify that export now returns an InvalidArgument status.",
+  "tier2_summary": "The episode focused on debugging an export crash triggered after loading a large JSON file. The failure turned out to be an unchecked optional in `BuildExportPayload()` inside `export_report.cpp`, where the code assumed `selected_profile` was always present. For some imported files that field was actually missing, leading to `std::bad_optional_access` during export. The fix was to detect the missing profile and return an InvalidArgument error rather than dereferencing the empty optional. The user also added a regression test to cover the missing-profile case so the crash does not return.",
+  "tier3_ref": "Fixed an export crash caused by dereferencing a missing optional profile in `export_report.cpp`.",
+  "tier3_keywords": [
+    "std::bad_optional_access",
+    "export_report.cpp",
+    "BuildExportPayload",
+    "selected_profile",
+    "regression test"
+  ],
+  "salience": 9
+}
+
+### Validation Checklist
+Before finalizing your response, ensure:
+- The response is valid JSON.
+- All required fields are present.
+- No extra fields are present.
+- `tier3_keywords` has exactly 5 items.
+- `salience` is an integer from 1 to 10.
+- `tier3_ref` is exactly one sentence.
