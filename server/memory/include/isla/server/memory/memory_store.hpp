@@ -45,6 +45,15 @@ struct MidTermEpisodeWrite {
     Episode episode;
 };
 
+struct SplitEpisodeStubWrite {
+    std::string session_id;
+    std::int64_t conversation_item_index = 0;
+    std::string episode_id;
+    std::string episode_stub_content;
+    Timestamp episode_stub_create_time;
+    OngoingEpisode remaining_ongoing_episode;
+};
+
 struct PersistedConversationItem {
     std::int64_t conversation_item_index = 0;
     ConversationItemType type = ConversationItemType::OngoingEpisode;
@@ -63,6 +72,7 @@ struct MemoryStoreSnapshot {
 [[nodiscard]] absl::Status ValidateConversationMessageWrite(const ConversationMessageWrite& write);
 [[nodiscard]] absl::Status ValidateEpisodeStubWrite(const EpisodeStubWrite& write);
 [[nodiscard]] absl::Status ValidateMidTermEpisodeWrite(const MidTermEpisodeWrite& write);
+[[nodiscard]] absl::Status ValidateSplitEpisodeStubWrite(const SplitEpisodeStubWrite& write);
 [[nodiscard]] absl::Status ValidateMemoryStoreSnapshot(const MemoryStoreSnapshot& snapshot);
 
 class MemoryStore {
@@ -83,6 +93,8 @@ class MemoryStore {
     [[nodiscard]] virtual absl::Status
     ReplaceConversationItemWithEpisodeStub(const EpisodeStubWrite& write) = 0;
     [[nodiscard]] virtual absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) = 0;
+    [[nodiscard]] virtual absl::Status
+    SplitConversationItemWithEpisodeStub(const SplitEpisodeStubWrite& write) = 0;
     [[nodiscard]] virtual absl::StatusOr<std::vector<Episode>>
     ListMidTermEpisodes(std::string_view session_id) const = 0;
     [[nodiscard]] virtual absl::StatusOr<std::optional<Episode>>

@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <future>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -113,12 +115,19 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
-    [[nodiscard]] absl::StatusOr<std::optional<std::size_t>>
+    struct FlushTarget {
+        std::size_t conversation_item_index;
+        std::optional<std::size_t> split_at_message_index;
+    };
+
+    [[nodiscard]] absl::StatusOr<std::optional<FlushTarget>>
     MaybeChooseFlushConversationItem() const;
-    [[nodiscard]] absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>>
+    [[nodiscard]] absl::StatusOr<
+        std::optional<std::pair<OngoingEpisodeFlushCandidate, std::optional<std::size_t>>>>
     MaybeCaptureFlushCandidate(const Message& assistant_message);
     [[nodiscard]] absl::Status
-    QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate);
+    QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate,
+                      std::optional<std::size_t> split_at_message_index = std::nullopt);
     [[nodiscard]] std::string NextEpisodeId();
 
     struct PendingMidTermFlush {
@@ -126,6 +135,7 @@ class MemoryOrchestrator {
         // worker thread, but pending_mid_term_flushes_ itself is not shared concurrently.
         std::size_t conversation_item_index = 0;
         std::future<absl::StatusOr<CompletedOngoingEpisodeFlush>> future;
+        bool was_split = false;
     };
 
     std::string session_id_;

@@ -18,4 +18,10 @@ void AppendEpisodeStub(Conversation& conversation, std::string content, Timestam
                                                          std::string stub_text,
                                                          Timestamp stub_timestamp);
 
+[[nodiscard]] absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
+                                                       std::size_t conversation_item_index,
+                                                       std::size_t split_at_message_index,
+                                                       std::string stub_text,
+                                                       Timestamp stub_timestamp);
+
 } // namespace isla::server::memory

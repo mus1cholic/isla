@@ -372,6 +372,22 @@ class SupabaseMemoryStore final : public MemoryStore {
         return absl::OkStatus();
     }
 
+    [[nodiscard]] absl::Status
+    SplitConversationItemWithEpisodeStub(const SplitEpisodeStubWrite& write) override {
+        ScopedSupabaseOperationLatency latency(config_, "split_conversation_item_with_episode_stub",
+                                               write.session_id);
+        if (absl::Status status = ValidateSplitEpisodeStubWrite(write); !status.ok()) {
+            latency.SetOutcome("validation_error");
+            return status;
+        }
+        // TODO: Implement Supabase persistence for split episode stubs. Requires
+        // replacing the conversation item with a stub and inserting a new ongoing
+        // episode item with the remaining messages in a single transaction.
+        latency.SetOutcome("unimplemented");
+        return absl::UnimplementedError(
+            "SplitConversationItemWithEpisodeStub is not yet implemented for Supabase");
+    }
+
     [[nodiscard]] absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) override {
         ScopedSupabaseOperationLatency latency(config_, "upsert_mid_term_episode",
                                                write.session_id);

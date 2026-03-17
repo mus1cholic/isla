@@ -1,6 +1,7 @@
 #include "isla/server/memory/memory_orchestrator.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <future>
 #include <string_view>
@@ -193,27 +194,70 @@ MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFl
         return status;
     }
 
-    const EpisodeStubWrite stub_write{
-        .session_id = session_id_,
-        .conversation_item_index = static_cast<std::int64_t>(flush.conversation_item_index),
-        .episode_id = flush.episode.episode_id,
-        .episode_stub_content = flush.episode.tier3_ref,
-        .episode_stub_create_time = flush.stub_timestamp,
-    };
-    if (absl::Status status = ValidateEpisodeStubWrite(stub_write); !status.ok()) {
-        return status;
-    }
-    if (absl::Status status = store_->ReplaceConversationItemWithEpisodeStub(stub_write);
-        !status.ok()) {
-        LOG(WARNING)
-            << "MemoryOrchestrator store.ReplaceConversationItemWithEpisodeStub failed while "
-               "marking the flushed conversation item as an episode stub"
-            << " session_id=" << SanitizeForLog(session_id_)
-            << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
-            << " conversation_item_index=" << flush.conversation_item_index
-            << " episode_stub_created_at=" << SanitizeForLog(FormatTimestamp(flush.stub_timestamp))
-            << " detail='" << SanitizeForLog(status.message()) << "'";
-        return status;
+    if (flush.split_at_message_index.has_value()) {
+        // For split flushes, read the remaining messages from the live conversation so the
+        // persistence layer can reconstruct the full state on reload.
+        const Conversation& conversation = memory_.conversation();
+        const auto& item = conversation.items[flush.conversation_item_index];
+        if (!item.ongoing_episode.has_value()) {
+            return absl::InternalError(
+                "PersistCompletedEpisodeFlush expected an ongoing episode for split persistence");
+        }
+        const auto& messages = item.ongoing_episode->messages;
+        OngoingEpisode remaining;
+        remaining.messages.assign(messages.begin() +
+                                      static_cast<std::ptrdiff_t>(*flush.split_at_message_index),
+                                  messages.end());
+
+        const SplitEpisodeStubWrite split_write{
+            .session_id = session_id_,
+            .conversation_item_index = static_cast<std::int64_t>(flush.conversation_item_index),
+            .episode_id = flush.episode.episode_id,
+            .episode_stub_content = flush.episode.tier3_ref,
+            .episode_stub_create_time = flush.stub_timestamp,
+            .remaining_ongoing_episode = std::move(remaining),
+        };
+        if (absl::Status status = ValidateSplitEpisodeStubWrite(split_write); !status.ok()) {
+            return status;
+        }
+        if (absl::Status status = store_->SplitConversationItemWithEpisodeStub(split_write);
+            !status.ok()) {
+            LOG(WARNING)
+                << "MemoryOrchestrator store.SplitConversationItemWithEpisodeStub failed while "
+                   "persisting a split episode stub"
+                << " session_id=" << SanitizeForLog(session_id_)
+                << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
+                << " conversation_item_index=" << flush.conversation_item_index
+                << " split_at_message_index=" << *flush.split_at_message_index
+                << " remaining_message_count="
+                << split_write.remaining_ongoing_episode.messages.size() << " detail='"
+                << SanitizeForLog(status.message()) << "'";
+            return status;
+        }
+    } else {
+        const EpisodeStubWrite stub_write{
+            .session_id = session_id_,
+            .conversation_item_index = static_cast<std::int64_t>(flush.conversation_item_index),
+            .episode_id = flush.episode.episode_id,
+            .episode_stub_content = flush.episode.tier3_ref,
+            .episode_stub_create_time = flush.stub_timestamp,
+        };
+        if (absl::Status status = ValidateEpisodeStubWrite(stub_write); !status.ok()) {
+            return status;
+        }
+        if (absl::Status status = store_->ReplaceConversationItemWithEpisodeStub(stub_write);
+            !status.ok()) {
+            LOG(WARNING)
+                << "MemoryOrchestrator store.ReplaceConversationItemWithEpisodeStub failed while "
+                   "marking the flushed conversation item as an episode stub"
+                << " session_id=" << SanitizeForLog(session_id_)
+                << " episode_id=" << SanitizeForLog(flush.episode.episode_id)
+                << " conversation_item_index=" << flush.conversation_item_index
+                << " episode_stub_created_at="
+                << SanitizeForLog(FormatTimestamp(flush.stub_timestamp)) << " detail='"
+                << SanitizeForLog(status.message()) << "'";
+            return status;
+        }
     }
     return absl::OkStatus();
 }
@@ -225,7 +269,7 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
     return std::nullopt;
 }
 
-absl::StatusOr<std::optional<std::size_t>>
+absl::StatusOr<std::optional<MemoryOrchestrator::FlushTarget>>
 MemoryOrchestrator::MaybeChooseFlushConversationItem() const {
     if (mid_term_compactor_ == nullptr || mid_term_flush_decider_ == nullptr) {
         return std::nullopt;
@@ -262,24 +306,70 @@ MemoryOrchestrator::MaybeChooseFlushConversationItem() const {
         return invalid_argument(
             "mid-term flush decider must return a conversation item when should_flush is true");
     }
-    if (*decision->conversation_item_index >= conversation.items.size()) {
+    const std::size_t item_index = *decision->conversation_item_index;
+    if (item_index >= conversation.items.size()) {
         LOG(WARNING)
             << "MemoryOrchestrator rejected invalid mid-term flush decider output"
             << " session_id=" << SanitizeForLog(session_id_)
-            << " conversation_item_index=" << *decision->conversation_item_index
+            << " conversation_item_index=" << item_index
             << " conversation_size=" << conversation.items.size()
             << " detail='flush decider returned a conversation item outside the conversation "
                "range'";
         return invalid_argument(
             "mid-term flush decider returned a conversation item outside the conversation range");
     }
+
+    // Validate split_at_message_index when present.
+    if (decision->split_at_message_index.has_value()) {
+        const auto& item = conversation.items[item_index];
+        if (item.type != ConversationItemType::OngoingEpisode ||
+            !item.ongoing_episode.has_value()) {
+            LOG(WARNING) << "MemoryOrchestrator rejected split_at on non-ongoing-episode"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " conversation_item_index=" << item_index;
+            return invalid_argument(
+                "mid-term flush decider split_at requires the target to be an ongoing episode");
+        }
+        const auto& messages = item.ongoing_episode->messages;
+        const std::size_t split_at = *decision->split_at_message_index;
+        if (split_at >= messages.size()) {
+            LOG(WARNING) << "MemoryOrchestrator rejected split_at out of range"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " split_at_message_index=" << split_at
+                         << " message_count=" << messages.size();
+            return invalid_argument(
+                "mid-term flush decider split_at_message_index is out of range");
+        }
+        if (split_at < 2) {
+            LOG(WARNING)
+                << "MemoryOrchestrator rejected split_at with too few messages before split point"
+                << " session_id=" << SanitizeForLog(session_id_)
+                << " split_at_message_index=" << split_at;
+            return invalid_argument("mid-term flush decider split_at_message_index must leave at "
+                                    "least 2 messages in the completed portion");
+        }
+        if (messages[split_at].role != MessageRole::User) {
+            LOG(WARNING) << "MemoryOrchestrator rejected split_at referencing a non-user message"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " split_at_message_index=" << split_at;
+            return invalid_argument("mid-term flush decider split_at_message_index must reference "
+                                    "a user message");
+        }
+    }
+
     VLOG(1) << "MemoryOrchestrator flush decider chose a conversation item for flush session_id="
-            << SanitizeForLog(session_id_)
-            << " conversation_item_index=" << *decision->conversation_item_index;
-    return decision->conversation_item_index;
+            << SanitizeForLog(session_id_) << " conversation_item_index=" << item_index
+            << " split_at="
+            << (decision->split_at_message_index.has_value()
+                    ? std::to_string(*decision->split_at_message_index)
+                    : "none");
+    return FlushTarget{
+        .conversation_item_index = item_index,
+        .split_at_message_index = decision->split_at_message_index,
+    };
 }
 
-absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>>
+absl::StatusOr<std::optional<std::pair<OngoingEpisodeFlushCandidate, std::optional<std::size_t>>>>
 MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& assistant_message) {
     if (mid_term_compactor_ == nullptr) {
         return std::nullopt;
@@ -293,17 +383,26 @@ MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& assistant_message)
         return std::nullopt;
     }
 
-    if (const absl::StatusOr<std::optional<std::size_t>> decider_choice =
+    if (const absl::StatusOr<std::optional<FlushTarget>> decider_choice =
             MaybeChooseFlushConversationItem();
         !decider_choice.ok()) {
         return decider_choice.status();
     } else if (decider_choice->has_value()) {
+        const FlushTarget& target = decider_choice->value();
         for (const PendingMidTermFlush& pending_flush : pending_mid_term_flushes_) {
-            if (pending_flush.conversation_item_index == decider_choice->value()) {
+            if (pending_flush.conversation_item_index == target.conversation_item_index) {
                 return std::nullopt;
             }
         }
-        return memory_.CaptureOngoingEpisodeForFlush(decider_choice->value());
+        absl::StatusOr<OngoingEpisodeFlushCandidate> candidate =
+            target.split_at_message_index.has_value()
+                ? memory_.CaptureOngoingEpisodeForSplitFlush(target.conversation_item_index,
+                                                             *target.split_at_message_index)
+                : memory_.CaptureOngoingEpisodeForFlush(target.conversation_item_index);
+        if (!candidate.ok()) {
+            return candidate.status();
+        }
+        return std::make_pair(std::move(*candidate), target.split_at_message_index);
     } else if (mid_term_flush_decider_ != nullptr) {
         return std::nullopt;
     }
@@ -323,7 +422,12 @@ MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& assistant_message)
         return std::nullopt;
     }
 
-    return memory_.CaptureOngoingEpisodeForFlush(conversation_item_index);
+    absl::StatusOr<OngoingEpisodeFlushCandidate> candidate =
+        memory_.CaptureOngoingEpisodeForFlush(conversation_item_index);
+    if (!candidate.ok()) {
+        return candidate.status();
+    }
+    return std::make_pair(std::move(*candidate), std::optional<std::size_t>(std::nullopt));
 }
 
 std::string MemoryOrchestrator::NextEpisodeId() {
@@ -331,7 +435,8 @@ std::string MemoryOrchestrator::NextEpisodeId() {
 }
 
 absl::Status
-MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate) {
+MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate,
+                                      std::optional<std::size_t> split_at_message_index) {
     if (mid_term_compactor_ == nullptr) {
         return absl::OkStatus();
     }
@@ -344,7 +449,7 @@ MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_
             .conversation_item_index = flush_candidate.conversation_item_index,
             .future = std::async(
                 std::launch::async,
-                [compactor = std::move(compactor), session_id, episode_id,
+                [compactor = std::move(compactor), session_id, episode_id, split_at_message_index,
                  flush_candidate = OngoingEpisodeFlushCandidate(
                      flush_candidate)]() -> absl::StatusOr<CompletedOngoingEpisodeFlush> {
                     const absl::StatusOr<CompactedMidTermEpisode> compacted =
@@ -380,6 +485,7 @@ MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_
                                     flush_candidate.ongoing_episode.messages.back().create_time,
                             },
                         .stub_timestamp = NowTimestamp(),
+                        .split_at_message_index = split_at_message_index,
                     };
                     if (absl::Status status = ValidateMidTermEpisodeWrite(MidTermEpisodeWrite{
                             .session_id = session_id,
@@ -392,10 +498,12 @@ MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_
                     }
                     return flush;
                 }),
+            .was_split = split_at_message_index.has_value(),
         });
     VLOG(1) << "MemoryOrchestrator queued async mid-term flush session_id="
             << SanitizeForLog(session_id_)
-            << " conversation_item_index=" << flush_candidate.conversation_item_index;
+            << " conversation_item_index=" << flush_candidate.conversation_item_index
+            << " was_split=" << (split_at_message_index.has_value() ? "true" : "false");
     return absl::OkStatus();
 }
 
@@ -408,6 +516,10 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
         }
 
         absl::StatusOr<CompletedOngoingEpisodeFlush> completed_flush = it->future.get();
+        // Use the adjusted conversation_item_index from the pending struct rather than the
+        // value captured in the async lambda. Earlier split flushes may have inserted new
+        // conversation items, shifting indices of subsequent pending flushes.
+        const std::size_t adjusted_conversation_item_index = it->conversation_item_index;
         it = pending_mid_term_flushes_.erase(it);
         if (!completed_flush.ok()) {
             LOG(WARNING) << "MemoryOrchestrator async mid-term flush failed session_id="
@@ -415,6 +527,7 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
                          << SanitizeForLog(completed_flush.status().message()) << "'";
             return completed_flush.status();
         }
+        completed_flush->conversation_item_index = adjusted_conversation_item_index;
         if (absl::Status apply_status = ApplyCompletedEpisodeFlush(*completed_flush);
             !apply_status.ok()) {
             return apply_status;
@@ -440,7 +553,8 @@ void MemoryOrchestrator::PrepareConversationForAppend() {
 
     const std::size_t last_conversation_item_index = conversation.items.size() - 1U;
     for (const PendingMidTermFlush& pending_flush : pending_mid_term_flushes_) {
-        if (pending_flush.conversation_item_index == last_conversation_item_index) {
+        if (pending_flush.conversation_item_index == last_conversation_item_index &&
+            !pending_flush.was_split) {
             VLOG(1) << "MemoryOrchestrator started a new ongoing episode before append because the "
                        "tail conversation item is still flushing"
                     << " session_id=" << SanitizeForLog(session_id_)
@@ -462,13 +576,15 @@ absl::Status MemoryOrchestrator::AfterUserQueryAppended(const Message& user_mess
 }
 
 absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assistant_message) {
-    const absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>> flush_candidate =
-        MaybeCaptureFlushCandidate(assistant_message);
-    if (!flush_candidate.ok()) {
-        return flush_candidate.status();
+    const absl::StatusOr<
+        std::optional<std::pair<OngoingEpisodeFlushCandidate, std::optional<std::size_t>>>>
+        flush_result = MaybeCaptureFlushCandidate(assistant_message);
+    if (!flush_result.ok()) {
+        return flush_result.status();
     }
-    if (flush_candidate->has_value()) {
-        if (absl::Status queue_status = QueueMidTermFlush(flush_candidate->value());
+    if (flush_result->has_value()) {
+        const auto& [candidate, split_at] = flush_result->value();
+        if (absl::Status queue_status = QueueMidTermFlush(candidate, split_at);
             !queue_status.ok()) {
             return queue_status;
         }
@@ -555,16 +671,41 @@ absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantRepl
 
 absl::Status
 MemoryOrchestrator::ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush) {
-    const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
-        memory_.CaptureOngoingEpisodeForFlush(flush.conversation_item_index);
-    if (!captured.ok()) {
-        return captured.status();
+    // Validate that the target conversation item is still a valid ongoing episode.
+    if (flush.split_at_message_index.has_value()) {
+        const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
+            memory_.CaptureOngoingEpisodeForSplitFlush(flush.conversation_item_index,
+                                                       *flush.split_at_message_index);
+        if (!captured.ok()) {
+            return captured.status();
+        }
+    } else {
+        const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
+            memory_.CaptureOngoingEpisodeForFlush(flush.conversation_item_index);
+        if (!captured.ok()) {
+            return captured.status();
+        }
     }
+
     if (absl::Status persistence_status = PersistCompletedEpisodeFlush(flush);
         !persistence_status.ok()) {
         return persistence_status;
     }
-    return memory_.ApplyCompletedOngoingEpisodeFlush(flush);
+    if (absl::Status apply_status = memory_.ApplyCompletedOngoingEpisodeFlush(flush);
+        !apply_status.ok()) {
+        return apply_status;
+    }
+
+    // A split insert adds a new conversation item after the stub. Adjust indices of any remaining
+    // pending flushes that reference conversation items after the split point.
+    if (flush.split_at_message_index.has_value()) {
+        for (auto& pending : pending_mid_term_flushes_) {
+            if (pending.conversation_item_index > flush.conversation_item_index) {
+                pending.conversation_item_index += 1;
+            }
+        }
+    }
+    return absl::OkStatus();
 }
 
 absl::StatusOr<std::string> MemoryOrchestrator::RenderFullWorkingMemory() const {

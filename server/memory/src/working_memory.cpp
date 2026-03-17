@@ -101,12 +101,45 @@ WorkingMemory::CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index
     VLOG(1) << "WorkingMemory captured ongoing episode for async flush conversation_item_index="
             << conversation_item_index
             << " message_count=" << item.ongoing_episode->messages.size();
-    // TODO: The async flush worker should consume this snapshot to perform natural-boundary
-    // detection and generate tier1/tier2/tier3 before ApplyCompletedOngoingEpisodeFlush mutates
-    // conversation state.
     return OngoingEpisodeFlushCandidate{
         .conversation_item_index = conversation_item_index,
         .ongoing_episode = *item.ongoing_episode,
+    };
+}
+
+absl::StatusOr<OngoingEpisodeFlushCandidate>
+WorkingMemory::CaptureOngoingEpisodeForSplitFlush(std::size_t conversation_item_index,
+                                                  std::size_t split_at_message_index) const {
+    if (conversation_item_index >= state_.conversation.items.size()) {
+        return invalid_argument("split flush target exceeds conversation size");
+    }
+    const auto& item = state_.conversation.items[conversation_item_index];
+    if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
+        return invalid_argument("split flush target must be an ongoing episode");
+    }
+    const auto& messages = item.ongoing_episode->messages;
+    if (split_at_message_index >= messages.size()) {
+        return invalid_argument("split_at_message_index exceeds message count");
+    }
+    if (split_at_message_index < 2) {
+        return invalid_argument(
+            "split_at_message_index must leave at least 2 messages in the completed portion");
+    }
+    if (messages[split_at_message_index].role != MessageRole::User) {
+        return invalid_argument("split_at_message_index must reference a user message");
+    }
+
+    OngoingEpisode completed_portion;
+    completed_portion.messages.assign(
+        messages.begin(), messages.begin() + static_cast<std::ptrdiff_t>(split_at_message_index));
+
+    VLOG(1) << "WorkingMemory captured split flush conversation_item_index="
+            << conversation_item_index << " split_at_message_index=" << split_at_message_index
+            << " completed_message_count=" << completed_portion.messages.size()
+            << " total_message_count=" << messages.size();
+    return OngoingEpisodeFlushCandidate{
+        .conversation_item_index = conversation_item_index,
+        .ongoing_episode = std::move(completed_portion),
     };
 }
 
@@ -117,14 +150,27 @@ WorkingMemory::ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFl
         return episode_status;
     }
 
-    const absl::Status replace_status =
-        ReplaceOngoingEpisodeWithStub(state_.conversation, flush.conversation_item_index,
-                                      flush.episode.tier3_ref, flush.stub_timestamp);
-    if (!replace_status.ok()) {
-        LOG(WARNING) << "WorkingMemory apply flush failed conversation_item_index="
-                     << flush.conversation_item_index << " detail='" << replace_status.message()
-                     << "'";
-        return replace_status;
+    if (flush.split_at_message_index.has_value()) {
+        const absl::Status split_status = SplitOngoingEpisodeWithStub(
+            state_.conversation, flush.conversation_item_index, *flush.split_at_message_index,
+            flush.episode.tier3_ref, flush.stub_timestamp);
+        if (!split_status.ok()) {
+            LOG(WARNING) << "WorkingMemory apply split flush failed conversation_item_index="
+                         << flush.conversation_item_index
+                         << " split_at_message_index=" << *flush.split_at_message_index
+                         << " detail='" << split_status.message() << "'";
+            return split_status;
+        }
+    } else {
+        const absl::Status replace_status =
+            ReplaceOngoingEpisodeWithStub(state_.conversation, flush.conversation_item_index,
+                                          flush.episode.tier3_ref, flush.stub_timestamp);
+        if (!replace_status.ok()) {
+            LOG(WARNING) << "WorkingMemory apply flush failed conversation_item_index="
+                         << flush.conversation_item_index << " detail='" << replace_status.message()
+                         << "'";
+            return replace_status;
+        }
     }
 
     auto insert_at = std::upper_bound(state_.mid_term_episodes.begin(),
@@ -135,6 +181,7 @@ WorkingMemory::ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFl
     state_.mid_term_episodes.insert(insert_at, flush.episode);
     LOG(INFO) << "WorkingMemory applied completed flush conversation_item_index="
               << flush.conversation_item_index << " episode_id=" << flush.episode.episode_id
+              << " was_split=" << (flush.split_at_message_index.has_value() ? "true" : "false")
               << " mid_term_count=" << state_.mid_term_episodes.size();
     return absl::OkStatus();
 }

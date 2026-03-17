@@ -12,6 +12,7 @@ namespace isla::server::memory {
 struct MidTermFlushDecision {
     bool should_flush = false;
     std::optional<std::size_t> conversation_item_index;
+    std::optional<std::size_t> split_at_message_index;
 };
 
 class MidTermFlushDecider {

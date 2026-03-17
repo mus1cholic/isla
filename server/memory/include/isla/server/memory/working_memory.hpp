@@ -30,6 +30,7 @@ struct CompletedOngoingEpisodeFlush {
     std::size_t conversation_item_index = 0;
     Episode episode;
     Timestamp stub_timestamp;
+    std::optional<std::size_t> split_at_message_index;
 };
 
 class WorkingMemory {
@@ -59,6 +60,9 @@ class WorkingMemory {
 
     [[nodiscard]] absl::StatusOr<OngoingEpisodeFlushCandidate>
     CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index) const;
+    [[nodiscard]] absl::StatusOr<OngoingEpisodeFlushCandidate>
+    CaptureOngoingEpisodeForSplitFlush(std::size_t conversation_item_index,
+                                       std::size_t split_at_message_index) const;
     [[nodiscard]] absl::Status
     ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
     [[nodiscard]] absl::StatusOr<RenderedWorkingMemory> RenderPromptBundle() const;

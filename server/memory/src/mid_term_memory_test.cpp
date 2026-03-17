@@ -33,6 +33,11 @@ class RecordingMemoryStore final : public MemoryStore {
         return absl::OkStatus();
     }
 
+    absl::Status SplitConversationItemWithEpisodeStub(const SplitEpisodeStubWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
     absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) override {
         if (!upsert_episode_status.ok()) {
             return upsert_episode_status;

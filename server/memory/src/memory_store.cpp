@@ -82,6 +82,31 @@ absl::Status ValidateEpisodeStubWrite(const EpisodeStubWrite& write) {
     return absl::OkStatus();
 }
 
+absl::Status ValidateSplitEpisodeStubWrite(const SplitEpisodeStubWrite& write) {
+    if (write.session_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateSplitEpisodeStubWrite requires session_id to be non-empty");
+    }
+    if (write.conversation_item_index < 0) {
+        return absl::InvalidArgumentError(
+            "ValidateSplitEpisodeStubWrite requires conversation_item_index to be non-negative");
+    }
+    if (write.episode_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateSplitEpisodeStubWrite requires episode_id to be non-empty");
+    }
+    if (write.episode_stub_content.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateSplitEpisodeStubWrite requires episode_stub_content to be non-empty");
+    }
+    if (write.remaining_ongoing_episode.messages.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateSplitEpisodeStubWrite requires remaining_ongoing_episode to contain at least "
+            "one message");
+    }
+    return absl::OkStatus();
+}
+
 absl::Status ValidateMidTermEpisodeWrite(const MidTermEpisodeWrite& write) {
     if (write.session_id.empty()) {
         return absl::InvalidArgumentError(
