@@ -14,8 +14,8 @@ You will receive one JSON object with this shape:
 {
   "messages": [
     {
-      "role": "user" | "assistant",
-      "content": string
+      "role": "user",
+      "content": "message text"
     }
   ]
 }
@@ -24,6 +24,7 @@ Interpretation:
 - `messages` is the actual content you must compress.
 - The messages are already provided in chronological order from earliest to latest.
 - Treat the message order as meaningful. Do not assume the messages were shuffled or randomly sampled.
+- Each `role` value will be either `"user"` or `"assistant"`.
 
 ### Purpose
 The output should preserve:
@@ -37,11 +38,17 @@ The output should preserve:
 Return exactly one JSON object with exactly these fields:
 
 {
-  "tier1_detail": string | null,
-  "tier2_summary": string,
-  "tier3_ref": string,
-  "tier3_keywords": string[],
-  "salience": integer
+  "tier1_detail": "exact details if useful, otherwise null",
+  "tier2_summary": "max 4-6 sentence narrative summary",
+  "tier3_ref": "single-sentence bookmark",
+  "tier3_keywords": [
+    "keyword1",
+    "keyword2",
+    "keyword3",
+    "keyword4",
+    "keyword5"
+  ],
+  "salience": 6
 }
 
 ### Field Definitions
@@ -57,7 +64,7 @@ Return exactly one JSON object with exactly these fields:
 #### tier2_summary
 - Required.
 - A concise narrative summary of the episode.
-- Target 4-6 sentences maximum.
+- Max 4-6 sentences.
 - Focus on:
   - what the topic was
   - what happened
@@ -166,52 +173,52 @@ Input:
   "messages": [
     {
       "role": "user",
-      "content": "My laptop battery has been draining really fast since the weekend. Can you help me figure out what to check first?"
+      "content": "I'm debugging a crash in my app. It only happens when I click Export after loading a large JSON file, and the error says `std::bad_optional_access`."
     },
     {
       "role": "assistant",
-      "content": "Yes. A few common causes are screen brightness, apps running in the background, browser tabs, update activity, and battery health. Have you noticed the fans running a lot or any app using unusually high power?"
+      "content": "That usually means something is calling `.value()` on an empty optional. Do you know which function or file the crash points to?"
     },
     {
       "role": "user",
-      "content": "The fans have been louder than usual, and Chrome has about 25 tabs open most of the time. I also installed a video editor on Saturday."
+      "content": "Yes, the debugger points to `export_report.cpp` inside `BuildExportPayload()`. There's an optional field called `selected_profile`, and I think it is empty for some imported files."
     },
     {
       "role": "assistant",
-      "content": "That helps narrow it down. I would first check Task Manager for CPU usage, especially from Chrome and the video editor, and see whether the editor left any background helper process running. Also look in battery settings for which apps used the most power over the last 24 hours."
+      "content": "That sounds like the likely cause. Search for `selected_profile.value()` or any direct dereference of that optional. If imported files can omit it, the export path needs a guard or fallback."
     },
     {
       "role": "user",
-      "content": "I checked. Chrome is high, and there is a process called RenderCacheHelper from the video editor using around 18% CPU even though the app is closed."
+      "content": "Found it. The code does `payload.profile_name = selected_profile.value().name;` on line 214. I changed it to return an InvalidArgument error when `!selected_profile.has_value()`."
     },
     {
       "role": "assistant",
-      "content": "That background process is likely a major contributor. End that task for now, then disable it from startup if you do not need it. Reducing open Chrome tabs and turning on battery saver should also help immediately."
+      "content": "Good fix. You should also include the file context in the error so it is easier to diagnose next time. Something like `return absl::InvalidArgumentError(\"selected_profile is required for export\")` would be better than crashing."
     },
     {
       "role": "user",
-      "content": "Okay. Let's do that, and also remind me later to check battery health if the drain is still bad tomorrow."
+      "content": "I did that and added a test named `ExportFailsWhenSelectedProfileMissing`. It loads a large imported JSON fixture without the profile field and now expects an InvalidArgument status instead of a crash."
     },
     {
       "role": "assistant",
-      "content": "Sounds good. The immediate plan is to stop the RenderCacheHelper process, remove it from startup if possible, cut down Chrome tabs, and enable battery saver. If battery life is still poor tomorrow, the next step is to check the battery health report."
+      "content": "Nice. So the root cause was an unchecked optional in `BuildExportPayload()` in `export_report.cpp`, and the resolution was to guard the missing profile case and cover it with a regression test."
     }
   ]
 }
 
 Output:
 {
-  "tier1_detail": "Battery troubleshooting details: symptoms included loud fans, fast battery drain starting after the weekend, about 25 Chrome tabs open, and a recent video editor install on Saturday. The user found a background process named `RenderCacheHelper` from the video editor using about 18% CPU even while the main app was closed. Recommended immediate actions were to end that task, disable it from startup if not needed, reduce Chrome tabs, and enable battery saver. If the problem continues the next day, the follow-up step is to check the battery health report.",
-  "tier2_summary": "The episode centered on diagnosing sudden laptop battery drain. Early clues included louder fans, many open Chrome tabs, and a recently installed video editor. After checking running processes, the user found that a background helper from the video editor was consuming significant CPU even when the app was not open, making it the most likely cause of the abnormal drain. The immediate plan was to stop that helper process, prevent it from auto-starting if possible, reduce Chrome tab usage, and enable battery saver. A follow-up check of battery health was deferred until the next day if the drain does not improve.",
-  "tier3_ref": "Diagnosed likely battery drain from a background video editor helper process.",
+  "tier1_detail": "The crash occurred when exporting after loading a large imported JSON file and produced `std::bad_optional_access`. The debugger traced it to `BuildExportPayload()` in `export_report.cpp`, where the code on line 214 did `payload.profile_name = selected_profile.value().name;`. The issue was that `selected_profile` could be empty for imported files. The fix was to guard the optional with `!selected_profile.has_value()` and return `absl::InvalidArgumentError(\"selected_profile is required for export\")` instead of crashing. A regression test named `ExportFailsWhenSelectedProfileMissing` was added to load a large JSON fixture without the profile field and verify that export now returns an InvalidArgument status.",
+  "tier2_summary": "The episode focused on debugging an export crash triggered after loading a large JSON file. The failure turned out to be an unchecked optional in `BuildExportPayload()` inside `export_report.cpp`, where the code assumed `selected_profile` was always present. For some imported files that field was actually missing, leading to `std::bad_optional_access` during export. The fix was to detect the missing profile and return an InvalidArgument error rather than dereferencing the empty optional. The user also added a regression test to cover the missing-profile case so the crash does not return.",
+  "tier3_ref": "Fixed an export crash caused by dereferencing a missing optional profile in `export_report.cpp`.",
   "tier3_keywords": [
-    "battery drain",
-    "Chrome tabs",
-    "video editor",
-    "RenderCacheHelper",
-    "battery health"
+    "std::bad_optional_access",
+    "export_report.cpp",
+    "BuildExportPayload",
+    "selected_profile",
+    "regression test"
   ],
-  "salience": 7
+  "salience": 9
 }
 
 ### Validation Checklist
