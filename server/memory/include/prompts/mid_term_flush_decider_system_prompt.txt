@@ -94,8 +94,10 @@ When a boundary is detected and the message group should be split:
   Never reference an `episode_stub`.
 
 #### split_at
+- Required. String or null.
 - Null when `should_flush` is `false`.
-- Optional when `should_flush` is `true`.
+- When `should_flush` is `true`, set to `null` if the entire message group should be archived
+  without splitting.
 - When provided, this is the `id` of the first message in the new topic. The message group is split
   into two parts:
   - Completed portion: all messages before `split_at`. This is the topic that has ended.
