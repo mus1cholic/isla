@@ -113,7 +113,8 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
-    [[nodiscard]] absl::StatusOr<std::optional<std::size_t>> MaybeChooseFlushConversationItem() const;
+    [[nodiscard]] absl::StatusOr<std::optional<std::size_t>>
+    MaybeChooseFlushConversationItem() const;
     [[nodiscard]] absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>>
     MaybeCaptureFlushCandidate(const Message& assistant_message);
     [[nodiscard]] absl::Status

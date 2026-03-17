@@ -147,23 +147,22 @@ class RecordingMidTermFlushDecider final : public MidTermFlushDecider {
         absl::StatusOr<MidTermFlushDecision> decision = MidTermFlushDecision{})
         : decision_(std::move(decision)) {}
 
-    absl::StatusOr<MidTermFlushDecision>
-    Decide(const MidTermFlushDecisionRequest& request) override {
+    absl::StatusOr<MidTermFlushDecision> Decide(const Conversation& conversation) override {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            requests_.push_back(request);
+            requests_.push_back(conversation);
         }
         return decision_;
     }
 
-    [[nodiscard]] std::vector<MidTermFlushDecisionRequest> requests() const {
+    [[nodiscard]] std::vector<Conversation> requests() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return requests_;
     }
 
   private:
     mutable std::mutex mutex_;
-    std::vector<MidTermFlushDecisionRequest> requests_;
+    std::vector<Conversation> requests_;
     absl::StatusOr<MidTermFlushDecision> decision_;
 };
 
@@ -193,7 +192,7 @@ class MemoryOrchestratorTest : public ::testing::Test {
 
     static absl::StatusOr<MemoryOrchestrator>
     MakeHandlerWithCompactor(const MidTermCompactorPtr& compactor, MemoryStorePtr store = nullptr,
-                            const MidTermFlushDeciderPtr& decider = nullptr) {
+                             const MidTermFlushDeciderPtr& decider = nullptr) {
         absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
             .system_prompt = "You are Isla.",
             .user_id = "user_001",
@@ -234,8 +233,7 @@ class MemoryOrchestratorTest : public ::testing::Test {
             }
             std::this_thread::sleep_for(10ms);
         }
-        return absl::DeadlineExceededError(
-            "timed out waiting for mid-term compaction failure");
+        return absl::DeadlineExceededError("timed out waiting for mid-term compaction failure");
     }
 };
 
@@ -416,9 +414,8 @@ TEST_F(MemoryOrchestratorTest, HandleAssistantReplyPropagatesFlushDeciderFailure
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status =
-        handler->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
-                                                            Ts("2026-03-08T14:00:01Z")));
+    const absl::Status status = handler->HandleAssistantReply(
+        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
@@ -440,9 +437,8 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsMissingConversationItemWhenFlu
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status =
-        handler->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
-                                                            Ts("2026-03-08T14:00:01Z")));
+    const absl::Status status = handler->HandleAssistantReply(
+        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
@@ -464,9 +460,8 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsConversationItemWhenFlushNotRe
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status =
-        handler->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
-                                                            Ts("2026-03-08T14:00:01Z")));
+    const absl::Status status = handler->HandleAssistantReply(
+        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
@@ -488,9 +483,8 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsOutOfRangeConversationItem) {
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status =
-        handler->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
-                                                            Ts("2026-03-08T14:00:01Z")));
+    const absl::Status status = handler->HandleAssistantReply(
+        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
@@ -528,8 +522,8 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderDoesNotQueueDuplicatePendingFlushes) 
     ASSERT_TRUE(compactor->WaitForRequestCount(1U));
 
     ASSERT_TRUE(handler
-                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_002", "extra reply",
-                                                                 Ts("2026-03-08T14:00:02Z")))
+                    ->HandleAssistantReply(GatewayAssistantReply(
+                        "srv_test", "turn_002", "extra reply", Ts("2026-03-08T14:00:02Z")))
                     .ok());
 
     EXPECT_EQ(compactor->requests().size(), 1U);

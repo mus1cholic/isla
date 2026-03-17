@@ -9,10 +9,6 @@
 
 namespace isla::server::memory {
 
-struct MidTermFlushDecisionRequest {
-    Conversation conversation;
-};
-
 struct MidTermFlushDecision {
     bool should_flush = false;
     std::optional<std::size_t> conversation_item_index;
@@ -23,7 +19,7 @@ class MidTermFlushDecider {
     virtual ~MidTermFlushDecider() = default;
 
     [[nodiscard]] virtual absl::StatusOr<MidTermFlushDecision>
-    Decide(const MidTermFlushDecisionRequest& request) = 0;
+    Decide(const Conversation& conversation) = 0;
 };
 
 using MidTermFlushDeciderPtr = std::shared_ptr<MidTermFlushDecider>;

@@ -50,8 +50,7 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
         return memory.status();
     }
     return MemoryOrchestrator(std::move(session_id), std::move(*memory), init.store,
-                              init.mid_term_flush_decider,
-                              init.mid_term_compactor);
+                              init.mid_term_flush_decider, init.mid_term_compactor);
 }
 
 absl::Status MemoryOrchestrator::BeginSession(Timestamp create_time) {
@@ -226,7 +225,8 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
     return std::nullopt;
 }
 
-absl::StatusOr<std::optional<std::size_t>> MemoryOrchestrator::MaybeChooseFlushConversationItem() const {
+absl::StatusOr<std::optional<std::size_t>>
+MemoryOrchestrator::MaybeChooseFlushConversationItem() const {
     if (mid_term_compactor_ == nullptr || mid_term_flush_decider_ == nullptr) {
         return std::nullopt;
     }
@@ -237,9 +237,7 @@ absl::StatusOr<std::optional<std::size_t>> MemoryOrchestrator::MaybeChooseFlushC
     }
 
     const absl::StatusOr<MidTermFlushDecision> decision =
-        mid_term_flush_decider_->Decide(MidTermFlushDecisionRequest{
-            .conversation = conversation,
-        });
+        mid_term_flush_decider_->Decide(conversation);
     if (!decision.ok()) {
         return decision.status();
     }
@@ -250,8 +248,8 @@ absl::StatusOr<std::optional<std::size_t>> MemoryOrchestrator::MaybeChooseFlushC
                 << " session_id=" << SanitizeForLog(session_id_)
                 << " detail='flush decider returned a conversation item while should_flush was "
                    "false'";
-            return invalid_argument(
-                "mid-term flush decider cannot return a conversation item when should_flush is false");
+            return invalid_argument("mid-term flush decider cannot return a conversation item when "
+                                    "should_flush is false");
         }
         VLOG(1) << "MemoryOrchestrator flush decider chose not to flush session_id="
                 << SanitizeForLog(session_id_);
