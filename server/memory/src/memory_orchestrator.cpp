@@ -28,8 +28,11 @@ Timestamp NowTimestamp() {
 } // namespace
 
 MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory memory,
-                                       MemoryStorePtr store, MidTermCompactorPtr mid_term_compactor)
+                                       MemoryStorePtr store,
+                                       MidTermFlushDeciderPtr mid_term_flush_decider,
+                                       MidTermCompactorPtr mid_term_compactor)
     : session_id_(std::move(session_id)), memory_(std::move(memory)), store_(std::move(store)),
+      mid_term_flush_decider_(std::move(mid_term_flush_decider)),
       mid_term_compactor_(std::move(mid_term_compactor)), pending_mid_term_flushes_(),
       next_episode_sequence_(1), session_persisted_(false) {}
 
@@ -47,6 +50,7 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
         return memory.status();
     }
     return MemoryOrchestrator(std::move(session_id), std::move(*memory), init.store,
+                              init.mid_term_flush_decider,
                               init.mid_term_compactor);
 }
 
@@ -222,6 +226,61 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
     return std::nullopt;
 }
 
+absl::StatusOr<std::optional<std::size_t>> MemoryOrchestrator::MaybeChooseFlushConversationItem() const {
+    if (mid_term_compactor_ == nullptr || mid_term_flush_decider_ == nullptr) {
+        return std::nullopt;
+    }
+
+    const Conversation& conversation = memory_.conversation();
+    if (conversation.items.empty()) {
+        return std::nullopt;
+    }
+
+    const absl::StatusOr<MidTermFlushDecision> decision =
+        mid_term_flush_decider_->Decide(MidTermFlushDecisionRequest{
+            .conversation = conversation,
+        });
+    if (!decision.ok()) {
+        return decision.status();
+    }
+    if (!decision->should_flush) {
+        if (decision->conversation_item_index.has_value()) {
+            LOG(WARNING)
+                << "MemoryOrchestrator rejected invalid mid-term flush decider output"
+                << " session_id=" << SanitizeForLog(session_id_)
+                << " detail='flush decider returned a conversation item while should_flush was "
+                   "false'";
+            return invalid_argument(
+                "mid-term flush decider cannot return a conversation item when should_flush is false");
+        }
+        VLOG(1) << "MemoryOrchestrator flush decider chose not to flush session_id="
+                << SanitizeForLog(session_id_);
+        return std::nullopt;
+    }
+    if (!decision->conversation_item_index.has_value()) {
+        LOG(WARNING) << "MemoryOrchestrator rejected invalid mid-term flush decider output"
+                     << " session_id=" << SanitizeForLog(session_id_)
+                     << " detail='flush decider requested a flush without a conversation item'";
+        return invalid_argument(
+            "mid-term flush decider must return a conversation item when should_flush is true");
+    }
+    if (*decision->conversation_item_index >= conversation.items.size()) {
+        LOG(WARNING)
+            << "MemoryOrchestrator rejected invalid mid-term flush decider output"
+            << " session_id=" << SanitizeForLog(session_id_)
+            << " conversation_item_index=" << *decision->conversation_item_index
+            << " conversation_size=" << conversation.items.size()
+            << " detail='flush decider returned a conversation item outside the conversation "
+               "range'";
+        return invalid_argument(
+            "mid-term flush decider returned a conversation item outside the conversation range");
+    }
+    VLOG(1) << "MemoryOrchestrator flush decider chose a conversation item for flush session_id="
+            << SanitizeForLog(session_id_)
+            << " conversation_item_index=" << *decision->conversation_item_index;
+    return decision->conversation_item_index;
+}
+
 absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>>
 MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& assistant_message) {
     if (mid_term_compactor_ == nullptr) {
@@ -233,6 +292,21 @@ MemoryOrchestrator::MaybeCaptureFlushCandidate(const Message& assistant_message)
 
     const Conversation& conversation = memory_.conversation();
     if (conversation.items.empty()) {
+        return std::nullopt;
+    }
+
+    if (const absl::StatusOr<std::optional<std::size_t>> decider_choice =
+            MaybeChooseFlushConversationItem();
+        !decider_choice.ok()) {
+        return decider_choice.status();
+    } else if (decider_choice->has_value()) {
+        for (const PendingMidTermFlush& pending_flush : pending_mid_term_flushes_) {
+            if (pending_flush.conversation_item_index == decider_choice->value()) {
+                return std::nullopt;
+            }
+        }
+        return memory_.CaptureOngoingEpisodeForFlush(decider_choice->value());
+    } else if (mid_term_flush_decider_ != nullptr) {
         return std::nullopt;
     }
 
