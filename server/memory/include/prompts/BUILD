@@ -23,3 +23,9 @@ filegroup(
     srcs = ["mid_term_compactor_system_prompt.txt"],
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "mid_term_flush_decider_system_prompt_asset",
+    srcs = ["mid_term_flush_decider_system_prompt.txt"],
+    visibility = ["//visibility:public"],
+)
