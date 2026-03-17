@@ -35,4 +35,9 @@ class MidTermCompactor {
 
 using MidTermCompactorPtr = std::shared_ptr<MidTermCompactor>;
 
+// TODO: Add a concrete LLM-based MidTermCompactor implementation that calls an
+// LLM to produce tiered summaries, keywords, and salience scores from the
+// flushed episode messages. The system prompt already exists at
+// server/memory/include/prompts/mid_term_compactor_system_prompt.txt.
+
 } // namespace isla::server::memory

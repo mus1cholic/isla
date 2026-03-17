@@ -54,8 +54,7 @@ TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptWithControlCharac
 
     ASSERT_FALSE(resolved_prompt.ok());
     EXPECT_EQ(resolved_prompt.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_EQ(resolved_prompt.status().message(),
-              "prompt contains unsupported control characters");
+    EXPECT_EQ(resolved_prompt.status().message(), "prompt contains unsupported control characters");
 }
 
 TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptThatIsTooLarge) {
@@ -65,6 +64,14 @@ TEST(PromptLoaderTest, ResolveSystemPromptRejectsExplicitPromptThatIsTooLarge) {
     ASSERT_FALSE(resolved_prompt.ok());
     EXPECT_EQ(resolved_prompt.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_EQ(resolved_prompt.status().message(), "prompt exceeds maximum length");
+}
+
+TEST(PromptLoaderTest, LoadMidTermFlushDeciderSystemPromptSucceeds) {
+    const absl::StatusOr<std::string> prompt =
+        LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
+
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_FALSE(prompt->empty());
 }
 
 TEST(PromptLoaderTest, LoadPromptRejectsUnknownPromptAsset) {

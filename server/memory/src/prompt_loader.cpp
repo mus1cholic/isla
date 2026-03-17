@@ -1,5 +1,6 @@
 #include "isla/server/memory/prompt_loader.hpp"
 
+#include <cstddef>
 #include <string>
 
 #include "absl/log/log.h"
@@ -11,7 +12,7 @@ namespace {
 
 using isla::server::ai_gateway::SanitizeForLog;
 
-inline constexpr std::size_t kMaxPromptBytes = 64U * 1024U;
+inline constexpr std::size_t kMaxPromptBytes = static_cast<const std::size_t>(64U * 1024U);
 
 struct EmbeddedPromptAsset {
     std::string_view runfile_path;
@@ -20,6 +21,8 @@ struct EmbeddedPromptAsset {
 
 inline constexpr std::string_view kSystemPromptRunfile =
     "server/memory/include/prompts/system_prompt.txt";
+inline constexpr std::string_view kMidTermFlushDeciderSystemPromptRunfile =
+    "server/memory/include/prompts/mid_term_flush_decider_system_prompt.txt";
 inline constexpr std::string_view kFuturePromptTestRunfile =
     "server/memory/include/prompts/future_prompt_test.txt";
 
@@ -29,6 +32,8 @@ absl::StatusOr<std::string_view> PromptAssetRunfilePath(PromptAsset prompt_asset
     switch (prompt_asset) {
     case PromptAsset::kSystemPrompt:
         return kSystemPromptRunfile;
+    case PromptAsset::kMidTermFlushDeciderSystemPrompt:
+        return kMidTermFlushDeciderSystemPromptRunfile;
     case PromptAsset::kFuturePromptTest:
         return kFuturePromptTestRunfile;
     }
@@ -80,11 +85,9 @@ absl::StatusOr<std::string> LoadPrompt(PromptAsset prompt_asset) {
                 << SanitizeForLog(*runfile_path) << "'";
         return absl::NotFoundError("prompt was not embedded in the binary");
     }
-    VLOG(1) << "PromptLoader loaded embedded prompt runfile_path='"
-            << SanitizeForLog(*runfile_path)
+    VLOG(1) << "PromptLoader loaded embedded prompt runfile_path='" << SanitizeForLog(*runfile_path)
             << "' bytes=" << prompt->contents.size();
-    const absl::Status validation_status =
-        ValidatePromptContents(prompt->contents, *runfile_path);
+    absl::Status validation_status = ValidatePromptContents(prompt->contents, *runfile_path);
     if (!validation_status.ok()) {
         VLOG(1) << "PromptLoader rejected embedded prompt runfile_path='"
                 << SanitizeForLog(*runfile_path) << "' detail='"
@@ -100,7 +103,7 @@ absl::StatusOr<std::string> LoadSystemPrompt() {
 
 absl::StatusOr<std::string> ResolveSystemPrompt(std::string_view configured_prompt) {
     if (!configured_prompt.empty()) {
-        const absl::Status validation_status =
+        absl::Status validation_status =
             ValidatePromptContents(configured_prompt, "configured system prompt");
         if (!validation_status.ok()) {
             VLOG(1) << "PromptLoader rejected configured system prompt detail='"
