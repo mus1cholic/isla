@@ -238,7 +238,9 @@ cc_test(
     srcs = ["mid_term_flush_decider_test.cpp"],
     deps = [
         ":mid_term_flush_decider",
+        ":prompt_loader",
         "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/log:check",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],

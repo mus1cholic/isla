@@ -122,10 +122,14 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
     const bool should_flush = response["should_flush"].get<bool>();
 
     if (!should_flush) {
-        // Validate consistency: item_id and split_at should be null when not flushing.
+        // Validate consistency: flush-only fields should be null when not flushing.
         if (response.contains("item_id") && !response["item_id"].is_null()) {
             return invalid_argument(
                 "flush decider returned should_flush=false but item_id is non-null");
+        }
+        if (response.contains("split_at") && !response["split_at"].is_null()) {
+            return invalid_argument(
+                "flush decider returned should_flush=false but split_at is non-null");
         }
         return MidTermFlushDecision{ .should_flush = false };
     }
@@ -255,6 +259,10 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
 MidTermFlushDeciderPtr CreateLlmMidTermFlushDecider(
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> responses_client,
     std::string model) {
+    if (!responses_client) {
+        LOG(ERROR) << "LlmMidTermFlushDecider requires a non-null responses client";
+        return nullptr;
+    }
     absl::StatusOr<std::string> system_prompt =
         LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
     if (!system_prompt.ok()) {

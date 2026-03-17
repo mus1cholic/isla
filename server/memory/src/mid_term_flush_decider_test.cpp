@@ -9,8 +9,10 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "isla/server/memory/memory_types.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::memory {
@@ -98,16 +100,21 @@ struct DeciderWithFake {
     MidTermFlushDeciderPtr decider;
 };
 
+// NOTE: These helpers CHECK that the factory succeeds. If the embedded system
+// prompt fails to load, CHECK will abort with a clear message rather than
+// letting tests segfault on a null decider.
+
 DeciderWithFake MakeDecider(std::string canned_response) {
     auto fake = std::make_shared<FakeOpenAiResponsesClient>(std::move(canned_response));
-    // Use the factory to build the decider with its embedded system prompt.
     MidTermFlushDeciderPtr decider = CreateLlmMidTermFlushDecider(fake, "test-model");
+    CHECK(decider != nullptr) << "Factory returned null — embedded system prompt may be missing";
     return { fake, std::move(decider) };
 }
 
 DeciderWithFake MakeFailingDecider(absl::Status failure_status) {
     auto fake = std::make_shared<FakeOpenAiResponsesClient>("", std::move(failure_status));
     MidTermFlushDeciderPtr decider = CreateLlmMidTermFlushDecider(fake, "test-model");
+    CHECK(decider != nullptr) << "Factory returned null — embedded system prompt may be missing";
     return { fake, std::move(decider) };
 }
 
@@ -286,10 +293,11 @@ TEST(LlmMidTermFlushDeciderTest, DecideUsesCorrectModelAndSystemPrompt) {
     ASSERT_TRUE(decision.ok()) << decision.status();
 
     EXPECT_EQ(fake->last_request_model(), "test-model");
-    // System prompt should be loaded from the embedded asset — verify it's non-empty.
-    EXPECT_FALSE(fake->last_request_system_prompt().empty());
-    // Verify it contains a key phrase from the system prompt.
-    EXPECT_NE(fake->last_request_system_prompt().find("topic boundary"), std::string::npos);
+    // Verify the system prompt matches the embedded asset (correct wiring).
+    const absl::StatusOr<std::string> expected_prompt =
+        LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    ASSERT_TRUE(expected_prompt.ok()) << expected_prompt.status();
+    EXPECT_EQ(fake->last_request_system_prompt(), *expected_prompt);
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidJson) {
@@ -366,6 +374,17 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInconsistentNoFlushWithItemId) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsInconsistentNoFlushWithSplitAt) {
+    auto [fake, decider] = MakeDecider(
+        R"({"should_flush": false, "item_id": null, "split_at": "m3", "reasoning": "No"})");
+
+    const Conversation conversation = MakeSimpleConversation();
+    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+
+    ASSERT_FALSE(decision.ok());
+    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LlmMidTermFlushDeciderTest, DecideHandlesEmptyConversation) {
     const std::string response =
         R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "Empty"})";
@@ -400,6 +419,12 @@ TEST(LlmMidTermFlushDeciderTest, FactoryReturnsNonNullDecider) {
     MidTermFlushDeciderPtr decider = CreateLlmMidTermFlushDecider(fake, "gpt-4o-mini");
 
     ASSERT_NE(decider, nullptr);
+}
+
+TEST(LlmMidTermFlushDeciderTest, FactoryReturnsNullForNullClient) {
+    MidTermFlushDeciderPtr decider = CreateLlmMidTermFlushDecider(nullptr, "test-model");
+
+    EXPECT_EQ(decider, nullptr);
 }
 
 } // namespace
