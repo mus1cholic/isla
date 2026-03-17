@@ -10,6 +10,7 @@
 #include "absl/status/statusor.h"
 #include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
+#include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
@@ -54,6 +55,7 @@ struct UserQueryMemoryResult {
 struct MemoryOrchestratorInit {
     std::string user_id;
     MemoryStorePtr store;
+    MidTermFlushDeciderPtr mid_term_flush_decider = nullptr;
     MidTermCompactorPtr mid_term_compactor = nullptr;
 };
 
@@ -63,6 +65,7 @@ struct MemoryOrchestratorInit {
 class MemoryOrchestrator {
   public:
     MemoryOrchestrator(std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr,
+                       MidTermFlushDeciderPtr mid_term_flush_decider = nullptr,
                        MidTermCompactorPtr mid_term_compactor = nullptr);
 
     [[nodiscard]] static absl::StatusOr<MemoryOrchestrator>
@@ -110,6 +113,8 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
+    [[nodiscard]] absl::StatusOr<std::optional<std::size_t>>
+    MaybeChooseFlushConversationItem() const;
     [[nodiscard]] absl::StatusOr<std::optional<OngoingEpisodeFlushCandidate>>
     MaybeCaptureFlushCandidate(const Message& assistant_message);
     [[nodiscard]] absl::Status
@@ -126,6 +131,7 @@ class MemoryOrchestrator {
     std::string session_id_;
     WorkingMemory memory_;
     MemoryStorePtr store_;
+    MidTermFlushDeciderPtr mid_term_flush_decider_;
     MidTermCompactorPtr mid_term_compactor_;
     std::vector<PendingMidTermFlush> pending_mid_term_flushes_;
     std::size_t next_episode_sequence_ = 1;

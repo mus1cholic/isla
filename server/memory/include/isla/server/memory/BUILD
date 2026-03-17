@@ -5,6 +5,7 @@ cc_library(
     hdrs = [
         "conversation.hpp",
         "mid_term_compactor.hpp",
+        "mid_term_flush_decider.hpp",
         "mid_term_memory.hpp",
         "memory_store.hpp",
         "memory_timestamp_utils.hpp",
