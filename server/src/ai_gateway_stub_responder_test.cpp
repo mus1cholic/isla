@@ -364,6 +364,12 @@ class RecordingGatewayMemoryStore final : public isla::server::memory::MemorySto
         return absl::OkStatus();
     }
 
+    absl::Status SplitConversationItemWithEpisodeStub(
+        const isla::server::memory::SplitEpisodeStubWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
     absl::Status
     UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
         static_cast<void>(write);
