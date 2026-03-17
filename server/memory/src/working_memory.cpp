@@ -85,8 +85,8 @@ absl::Status WorkingMemory::WriteBackCoreEntity(std::string_view entity_id, std:
     return absl::OkStatus();
 }
 
-absl::StatusOr<OngoingEpisodeFlushCandidate>
-WorkingMemory::CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index) const {
+absl::Status
+WorkingMemory::ValidateOngoingEpisodeForFlush(std::size_t conversation_item_index) const {
     if (conversation_item_index >= state_.conversation.items.size()) {
         return invalid_argument("flush target exceeds conversation size");
     }
@@ -97,19 +97,12 @@ WorkingMemory::CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index
     if (item.ongoing_episode->messages.empty()) {
         return invalid_argument("flush target must contain at least one message");
     }
-
-    VLOG(1) << "WorkingMemory captured ongoing episode for async flush conversation_item_index="
-            << conversation_item_index
-            << " message_count=" << item.ongoing_episode->messages.size();
-    return OngoingEpisodeFlushCandidate{
-        .conversation_item_index = conversation_item_index,
-        .ongoing_episode = *item.ongoing_episode,
-    };
+    return absl::OkStatus();
 }
 
-absl::StatusOr<OngoingEpisodeFlushCandidate>
-WorkingMemory::CaptureOngoingEpisodeForSplitFlush(std::size_t conversation_item_index,
-                                                  std::size_t split_at_message_index) const {
+absl::Status
+WorkingMemory::ValidateOngoingEpisodeForSplitFlush(std::size_t conversation_item_index,
+                                                   std::size_t split_at_message_index) const {
     if (conversation_item_index >= state_.conversation.items.size()) {
         return invalid_argument("split flush target exceeds conversation size");
     }
@@ -128,6 +121,36 @@ WorkingMemory::CaptureOngoingEpisodeForSplitFlush(std::size_t conversation_item_
     if (messages[split_at_message_index].role != MessageRole::User) {
         return invalid_argument("split_at_message_index must reference a user message");
     }
+    return absl::OkStatus();
+}
+
+absl::StatusOr<OngoingEpisodeFlushCandidate>
+WorkingMemory::CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index) const {
+    if (const absl::Status status = ValidateOngoingEpisodeForFlush(conversation_item_index);
+        !status.ok()) {
+        return status;
+    }
+    const auto& item = state_.conversation.items[conversation_item_index];
+
+    VLOG(1) << "WorkingMemory captured ongoing episode for async flush conversation_item_index="
+            << conversation_item_index
+            << " message_count=" << item.ongoing_episode->messages.size();
+    return OngoingEpisodeFlushCandidate{
+        .conversation_item_index = conversation_item_index,
+        .ongoing_episode = *item.ongoing_episode,
+    };
+}
+
+absl::StatusOr<OngoingEpisodeFlushCandidate>
+WorkingMemory::CaptureOngoingEpisodeForSplitFlush(std::size_t conversation_item_index,
+                                                  std::size_t split_at_message_index) const {
+    if (const absl::Status status =
+            ValidateOngoingEpisodeForSplitFlush(conversation_item_index, split_at_message_index);
+        !status.ok()) {
+        return status;
+    }
+    const auto& messages =
+        state_.conversation.items[conversation_item_index].ongoing_episode->messages;
 
     OngoingEpisode completed_portion;
     completed_portion.messages.assign(

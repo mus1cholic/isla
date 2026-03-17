@@ -63,6 +63,124 @@ TEST(MemoryStoreTest, EpisodeStubWriteRejectsMissingStubPayload) {
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(MemoryStoreTest, SplitEpisodeStubWriteRejectsEmptySessionId) {
+    const absl::Status status = ValidateSplitEpisodeStubWrite(SplitEpisodeStubWrite{
+        .session_id = "",
+        .conversation_item_index = 0,
+        .episode_id = "ep_001",
+        .episode_stub_content = "stub summary",
+        .episode_stub_create_time = Ts("2026-03-08T14:00:00Z"),
+        .remaining_ongoing_episode =
+            OngoingEpisode{
+                .messages = { Message{
+                    .role = MessageRole::User,
+                    .content = "hello",
+                    .create_time = Ts("2026-03-08T14:00:01Z"),
+                } },
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, SplitEpisodeStubWriteRejectsNegativeConversationItemIndex) {
+    const absl::Status status = ValidateSplitEpisodeStubWrite(SplitEpisodeStubWrite{
+        .session_id = "session_001",
+        .conversation_item_index = -1,
+        .episode_id = "ep_001",
+        .episode_stub_content = "stub summary",
+        .episode_stub_create_time = Ts("2026-03-08T14:00:00Z"),
+        .remaining_ongoing_episode =
+            OngoingEpisode{
+                .messages = { Message{
+                    .role = MessageRole::User,
+                    .content = "hello",
+                    .create_time = Ts("2026-03-08T14:00:01Z"),
+                } },
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, SplitEpisodeStubWriteRejectsEmptyEpisodeId) {
+    const absl::Status status = ValidateSplitEpisodeStubWrite(SplitEpisodeStubWrite{
+        .session_id = "session_001",
+        .conversation_item_index = 0,
+        .episode_id = "",
+        .episode_stub_content = "stub summary",
+        .episode_stub_create_time = Ts("2026-03-08T14:00:00Z"),
+        .remaining_ongoing_episode =
+            OngoingEpisode{
+                .messages = { Message{
+                    .role = MessageRole::User,
+                    .content = "hello",
+                    .create_time = Ts("2026-03-08T14:00:01Z"),
+                } },
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, SplitEpisodeStubWriteRejectsEmptyStubContent) {
+    const absl::Status status = ValidateSplitEpisodeStubWrite(SplitEpisodeStubWrite{
+        .session_id = "session_001",
+        .conversation_item_index = 0,
+        .episode_id = "ep_001",
+        .episode_stub_content = "",
+        .episode_stub_create_time = Ts("2026-03-08T14:00:00Z"),
+        .remaining_ongoing_episode =
+            OngoingEpisode{
+                .messages = { Message{
+                    .role = MessageRole::User,
+                    .content = "hello",
+                    .create_time = Ts("2026-03-08T14:00:01Z"),
+                } },
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, SplitEpisodeStubWriteRejectsEmptyRemainingMessages) {
+    const absl::Status status = ValidateSplitEpisodeStubWrite(SplitEpisodeStubWrite{
+        .session_id = "session_001",
+        .conversation_item_index = 0,
+        .episode_id = "ep_001",
+        .episode_stub_content = "stub summary",
+        .episode_stub_create_time = Ts("2026-03-08T14:00:00Z"),
+        .remaining_ongoing_episode = OngoingEpisode{ .messages = {} },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, SplitEpisodeStubWriteAcceptsValidInput) {
+    const absl::Status status = ValidateSplitEpisodeStubWrite(SplitEpisodeStubWrite{
+        .session_id = "session_001",
+        .conversation_item_index = 0,
+        .episode_id = "ep_001",
+        .episode_stub_content = "stub summary",
+        .episode_stub_create_time = Ts("2026-03-08T14:00:00Z"),
+        .remaining_ongoing_episode =
+            OngoingEpisode{
+                .messages = { Message{
+                    .role = MessageRole::User,
+                    .content = "hello",
+                    .create_time = Ts("2026-03-08T14:00:01Z"),
+                } },
+            },
+    });
+
+    EXPECT_TRUE(status.ok()) << status;
+}
+
 TEST(MemoryStoreTest, SnapshotValidationRequiresContiguousConversationItemIndexes) {
     const absl::Status status = ValidateMemoryStoreSnapshot(MemoryStoreSnapshot{
         .session =

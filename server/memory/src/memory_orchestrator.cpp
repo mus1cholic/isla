@@ -520,10 +520,12 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
         // value captured in the async lambda. Earlier split flushes may have inserted new
         // conversation items, shifting indices of subsequent pending flushes.
         const std::size_t adjusted_conversation_item_index = it->conversation_item_index;
+        const bool was_split = it->was_split;
         it = pending_mid_term_flushes_.erase(it);
         if (!completed_flush.ok()) {
             LOG(WARNING) << "MemoryOrchestrator async mid-term flush failed session_id="
-                         << SanitizeForLog(session_id_) << " detail='"
+                         << SanitizeForLog(session_id_)
+                         << " was_split=" << (was_split ? "true" : "false") << " detail='"
                          << SanitizeForLog(completed_flush.status().message()) << "'";
             return completed_flush.status();
         }
@@ -535,7 +537,8 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
         VLOG(1) << "MemoryOrchestrator drained completed async mid-term flush session_id="
                 << SanitizeForLog(session_id_)
                 << " episode_id=" << SanitizeForLog(completed_flush->episode.episode_id)
-                << " conversation_item_index=" << completed_flush->conversation_item_index;
+                << " conversation_item_index=" << completed_flush->conversation_item_index
+                << " was_split=" << (was_split ? "true" : "false");
         ++drained_count;
     }
     return drained_count;
@@ -671,19 +674,19 @@ absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantRepl
 
 absl::Status
 MemoryOrchestrator::ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush) {
-    // Validate that the target conversation item is still a valid ongoing episode.
+    // Validate that the target conversation item is still a valid ongoing episode without copying
+    // any message data — the full capture is unnecessary at apply time.
     if (flush.split_at_message_index.has_value()) {
-        const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
-            memory_.CaptureOngoingEpisodeForSplitFlush(flush.conversation_item_index,
-                                                       *flush.split_at_message_index);
-        if (!captured.ok()) {
-            return captured.status();
+        if (const absl::Status status = memory_.ValidateOngoingEpisodeForSplitFlush(
+                flush.conversation_item_index, *flush.split_at_message_index);
+            !status.ok()) {
+            return status;
         }
     } else {
-        const absl::StatusOr<OngoingEpisodeFlushCandidate> captured =
-            memory_.CaptureOngoingEpisodeForFlush(flush.conversation_item_index);
-        if (!captured.ok()) {
-            return captured.status();
+        if (const absl::Status status =
+                memory_.ValidateOngoingEpisodeForFlush(flush.conversation_item_index);
+            !status.ok()) {
+            return status;
         }
     }
 

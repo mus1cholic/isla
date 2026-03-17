@@ -58,6 +58,12 @@ class WorkingMemory {
     void UpsertFamiliarLabel(std::string entity_id, std::string text);
     [[nodiscard]] absl::Status WriteBackCoreEntity(std::string_view entity_id, std::string text);
 
+    [[nodiscard]] absl::Status
+    ValidateOngoingEpisodeForFlush(std::size_t conversation_item_index) const;
+    [[nodiscard]] absl::Status
+    ValidateOngoingEpisodeForSplitFlush(std::size_t conversation_item_index,
+                                        std::size_t split_at_message_index) const;
+
     [[nodiscard]] absl::StatusOr<OngoingEpisodeFlushCandidate>
     CaptureOngoingEpisodeForFlush(std::size_t conversation_item_index) const;
     [[nodiscard]] absl::StatusOr<OngoingEpisodeFlushCandidate>
