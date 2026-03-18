@@ -109,7 +109,15 @@ The intended runtime write sequence is:
 1. Upsert `memory_sessions` on the first turn of a session
 2. Append raw rows into `conversation_items` and `conversation_messages` for each message
 3. When a flush completes, upsert `mid_term_episodes`
-4. Replace the matching `conversation_items` row with `item_type = 'episode_stub'`, fill `episode_id`, `episode_stub_content`, and `episode_stub_created_at`
+4. Persist the conversation timeline update for the flushed item
+
+For full flushes, the store can directly replace the matching `conversation_items` row with
+`item_type = 'episode_stub'`, fill `episode_id`, `episode_stub_content`, and
+`episode_stub_created_at`.
+
+For split flushes, the store calls `split_conversation_item_with_episode_stub(...)` so the suffix
+validation, item-index shifting, message move, completed-prefix delete, and episode-stub rewrite
+happen transactionally inside Postgres.
 
 This mirrors the current C++ architecture:
 
@@ -132,16 +140,21 @@ That data maps directly to the new `MemoryStoreSnapshot` shape in C++.
 
 - Use the server-side service role on the Isla backend only; do not ship it to the desktop client.
 - Keep Row Level Security decisions simple at first. If only the backend writes memory, service-role access can own the first version.
-- Start with regular Postgres tables before adding RPCs or Edge Functions. The runtime write pattern is straightforward enough for direct SQL or PostgREST-backed writes.
+- Keep simple writes on direct PostgREST table upserts where possible.
+- Use RPC-backed SQL functions for multi-row memory mutations that need fewer round trips or
+  transactional guarantees. The split-flush path now uses
+  `split_conversation_item_with_episode_stub(...)` for exactly that reason.
 
 ## Initial implementation recommendation
 
-For v1, implement only:
+For the current serving path, implement:
 
 - session upsert
 - conversation message append
 - episode upsert
-- stub replacement
+- full-flush stub replacement
+- split-flush RPC persistence
 - session hydration
 
-That is enough to persist complete chat history and mid-term memory without prematurely committing to the long-term graph/vector architecture.
+That is enough to persist complete chat history and mid-term memory without prematurely committing
+to the long-term graph/vector architecture.

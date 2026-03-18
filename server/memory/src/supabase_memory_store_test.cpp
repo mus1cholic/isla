@@ -524,28 +524,10 @@ TEST(SupabaseMemoryStoreTest, AppendConversationMessageCreatesConversationItemTh
     EXPECT_EQ(body[0]["content"], "hello");
 }
 
-TEST(SupabaseMemoryStoreTest, SplitConversationItemWithEpisodeStubPersistsStubAndRemainingItem) {
-    const std::string later_items_body = "[{\"item_index\":1}]";
-    const std::string message_rows_body =
-        "[{\"item_index\":0,\"message_index\":0,\"role\":\"user\",\"content\":\"hello\","
-        "\"created_at\":\"2026-03-08T14:00:00Z\"},"
-        "{\"item_index\":0,\"message_index\":1,\"role\":\"assistant\",\"content\":\"hi there\","
-        "\"created_at\":\"2026-03-08T14:00:01Z\"},"
-        "{\"item_index\":0,\"message_index\":2,\"role\":\"user\",\"content\":\"follow up\","
-        "\"created_at\":\"2026-03-08T14:00:02Z\"},"
-        "{\"item_index\":1,\"message_index\":0,\"role\":\"assistant\",\"content\":\"later item\","
-        "\"created_at\":\"2026-03-08T14:00:03Z\"}]";
+TEST(SupabaseMemoryStoreTest,
+     SplitConversationItemWithEpisodeStubInvokesSupabaseRpcWithRemainingMessages) {
     SequentialHttpServer server({
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(later_items_body.size()) + "\r\n\r\n" + later_items_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(message_rows_body.size()) + "\r\n\r\n" + message_rows_body,
         "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
     });
     const absl::StatusOr<MemoryStorePtr> store =
         CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
@@ -572,253 +554,49 @@ TEST(SupabaseMemoryStoreTest, SplitConversationItemWithEpisodeStubPersistsStubAn
                             .content = "follow up",
                             .create_time = Ts("2026-03-08T14:00:02Z"),
                         },
-                    },
-            },
-    });
-
-    ASSERT_TRUE(status.ok()) << status;
-    ASSERT_TRUE(server.WaitForRequestCount(8U));
-    const std::vector<std::string> requests = server.requests();
-    ASSERT_EQ(requests.size(), 8U);
-
-    EXPECT_NE(requests[0].find(
-                  "GET /rest/v1/conversation_items?select=item_index&session_id=eq.session_001&"
-                  "item_index=gt.0&order=item_index.desc HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[1].find(
-                  "GET /rest/v1/conversation_messages?select=item_index%2Cmessage_index%2Crole%"
-                  "2Ccontent%2Ccreated_at&session_id=eq.session_001&item_index=gte.0&order="
-                  "item_index.asc%2Cmessage_index.asc HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[2].find(
-                  "PATCH /rest/v1/conversation_items?session_id=eq.session_001&item_index=eq.1 "
-                  "HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[3].find(
-                  "POST /rest/v1/conversation_items?on_conflict=session_id%2Citem_index HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[4].find(
-                  "PATCH /rest/v1/conversation_messages?session_id=eq.session_001&item_index=eq.1 "
-                  "HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[5].find(
-                  "PATCH /rest/v1/conversation_messages?session_id=eq.session_001&item_index=eq.0&"
-                  "message_index=eq.2 HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[6].find(
-                  "DELETE /rest/v1/conversation_messages?session_id=eq.session_001&item_index="
-                  "eq.0 HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[7].find(
-                  "POST /rest/v1/conversation_items?on_conflict=session_id%2Citem_index HTTP/1.1"),
-              std::string::npos);
-
-    const std::size_t shift_item_body_pos = requests[2].find("\r\n\r\n");
-    ASSERT_NE(shift_item_body_pos, std::string::npos);
-    const json expected_shifted_item_body = json{ { "item_index", 2 } };
-    EXPECT_EQ(json::parse(requests[2].substr(shift_item_body_pos + 4U)),
-              expected_shifted_item_body);
-
-    const std::size_t inserted_item_body_pos = requests[3].find("\r\n\r\n");
-    ASSERT_NE(inserted_item_body_pos, std::string::npos);
-    const json inserted_item_body = json::parse(requests[3].substr(inserted_item_body_pos + 4U));
-    ASSERT_TRUE(inserted_item_body.is_array());
-    EXPECT_EQ(inserted_item_body[0]["session_id"], "session_001");
-    EXPECT_EQ(inserted_item_body[0]["item_index"], 1);
-    EXPECT_EQ(inserted_item_body[0]["item_type"], "ongoing_episode");
-    EXPECT_TRUE(inserted_item_body[0]["episode_id"].is_null());
-    EXPECT_TRUE(inserted_item_body[0]["episode_stub_content"].is_null());
-
-    const std::size_t shift_later_messages_body_pos = requests[4].find("\r\n\r\n");
-    ASSERT_NE(shift_later_messages_body_pos, std::string::npos);
-    const json expected_shifted_message_body = json{ { "item_index", 2 } };
-    EXPECT_EQ(json::parse(requests[4].substr(shift_later_messages_body_pos + 4U)),
-              expected_shifted_message_body);
-
-    const std::size_t move_remaining_body_pos = requests[5].find("\r\n\r\n");
-    ASSERT_NE(move_remaining_body_pos, std::string::npos);
-    const json expected_move_remaining_body = json{
-        { "item_index", 1 },
-        { "message_index", 0 },
-    };
-    EXPECT_EQ(json::parse(requests[5].substr(move_remaining_body_pos + 4U)),
-              expected_move_remaining_body);
-
-    const std::size_t stub_body_pos = requests[7].find("\r\n\r\n");
-    ASSERT_NE(stub_body_pos, std::string::npos);
-    const json stub_body = json::parse(requests[7].substr(stub_body_pos + 4U));
-    ASSERT_TRUE(stub_body.is_array());
-    EXPECT_EQ(stub_body[0]["session_id"], "session_001");
-    EXPECT_EQ(stub_body[0]["item_index"], 0);
-    EXPECT_EQ(stub_body[0]["item_type"], "episode_stub");
-    EXPECT_EQ(stub_body[0]["episode_id"], "ep_001");
-    EXPECT_EQ(stub_body[0]["episode_stub_content"], "first exchange ref");
-}
-
-TEST(SupabaseMemoryStoreTest,
-     SplitConversationItemWithEpisodeStubHandlesTailSplitWithoutLaterItems) {
-    const std::string later_items_body = "[]";
-    const std::string message_rows_body =
-        "[{\"item_index\":0,\"message_index\":0,\"role\":\"user\",\"content\":\"hello\","
-        "\"created_at\":\"2026-03-08T14:00:00Z\"},"
-        "{\"item_index\":0,\"message_index\":1,\"role\":\"assistant\",\"content\":\"hi there\","
-        "\"created_at\":\"2026-03-08T14:00:01Z\"},"
-        "{\"item_index\":0,\"message_index\":2,\"role\":\"user\",\"content\":\"tail user\","
-        "\"created_at\":\"2026-03-08T14:00:02Z\"}]";
-    SequentialHttpServer server({
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(later_items_body.size()) + "\r\n\r\n" + later_items_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(message_rows_body.size()) + "\r\n\r\n" + message_rows_body,
-        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
-    });
-    const absl::StatusOr<MemoryStorePtr> store =
-        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
-            .enabled = true,
-            .url = "http://127.0.0.1:" + std::to_string(server.port()),
-            .service_role_key = "service_role_key",
-            .schema = "public",
-            .request_timeout = 2s,
-        });
-    ASSERT_TRUE(store.ok()) << store.status();
-
-    const absl::Status status = (*store)->SplitConversationItemWithEpisodeStub(SplitEpisodeStubWrite{
-        .session_id = "session_001",
-        .conversation_item_index = 0,
-        .episode_id = "ep_001",
-        .episode_stub_content = "tail ref",
-        .episode_stub_create_time = Ts("2026-03-08T14:00:04Z"),
-        .remaining_ongoing_episode =
-            OngoingEpisode{
-                .messages =
-                    {
                         Message{
-                            .role = MessageRole::User,
-                            .content = "tail user",
-                            .create_time = Ts("2026-03-08T14:00:02Z"),
+                            .role = MessageRole::Assistant,
+                            .content = "here is more help",
+                            .create_time = Ts("2026-03-08T14:00:03Z"),
                         },
                     },
             },
     });
 
     ASSERT_TRUE(status.ok()) << status;
-    ASSERT_TRUE(server.WaitForRequestCount(6U));
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
     const std::vector<std::string> requests = server.requests();
-    ASSERT_EQ(requests.size(), 6U);
-    EXPECT_NE(requests[2].find(
-                  "POST /rest/v1/conversation_items?on_conflict=session_id%2Citem_index HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[3].find(
-                  "PATCH /rest/v1/conversation_messages?session_id=eq.session_001&item_index=eq.0&"
-                  "message_index=eq.2 HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[4].find(
-                  "DELETE /rest/v1/conversation_messages?session_id=eq.session_001&item_index="
-                  "eq.0 HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[5].find(
-                  "POST /rest/v1/conversation_items?on_conflict=session_id%2Citem_index HTTP/1.1"),
-              std::string::npos);
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(
+        requests[0].find("POST /rest/v1/rpc/split_conversation_item_with_episode_stub HTTP/1.1"),
+        std::string::npos);
+    EXPECT_NE(requests[0].find("Content-Profile: public"), std::string::npos);
+
+    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    EXPECT_EQ(body["p_session_id"], "session_001");
+    EXPECT_EQ(body["p_conversation_item_index"], 0);
+    EXPECT_EQ(body["p_episode_id"], "ep_001");
+    EXPECT_EQ(body["p_episode_stub_content"], "first exchange ref");
+    EXPECT_EQ(body["p_episode_stub_created_at"], "2026-03-08T14:00:04Z");
+    ASSERT_TRUE(body["p_remaining_messages"].is_array());
+    ASSERT_EQ(body["p_remaining_messages"].size(), 2U);
+    EXPECT_EQ(body["p_remaining_messages"][0]["role"], "user");
+    EXPECT_EQ(body["p_remaining_messages"][0]["content"], "follow up");
+    EXPECT_EQ(body["p_remaining_messages"][0]["created_at"], "2026-03-08T14:00:02Z");
+    EXPECT_EQ(body["p_remaining_messages"][1]["role"], "assistant");
+    EXPECT_EQ(body["p_remaining_messages"][1]["content"], "here is more help");
+    EXPECT_EQ(body["p_remaining_messages"][1]["created_at"], "2026-03-08T14:00:03Z");
 }
 
 TEST(SupabaseMemoryStoreTest,
-     SplitConversationItemWithEpisodeStubShiftsMultipleLaterItemsAndMessagesFromHighestIndex) {
-    const std::string later_items_body = R"([{"item_index":2},{"item_index":1}])";
-    const std::string message_rows_body =
-        "[{\"item_index\":0,\"message_index\":0,\"role\":\"user\",\"content\":\"hello\","
-        "\"created_at\":\"2026-03-08T14:00:00Z\"},"
-        "{\"item_index\":0,\"message_index\":1,\"role\":\"assistant\",\"content\":\"hi there\","
-        "\"created_at\":\"2026-03-08T14:00:01Z\"},"
-        "{\"item_index\":0,\"message_index\":2,\"role\":\"user\",\"content\":\"follow up\","
-        "\"created_at\":\"2026-03-08T14:00:02Z\"},"
-        "{\"item_index\":1,\"message_index\":0,\"role\":\"assistant\",\"content\":\"later one\","
-        "\"created_at\":\"2026-03-08T14:00:03Z\"},"
-        "{\"item_index\":2,\"message_index\":0,\"role\":\"assistant\",\"content\":\"later two\","
-        "\"created_at\":\"2026-03-08T14:00:04Z\"}]";
+     SplitConversationItemWithEpisodeStubPropagatesFailedPreconditionFromRpc) {
+    const std::string failure_body =
+        R"({"message":"remaining_ongoing_episode does not match persisted conversation messages"})";
     SequentialHttpServer server({
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(later_items_body.size()) + "\r\n\r\n" + later_items_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(message_rows_body.size()) + "\r\n\r\n" + message_rows_body,
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
-        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
-    });
-    const absl::StatusOr<MemoryStorePtr> store =
-        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
-            .enabled = true,
-            .url = "http://127.0.0.1:" + std::to_string(server.port()),
-            .service_role_key = "service_role_key",
-            .schema = "public",
-            .request_timeout = 2s,
-        });
-    ASSERT_TRUE(store.ok()) << store.status();
-
-    const absl::Status status = (*store)->SplitConversationItemWithEpisodeStub(SplitEpisodeStubWrite{
-        .session_id = "session_001",
-        .conversation_item_index = 0,
-        .episode_id = "ep_001",
-        .episode_stub_content = "first exchange ref",
-        .episode_stub_create_time = Ts("2026-03-08T14:00:05Z"),
-        .remaining_ongoing_episode =
-            OngoingEpisode{
-                .messages =
-                    {
-                        Message{
-                            .role = MessageRole::User,
-                            .content = "follow up",
-                            .create_time = Ts("2026-03-08T14:00:02Z"),
-                        },
-                    },
-            },
-    });
-
-    ASSERT_TRUE(status.ok()) << status;
-    ASSERT_TRUE(server.WaitForRequestCount(10U));
-    const std::vector<std::string> requests = server.requests();
-    ASSERT_EQ(requests.size(), 10U);
-
-    EXPECT_NE(requests[2].find(
-                  "PATCH /rest/v1/conversation_items?session_id=eq.session_001&item_index=eq.2 "
-                  "HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[3].find(
-                  "PATCH /rest/v1/conversation_items?session_id=eq.session_001&item_index=eq.1 "
-                  "HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[5].find(
-                  "PATCH /rest/v1/conversation_messages?session_id=eq.session_001&item_index=eq.2 "
-                  "HTTP/1.1"),
-              std::string::npos);
-    EXPECT_NE(requests[6].find(
-                  "PATCH /rest/v1/conversation_messages?session_id=eq.session_001&item_index=eq.1 "
-                  "HTTP/1.1"),
-              std::string::npos);
-}
-
-TEST(SupabaseMemoryStoreTest,
-     SplitConversationItemWithEpisodeStubRejectsWhenPersistedSuffixDoesNotMatchRemainingEpisode) {
-    const std::string later_items_body = "[]";
-    const std::string message_rows_body =
-        "[{\"item_index\":0,\"message_index\":0,\"role\":\"user\",\"content\":\"hello\","
-        "\"created_at\":\"2026-03-08T14:00:00Z\"},"
-        "{\"item_index\":0,\"message_index\":1,\"role\":\"assistant\",\"content\":\"hi there\","
-        "\"created_at\":\"2026-03-08T14:00:01Z\"},"
-        "{\"item_index\":0,\"message_index\":2,\"role\":\"user\",\"content\":\"different\","
-        "\"created_at\":\"2026-03-08T14:00:02Z\"}]";
-    SequentialHttpServer server({
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(later_items_body.size()) + "\r\n\r\n" + later_items_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(message_rows_body.size()) + "\r\n\r\n" + message_rows_body,
+        "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(failure_body.size()) + "\r\n\r\n" + failure_body,
     });
     const absl::StatusOr<MemoryStorePtr> store =
         CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
@@ -851,26 +629,13 @@ TEST(SupabaseMemoryStoreTest,
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kFailedPrecondition);
-    EXPECT_NE(status.message().find("did not match"), std::string::npos);
-    ASSERT_TRUE(server.WaitForRequestCount(2U));
+    EXPECT_NE(status.message().find("does not match"), std::string::npos);
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
 }
 
-TEST(SupabaseMemoryStoreTest,
-     SplitConversationItemWithEpisodeStubPropagatesFailureFromIntermediateShiftRequest) {
-    const std::string later_items_body = "[{\"item_index\":1}]";
-    const std::string message_rows_body =
-        "[{\"item_index\":0,\"message_index\":0,\"role\":\"user\",\"content\":\"hello\","
-        "\"created_at\":\"2026-03-08T14:00:00Z\"},"
-        "{\"item_index\":0,\"message_index\":1,\"role\":\"assistant\",\"content\":\"hi there\","
-        "\"created_at\":\"2026-03-08T14:00:01Z\"},"
-        "{\"item_index\":0,\"message_index\":2,\"role\":\"user\",\"content\":\"follow up\","
-        "\"created_at\":\"2026-03-08T14:00:02Z\"}]";
+TEST(SupabaseMemoryStoreTest, SplitConversationItemWithEpisodeStubPropagatesRpcFailure) {
     const std::string failure_body = R"({"message":"supabase unavailable"})";
     SequentialHttpServer server({
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(later_items_body.size()) + "\r\n\r\n" + later_items_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(message_rows_body.size()) + "\r\n\r\n" + message_rows_body,
         "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: " +
             std::to_string(failure_body.size()) + "\r\n\r\n" + failure_body,
     });
@@ -906,8 +671,7 @@ TEST(SupabaseMemoryStoreTest,
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
     EXPECT_NE(status.message().find("supabase unavailable"), std::string::npos);
-    ASSERT_TRUE(server.WaitForRequestCount(3U));
-    EXPECT_EQ(server.requests().size(), 3U);
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
 }
 
 TEST(SupabaseMemoryStoreTest, LogsRequestAndOperationLatencyWhenTelemetryEnabled) {
