@@ -33,12 +33,16 @@ class MidTermCompactor {
   public:
     virtual ~MidTermCompactor() = default;
 
+    // Compacts a flushed ongoing episode into the mid-term representation. Implementations are
+    // expected to produce non-empty Tier 2 and Tier 3 text, with Tier 1 detail optional.
     [[nodiscard]] virtual absl::StatusOr<CompactedMidTermEpisode>
     Compact(const MidTermCompactionRequest& request) = 0;
 };
 
 using MidTermCompactorPtr = std::shared_ptr<MidTermCompactor>;
 
+// Creates the LLM-backed compactor. The returned implementation validates the model's JSON schema
+// strictly so malformed compaction output is rejected before it reaches working memory.
 [[nodiscard]] absl::StatusOr<MidTermCompactorPtr> CreateLlmMidTermCompactor(
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> responses_client,
     std::string model);

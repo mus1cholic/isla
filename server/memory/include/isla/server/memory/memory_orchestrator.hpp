@@ -70,18 +70,41 @@ class MemoryOrchestrator {
                        MidTermFlushDeciderPtr mid_term_flush_decider = nullptr,
                        MidTermCompactorPtr mid_term_compactor = nullptr);
 
+    // Builds a fresh orchestrator with empty working-memory conversation state for the session.
+    // Persistence and async mid-term components are optional and can be attached up front.
     [[nodiscard]] static absl::StatusOr<MemoryOrchestrator>
     Create(std::string session_id, const MemoryOrchestratorInit& init);
 
+    // Persists the session record once so later turn handling can safely write conversation state.
+    // When a store is configured, callers should invoke this before handling any messages.
     [[nodiscard]] absl::Status BeginSession(Timestamp create_time);
+
+    // Handles a gateway user turn end to end: drains completed async flushes, appends and
+    // persists the user message, refreshes retrieved memory, then returns the rendered prompt
+    // pieces the gateway needs for the next model call.
     [[nodiscard]] absl::StatusOr<UserQueryMemoryResult>
     HandleUserQuery(const GatewayUserQuery& query);
+
+    // Handles an assistant turn by appending/persisting the reply and kicking off any eligible
+    // mid-term analysis or compaction work.
     [[nodiscard]] absl::Status HandleAssistantReply(const GatewayAssistantReply& reply);
+
+    // Persists a completed flush first, then applies it to working memory. Split flushes may shift
+    // later conversation item indices, so pending async work is adjusted after success.
     [[nodiscard]] absl::Status
     ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
+
+    // Polls all pending async mid-term tasks, applies any completed flushes whose targets are still
+    // valid, and returns how many flushes were committed during this pass.
     [[nodiscard]] absl::StatusOr<std::size_t> DrainCompletedMidTermCompactions();
+
+    // Renders only the system-prompt portion of the orchestrator's current working memory.
     [[nodiscard]] absl::StatusOr<std::string> RenderSystemPrompt() const;
+
+    // Renders only the non-system-prompt context section of the current working memory.
     [[nodiscard]] absl::StatusOr<std::string> RenderWorkingMemoryContext() const;
+
+    // Renders the full prompt bundle as a single string.
     [[nodiscard]] absl::StatusOr<std::string> RenderFullWorkingMemory() const;
 
     [[nodiscard]] const std::string& session_id() const {
@@ -97,28 +120,60 @@ class MemoryOrchestrator {
     }
 
   private:
+    // Verifies that a gateway turn targets this session and includes the ids required for
+    // persistence and logging.
     [[nodiscard]] absl::Status ValidateTurnText(std::string_view session_id,
                                                 std::string_view turn_id,
                                                 std::string_view role_label) const;
+
+    // Guards persistence paths that require BeginSession to have succeeded first.
     [[nodiscard]] absl::Status ValidateSessionReadyForPersistence() const;
+
+    // Writes the session row once and becomes a no-op after the session is marked persisted.
     [[nodiscard]] absl::Status PersistSessionIfNeeded(Timestamp create_time);
+
+    // Persists the most recently appended conversation message from the live tail episode.
     [[nodiscard]] absl::Status PersistConversationMessage(std::string_view turn_id,
                                                           const Message& message);
+
+    // Persists the flushed mid-term episode and its corresponding conversation-item mutation. For
+    // split flushes, the remaining tail messages are read from live state so reloads stay exact.
     [[nodiscard]] absl::Status
     PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
+
+    // Shared turn-ingest path used by both user and assistant messages.
     [[nodiscard]] absl::Status HandleConversationMessage(std::string_view session_id,
                                                          std::string_view turn_id,
                                                          std::string_view text,
                                                          Timestamp create_time, MessageRole role);
+
+    // Freezes the current tail into its own conversation item before another append when a pending
+    // flush still targets that tail item.
     void PrepareConversationForAppend();
+
+    // Post-user hook for retrieval and other query-time memory enrichment.
     [[nodiscard]] absl::Status AfterUserQueryAppended(const Message& user_message);
+
+    // Post-assistant hook for queueing mid-term analysis or direct compaction after a full
+    // user/assistant exchange exists.
     [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
+
+    // Retrieves extra memory to inject for the next prompt render. Today this is a placeholder and
+    // may legitimately return no extra memory.
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
+
+    // Runs the decider against a snapshot, and if it chooses a target, chains compaction work for
+    // that captured conversation state off-thread.
     [[nodiscard]] absl::Status QueueMidTermAnalysis(const Conversation& conversation_snapshot);
+
+    // Queues compaction for an already chosen flush candidate. The captured snapshot is owned by
+    // the async task so later live conversation edits do not affect the compactor input.
     [[nodiscard]] absl::Status
     QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate,
                       std::optional<std::size_t> split_at_message_index = std::nullopt);
+
+    // Produces stable per-session episode ids in the order completed flushes are applied.
     [[nodiscard]] std::string NextEpisodeId();
 
     struct CompletedFlushBuildInput {

@@ -68,11 +68,23 @@ struct MemoryStoreSnapshot {
     std::vector<Episode> mid_term_episodes;
 };
 
+// Validates the top-level persisted session row before it is written to a store.
 [[nodiscard]] absl::Status ValidateMemorySessionRecord(const MemorySessionRecord& record);
+
+// Validates an appended conversation message write, including ordering indices and required ids.
 [[nodiscard]] absl::Status ValidateConversationMessageWrite(const ConversationMessageWrite& write);
+
+// Validates a replacement write that converts a conversation item into an episode stub.
 [[nodiscard]] absl::Status ValidateEpisodeStubWrite(const EpisodeStubWrite& write);
+
+// Validates the persisted representation of a completed mid-term episode.
 [[nodiscard]] absl::Status ValidateMidTermEpisodeWrite(const MidTermEpisodeWrite& write);
+
+// Validates a split-flush write that replaces one item with a stub and preserves the remaining
+// live messages as a new ongoing episode.
 [[nodiscard]] absl::Status ValidateSplitEpisodeStubWrite(const SplitEpisodeStubWrite& write);
+
+// Validates a fully loaded snapshot before it is rehydrated into working-memory state.
 [[nodiscard]] absl::Status ValidateMemoryStoreSnapshot(const MemoryStoreSnapshot& snapshot);
 
 class MemoryStore {
@@ -87,18 +99,35 @@ class MemoryStore {
         return absl::OkStatus();
     }
 
+    // Creates or updates the persisted session row for the current session id.
     [[nodiscard]] virtual absl::Status UpsertSession(const MemorySessionRecord& record) = 0;
+
+    // Appends a single message into the persisted conversation timeline for an ongoing episode.
     [[nodiscard]] virtual absl::Status
     AppendConversationMessage(const ConversationMessageWrite& write) = 0;
+
+    // Replaces an entire persisted conversation item with an episode stub after a full flush.
     [[nodiscard]] virtual absl::Status
     ReplaceConversationItemWithEpisodeStub(const EpisodeStubWrite& write) = 0;
+
+    // Creates or updates the persisted mid-term episode generated from a flushed conversation
+    // segment.
     [[nodiscard]] virtual absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) = 0;
+
+    // Applies a split flush by replacing the completed prefix with a stub and retaining the
+    // unfinished tail as a new ongoing episode.
     [[nodiscard]] virtual absl::Status
     SplitConversationItemWithEpisodeStub(const SplitEpisodeStubWrite& write) = 0;
+
+    // Lists all persisted mid-term episodes for the session.
     [[nodiscard]] virtual absl::StatusOr<std::vector<Episode>>
     ListMidTermEpisodes(std::string_view session_id) const = 0;
+
+    // Returns one persisted mid-term episode when present.
     [[nodiscard]] virtual absl::StatusOr<std::optional<Episode>>
     GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const = 0;
+
+    // Loads the persisted session, conversation items, and mid-term episodes as one snapshot.
     [[nodiscard]] virtual absl::StatusOr<std::optional<MemoryStoreSnapshot>>
     LoadSnapshot(std::string_view session_id) const = 0;
 };
