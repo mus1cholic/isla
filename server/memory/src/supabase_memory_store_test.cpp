@@ -270,6 +270,11 @@ class RoutingHttpServer {
         return false;
     }
 
+    [[nodiscard]] std::vector<std::string> requests() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requests_;
+    }
+
   private:
     void Stop() {
         if (stopped_.exchange(true)) {
@@ -945,6 +950,14 @@ TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes
     ASSERT_TRUE(snapshot.ok()) << snapshot.status();
     ASSERT_TRUE(snapshot->has_value());
     ASSERT_TRUE(server.WaitForRequestCount(4U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 4U);
+    EXPECT_NE(
+        requests[2].find("/rest/v1/conversation_messages?select=item_index%2Cmessage_index%2Crole"
+                         "%2Ccontent%2Ccreated_at%2Cconversation_items%21inner%28item_type%29"),
+        std::string::npos);
+    EXPECT_NE(requests[2].find("conversation_items.item_type=eq.ongoing_episode"),
+              std::string::npos);
     ASSERT_EQ(snapshot->value().conversation_items.size(), 2U);
     EXPECT_EQ(snapshot->value().conversation_items[0].type, ConversationItemType::EpisodeStub);
     EXPECT_EQ(snapshot->value().conversation_items[0].episode_stub->content, "summary ref");
