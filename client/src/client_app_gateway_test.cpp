@@ -37,13 +37,13 @@ using isla::server::ai_gateway::GatewayServer;
 using isla::server::ai_gateway::GatewayServerConfig;
 using isla::server::ai_gateway::GatewayStubResponder;
 using isla::server::ai_gateway::GatewayStubResponderConfig;
+using isla::server::ai_gateway::kDefaultMidTermMemoryModel;
 using isla::server::ai_gateway::OpenAiResponsesClient;
 using isla::server::ai_gateway::OpenAiResponsesCompletedEvent;
 using isla::server::ai_gateway::OpenAiResponsesEventCallback;
 using isla::server::ai_gateway::OpenAiResponsesRequest;
 using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
 using isla::server::ai_gateway::SequentialSessionIdGenerator;
-using isla::server::ai_gateway::kDefaultMidTermMemoryModel;
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 

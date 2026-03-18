@@ -29,6 +29,7 @@
 
 #include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/memory/memory_store.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 #include "isla/shared/ai_gateway_protocol.hpp"
 #include "openai_responses_test_utils.hpp"
 
@@ -52,22 +53,78 @@ template <typename StartFn> absl::Status await_emit(StartFn&& start) {
     return future.get();
 }
 
+absl::Status EmitResponseText(std::string_view text, const OpenAiResponsesEventCallback& on_event,
+                              std::string_view response_id = "resp_test") {
+    const absl::Status delta_status =
+        on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = std::string(text) });
+    if (!delta_status.ok()) {
+        return delta_status;
+    }
+    return on_event(OpenAiResponsesCompletedEvent{
+        .response_id = std::string(response_id),
+    });
+}
+
+const std::string& MidTermFlushDeciderPromptText() {
+    static const std::string prompt = [] {
+        const absl::StatusOr<std::string> loaded = isla::server::memory::LoadPrompt(
+            isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+        if (!loaded.ok()) {
+            throw std::runtime_error("failed to load mid-term flush decider prompt");
+        }
+        return *loaded;
+    }();
+    return prompt;
+}
+
+const std::string& MidTermCompactorPromptText() {
+    static const std::string prompt = [] {
+        const absl::StatusOr<std::string> loaded = isla::server::memory::LoadPrompt(
+            isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+        if (!loaded.ok()) {
+            throw std::runtime_error("failed to load mid-term compactor prompt");
+        }
+        return *loaded;
+    }();
+    return prompt;
+}
+
+bool IsMidTermMemoryRequest(const OpenAiResponsesRequest& request) {
+    return request.system_prompt == MidTermFlushDeciderPromptText() ||
+           request.system_prompt == MidTermCompactorPromptText();
+}
+
+absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& request,
+                                          const OpenAiResponsesEventCallback& on_event,
+                                          std::string_view prefix = "stub echo: ") {
+    if (request.system_prompt == MidTermFlushDeciderPromptText()) {
+        return EmitResponseText(R"json({
+            "should_flush": false,
+            "item_id": null,
+            "split_at": null,
+            "reasoning": "No completed episode boundary."
+        })json",
+                                on_event, "resp_decider");
+    }
+    if (request.system_prompt == MidTermCompactorPromptText()) {
+        return EmitResponseText(R"json({
+            "tier1_detail": "Fallback detail.",
+            "tier2_summary": "Fallback summary.",
+            "tier3_ref": "Fallback ref.",
+            "tier3_keywords": ["fallback", "summary", "memory", "test", "compactor"],
+            "salience": 5
+        })json",
+                                on_event, "resp_compactor");
+    }
+    return EmitResponseText(std::string(prefix) + test::ExtractLatestPromptLine(request.user_text),
+                            on_event);
+}
+
 std::shared_ptr<test::FakeOpenAiResponsesClient> MakeEchoOpenAiResponsesClient() {
     return test::MakeFakeOpenAiResponsesClient(
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [](const OpenAiResponsesRequest& request,
-           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            const std::string text =
-                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
-            const absl::Status delta_status =
-                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
-            if (!delta_status.ok()) {
-                return delta_status;
-            }
-            return on_event(OpenAiResponsesCompletedEvent{
-                .response_id = "resp_test",
-            });
-        });
+        [](const OpenAiResponsesRequest& request, const OpenAiResponsesEventCallback& on_event)
+            -> absl::Status { return EmitMidTermAwareEchoResponse(request, on_event); });
 }
 
 class FailingSessionStartMemoryStore final : public isla::server::memory::MemoryStore {
@@ -921,6 +978,9 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            if (IsMidTermMemoryRequest(request)) {
+                return EmitMidTermAwareEchoResponse(request, on_event);
+            }
             const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
             const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
                 .text_delta = "stub ",
@@ -1356,19 +1416,8 @@ TEST(AiGatewayServerIntegrationTest, ServerOperatesNormallyAfterOpenAiClientWarm
     // is only a warning. The server must still accept connections and process turns.
     auto failing_warmup_client = test::MakeFakeOpenAiResponsesClient(
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [](const OpenAiResponsesRequest& request,
-           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            const std::string text =
-                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
-            const absl::Status delta_status =
-                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
-            if (!delta_status.ok()) {
-                return delta_status;
-            }
-            return on_event(OpenAiResponsesCompletedEvent{
-                .response_id = "resp_test",
-            });
-        },
+        [](const OpenAiResponsesRequest& request, const OpenAiResponsesEventCallback& on_event)
+            -> absl::Status { return EmitMidTermAwareEchoResponse(request, on_event); },
         absl::UnavailableError("simulated warmup failure"));
 
     // Warmup fails — this is the scenario under test.
