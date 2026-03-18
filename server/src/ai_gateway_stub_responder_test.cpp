@@ -726,22 +726,33 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
     auto compactor_started = std::make_shared<std::promise<void>>();
     std::future<void> compactor_started_future = compactor_started->get_future();
     auto compactor_started_once = std::make_shared<std::once_flag>();
+    auto decider_call_count = std::make_shared<int>(0);
     auto client = test::MakeFakeOpenAiResponsesClient(
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [recorded_requests, requests_mutex, decider_prompt = *decider_prompt,
-         compactor_prompt = *compactor_prompt, compactor_started,
-         compactor_started_once](const OpenAiResponsesRequest& request,
-                                 const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+         compactor_prompt = *compactor_prompt, compactor_started, compactor_started_once,
+         decider_call_count](const OpenAiResponsesRequest& request,
+                             const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             {
                 std::lock_guard<std::mutex> lock(*requests_mutex);
                 recorded_requests->push_back(request);
             }
             if (request.system_prompt == decider_prompt) {
+                const int call_index = (*decider_call_count)++;
+                if (call_index == 0) {
+                    return EmitResponseText(R"json({
+                        "should_flush": true,
+                        "item_id": "i0",
+                        "split_at": null,
+                        "reasoning": "Completed first exchange."
+                    })json",
+                                            on_event, "resp_decider");
+                }
                 return EmitResponseText(R"json({
-                    "should_flush": true,
-                    "item_id": "i0",
+                    "should_flush": false,
+                    "item_id": null,
                     "split_at": null,
-                    "reasoning": "Completed first exchange."
+                    "reasoning": "No additional completed episode."
                 })json",
                                         on_event, "resp_decider");
             }
