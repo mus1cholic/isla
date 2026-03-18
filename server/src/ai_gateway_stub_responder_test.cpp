@@ -920,6 +920,13 @@ TEST(GatewayStubResponderStandaloneTest, DisabledMidTermMemoryDoesNotCallAnalysi
 
 TEST(GatewayStubResponderStandaloneTest,
      MidTermMemoryConstructionFailureFallsBackToWorkingMemoryOnly) {
+    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
     auto recorded_requests = std::make_shared<std::vector<OpenAiResponsesRequest>>();
     auto requests_mutex = std::make_shared<std::mutex>();
     auto client = test::MakeFakeOpenAiResponsesClient(
@@ -965,6 +972,22 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_EQ(events[0].op, "text.output");
     EXPECT_EQ(events[0].payload, "stub echo: hello");
     EXPECT_EQ(events[1].op, "turn.completed");
+
+    std::vector<OpenAiResponsesRequest> requests;
+    {
+        std::lock_guard<std::mutex> lock(*requests_mutex);
+        requests = *recorded_requests;
+    }
+    EXPECT_EQ(std::count_if(requests.begin(), requests.end(),
+                            [&decider_prompt](const OpenAiResponsesRequest& request) {
+                                return request.system_prompt == *decider_prompt;
+                            }),
+              0);
+    EXPECT_EQ(std::count_if(requests.begin(), requests.end(),
+                            [&compactor_prompt](const OpenAiResponsesRequest& request) {
+                                return request.system_prompt == *compactor_prompt;
+                            }),
+              0);
 }
 
 TEST_F(GatewayStubResponderTest, SessionStartUsesBundledSystemPromptByDefault) {
