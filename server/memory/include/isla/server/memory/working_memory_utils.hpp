@@ -20,7 +20,8 @@ void UpsertActiveModel(PersistentMemoryCache& cache, std::string entity_id, std:
 // Stores an entity in the familiar-label cache while removing any active-model duplicate.
 void UpsertFamiliarLabel(PersistentMemoryCache& cache, std::string entity_id, std::string text);
 
-// Escapes control characters so arbitrary text can be embedded safely into rendered prompt blocks.
+// Escapes backslashes plus newline, carriage return, and tab so rendered prompt blocks stay
+// single-line and readable.
 [[nodiscard]] std::string EscapePromptText(std::string_view text);
 
 // Appends the persistent-memory cache section using the prompt rendering format.
