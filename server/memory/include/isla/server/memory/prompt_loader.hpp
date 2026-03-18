@@ -9,6 +9,7 @@ namespace isla::server::memory {
 
 enum class PromptAsset {
     kSystemPrompt,
+    kMidTermCompactorSystemPrompt,
     kMidTermFlushDeciderSystemPrompt,
     kFuturePromptTest,
 };

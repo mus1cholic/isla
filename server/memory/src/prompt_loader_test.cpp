@@ -78,6 +78,17 @@ TEST(PromptLoaderTest, LoadMidTermFlushDeciderSystemPromptSucceeds) {
     EXPECT_NE(*prompt, *system_prompt);
 }
 
+TEST(PromptLoaderTest, LoadMidTermCompactorSystemPromptSucceeds) {
+    const absl::StatusOr<std::string> prompt =
+        LoadPrompt(PromptAsset::kMidTermCompactorSystemPrompt);
+    const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
+
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
+    EXPECT_FALSE(prompt->empty());
+    EXPECT_NE(*prompt, *system_prompt);
+}
+
 TEST(PromptLoaderTest, LoadPromptRejectsUnknownPromptAsset) {
     const absl::StatusOr<std::string> missing_prompt = LoadPrompt(static_cast<PromptAsset>(999));
 
