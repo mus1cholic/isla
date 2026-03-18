@@ -121,8 +121,15 @@ class MemoryOrchestrator {
                       std::optional<std::size_t> split_at_message_index = std::nullopt);
     [[nodiscard]] std::string NextEpisodeId();
 
+    struct CompletedFlushBuildInput {
+        CompactedMidTermEpisode compacted;
+        Timestamp episode_created_at;
+        Timestamp stub_timestamp;
+        std::optional<std::size_t> split_at_message_index;
+    };
+
     struct AsyncMidTermFlushResult {
-        std::optional<CompletedOngoingEpisodeFlush> completed_flush;
+        std::optional<CompletedFlushBuildInput> completed_flush;
         std::size_t captured_message_count = 0;
     };
 

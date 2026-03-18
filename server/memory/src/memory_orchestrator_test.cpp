@@ -533,6 +533,13 @@ TEST_F(MemoryOrchestratorTest, NoFlushAnalysisDrainsCleanlyAndLaterAnalysisCanRu
     ASSERT_TRUE(compactor->WaitForRequestCount(1U));
     EXPECT_EQ(decider->requests().size(), 2U);
     EXPECT_EQ(compactor->requests().size(), 1U);
+
+    const absl::StatusOr<std::size_t> drained = WaitForDrain(*handler, 1U);
+    ASSERT_TRUE(drained.ok()) << drained.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_EQ(state.mid_term_episodes.size(), 1U);
+    EXPECT_EQ(state.mid_term_episodes[0].episode_id, "ep_srv_test_1");
 }
 
 TEST_F(MemoryOrchestratorTest, NextTurnPropagatesPendingAnalysisFailureBeforeMutation) {
