@@ -713,7 +713,7 @@ TEST_F(GatewayStubResponderTest,
               std::string::npos);
 }
 
-TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurnIntoNextPrompt) {
+TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurnIntoLaterPrompt) {
     const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
         isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
     const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
@@ -792,6 +792,13 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
     });
     ASSERT_TRUE(session->WaitForEventCount(4U));
 
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_3",
+        .text = "third turn",
+    });
+    ASSERT_TRUE(session->WaitForEventCount(6U));
+
     std::vector<OpenAiResponsesRequest> requests;
     {
         std::lock_guard<std::mutex> lock(*requests_mutex);
@@ -813,18 +820,18 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
     ASSERT_NE(compactor_request, requests.end());
     EXPECT_EQ(compactor_request->model, "gpt-4.1-nano");
 
-    const auto second_reply_request =
+    const auto third_reply_request =
         std::find_if(requests.begin(), requests.end(),
                      [&decider_prompt, &compactor_prompt](const OpenAiResponsesRequest& request) {
                          return request.system_prompt != *decider_prompt &&
                                 request.system_prompt != *compactor_prompt &&
-                                request.user_text.find("] follow up") != std::string::npos;
+                                request.user_text.find("] third turn") != std::string::npos;
                      });
-    ASSERT_NE(second_reply_request, requests.end());
-    EXPECT_NE(second_reply_request->user_text.find("<mid_term_episodes>"), std::string::npos);
-    EXPECT_EQ(second_reply_request->user_text.find("<mid_term_episodes>\n- (none)"),
+    ASSERT_NE(third_reply_request, requests.end());
+    EXPECT_NE(third_reply_request->user_text.find("<mid_term_episodes>"), std::string::npos);
+    EXPECT_EQ(third_reply_request->user_text.find("<mid_term_episodes>\n- (none)"),
               std::string::npos);
-    EXPECT_NE(second_reply_request->user_text.find("ep_srv_test_1"), std::string::npos);
+    EXPECT_NE(third_reply_request->user_text.find("ep_srv_test_1"), std::string::npos);
 
     const absl::StatusOr<std::string> prompt = responder.RenderSessionMemoryPrompt("srv_test");
     ASSERT_TRUE(prompt.ok()) << prompt.status();
