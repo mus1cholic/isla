@@ -749,7 +749,11 @@ TEST_F(GatewayStubResponderTest,
     });
     ASSERT_TRUE(session->WaitForEventCount(4U));
 
-    const std::string& second_request_context = capturing_client->last_request.user_text;
+    auto second_request = std::find_if(
+        capturing_client->requests.rbegin(), capturing_client->requests.rend(),
+        [](const OpenAiResponsesRequest& request) { return !IsMidTermMemoryRequest(request); });
+    ASSERT_NE(second_request, capturing_client->requests.rend());
+    const std::string& second_request_context = second_request->user_text;
     EXPECT_NE(second_request_context.find("<conversation>"), std::string::npos);
     EXPECT_NE(second_request_context.find("] hello"), std::string::npos);
     EXPECT_NE(second_request_context.find("] stub echo: hello"), std::string::npos);
@@ -896,12 +900,15 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
 }
 
 TEST(GatewayStubResponderStandaloneTest,
-     MidTermMemoryInitializationFailureStillAllowsSessionMemoryStartup) {
+     MidTermMemoryNotConfiguredStillAllowsSessionMemoryStartup) {
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
         .async_emit_timeout = 2s,
     });
+    EXPECT_FALSE(responder.IsMidTermMemoryConfigured());
+    EXPECT_FALSE(responder.IsMidTermMemoryAvailable());
+    EXPECT_TRUE(responder.MidTermMemoryInitializationStatus().ok());
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     responder.AttachSessionRegistry(&registry);

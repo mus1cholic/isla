@@ -57,6 +57,9 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     [[nodiscard]] absl::StatusOr<std::string>
     RenderSessionMemoryPrompt(std::string_view session_id) const;
     [[nodiscard]] bool WaitForAcceptedTurns(std::size_t expected_count);
+    [[nodiscard]] bool IsMidTermMemoryConfigured() const;
+    [[nodiscard]] bool IsMidTermMemoryAvailable() const;
+    [[nodiscard]] const absl::Status& MidTermMemoryInitializationStatus() const;
 
   private:
     using Clock = std::chrono::steady_clock;
@@ -117,6 +120,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     GatewayPlanExecutor executor_;
     isla::server::memory::MidTermFlushDeciderPtr mid_term_flush_decider_;
     isla::server::memory::MidTermCompactorPtr mid_term_compactor_;
+    bool mid_term_memory_configured_ = false;
     absl::Status mid_term_memory_initialization_status_ = absl::OkStatus();
     mutable std::mutex mutex_;
     std::condition_variable cv_;

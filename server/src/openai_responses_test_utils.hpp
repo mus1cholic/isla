@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "isla/server/openai_responses_client.hpp"
@@ -38,6 +39,7 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
         last_request = request;
+        requests.push_back(request);
         if (stream_handler_) {
             return stream_handler_(request, on_event);
         }
@@ -63,6 +65,7 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     }
 
     mutable OpenAiResponsesRequest last_request;
+    mutable std::vector<OpenAiResponsesRequest> requests;
 
   private:
     absl::Status status_;

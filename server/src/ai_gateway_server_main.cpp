@@ -114,12 +114,20 @@ int main(int argc, char** argv) {
 
     const isla::server::ai_gateway::StartupLogContext log_context =
         isla::server::ai_gateway::BuildStartupLogContext(argc, argv, env_lookup, *startup_config);
+    const bool mid_term_memory_configured = responder.IsMidTermMemoryConfigured();
+    const bool mid_term_memory_available = responder.IsMidTermMemoryAvailable();
+    const absl::Status& mid_term_memory_status = responder.MidTermMemoryInitializationStatus();
 
     LOG(INFO) << "AI gateway OpenAI config source=" << log_context.config_source
               << " api_key_source=" << log_context.api_key_source << " organization_configured="
               << (log_context.organization_configured ? "true" : "false")
               << " project_configured=" << (log_context.project_configured ? "true" : "false")
-              << " mid_term_memory_policy=enabled"
+              << " mid_term_memory_policy=best_effort"
+              << " mid_term_memory_effective_state="
+              << (mid_term_memory_available
+                      ? "enabled"
+                      : (mid_term_memory_configured ? "degraded_working_memory_only"
+                                                    : "not_configured"))
               << " mid_term_memory_graceful_degradation=true"
               << " supabase_configured=" << (log_context.supabase_configured ? "true" : "false")
               << " telemetry_logging_enabled="
@@ -129,6 +137,11 @@ int main(int argc, char** argv) {
     LOG(INFO) << "AI gateway mid-term memory model="
               << isla::server::ai_gateway::SanitizeForLog(
                      isla::server::ai_gateway::kDefaultMidTermMemoryModel);
+    if (mid_term_memory_configured && !mid_term_memory_available) {
+        LOG(WARNING) << "AI gateway mid-term memory degraded to working-memory-only detail='"
+                     << isla::server::ai_gateway::SanitizeForLog(mid_term_memory_status.message())
+                     << "'";
+    }
     LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
               << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.host) << ":"
               << startup_config->openai_config.port << " scheme="
