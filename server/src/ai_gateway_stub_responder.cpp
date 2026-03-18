@@ -69,23 +69,20 @@ struct MidTermMemoryComponents {
 
 absl::StatusOr<MidTermMemoryComponents>
 CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
-    if (!config.mid_term_memory_enabled) {
-        return MidTermMemoryComponents{};
-    }
     if (config.openai_client == nullptr) {
-        return absl::FailedPreconditionError("mid-term memory requires an OpenAI responses client");
+        return MidTermMemoryComponents{};
     }
 
     absl::StatusOr<isla::server::memory::MidTermFlushDeciderPtr> decider =
         isla::server::memory::CreateLlmMidTermFlushDecider(config.openai_client,
-                                                           config.mid_term_flush_decider_model);
+                                                           std::string(kDefaultMidTermMemoryModel));
     if (!decider.ok()) {
         return decider.status();
     }
 
     absl::StatusOr<isla::server::memory::MidTermCompactorPtr> compactor =
         isla::server::memory::CreateLlmMidTermCompactor(config.openai_client,
-                                                        config.mid_term_compactor_model);
+                                                        std::string(kDefaultMidTermMemoryModel));
     if (!compactor.ok()) {
         return compactor.status();
     }
@@ -103,13 +100,24 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
                                       .openai_config = config_.openai_config,
                                       .openai_client = config_.openai_client,
                                   }) {
-    absl::StatusOr<MidTermMemoryComponents> created_components =
-        CreateMidTermMemoryComponents(config_);
-    if (!created_components.ok()) {
-        mid_term_memory_initialization_status_ = created_components.status();
+    mid_term_memory_configured_ = (config_.openai_client != nullptr);
+    if (!mid_term_memory_configured_) {
+        LOG(INFO) << "AI gateway stub mid-term memory not configured because no OpenAI responses"
+                  << " client was provided";
     } else {
-        mid_term_flush_decider_ = std::move(created_components->flush_decider);
-        mid_term_compactor_ = std::move(created_components->compactor);
+        absl::StatusOr<MidTermMemoryComponents> created_components =
+            CreateMidTermMemoryComponents(config_);
+        if (!created_components.ok()) {
+            mid_term_memory_initialization_status_ = created_components.status();
+            LOG(WARNING) << "AI gateway stub degraded mid-term memory to working-memory-only"
+                         << " model=" << SanitizeForLog(kDefaultMidTermMemoryModel) << " detail='"
+                         << SanitizeForLog(mid_term_memory_initialization_status_.message()) << "'";
+        } else {
+            mid_term_flush_decider_ = std::move(created_components->flush_decider);
+            mid_term_compactor_ = std::move(created_components->compactor);
+            LOG(INFO) << "AI gateway stub enabled mid-term memory model="
+                      << SanitizeForLog(kDefaultMidTermMemoryModel);
+        }
     }
 
     worker_ = std::thread([this] {
@@ -131,6 +139,18 @@ GatewayStubResponder::~GatewayStubResponder() {
 void GatewayStubResponder::AttachSessionRegistry(GatewaySessionRegistry* session_registry) {
     std::lock_guard<std::mutex> lock(mutex_);
     session_registry_ = session_registry;
+}
+
+bool GatewayStubResponder::IsMidTermMemoryConfigured() const {
+    return mid_term_memory_configured_;
+}
+
+bool GatewayStubResponder::IsMidTermMemoryAvailable() const {
+    return mid_term_memory_configured_ && mid_term_memory_initialization_status_.ok();
+}
+
+const absl::Status& GatewayStubResponder::MidTermMemoryInitializationStatus() const {
+    return mid_term_memory_initialization_status_;
 }
 
 void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
@@ -959,11 +979,6 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         // upsert below runs after insertion so connect-time persistence does not block unrelated
         // lifecycle work behind this mutex.
         std::lock_guard<std::mutex> lock(mutex_);
-        if (config_.mid_term_memory_enabled && !mid_term_memory_initialization_status_.ok()) {
-            LOG(WARNING) << "AI gateway stub disabled mid-term memory for session="
-                         << SanitizeForLog(session_id) << " detail='"
-                         << SanitizeForLog(mid_term_memory_initialization_status_.message()) << "'";
-        }
         absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
             isla::server::memory::MemoryOrchestrator::Create(
                 std::string(session_id), isla::server::memory::MemoryOrchestratorInit{

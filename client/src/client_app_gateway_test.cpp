@@ -37,6 +37,7 @@ using isla::server::ai_gateway::GatewayServer;
 using isla::server::ai_gateway::GatewayServerConfig;
 using isla::server::ai_gateway::GatewayStubResponder;
 using isla::server::ai_gateway::GatewayStubResponderConfig;
+using isla::server::ai_gateway::kDefaultMidTermMemoryModel;
 using isla::server::ai_gateway::OpenAiResponsesClient;
 using isla::server::ai_gateway::OpenAiResponsesCompletedEvent;
 using isla::server::ai_gateway::OpenAiResponsesEventCallback;
@@ -225,6 +226,22 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
+        if (request.model == kDefaultMidTermMemoryModel) {
+            const absl::Status status = on_event(OpenAiResponsesTextDeltaEvent{
+                .text_delta = R"json({
+                    "should_flush": false,
+                    "item_id": null,
+                    "split_at": null,
+                    "reasoning": "No completed episode boundary."
+                })json",
+            });
+            if (!status.ok()) {
+                return status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_client_app_mid_term_test",
+            });
+        }
         absl::Status status = on_event(OpenAiResponsesTextDeltaEvent{
             .text_delta = "stub echo: " + isla::server::ai_gateway::test::ExtractLatestPromptLine(
                                               request.user_text),
@@ -247,6 +264,22 @@ class CountingOpenAiResponsesClient final : public OpenAiResponsesClient {
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
+        if (request.model == kDefaultMidTermMemoryModel) {
+            const absl::Status status = on_event(OpenAiResponsesTextDeltaEvent{
+                .text_delta = R"json({
+                    "should_flush": false,
+                    "item_id": null,
+                    "split_at": null,
+                    "reasoning": "No completed episode boundary."
+                })json",
+            });
+            if (!status.ok()) {
+                return status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_client_app_mid_term_counting_test",
+            });
+        }
         const int call_number = call_count_.fetch_add(1) + 1;
         absl::Status status = on_event(OpenAiResponsesTextDeltaEvent{
             .text_delta =
