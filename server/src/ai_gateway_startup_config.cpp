@@ -224,6 +224,24 @@ void ApplyTelemetryEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLook
     }
 }
 
+void ApplyMidTermMemoryEnvDefaults(ParsedStartupConfig* parsed,
+                                   const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> enabled = env_lookup("AI_GATEWAY_MID_TERM_MEMORY_ENABLED");
+        enabled.has_value()) {
+        parsed->mid_term_memory_enabled = ParseEnabledFlagValue(*enabled);
+    }
+    if (const std::optional<std::string> decider_model =
+            env_lookup("AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL");
+        decider_model.has_value()) {
+        parsed->mid_term_flush_decider_model = *decider_model;
+    }
+    if (const std::optional<std::string> compactor_model =
+            env_lookup("AI_GATEWAY_MID_TERM_COMPACTOR_MODEL");
+        compactor_model.has_value()) {
+        parsed->mid_term_compactor_model = *compactor_model;
+    }
+}
+
 } // namespace
 
 absl::StatusOr<StartupEnvMap> LoadDotEnvFile(std::string_view path) {
@@ -411,6 +429,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     ApplyOpenAiEnvDefaults(&parsed.openai_config, env_lookup);
     ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
     ApplyTelemetryEnvDefaults(&parsed, env_lookup);
+    ApplyMidTermMemoryEnvDefaults(&parsed, env_lookup);
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -453,6 +472,18 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         if (argument == "--telemetry-log-events") {
             parsed.telemetry_logging_enabled = true;
             parsed.telemetry_event_logging_enabled = true;
+            continue;
+        }
+        if (argument == "--mid-term-memory") {
+            parsed.mid_term_memory_enabled = true;
+            continue;
+        }
+        if (argument.starts_with("--mid-term-flush-decider-model=")) {
+            parsed.mid_term_flush_decider_model = argument.substr(31);
+            continue;
+        }
+        if (argument.starts_with("--mid-term-compactor-model=")) {
+            parsed.mid_term_compactor_model = argument.substr(27);
             continue;
         }
         if (argument.starts_with("--openai-api-key=")) {

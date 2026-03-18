@@ -17,6 +17,9 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/ai_gateway_stub_responder_utils.hpp"
+#include "isla/server/memory/mid_term_compactor.hpp"
+#include "isla/server/memory/mid_term_flush_decider.hpp"
+
 namespace isla::server::ai_gateway {
 namespace {
 
@@ -57,6 +60,40 @@ std::string SessionStartErrorCode(const absl::Status& status) {
     default:
         return "internal_error";
     }
+}
+
+struct MidTermMemoryComponents {
+    isla::server::memory::MidTermFlushDeciderPtr flush_decider;
+    isla::server::memory::MidTermCompactorPtr compactor;
+};
+
+absl::StatusOr<MidTermMemoryComponents>
+CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
+    if (!config.mid_term_memory_enabled) {
+        return MidTermMemoryComponents{};
+    }
+    if (config.openai_client == nullptr) {
+        return absl::FailedPreconditionError("mid-term memory requires an OpenAI responses client");
+    }
+
+    absl::StatusOr<isla::server::memory::MidTermFlushDeciderPtr> decider =
+        isla::server::memory::CreateLlmMidTermFlushDecider(config.openai_client,
+                                                           config.mid_term_flush_decider_model);
+    if (!decider.ok()) {
+        return decider.status();
+    }
+
+    absl::StatusOr<isla::server::memory::MidTermCompactorPtr> compactor =
+        isla::server::memory::CreateLlmMidTermCompactor(config.openai_client,
+                                                        config.mid_term_compactor_model);
+    if (!compactor.ok()) {
+        return compactor.status();
+    }
+
+    return MidTermMemoryComponents{
+        .flush_decider = std::move(*decider),
+        .compactor = std::move(*compactor),
+    };
 }
 
 } // namespace
@@ -913,12 +950,27 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         // upsert below runs after insertion so connect-time persistence does not block unrelated
         // lifecycle work behind this mutex.
         std::lock_guard<std::mutex> lock(mutex_);
+        MidTermMemoryComponents mid_term_components;
+        if (config_.mid_term_memory_enabled) {
+            absl::StatusOr<MidTermMemoryComponents> created_components =
+                CreateMidTermMemoryComponents(config_);
+            if (!created_components.ok()) {
+                LOG(WARNING) << "AI gateway stub disabled mid-term memory for session="
+                             << SanitizeForLog(session_id) << " detail='"
+                             << SanitizeForLog(created_components.status().message()) << "'";
+            } else {
+                mid_term_components = std::move(*created_components);
+            }
+        }
         absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
             isla::server::memory::MemoryOrchestrator::Create(
-                std::string(session_id), isla::server::memory::MemoryOrchestratorInit{
-                                             .user_id = config_.memory_user_id,
-                                             .store = config_.memory_store,
-                                         });
+                std::string(session_id),
+                isla::server::memory::MemoryOrchestratorInit{
+                    .user_id = config_.memory_user_id,
+                    .store = config_.memory_store,
+                    .mid_term_flush_decider = std::move(mid_term_components.flush_decider),
+                    .mid_term_compactor = std::move(mid_term_components.compactor),
+                });
         if (!orchestrator.ok()) {
             failed_session_starts_.insert_or_assign(std::string(session_id), orchestrator.status());
             return orchestrator.status();
