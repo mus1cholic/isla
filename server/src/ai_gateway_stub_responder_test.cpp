@@ -690,22 +690,21 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
     });
 
     ASSERT_TRUE(session->WaitForEventCount(2U));
-    EXPECT_NE(capturing_client->last_request.system_prompt.find("<persistent_memory_cache>"),
-              std::string::npos);
-    EXPECT_EQ(capturing_client->last_request.system_prompt.find("- [user | "), std::string::npos);
-    EXPECT_EQ(capturing_client->last_request.system_prompt.find("- [assistant | "),
-              std::string::npos);
-    EXPECT_EQ(capturing_client->last_request.system_prompt.find("] hello"), std::string::npos);
-    EXPECT_NE(capturing_client->last_request.user_text.find("<conversation>"), std::string::npos);
-    EXPECT_NE(capturing_client->last_request.user_text.find("<mid_term_episodes>"),
-              std::string::npos);
-    EXPECT_NE(capturing_client->last_request.user_text.find("<retrieved_memory>"),
-              std::string::npos);
-    EXPECT_EQ(capturing_client->last_request.user_text.find("<persistent_memory_cache>"),
-              std::string::npos);
-    EXPECT_EQ(capturing_client->last_request.user_text.find("You are Isla."), std::string::npos);
-    EXPECT_NE(capturing_client->last_request.user_text.find("] hello"), std::string::npos);
-    EXPECT_EQ(capturing_client->last_request.telemetry_context, telemetry_context);
+    auto main_request = std::find_if(
+        capturing_client->requests.rbegin(), capturing_client->requests.rend(),
+        [](const OpenAiResponsesRequest& request) { return !IsMidTermMemoryRequest(request); });
+    ASSERT_NE(main_request, capturing_client->requests.rend());
+    EXPECT_NE(main_request->system_prompt.find("<persistent_memory_cache>"), std::string::npos);
+    EXPECT_EQ(main_request->system_prompt.find("- [user | "), std::string::npos);
+    EXPECT_EQ(main_request->system_prompt.find("- [assistant | "), std::string::npos);
+    EXPECT_EQ(main_request->system_prompt.find("] hello"), std::string::npos);
+    EXPECT_NE(main_request->user_text.find("<conversation>"), std::string::npos);
+    EXPECT_NE(main_request->user_text.find("<mid_term_episodes>"), std::string::npos);
+    EXPECT_NE(main_request->user_text.find("<retrieved_memory>"), std::string::npos);
+    EXPECT_EQ(main_request->user_text.find("<persistent_memory_cache>"), std::string::npos);
+    EXPECT_EQ(main_request->user_text.find("You are Isla."), std::string::npos);
+    EXPECT_NE(main_request->user_text.find("] hello"), std::string::npos);
+    EXPECT_EQ(main_request->telemetry_context, telemetry_context);
 }
 
 TEST(GatewayStubResponderStandaloneTest,
@@ -775,14 +774,14 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
 
     auto recorded_requests = std::make_shared<std::vector<OpenAiResponsesRequest>>();
     auto requests_mutex = std::make_shared<std::mutex>();
-    auto compactor_started = std::make_shared<std::promise<void>>();
-    std::future<void> compactor_started_future = compactor_started->get_future();
-    auto compactor_started_once = std::make_shared<std::once_flag>();
+    auto compactor_finished = std::make_shared<std::promise<void>>();
+    std::future<void> compactor_finished_future = compactor_finished->get_future();
+    auto compactor_finished_once = std::make_shared<std::once_flag>();
     auto decider_call_count = std::make_shared<int>(0);
     auto client = test::MakeFakeOpenAiResponsesClient(
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [recorded_requests, requests_mutex, decider_prompt = *decider_prompt,
-         compactor_prompt = *compactor_prompt, compactor_started, compactor_started_once,
+         compactor_prompt = *compactor_prompt, compactor_finished, compactor_finished_once,
          decider_call_count](const OpenAiResponsesRequest& request,
                              const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             {
@@ -809,16 +808,19 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
                                         on_event, "resp_decider");
             }
             if (request.system_prompt == compactor_prompt) {
-                std::call_once(*compactor_started_once,
-                               [compactor_started] { compactor_started->set_value(); });
-                return EmitResponseText(R"json({
+                const absl::Status status = EmitResponseText(R"json({
                     "tier1_detail": "First exchange detail.",
                     "tier2_summary": "First exchange summary.",
                     "tier3_ref": "First exchange ref.",
                     "tier3_keywords": ["first", "exchange", "summary", "memory", "test"],
                     "salience": 8
                 })json",
-                                        on_event, "resp_compactor");
+                                                             on_event, "resp_compactor");
+                if (status.ok()) {
+                    std::call_once(*compactor_finished_once,
+                                   [compactor_finished] { compactor_finished->set_value(); });
+                }
+                return status;
             }
 
             const std::string reply =
@@ -843,7 +845,7 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
         .text = "hello",
     });
     ASSERT_TRUE(session->WaitForEventCount(2U));
-    ASSERT_EQ(compactor_started_future.wait_for(2s), std::future_status::ready);
+    ASSERT_EQ(compactor_finished_future.wait_for(2s), std::future_status::ready);
 
     responder.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = "srv_test",
