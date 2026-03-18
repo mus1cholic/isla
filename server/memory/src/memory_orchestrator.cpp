@@ -31,6 +31,30 @@ Timestamp NowTimestamp() {
         std::chrono::system_clock::now());
 }
 
+absl::Status ValidateSplitFlushTarget(const Conversation& conversation,
+                                      std::size_t conversation_item_index,
+                                      std::size_t split_at_message_index) {
+    if (conversation_item_index >= conversation.items.size()) {
+        return invalid_argument("split flush target exceeds conversation size");
+    }
+    const auto& item = conversation.items[conversation_item_index];
+    if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
+        return invalid_argument("split flush target must be an ongoing episode");
+    }
+    const auto& messages = item.ongoing_episode->messages;
+    if (split_at_message_index >= messages.size()) {
+        return invalid_argument("split_at_message_index exceeds message count");
+    }
+    if (split_at_message_index < 2) {
+        return invalid_argument(
+            "split_at_message_index must leave at least 2 messages in the completed portion");
+    }
+    if (messages[split_at_message_index].role != MessageRole::User) {
+        return invalid_argument("split_at_message_index must reference a user message");
+    }
+    return absl::OkStatus();
+}
+
 absl::StatusOr<std::optional<FlushTarget>>
 ChooseFlushConversationItem(const Conversation& conversation, const MidTermFlushDecision& decision,
                             std::string_view session_id) {
@@ -73,39 +97,15 @@ ChooseFlushConversationItem(const Conversation& conversation, const MidTermFlush
     }
 
     if (decision.split_at_message_index.has_value()) {
-        const auto& item = conversation.items[item_index];
-        if (item.type != ConversationItemType::OngoingEpisode ||
-            !item.ongoing_episode.has_value()) {
-            LOG(WARNING) << "MemoryOrchestrator rejected split_at on non-ongoing-episode"
-                         << " session_id=" << SanitizeForLog(session_id)
-                         << " conversation_item_index=" << item_index;
-            return invalid_argument(
-                "mid-term flush decider split_at requires the target to be an ongoing episode");
-        }
-        const auto& messages = item.ongoing_episode->messages;
         const std::size_t split_at = *decision.split_at_message_index;
-        if (split_at >= messages.size()) {
-            LOG(WARNING) << "MemoryOrchestrator rejected split_at out of range"
+        if (absl::Status status = ValidateSplitFlushTarget(conversation, item_index, split_at);
+            !status.ok()) {
+            LOG(WARNING) << "MemoryOrchestrator rejected invalid split flush target from decider"
                          << " session_id=" << SanitizeForLog(session_id)
-                         << " split_at_message_index=" << split_at
-                         << " message_count=" << messages.size();
-            return invalid_argument(
-                "mid-term flush decider split_at_message_index is out of range");
-        }
-        if (split_at < 2) {
-            LOG(WARNING)
-                << "MemoryOrchestrator rejected split_at with too few messages before split point"
-                << " session_id=" << SanitizeForLog(session_id)
-                << " split_at_message_index=" << split_at;
-            return invalid_argument("mid-term flush decider split_at_message_index must leave at "
-                                    "least 2 messages in the completed portion");
-        }
-        if (messages[split_at].role != MessageRole::User) {
-            LOG(WARNING) << "MemoryOrchestrator rejected split_at referencing a non-user message"
-                         << " session_id=" << SanitizeForLog(session_id)
-                         << " split_at_message_index=" << split_at;
-            return invalid_argument("mid-term flush decider split_at_message_index must reference "
-                                    "a user message");
+                         << " conversation_item_index=" << item_index
+                         << " split_at_message_index=" << split_at << " detail='"
+                         << SanitizeForLog(status.message()) << "'";
+            return status;
         }
     }
 
@@ -144,25 +144,13 @@ absl::StatusOr<OngoingEpisodeFlushCandidate>
 CaptureOngoingEpisodeForSplitFlush(const Conversation& conversation,
                                    std::size_t conversation_item_index,
                                    std::size_t split_at_message_index) {
-    if (conversation_item_index >= conversation.items.size()) {
-        return invalid_argument("split flush target exceeds conversation size");
-    }
-    const auto& item = conversation.items[conversation_item_index];
-    if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
-        return invalid_argument("split flush target must be an ongoing episode");
-    }
-    const auto& messages = item.ongoing_episode->messages;
-    if (split_at_message_index >= messages.size()) {
-        return invalid_argument("split_at_message_index exceeds message count");
-    }
-    if (split_at_message_index < 2) {
-        return invalid_argument(
-            "split_at_message_index must leave at least 2 messages in the completed portion");
-    }
-    if (messages[split_at_message_index].role != MessageRole::User) {
-        return invalid_argument("split_at_message_index must reference a user message");
+    if (absl::Status status =
+            ValidateSplitFlushTarget(conversation, conversation_item_index, split_at_message_index);
+        !status.ok()) {
+        return status;
     }
 
+    const auto& messages = conversation.items[conversation_item_index].ongoing_episode->messages;
     OngoingEpisode completed_portion;
     completed_portion.messages.assign(
         messages.begin(), messages.begin() + static_cast<std::ptrdiff_t>(split_at_message_index));
