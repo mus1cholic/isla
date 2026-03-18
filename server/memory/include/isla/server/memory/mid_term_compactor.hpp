@@ -9,6 +9,10 @@
 #include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
+namespace isla::server::ai_gateway {
+class OpenAiResponsesClient;
+} // namespace isla::server::ai_gateway
+
 namespace isla::server::memory {
 
 struct MidTermCompactionRequest {
@@ -35,9 +39,8 @@ class MidTermCompactor {
 
 using MidTermCompactorPtr = std::shared_ptr<MidTermCompactor>;
 
-// TODO: Add a concrete LLM-based MidTermCompactor implementation that calls an
-// LLM to produce tiered summaries, keywords, and salience scores from the
-// flushed episode messages. The system prompt already exists at
-// server/memory/include/prompts/mid_term_compactor_system_prompt.txt.
+[[nodiscard]] absl::StatusOr<MidTermCompactorPtr> CreateLlmMidTermCompactor(
+    std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> responses_client,
+    std::string model);
 
 } // namespace isla::server::memory

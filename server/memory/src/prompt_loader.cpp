@@ -21,6 +21,8 @@ struct EmbeddedPromptAsset {
 
 inline constexpr std::string_view kSystemPromptRunfile =
     "server/memory/include/prompts/system_prompt.txt";
+inline constexpr std::string_view kMidTermCompactorSystemPromptRunfile =
+    "server/memory/include/prompts/mid_term_compactor_system_prompt.txt";
 inline constexpr std::string_view kMidTermFlushDeciderSystemPromptRunfile =
     "server/memory/include/prompts/mid_term_flush_decider_system_prompt.txt";
 inline constexpr std::string_view kFuturePromptTestRunfile =
@@ -32,6 +34,8 @@ absl::StatusOr<std::string_view> PromptAssetRunfilePath(PromptAsset prompt_asset
     switch (prompt_asset) {
     case PromptAsset::kSystemPrompt:
         return kSystemPromptRunfile;
+    case PromptAsset::kMidTermCompactorSystemPrompt:
+        return kMidTermCompactorSystemPromptRunfile;
     case PromptAsset::kMidTermFlushDeciderSystemPrompt:
         return kMidTermFlushDeciderSystemPromptRunfile;
     case PromptAsset::kFuturePromptTest:
