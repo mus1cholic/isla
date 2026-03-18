@@ -74,15 +74,15 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
     }
 
     absl::StatusOr<isla::server::memory::MidTermFlushDeciderPtr> decider =
-        isla::server::memory::CreateLlmMidTermFlushDecider(
-            config.openai_client, std::string(kDefaultMidTermMemoryModel));
+        isla::server::memory::CreateLlmMidTermFlushDecider(config.openai_client,
+                                                           std::string(kDefaultMidTermMemoryModel));
     if (!decider.ok()) {
         return decider.status();
     }
 
     absl::StatusOr<isla::server::memory::MidTermCompactorPtr> compactor =
-        isla::server::memory::CreateLlmMidTermCompactor(
-            config.openai_client, std::string(kDefaultMidTermMemoryModel));
+        isla::server::memory::CreateLlmMidTermCompactor(config.openai_client,
+                                                        std::string(kDefaultMidTermMemoryModel));
     if (!compactor.ok()) {
         return compactor.status();
     }

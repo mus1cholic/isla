@@ -50,6 +50,8 @@ auto kTelemetryLogEvents = std::to_array("--telemetry-log-events");
 auto kBadScheme = std::to_array("--openai-scheme=ftp");
 auto kBadPort = std::to_array("--openai-port=70000");
 
+class RemovedMidTermFlagTest : public ::testing::TestWithParam<const char*> {};
+
 TEST(AiGatewayStartupConfigTest, LoadDotEnvFileParsesBasicAssignments) {
     const std::filesystem::path path = MakeUniqueTestEnvPath("isla_ai_gateway_test");
     {
@@ -381,20 +383,23 @@ TEST(AiGatewayStartupConfigTest, RejectsInvalidOpenAiPort) {
     EXPECT_EQ(parsed.status().message(), "openai-port must be between 0 and 65535");
 }
 
-TEST(AiGatewayStartupConfigTest, RejectsRemovedMidTermMemoryFlag) {
-    auto kRemovedFlag = std::to_array("--mid-term-memory");
-    std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), kRemovedFlag.data() };
+TEST_P(RemovedMidTermFlagTest, RejectsRemovedMidTermFlags) {
+    std::string removed_flag = GetParam();
+    std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), removed_flag.data() };
 
-    const absl::StatusOr<ParsedStartupConfig> parsed =
-        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
-                                  [](std::string_view) -> std::optional<std::string> {
-                                      return std::nullopt;
-                                  });
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
 
     ASSERT_FALSE(parsed.ok());
     EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_EQ(parsed.status().message(), "unknown argument: --mid-term-memory");
+    EXPECT_EQ(parsed.status().message(), "unknown argument: " + removed_flag);
 }
+
+INSTANTIATE_TEST_SUITE_P(RemovedMidTermFlags, RemovedMidTermFlagTest,
+                         ::testing::Values("--mid-term-memory",
+                                           "--mid-term-flush-decider-model=gpt-4.1-mini",
+                                           "--mid-term-compactor-model=gpt-4.1-nano"));
 
 TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsCliOnlySource) {
     std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), kOrg.data() };

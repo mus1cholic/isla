@@ -99,6 +99,11 @@ const std::string& MidTermCompactorPromptText() {
     return prompt;
 }
 
+bool IsMidTermMemoryRequest(const OpenAiResponsesRequest& request) {
+    return request.system_prompt == MidTermFlushDeciderPromptText() ||
+           request.system_prompt == MidTermCompactorPromptText();
+}
+
 absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& request,
                                           const OpenAiResponsesEventCallback& on_event,
                                           std::string_view prefix = "stub echo: ") {
@@ -657,8 +662,7 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
         absl::OkStatus(), "reply", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            if (request.system_prompt == MidTermFlushDeciderPromptText() ||
-                request.system_prompt == MidTermCompactorPromptText()) {
+            if (IsMidTermMemoryRequest(request)) {
                 return EmitMidTermAwareEchoResponse(request, on_event);
             }
             return EmitResponseText("reply", on_event);
@@ -716,10 +720,8 @@ TEST_F(GatewayStubResponderTest,
        SecondTurnRequestIncludesPriorConversationWithoutDuplicatingCurrentTurn) {
     auto capturing_client = test::MakeFakeOpenAiResponsesClient(
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [](const OpenAiResponsesRequest& request,
-           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            return EmitMidTermAwareEchoResponse(request, on_event);
-        });
+        [](const OpenAiResponsesRequest& request, const OpenAiResponsesEventCallback& on_event)
+            -> absl::Status { return EmitMidTermAwareEchoResponse(request, on_event); });
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
@@ -1232,8 +1234,7 @@ TEST(GatewayStubResponderStandaloneTest, SessionClosedDuringExecutionDropsLaterE
             [builder_started,
              allow_finish_future](const OpenAiResponsesRequest& request,
                                   const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (request.system_prompt == MidTermFlushDeciderPromptText() ||
-                    request.system_prompt == MidTermCompactorPromptText()) {
+                if (IsMidTermMemoryRequest(request)) {
                     return EmitMidTermAwareEchoResponse(request, on_event);
                 }
                 builder_started->set_value();
@@ -1452,8 +1453,7 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
             absl::OkStatus(), "", "resp_test", absl::OkStatus(),
             [](const OpenAiResponsesRequest& request,
                const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (request.system_prompt == MidTermFlushDeciderPromptText() ||
-                    request.system_prompt == MidTermCompactorPromptText()) {
+                if (IsMidTermMemoryRequest(request)) {
                     return EmitMidTermAwareEchoResponse(request, on_event);
                 }
                 const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
@@ -1577,8 +1577,7 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
             [builder_started,
              allow_finish_future](const OpenAiResponsesRequest& request,
                                   const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (request.system_prompt == MidTermFlushDeciderPromptText() ||
-                    request.system_prompt == MidTermCompactorPromptText()) {
+                if (IsMidTermMemoryRequest(request)) {
                     return EmitMidTermAwareEchoResponse(request, on_event);
                 }
                 builder_started->set_value();
