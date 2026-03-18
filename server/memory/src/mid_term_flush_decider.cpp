@@ -209,8 +209,8 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
             });
 
         if (!stream_status.ok()) {
-            LOG(WARNING) << "LlmMidTermFlushDecider LLM call failed detail='"
-                         << SanitizeForLog(stream_status.message()) << "'";
+            LOG(ERROR) << "LlmMidTermFlushDecider LLM call failed detail='"
+                       << SanitizeForLog(stream_status.message()) << "'";
             return stream_status;
         }
 
