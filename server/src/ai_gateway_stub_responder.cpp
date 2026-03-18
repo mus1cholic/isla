@@ -951,16 +951,16 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         // lifecycle work behind this mutex.
         std::lock_guard<std::mutex> lock(mutex_);
         MidTermMemoryComponents mid_term_components;
-        if (config_.mid_term_memory_enabled) {
-            absl::StatusOr<MidTermMemoryComponents> created_components =
-                CreateMidTermMemoryComponents(config_);
-            if (!created_components.ok()) {
+        absl::StatusOr<MidTermMemoryComponents> created_components =
+            CreateMidTermMemoryComponents(config_);
+        if (!created_components.ok()) {
+            if (config_.mid_term_memory_enabled) {
                 LOG(WARNING) << "AI gateway stub disabled mid-term memory for session="
                              << SanitizeForLog(session_id) << " detail='"
                              << SanitizeForLog(created_components.status().message()) << "'";
-            } else {
-                mid_term_components = std::move(*created_components);
             }
+        } else {
+            mid_term_components = std::move(*created_components);
         }
         absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
             isla::server::memory::MemoryOrchestrator::Create(
