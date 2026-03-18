@@ -29,7 +29,7 @@ using isla::server::ai_gateway::SanitizeForLog;
 using nlohmann::json;
 
 absl::Status invalid_argument(std::string_view message) {
-    return absl::InvalidArgumentError(std::string(message));
+    return absl::InvalidArgumentError(message);
 }
 
 json SerializeEpisodeForCompactor(const OngoingEpisode& episode) {
@@ -99,16 +99,17 @@ absl::StatusOr<CompactedMidTermEpisode> ParseCompactorResponse(const std::string
         return status;
     }
 
+    const json& tier1_detail_json = response.at("tier1_detail");
     std::optional<std::string> tier1_detail;
-    if (response.at("tier1_detail").is_null()) {
+    if (tier1_detail_json.is_null()) {
         tier1_detail = std::nullopt;
-    } else if (response.at("tier1_detail").is_string()) {
-        const std::string detail = response.at("tier1_detail").get<std::string>();
+    } else if (tier1_detail_json.is_string()) {
+        std::string detail = tier1_detail_json.get<std::string>();
         if (detail.empty()) {
             return invalid_argument(
                 "mid-term compactor response field 'tier1_detail' must not be empty when set");
         }
-        tier1_detail = detail;
+        tier1_detail = std::move(detail);
     } else {
         return invalid_argument(
             "mid-term compactor response field 'tier1_detail' must be a string or null");
