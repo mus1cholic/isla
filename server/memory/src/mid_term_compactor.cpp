@@ -198,6 +198,7 @@ class LlmMidTermCompactor final : public MidTermCompactor {
                 .model = model_,
                 .system_prompt = system_prompt_,
                 .user_text = user_text,
+                .reasoning_effort = isla::server::ai_gateway::OpenAiReasoningEffort::kMedium,
             },
             [&output_text](const OpenAiResponsesEvent& event) -> absl::Status {
                 return std::visit(
@@ -212,11 +213,11 @@ class LlmMidTermCompactor final : public MidTermCompactor {
             });
 
         if (!stream_status.ok()) {
-            LOG(WARNING) << "LlmMidTermCompactor LLM call failed session_id="
-                         << SanitizeForLog(request.session_id) << " conversation_item_index="
-                         << request.flush_candidate.conversation_item_index
-                         << " model=" << SanitizeForLog(model_) << " detail='"
-                         << SanitizeForLog(stream_status.message()) << "'";
+            LOG(ERROR) << "LlmMidTermCompactor LLM call failed session_id="
+                       << SanitizeForLog(request.session_id) << " conversation_item_index="
+                       << request.flush_candidate.conversation_item_index
+                       << " model=" << SanitizeForLog(model_) << " detail='"
+                       << SanitizeForLog(stream_status.message()) << "'";
             return stream_status;
         }
 

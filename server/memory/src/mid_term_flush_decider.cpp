@@ -195,6 +195,7 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
                 .model = model_,
                 .system_prompt = system_prompt_,
                 .user_text = user_text,
+                .reasoning_effort = isla::server::ai_gateway::OpenAiReasoningEffort::kMedium,
             },
             [&output_text](const OpenAiResponsesEvent& event) -> absl::Status {
                 return std::visit(
@@ -209,8 +210,8 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
             });
 
         if (!stream_status.ok()) {
-            LOG(WARNING) << "LlmMidTermFlushDecider LLM call failed detail='"
-                         << SanitizeForLog(stream_status.message()) << "'";
+            LOG(ERROR) << "LlmMidTermFlushDecider LLM call failed detail='"
+                       << SanitizeForLog(stream_status.message()) << "'";
             return stream_status;
         }
 

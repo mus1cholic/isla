@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_executor.hpp"
 #include "isla/server/ai_gateway_planner.hpp"
@@ -28,6 +29,9 @@ struct GatewayStubResponderConfig {
     std::size_t session_start_persistence_max_attempts = 3;
     std::chrono::milliseconds session_start_persistence_retry_delay{ 100 };
     std::string memory_user_id = "gateway_user";
+    bool mid_term_memory_enabled = false;
+    std::string mid_term_flush_decider_model;
+    std::string mid_term_compactor_model;
     isla::server::memory::MemoryStorePtr memory_store;
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
@@ -112,6 +116,9 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
     GatewayStubResponderConfig config_;
     GatewayPlanExecutor executor_;
+    isla::server::memory::MidTermFlushDeciderPtr mid_term_flush_decider_;
+    isla::server::memory::MidTermCompactorPtr mid_term_compactor_;
+    absl::Status mid_term_memory_initialization_status_ = absl::OkStatus();
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::thread worker_;

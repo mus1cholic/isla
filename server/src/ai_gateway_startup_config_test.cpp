@@ -47,6 +47,9 @@ auto kSupabaseSchema = std::to_array("--supabase-schema=private_mem");
 auto kSupabaseTimeout = std::to_array("--supabase-timeout-ms=2500");
 auto kTelemetryLog = std::to_array("--telemetry-log");
 auto kTelemetryLogEvents = std::to_array("--telemetry-log-events");
+auto kMidTermMemory = std::to_array("--mid-term-memory");
+auto kMidTermFlushDeciderModel = std::to_array("--mid-term-flush-decider-model=gpt-4.1-mini");
+auto kMidTermCompactorModel = std::to_array("--mid-term-compactor-model=gpt-4.1-nano");
 auto kBadScheme = std::to_array("--openai-scheme=ftp");
 auto kBadPort = std::to_array("--openai-port=70000");
 
@@ -207,6 +210,20 @@ TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFlagsFromCli) {
     EXPECT_TRUE(parsed->supabase_config.telemetry_logging_enabled);
 }
 
+TEST(AiGatewayStartupConfigTest, ParsesMidTermMemoryFlagsFromCli) {
+    std::array<char*, 5> argv = { kArg0.data(), kApiKey.data(), kMidTermMemory.data(),
+                                  kMidTermFlushDeciderModel.data(), kMidTermCompactorModel.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_TRUE(parsed->mid_term_memory_enabled);
+    EXPECT_EQ(parsed->mid_term_flush_decider_model, "gpt-4.1-mini");
+    EXPECT_EQ(parsed->mid_term_compactor_model, "gpt-4.1-nano");
+}
+
 TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     std::array<char*, 1> argv = { kArg0.data() };
 
@@ -263,6 +280,30 @@ TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFromEnvironmentDefaults)
     EXPECT_TRUE(parsed->telemetry_logging_enabled);
     EXPECT_TRUE(parsed->telemetry_event_logging_enabled);
     EXPECT_TRUE(parsed->supabase_config.telemetry_logging_enabled);
+}
+
+TEST(AiGatewayStartupConfigTest, UsesMidTermMemoryEnvironmentDefaults) {
+    std::array<char*, 2> argv = { kArg0.data(), kApiKey.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "AI_GATEWAY_MID_TERM_MEMORY_ENABLED") {
+                                          return "true";
+                                      }
+                                      if (name == "AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL") {
+                                          return "gpt-4.1-decider";
+                                      }
+                                      if (name == "AI_GATEWAY_MID_TERM_COMPACTOR_MODEL") {
+                                          return "gpt-4.1-compactor";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_TRUE(parsed->mid_term_memory_enabled);
+    EXPECT_EQ(parsed->mid_term_flush_decider_model, "gpt-4.1-decider");
+    EXPECT_EQ(parsed->mid_term_compactor_model, "gpt-4.1-compactor");
 }
 
 TEST(AiGatewayStartupConfigTest, ParseGatewayStartupConfigAcceptsDotEnvFallback) {

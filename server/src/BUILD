@@ -261,6 +261,8 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:mid_term_compactor",
+        "//server/memory/src:mid_term_flush_decider",
         ":ai_gateway_executor",
         ":ai_gateway_logging_utils",
         ":ai_gateway_planner",

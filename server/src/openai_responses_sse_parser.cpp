@@ -274,7 +274,7 @@ IncrementalSseParser::FlushBufferedEvent(const OpenAiResponsesEventCallback& on_
         ReadOptionalStringField(event_json, "type");
     const std::string event_type =
         type_field.ok() ? type_field->value_or("") : std::string("<unreadable>");
-    VLOG(1) << "AI gateway openai responses assembled SSE event event_index="
+    VLOG(3) << "AI gateway openai responses assembled SSE event event_index="
             << (summary_.event_count + 1U) << " type='" << SanitizeForLog(event_type)
             << "' event_name='" << SanitizeForLog(event_name_) << "' payload_bytes=" << data_.size()
             << " first_event=" << (summary_.event_count == 0U ? "true" : "false");
