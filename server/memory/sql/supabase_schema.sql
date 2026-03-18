@@ -101,12 +101,16 @@ begin
           and item_index = p_conversation_item_index
           and item_type = 'ongoing_episode'
     ) then
-        raise exception 'split flush target must be an ongoing episode';
+        raise exception using
+            errcode = '23514',
+            message = 'split flush target must be an ongoing episode';
     end if;
 
     v_remaining_count := jsonb_array_length(p_remaining_messages);
     if v_remaining_count < 1 then
-        raise exception 'remaining_ongoing_episode must contain at least one message';
+        raise exception using
+            errcode = '23514',
+            message = 'remaining_ongoing_episode must contain at least one message';
     end if;
 
     select count(*)
@@ -116,12 +120,16 @@ begin
       and item_index = p_conversation_item_index;
 
     if v_target_message_count < v_remaining_count then
-        raise exception 'remaining_ongoing_episode does not match persisted conversation item';
+        raise exception using
+            errcode = '23514',
+            message = 'remaining_ongoing_episode does not match persisted conversation item';
     end if;
 
     v_split_at_message_index := v_target_message_count - v_remaining_count;
     if v_split_at_message_index < 2 then
-        raise exception 'split flush requires at least two completed messages before the remaining suffix';
+        raise exception using
+            errcode = '23514',
+            message = 'split flush requires at least two completed messages before the remaining suffix';
     end if;
 
     select count(*)
@@ -136,7 +144,9 @@ begin
       and persisted.created_at = ((expected.message ->> 'created_at')::timestamptz);
 
     if v_matching_suffix_count <> v_remaining_count then
-        raise exception 'remaining_ongoing_episode does not match persisted conversation messages';
+        raise exception using
+            errcode = '23514',
+            message = 'remaining_ongoing_episode does not match persisted conversation messages';
     end if;
 
     select coalesce(max(item_index), p_conversation_item_index) + 1
