@@ -21,6 +21,8 @@
 
 namespace isla::server::ai_gateway {
 
+inline constexpr std::string_view kDefaultMidTermMemoryModel = "gpt-5.4-mini";
+
 struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
@@ -29,9 +31,6 @@ struct GatewayStubResponderConfig {
     std::size_t session_start_persistence_max_attempts = 3;
     std::chrono::milliseconds session_start_persistence_retry_delay{ 100 };
     std::string memory_user_id = "gateway_user";
-    bool mid_term_memory_enabled = false;
-    std::string mid_term_flush_decider_model;
-    std::string mid_term_compactor_model;
     isla::server::memory::MemoryStorePtr memory_store;
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;

@@ -98,9 +98,6 @@ int main(int argc, char** argv) {
 
     isla::server::ai_gateway::GatewayStubResponder responder(
         isla::server::ai_gateway::GatewayStubResponderConfig{
-            .mid_term_memory_enabled = startup_config->mid_term_memory_enabled,
-            .mid_term_flush_decider_model = startup_config->mid_term_flush_decider_model,
-            .mid_term_compactor_model = startup_config->mid_term_compactor_model,
             .memory_store = *memory_store,
             .openai_config = startup_config->openai_config,
             .openai_client = openai_client,
@@ -122,21 +119,16 @@ int main(int argc, char** argv) {
               << " api_key_source=" << log_context.api_key_source << " organization_configured="
               << (log_context.organization_configured ? "true" : "false")
               << " project_configured=" << (log_context.project_configured ? "true" : "false")
-              << " mid_term_memory_enabled="
-              << (startup_config->mid_term_memory_enabled ? "true" : "false")
+              << " mid_term_memory_policy=enabled"
+              << " mid_term_memory_graceful_degradation=true"
               << " supabase_configured=" << (log_context.supabase_configured ? "true" : "false")
               << " telemetry_logging_enabled="
               << (log_context.telemetry_logging_enabled ? "true" : "false")
               << " telemetry_event_logging_enabled="
               << (log_context.telemetry_event_logging_enabled ? "true" : "false");
-    if (startup_config->mid_term_memory_enabled) {
-        LOG(INFO) << "AI gateway mid-term memory models flush_decider_model="
-                  << isla::server::ai_gateway::SanitizeForLog(
-                         startup_config->mid_term_flush_decider_model)
-                  << " compactor_model="
-                  << isla::server::ai_gateway::SanitizeForLog(
-                         startup_config->mid_term_compactor_model);
-    }
+    LOG(INFO) << "AI gateway mid-term memory model="
+              << isla::server::ai_gateway::SanitizeForLog(
+                     isla::server::ai_gateway::kDefaultMidTermMemoryModel);
     LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
               << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.host) << ":"
               << startup_config->openai_config.port << " scheme="

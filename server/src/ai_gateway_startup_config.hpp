@@ -20,9 +20,6 @@ struct ParsedStartupConfig {
     GatewayServerConfig server_config;
     OpenAiResponsesClientConfig openai_config;
     isla::server::memory::SupabaseMemoryStoreConfig supabase_config;
-    bool mid_term_memory_enabled = false;
-    std::string mid_term_flush_decider_model;
-    std::string mid_term_compactor_model;
     bool telemetry_logging_enabled = false;
     bool telemetry_event_logging_enabled = false;
 };

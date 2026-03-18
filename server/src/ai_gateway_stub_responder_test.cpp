@@ -29,6 +29,10 @@ namespace {
 
 using namespace std::chrono_literals;
 
+absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& request,
+                                          const OpenAiResponsesEventCallback& on_event,
+                                          std::string_view prefix);
+
 struct EmittedEvent {
     std::string op;
     std::string turn_id;
@@ -55,23 +59,7 @@ MakeEchoOpenAiResponsesClient(std::string prefix = "stub echo: ") {
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [prefix = std::move(prefix)](const OpenAiResponsesRequest& request,
                                      const OpenAiResponsesEventCallback& on_event) {
-            const std::string text = prefix + test::ExtractLatestPromptLine(request.user_text);
-            const std::size_t midpoint = text.size() / 2U;
-            const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
-                .text_delta = text.substr(0, midpoint),
-            });
-            if (!first_status.ok()) {
-                return first_status;
-            }
-            const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
-                .text_delta = text.substr(midpoint),
-            });
-            if (!second_status.ok()) {
-                return second_status;
-            }
-            return on_event(OpenAiResponsesCompletedEvent{
-                .response_id = "resp_test",
-            });
+            return EmitMidTermAwareEchoResponse(request, on_event, prefix);
         });
 }
 
@@ -84,6 +72,72 @@ absl::Status EmitResponseText(std::string_view text, const OpenAiResponsesEventC
     }
     return on_event(OpenAiResponsesCompletedEvent{
         .response_id = std::string(response_id),
+    });
+}
+
+const std::string& MidTermFlushDeciderPromptText() {
+    static const std::string prompt = [] {
+        const absl::StatusOr<std::string> loaded = isla::server::memory::LoadPrompt(
+            isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+        if (!loaded.ok()) {
+            throw std::runtime_error("failed to load mid-term flush decider prompt");
+        }
+        return *loaded;
+    }();
+    return prompt;
+}
+
+const std::string& MidTermCompactorPromptText() {
+    static const std::string prompt = [] {
+        const absl::StatusOr<std::string> loaded = isla::server::memory::LoadPrompt(
+            isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+        if (!loaded.ok()) {
+            throw std::runtime_error("failed to load mid-term compactor prompt");
+        }
+        return *loaded;
+    }();
+    return prompt;
+}
+
+absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& request,
+                                          const OpenAiResponsesEventCallback& on_event,
+                                          std::string_view prefix = "stub echo: ") {
+    if (request.system_prompt == MidTermFlushDeciderPromptText()) {
+        return EmitResponseText(R"json({
+            "should_flush": false,
+            "item_id": null,
+            "split_at": null,
+            "reasoning": "No completed episode boundary."
+        })json",
+                                on_event, "resp_decider");
+    }
+    if (request.system_prompt == MidTermCompactorPromptText()) {
+        return EmitResponseText(R"json({
+            "tier1_detail": "Fallback detail.",
+            "tier2_summary": "Fallback summary.",
+            "tier3_ref": "Fallback ref.",
+            "tier3_keywords": ["fallback", "summary", "memory", "test", "compactor"],
+            "salience": 5
+        })json",
+                                on_event, "resp_compactor");
+    }
+
+    const std::string text = std::string(prefix) + test::ExtractLatestPromptLine(request.user_text);
+    const std::size_t midpoint = text.size() / 2U;
+    const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
+        .text_delta = text.substr(0, midpoint),
+    });
+    if (!first_status.ok()) {
+        return first_status;
+    }
+    const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
+        .text_delta = text.substr(midpoint),
+    });
+    if (!second_status.ok()) {
+        return second_status;
+    }
+    return on_event(OpenAiResponsesCompletedEvent{
+        .response_id = "resp_test",
     });
 }
 
@@ -603,12 +657,11 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
         absl::OkStatus(), "reply", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            absl::Status delta_status =
-                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = "reply" });
-            if (!delta_status.ok()) {
-                return delta_status;
+            if (request.system_prompt == MidTermFlushDeciderPromptText() ||
+                request.system_prompt == MidTermCompactorPromptText()) {
+                return EmitMidTermAwareEchoResponse(request, on_event);
             }
-            return on_event(OpenAiResponsesCompletedEvent{ .response_id = "resp_test" });
+            return EmitResponseText("reply", on_event);
         });
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
@@ -665,14 +718,7 @@ TEST_F(GatewayStubResponderTest,
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [](const OpenAiResponsesRequest& request,
            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
-            const std::string reply = std::string("stub echo: ") + latest_text;
-            absl::Status delta_status =
-                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = reply });
-            if (!delta_status.ok()) {
-                return delta_status;
-            }
-            return on_event(OpenAiResponsesCompletedEvent{ .response_id = "resp_test" });
+            return EmitMidTermAwareEchoResponse(request, on_event);
         });
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
@@ -777,9 +823,6 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
         .async_emit_timeout = 2s,
-        .mid_term_memory_enabled = true,
-        .mid_term_flush_decider_model = "gpt-4.1-mini",
-        .mid_term_compactor_model = "gpt-4.1-nano",
         .openai_client = client,
     });
     GatewaySessionRegistry registry(&responder);
@@ -821,7 +864,7 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
             return request.system_prompt == *decider_prompt;
         });
     ASSERT_NE(decider_request, requests.end());
-    EXPECT_EQ(decider_request->model, "gpt-4.1-mini");
+    EXPECT_EQ(decider_request->model, kDefaultMidTermMemoryModel);
 
     const auto compactor_request =
         std::find_if(requests.begin(), requests.end(),
@@ -829,7 +872,7 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
                          return request.system_prompt == *compactor_prompt;
                      });
     ASSERT_NE(compactor_request, requests.end());
-    EXPECT_EQ(compactor_request->model, "gpt-4.1-nano");
+    EXPECT_EQ(compactor_request->model, kDefaultMidTermMemoryModel);
 
     const auto third_reply_request =
         std::find_if(requests.begin(), requests.end(),
@@ -850,106 +893,12 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
     EXPECT_NE(prompt->find("First exchange ref."), std::string::npos);
 }
 
-TEST(GatewayStubResponderStandaloneTest, DisabledMidTermMemoryDoesNotCallAnalysisModels) {
-    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
-    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
-    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
-    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
-
-    auto recorded_requests = std::make_shared<std::vector<OpenAiResponsesRequest>>();
-    auto requests_mutex = std::make_shared<std::mutex>();
-    auto client = test::MakeFakeOpenAiResponsesClient(
-        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [recorded_requests,
-         requests_mutex](const OpenAiResponsesRequest& request,
-                         const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            {
-                std::lock_guard<std::mutex> lock(*requests_mutex);
-                recorded_requests->push_back(request);
-            }
-            const std::string reply =
-                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
-            return EmitResponseText(reply, on_event);
-        });
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .mid_term_memory_enabled = false,
-        .openai_client = client,
-    });
-    GatewaySessionRegistry registry(&responder);
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_2",
-        .text = "follow up",
-    });
-    ASSERT_TRUE(session->WaitForEventCount(4U));
-
-    std::vector<OpenAiResponsesRequest> requests;
-    {
-        std::lock_guard<std::mutex> lock(*requests_mutex);
-        requests = *recorded_requests;
-    }
-
-    EXPECT_EQ(std::count_if(requests.begin(), requests.end(),
-                            [&decider_prompt](const OpenAiResponsesRequest& request) {
-                                return request.system_prompt == *decider_prompt;
-                            }),
-              0);
-    EXPECT_EQ(std::count_if(requests.begin(), requests.end(),
-                            [&compactor_prompt](const OpenAiResponsesRequest& request) {
-                                return request.system_prompt == *compactor_prompt;
-                            }),
-              0);
-}
-
 TEST(GatewayStubResponderStandaloneTest,
-     MidTermMemoryConstructionFailureFallsBackToWorkingMemoryOnly) {
-    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
-    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
-    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
-    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
-
-    auto recorded_requests = std::make_shared<std::vector<OpenAiResponsesRequest>>();
-    auto requests_mutex = std::make_shared<std::mutex>();
-    auto client = test::MakeFakeOpenAiResponsesClient(
-        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [recorded_requests,
-         requests_mutex](const OpenAiResponsesRequest& request,
-                         const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            {
-                std::lock_guard<std::mutex> lock(*requests_mutex);
-                recorded_requests->push_back(request);
-            }
-            const std::string reply =
-                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
-            return EmitResponseText(reply, on_event);
-        });
+     MidTermMemoryInitializationFailureStillAllowsSessionMemoryStartup) {
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
         .async_emit_timeout = 2s,
-        .mid_term_memory_enabled = true,
-        .mid_term_flush_decider_model = "",
-        .mid_term_compactor_model = "",
-        .openai_client = client,
     });
     GatewaySessionRegistry registry(&responder);
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
@@ -959,35 +908,6 @@ TEST(GatewayStubResponderStandaloneTest,
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
     ASSERT_TRUE(responder.RenderSessionMemoryPrompt("srv_test").ok());
     EXPECT_TRUE(session->events().empty());
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-
-    const std::vector<EmittedEvent> events = session->events();
-    ASSERT_EQ(events.size(), 2U);
-    EXPECT_EQ(events[0].op, "text.output");
-    EXPECT_EQ(events[0].payload, "stub echo: hello");
-    EXPECT_EQ(events[1].op, "turn.completed");
-
-    std::vector<OpenAiResponsesRequest> requests;
-    {
-        std::lock_guard<std::mutex> lock(*requests_mutex);
-        requests = *recorded_requests;
-    }
-    EXPECT_EQ(std::count_if(requests.begin(), requests.end(),
-                            [&decider_prompt](const OpenAiResponsesRequest& request) {
-                                return request.system_prompt == *decider_prompt;
-                            }),
-              0);
-    EXPECT_EQ(std::count_if(requests.begin(), requests.end(),
-                            [&compactor_prompt](const OpenAiResponsesRequest& request) {
-                                return request.system_prompt == *compactor_prompt;
-                            }),
-              0);
 }
 
 TEST_F(GatewayStubResponderTest, SessionStartUsesBundledSystemPromptByDefault) {
@@ -1312,6 +1232,10 @@ TEST(GatewayStubResponderStandaloneTest, SessionClosedDuringExecutionDropsLaterE
             [builder_started,
              allow_finish_future](const OpenAiResponsesRequest& request,
                                   const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+                if (request.system_prompt == MidTermFlushDeciderPromptText() ||
+                    request.system_prompt == MidTermCompactorPromptText()) {
+                    return EmitMidTermAwareEchoResponse(request, on_event);
+                }
                 builder_started->set_value();
                 allow_finish_future.wait();
                 const std::string text = std::string("stub echo: ") + request.user_text;
@@ -1528,6 +1452,10 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
             absl::OkStatus(), "", "resp_test", absl::OkStatus(),
             [](const OpenAiResponsesRequest& request,
                const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+                if (request.system_prompt == MidTermFlushDeciderPromptText() ||
+                    request.system_prompt == MidTermCompactorPromptText()) {
+                    return EmitMidTermAwareEchoResponse(request, on_event);
+                }
                 const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
                 if (latest_text == "explode") {
                     throw std::runtime_error("synthetic reply builder failure");
@@ -1649,6 +1577,10 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
             [builder_started,
              allow_finish_future](const OpenAiResponsesRequest& request,
                                   const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+                if (request.system_prompt == MidTermFlushDeciderPromptText() ||
+                    request.system_prompt == MidTermCompactorPromptText()) {
+                    return EmitMidTermAwareEchoResponse(request, on_event);
+                }
                 builder_started->set_value();
                 allow_finish_future.wait();
                 const std::string text = std::string("stub echo: ") + request.user_text;
