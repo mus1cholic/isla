@@ -655,7 +655,8 @@ TEST(SupabaseMemoryStoreTest, SplitConversationItemWithEpisodeStubPersistsStubAn
     EXPECT_EQ(stub_body[0]["episode_stub_content"], "first exchange ref");
 }
 
-TEST(SupabaseMemoryStoreTest, SplitConversationItemWithEpisodeStubHandlesTailSplitWithoutLaterItems) {
+TEST(SupabaseMemoryStoreTest,
+     SplitConversationItemWithEpisodeStubHandlesTailSplitWithoutLaterItems) {
     const std::string later_items_body = "[]";
     const std::string message_rows_body =
         "[{\"item_index\":0,\"message_index\":0,\"role\":\"user\",\"content\":\"hello\","

@@ -138,10 +138,10 @@ HttpRequestSpec BuildPatchRequest(std::string_view table_name,
     return request;
 }
 
-HttpRequestSpec BuildDeleteRequest(std::string_view table_name,
-                                   std::vector<std::pair<std::string, std::string>> query_parameters,
-                                   std::string_view schema,
-                                   const SupabaseMemoryStoreConfig& config) {
+HttpRequestSpec
+BuildDeleteRequest(std::string_view table_name,
+                   std::vector<std::pair<std::string, std::string>> query_parameters,
+                   std::string_view schema, const SupabaseMemoryStoreConfig& config) {
     HttpRequestSpec request{
         .method = boost::beast::http::verb::delete_,
         .target_path = "/rest/v1/" + std::string(table_name),
@@ -416,15 +416,15 @@ class SupabaseMemoryStore final : public MemoryStore {
         const std::int64_t target_item_index = write.conversation_item_index;
         const std::int64_t inserted_item_index = target_item_index + 1;
 
-        const HttpRequestSpec items_request = BuildGetRequest(
-            "/rest/v1/conversation_items",
-            {
-                { "select", "item_index" },
-                { "session_id", "eq." + session_id },
-                { "item_index", "gt." + std::to_string(target_item_index) },
-                { "order", "item_index.desc" },
-            },
-            config_.schema, config_);
+        const HttpRequestSpec items_request =
+            BuildGetRequest("/rest/v1/conversation_items",
+                            {
+                                { "select", "item_index" },
+                                { "session_id", "eq." + session_id },
+                                { "item_index", "gt." + std::to_string(target_item_index) },
+                                { "order", "item_index.desc" },
+                            },
+                            config_.schema, config_);
         const absl::StatusOr<std::string> items_response =
             ExecuteSupabaseRequest(*client_, config_, items_request);
         if (!items_response.ok()) {
@@ -447,15 +447,15 @@ class SupabaseMemoryStore final : public MemoryStore {
                 std::string("supabase conversation_items row was malformed: ") + error.what());
         }
 
-        const HttpRequestSpec messages_request = BuildGetRequest(
-            "/rest/v1/conversation_messages",
-            {
-                { "select", "item_index,message_index,role,content,created_at" },
-                { "session_id", "eq." + session_id },
-                { "item_index", "gte." + std::to_string(target_item_index) },
-                { "order", "item_index.asc,message_index.asc" },
-            },
-            config_.schema, config_);
+        const HttpRequestSpec messages_request =
+            BuildGetRequest("/rest/v1/conversation_messages",
+                            {
+                                { "select", "item_index,message_index,role,content,created_at" },
+                                { "session_id", "eq." + session_id },
+                                { "item_index", "gte." + std::to_string(target_item_index) },
+                                { "order", "item_index.asc,message_index.asc" },
+                            },
+                            config_.schema, config_);
         const absl::StatusOr<std::string> messages_response =
             ExecuteSupabaseRequest(*client_, config_, messages_request);
         if (!messages_response.ok()) {
@@ -498,8 +498,7 @@ class SupabaseMemoryStore final : public MemoryStore {
             }
         } catch (const std::exception& error) {
             return absl::InternalError(
-                std::string("supabase conversation_messages row was malformed: ") +
-                error.what());
+                std::string("supabase conversation_messages row was malformed: ") + error.what());
         }
 
         if (target_message_rows.size() < write.remaining_ongoing_episode.messages.size()) {
@@ -549,17 +548,21 @@ class SupabaseMemoryStore final : public MemoryStore {
             }
         }
 
+        // TODO(layer-2): Collapse split-flush persistence into a Supabase stored procedure (or
+        // equivalent server-side transaction). The current REST implementation is correct and
+        // tested, but it issues multiple PATCH/DELETE/POST requests, is not atomic, and moves
+        // remaining messages one row at a time.
         for (const std::int64_t item_index : later_item_indices) {
-            const HttpRequestSpec shift_item_request = BuildPatchRequest(
-                "conversation_items",
-                {
-                    { "session_id", "eq." + session_id },
-                    { "item_index", "eq." + std::to_string(item_index) },
-                },
-                json{
-                    { "item_index", item_index + 1 },
-                },
-                config_.schema, config_);
+            const HttpRequestSpec shift_item_request =
+                BuildPatchRequest("conversation_items",
+                                  {
+                                      { "session_id", "eq." + session_id },
+                                      { "item_index", "eq." + std::to_string(item_index) },
+                                  },
+                                  json{
+                                      { "item_index", item_index + 1 },
+                                  },
+                                  config_.schema, config_);
             const absl::StatusOr<std::string> shift_item_response =
                 ExecuteSupabaseRequest(*client_, config_, shift_item_request);
             if (!shift_item_response.ok()) {
@@ -582,16 +585,16 @@ class SupabaseMemoryStore final : public MemoryStore {
         for (auto it = later_message_item_indices.rbegin(); it != later_message_item_indices.rend();
              ++it) {
             const std::int64_t item_index = *it;
-            const HttpRequestSpec shift_message_request = BuildPatchRequest(
-                "conversation_messages",
-                {
-                    { "session_id", "eq." + session_id },
-                    { "item_index", "eq." + std::to_string(item_index) },
-                },
-                json{
-                    { "item_index", item_index + 1 },
-                },
-                config_.schema, config_);
+            const HttpRequestSpec shift_message_request =
+                BuildPatchRequest("conversation_messages",
+                                  {
+                                      { "session_id", "eq." + session_id },
+                                      { "item_index", "eq." + std::to_string(item_index) },
+                                  },
+                                  json{
+                                      { "item_index", item_index + 1 },
+                                  },
+                                  config_.schema, config_);
             const absl::StatusOr<std::string> shift_message_response =
                 ExecuteSupabaseRequest(*client_, config_, shift_message_request);
             if (!shift_message_response.ok()) {
@@ -620,13 +623,13 @@ class SupabaseMemoryStore final : public MemoryStore {
             }
         }
 
-        const HttpRequestSpec delete_completed_messages_request = BuildDeleteRequest(
-            "conversation_messages",
-            {
-                { "session_id", "eq." + session_id },
-                { "item_index", "eq." + std::to_string(target_item_index) },
-            },
-            config_.schema, config_);
+        const HttpRequestSpec delete_completed_messages_request =
+            BuildDeleteRequest("conversation_messages",
+                               {
+                                   { "session_id", "eq." + session_id },
+                                   { "item_index", "eq." + std::to_string(target_item_index) },
+                               },
+                               config_.schema, config_);
         const absl::StatusOr<std::string> delete_completed_messages_response =
             ExecuteSupabaseRequest(*client_, config_, delete_completed_messages_request);
         if (!delete_completed_messages_response.ok()) {
