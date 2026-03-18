@@ -122,6 +122,38 @@ HttpRequestSpec BuildGetRequest(std::string target_path,
     return request;
 }
 
+HttpRequestSpec BuildPatchRequest(std::string_view table_name,
+                                  std::vector<std::pair<std::string, std::string>> query_parameters,
+                                  const json& body, std::string_view schema,
+                                  const SupabaseMemoryStoreConfig& config) {
+    HttpRequestSpec request{
+        .method = boost::beast::http::verb::patch,
+        .target_path = "/rest/v1/" + std::string(table_name),
+        .query_parameters = std::move(query_parameters),
+        .headers = BuildSupabaseAuthHeaders(config),
+        .body = body.dump(),
+    };
+    request.headers.emplace_back("Prefer", "return=minimal");
+    request.headers.emplace_back("Content-Profile", std::string(schema));
+    return request;
+}
+
+HttpRequestSpec
+BuildDeleteRequest(std::string_view table_name,
+                   std::vector<std::pair<std::string, std::string>> query_parameters,
+                   std::string_view schema, const SupabaseMemoryStoreConfig& config) {
+    HttpRequestSpec request{
+        .method = boost::beast::http::verb::delete_,
+        .target_path = "/rest/v1/" + std::string(table_name),
+        .query_parameters = std::move(query_parameters),
+        .headers = BuildSupabaseAuthHeaders(config),
+        .body = std::nullopt,
+    };
+    request.headers.emplace_back("Prefer", "return=minimal");
+    request.headers.emplace_back("Content-Profile", std::string(schema));
+    return request;
+}
+
 std::string ExtractSupabaseErrorDetail(std::string_view body) {
     if (body.empty()) {
         return "empty response body";
@@ -380,14 +412,249 @@ class SupabaseMemoryStore final : public MemoryStore {
             latency.SetOutcome("validation_error");
             return status;
         }
-        // TODO(layer-2): Implement Supabase persistence for split episode stubs.
-        // Requires replacing the conversation item with a stub and inserting a new
-        // ongoing episode item with the remaining messages in a single transaction.
-        // No production code path currently triggers split flushes — the concrete
-        // MidTermFlushDecider (layer 2) must land alongside or after this.
-        latency.SetOutcome("unimplemented");
-        return absl::UnimplementedError(
-            "SplitConversationItemWithEpisodeStub is not yet implemented for Supabase");
+        const std::string session_id = write.session_id;
+        const std::int64_t target_item_index = write.conversation_item_index;
+        const std::int64_t inserted_item_index = target_item_index + 1;
+
+        const HttpRequestSpec items_request =
+            BuildGetRequest("/rest/v1/conversation_items",
+                            {
+                                { "select", "item_index" },
+                                { "session_id", "eq." + session_id },
+                                { "item_index", "gt." + std::to_string(target_item_index) },
+                                { "order", "item_index.desc" },
+                            },
+                            config_.schema, config_);
+        const absl::StatusOr<std::string> items_response =
+            ExecuteSupabaseRequest(*client_, config_, items_request);
+        if (!items_response.ok()) {
+            return items_response.status();
+        }
+        const absl::StatusOr<json> later_item_rows =
+            ParseJsonArrayResponse(*items_response, "supabase conversation_items");
+        if (!later_item_rows.ok()) {
+            return later_item_rows.status();
+        }
+
+        std::vector<std::int64_t> later_item_indices;
+        try {
+            later_item_indices.reserve(later_item_rows->size());
+            for (const json& item_json : *later_item_rows) {
+                later_item_indices.push_back(item_json.at("item_index").get<std::int64_t>());
+            }
+        } catch (const std::exception& error) {
+            return absl::InternalError(
+                std::string("supabase conversation_items row was malformed: ") + error.what());
+        }
+
+        const HttpRequestSpec messages_request =
+            BuildGetRequest("/rest/v1/conversation_messages",
+                            {
+                                { "select", "item_index,message_index,role,content,created_at" },
+                                { "session_id", "eq." + session_id },
+                                { "item_index", "gte." + std::to_string(target_item_index) },
+                                { "order", "item_index.asc,message_index.asc" },
+                            },
+                            config_.schema, config_);
+        const absl::StatusOr<std::string> messages_response =
+            ExecuteSupabaseRequest(*client_, config_, messages_request);
+        if (!messages_response.ok()) {
+            return messages_response.status();
+        }
+        const absl::StatusOr<json> message_rows =
+            ParseJsonArrayResponse(*messages_response, "supabase conversation_messages");
+        if (!message_rows.ok()) {
+            return message_rows.status();
+        }
+
+        struct PersistedMessageRow {
+            std::int64_t item_index = 0;
+            std::int64_t message_index = 0;
+            MessageRole role = MessageRole::User;
+            std::string content;
+            Timestamp created_at;
+        };
+
+        std::vector<PersistedMessageRow> target_message_rows;
+        std::vector<std::int64_t> later_message_item_indices;
+        try {
+            for (const json& message_json : *message_rows) {
+                const std::int64_t item_index = message_json.at("item_index").get<std::int64_t>();
+                if (item_index == target_item_index) {
+                    target_message_rows.push_back(PersistedMessageRow{
+                        .item_index = item_index,
+                        .message_index = message_json.at("message_index").get<std::int64_t>(),
+                        .role = message_json.at("role").get<MessageRole>(),
+                        .content = message_json.at("content").get<std::string>(),
+                        .created_at = message_json.at("created_at").get<Timestamp>(),
+                    });
+                    continue;
+                }
+                if (item_index > target_item_index &&
+                    (later_message_item_indices.empty() ||
+                     later_message_item_indices.back() != item_index)) {
+                    later_message_item_indices.push_back(item_index);
+                }
+            }
+        } catch (const std::exception& error) {
+            return absl::InternalError(
+                std::string("supabase conversation_messages row was malformed: ") + error.what());
+        }
+
+        if (target_message_rows.size() < write.remaining_ongoing_episode.messages.size()) {
+            LOG(WARNING) << "SupabaseMemoryStore split persistence rejected because the persisted "
+                            "target item had fewer messages than the remaining ongoing episode"
+                         << " session_id=" << SanitizeForLog(write.session_id)
+                         << " conversation_item_index=" << write.conversation_item_index
+                         << " persisted_message_count=" << target_message_rows.size()
+                         << " remaining_message_count="
+                         << write.remaining_ongoing_episode.messages.size();
+            latency.SetOutcome("failed_precondition");
+            return absl::FailedPreconditionError(
+                "SplitConversationItemWithEpisodeStub could not match remaining messages to the "
+                "persisted conversation item");
+        }
+        const std::size_t split_at_message_index =
+            target_message_rows.size() - write.remaining_ongoing_episode.messages.size();
+        if (split_at_message_index < 2U) {
+            LOG(WARNING) << "SupabaseMemoryStore split persistence rejected because the persisted "
+                            "target item did not leave at least two completed messages before the "
+                            "remaining suffix"
+                         << " session_id=" << SanitizeForLog(write.session_id)
+                         << " conversation_item_index=" << write.conversation_item_index
+                         << " persisted_message_count=" << target_message_rows.size()
+                         << " remaining_message_count="
+                         << write.remaining_ongoing_episode.messages.size();
+            latency.SetOutcome("failed_precondition");
+            return absl::FailedPreconditionError(
+                "SplitConversationItemWithEpisodeStub requires the persisted conversation item "
+                "to contain at least 2 completed messages before the remaining suffix");
+        }
+        for (std::size_t i = 0; i < write.remaining_ongoing_episode.messages.size(); ++i) {
+            const PersistedMessageRow& persisted = target_message_rows[split_at_message_index + i];
+            const Message& expected = write.remaining_ongoing_episode.messages[i];
+            if (persisted.role != expected.role || persisted.content != expected.content ||
+                persisted.created_at != expected.create_time) {
+                LOG(WARNING) << "SupabaseMemoryStore split persistence rejected because the "
+                                "remaining ongoing episode did not match the persisted suffix"
+                             << " session_id=" << SanitizeForLog(write.session_id)
+                             << " conversation_item_index=" << write.conversation_item_index
+                             << " split_at_message_index=" << split_at_message_index
+                             << " mismatch_message_index=" << i;
+                latency.SetOutcome("failed_precondition");
+                return absl::FailedPreconditionError(
+                    "SplitConversationItemWithEpisodeStub remaining_ongoing_episode did not "
+                    "match the persisted conversation messages");
+            }
+        }
+
+        // TODO(layer-2): Collapse split-flush persistence into a Supabase stored procedure (or
+        // equivalent server-side transaction). The current REST implementation is correct and
+        // tested, but it issues multiple PATCH/DELETE/POST requests, is not atomic, and moves
+        // remaining messages one row at a time.
+        for (const std::int64_t item_index : later_item_indices) {
+            const HttpRequestSpec shift_item_request =
+                BuildPatchRequest("conversation_items",
+                                  {
+                                      { "session_id", "eq." + session_id },
+                                      { "item_index", "eq." + std::to_string(item_index) },
+                                  },
+                                  json{
+                                      { "item_index", item_index + 1 },
+                                  },
+                                  config_.schema, config_);
+            const absl::StatusOr<std::string> shift_item_response =
+                ExecuteSupabaseRequest(*client_, config_, shift_item_request);
+            if (!shift_item_response.ok()) {
+                return shift_item_response.status();
+            }
+        }
+
+        const HttpRequestSpec insert_remaining_ongoing_item_request = BuildUpsertRequest(
+            "conversation_items",
+            json::array({ BuildConversationItemJson(session_id, inserted_item_index,
+                                                    ConversationItemType::OngoingEpisode,
+                                                    std::nullopt, std::nullopt, std::nullopt) }),
+            "session_id,item_index", config_.schema, config_);
+        const absl::StatusOr<std::string> insert_remaining_ongoing_item_response =
+            ExecuteSupabaseRequest(*client_, config_, insert_remaining_ongoing_item_request);
+        if (!insert_remaining_ongoing_item_response.ok()) {
+            return insert_remaining_ongoing_item_response.status();
+        }
+
+        for (auto it = later_message_item_indices.rbegin(); it != later_message_item_indices.rend();
+             ++it) {
+            const std::int64_t item_index = *it;
+            const HttpRequestSpec shift_message_request =
+                BuildPatchRequest("conversation_messages",
+                                  {
+                                      { "session_id", "eq." + session_id },
+                                      { "item_index", "eq." + std::to_string(item_index) },
+                                  },
+                                  json{
+                                      { "item_index", item_index + 1 },
+                                  },
+                                  config_.schema, config_);
+            const absl::StatusOr<std::string> shift_message_response =
+                ExecuteSupabaseRequest(*client_, config_, shift_message_request);
+            if (!shift_message_response.ok()) {
+                return shift_message_response.status();
+            }
+        }
+
+        for (std::size_t i = 0; i < write.remaining_ongoing_episode.messages.size(); ++i) {
+            const PersistedMessageRow& persisted = target_message_rows[split_at_message_index + i];
+            const HttpRequestSpec move_message_request = BuildPatchRequest(
+                "conversation_messages",
+                {
+                    { "session_id", "eq." + session_id },
+                    { "item_index", "eq." + std::to_string(target_item_index) },
+                    { "message_index", "eq." + std::to_string(persisted.message_index) },
+                },
+                json{
+                    { "item_index", inserted_item_index },
+                    { "message_index", static_cast<std::int64_t>(i) },
+                },
+                config_.schema, config_);
+            const absl::StatusOr<std::string> move_message_response =
+                ExecuteSupabaseRequest(*client_, config_, move_message_request);
+            if (!move_message_response.ok()) {
+                return move_message_response.status();
+            }
+        }
+
+        const HttpRequestSpec delete_completed_messages_request =
+            BuildDeleteRequest("conversation_messages",
+                               {
+                                   { "session_id", "eq." + session_id },
+                                   { "item_index", "eq." + std::to_string(target_item_index) },
+                               },
+                               config_.schema, config_);
+        const absl::StatusOr<std::string> delete_completed_messages_response =
+            ExecuteSupabaseRequest(*client_, config_, delete_completed_messages_request);
+        if (!delete_completed_messages_response.ok()) {
+            return delete_completed_messages_response.status();
+        }
+
+        const HttpRequestSpec upsert_episode_stub_item_request = BuildUpsertRequest(
+            "conversation_items",
+            json::array({ BuildConversationItemJson(
+                write.session_id, write.conversation_item_index, ConversationItemType::EpisodeStub,
+                write.episode_id, write.episode_stub_content, write.episode_stub_create_time) }),
+            "session_id,item_index", config_.schema, config_);
+        const absl::StatusOr<std::string> upsert_episode_stub_item_response =
+            ExecuteSupabaseRequest(*client_, config_, upsert_episode_stub_item_request);
+        if (!upsert_episode_stub_item_response.ok()) {
+            return upsert_episode_stub_item_response.status();
+        }
+
+        VLOG(1) << "SupabaseMemoryStore persisted split episode stub item session_id="
+                << SanitizeForLog(write.session_id)
+                << " conversation_item_index=" << write.conversation_item_index
+                << " inserted_item_index=" << inserted_item_index
+                << " remaining_message_count=" << write.remaining_ongoing_episode.messages.size();
+        latency.SetOutcome("ok");
+        return absl::OkStatus();
     }
 
     [[nodiscard]] absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) override {
