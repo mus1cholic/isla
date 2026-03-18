@@ -115,13 +115,13 @@ absl::StatusOr<CompactedMidTermEpisode> ParseCompactorResponse(const std::string
             "mid-term compactor response field 'tier1_detail' must be a string or null");
     }
 
-    const absl::StatusOr<std::string> tier2_summary =
+    absl::StatusOr<std::string> tier2_summary =
         ParseRequiredNonEmptyString(response, "tier2_summary", "mid-term compactor response");
     if (!tier2_summary.ok()) {
         return tier2_summary.status();
     }
 
-    const absl::StatusOr<std::string> tier3_ref =
+    absl::StatusOr<std::string> tier3_ref =
         ParseRequiredNonEmptyString(response, "tier3_ref", "mid-term compactor response");
     if (!tier3_ref.ok()) {
         return tier3_ref.status();
@@ -164,8 +164,8 @@ absl::StatusOr<CompactedMidTermEpisode> ParseCompactorResponse(const std::string
 
     return CompactedMidTermEpisode{
         .tier1_detail = std::move(tier1_detail),
-        .tier2_summary = *tier2_summary,
-        .tier3_ref = *tier3_ref,
+        .tier2_summary = std::move(*tier2_summary),
+        .tier3_ref = std::move(*tier3_ref),
         .tier3_keywords = std::move(tier3_keywords),
         .salience = salience,
         // TODO: Populate embeddings via an embedding service once the compaction pipeline
