@@ -197,11 +197,6 @@ begin
       and item_index = p_conversation_item_index
       and message_index >= v_split_at_message_index;
 
-    delete from public.conversation_messages
-    where session_id = p_session_id
-      and item_index = p_conversation_item_index
-      and message_index < v_split_at_message_index;
-
     update public.conversation_items
     set item_type = 'episode_stub',
         episode_id = p_episode_id,

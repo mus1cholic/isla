@@ -615,14 +615,16 @@ class SupabaseMemoryStore final : public MemoryStore {
             return ParseJsonArrayResponse(*items_response, "supabase conversation_items");
         };
         const auto fetch_message_rows = [this, session_id_string]() -> absl::StatusOr<json> {
-            const HttpRequestSpec messages_request = BuildGetRequest(
-                "/rest/v1/conversation_messages",
-                {
-                    { "select", "item_index,message_index,role,content,created_at" },
-                    { "session_id", "eq." + session_id_string },
-                    { "order", "item_index.asc,message_index.asc" },
-                },
-                config_.schema, config_);
+            const HttpRequestSpec messages_request =
+                BuildGetRequest("/rest/v1/conversation_messages",
+                                {
+                                    { "select", "item_index,message_index,role,content,created_at,"
+                                                "conversation_items!inner(item_type)" },
+                                    { "session_id", "eq." + session_id_string },
+                                    { "conversation_items.item_type", "eq.ongoing_episode" },
+                                    { "order", "item_index.asc,message_index.asc" },
+                                },
+                                config_.schema, config_);
             const absl::StatusOr<std::string> messages_response =
                 ExecuteSupabaseRequest(*client_, config_, messages_request);
             if (!messages_response.ok()) {
@@ -693,8 +695,9 @@ class SupabaseMemoryStore final : public MemoryStore {
                 PersistedConversationItem& item =
                     snapshot.conversation_items[static_cast<std::size_t>(item_index)];
                 if (!item.ongoing_episode.has_value()) {
-                    return absl::InternalError("supabase conversation_messages row referenced a "
-                                               "non-ongoing conversation item");
+                    // Keep archived transcript rows for episode stubs in storage, but only
+                    // hydrate messages that still belong to a live ongoing episode.
+                    continue;
                 }
                 item.ongoing_episode->messages.push_back(Message{
                     .role = message_json.at("role").get<MessageRole>(),

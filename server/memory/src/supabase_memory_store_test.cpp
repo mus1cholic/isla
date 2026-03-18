@@ -270,6 +270,11 @@ class RoutingHttpServer {
         return false;
     }
 
+    [[nodiscard]] std::vector<std::string> requests() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requests_;
+    }
+
   private:
     void Stop() {
         if (stopped_.exchange(true)) {
@@ -905,7 +910,11 @@ TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes
         "type\":\"ongoing_episode\",\"episode_id\":null,\"episode_stub_content\":null,\"episode_"
         "stub_created_at\":null}]";
     const std::string messages_body =
-        "[{\"item_index\":1,\"message_index\":0,\"role\":\"user\",\"content\":\"follow "
+        "[{\"item_index\":0,\"message_index\":0,\"role\":\"user\",\"content\":\"hello\","
+        "\"created_at\":\"2026-03-08T14:00:00Z\"},"
+        "{\"item_index\":0,\"message_index\":1,\"role\":\"assistant\",\"content\":\"hi there\","
+        "\"created_at\":\"2026-03-08T14:00:01Z\"},"
+        "{\"item_index\":1,\"message_index\":0,\"role\":\"user\",\"content\":\"follow "
         "up\",\"created_at\":\"2026-03-08T14:00:04Z\"}]";
     const std::string episodes_body = "[{\"episode_id\":\"ep_001\",\"tier1_detail\":null,\"tier2_"
                                       "summary\":\"summary\",\"tier3_ref\":\"summary "
@@ -941,10 +950,19 @@ TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes
     ASSERT_TRUE(snapshot.ok()) << snapshot.status();
     ASSERT_TRUE(snapshot->has_value());
     ASSERT_TRUE(server.WaitForRequestCount(4U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 4U);
+    EXPECT_NE(
+        requests[2].find("/rest/v1/conversation_messages?select=item_index%2Cmessage_index%2Crole"
+                         "%2Ccontent%2Ccreated_at%2Cconversation_items%21inner%28item_type%29"),
+        std::string::npos);
+    EXPECT_NE(requests[2].find("conversation_items.item_type=eq.ongoing_episode"),
+              std::string::npos);
     ASSERT_EQ(snapshot->value().conversation_items.size(), 2U);
     EXPECT_EQ(snapshot->value().conversation_items[0].type, ConversationItemType::EpisodeStub);
     EXPECT_EQ(snapshot->value().conversation_items[0].episode_stub->content, "summary ref");
     EXPECT_EQ(snapshot->value().conversation_items[1].type, ConversationItemType::OngoingEpisode);
+    EXPECT_FALSE(snapshot->value().conversation_items[0].ongoing_episode.has_value());
     ASSERT_TRUE(snapshot->value().conversation_items[1].ongoing_episode.has_value());
     ASSERT_EQ(snapshot->value().conversation_items[1].ongoing_episode->messages.size(), 1U);
     EXPECT_EQ(snapshot->value().conversation_items[1].ongoing_episode->messages[0].content,

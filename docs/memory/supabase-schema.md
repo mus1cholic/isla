@@ -116,7 +116,7 @@ For full flushes, the store can directly replace the matching `conversation_item
 `episode_stub_created_at`.
 
 For split flushes, the store calls `split_conversation_item_with_episode_stub(...)` so the suffix
-validation, item-index shifting, message move, completed-prefix delete, and episode-stub rewrite
+validation, item-index shifting, message move, and episode-stub rewrite
 happen transactionally inside Postgres.
 
 This mirrors the current C++ architecture:
@@ -131,7 +131,8 @@ To rebuild working memory for a session:
 
 1. Load `memory_sessions`
 2. Load `conversation_items` ordered by `item_index`
-3. For `ongoing_episode` items, join `conversation_messages` ordered by `message_index`
+3. Load `conversation_messages` ordered by `item_index,message_index`, but filter that query to
+   rows whose parent `conversation_items` row is still `ongoing_episode`
 4. Load `mid_term_episodes` ordered by `created_at`
 
 That data maps directly to the new `MemoryStoreSnapshot` shape in C++.
@@ -144,6 +145,8 @@ That data maps directly to the new `MemoryStoreSnapshot` shape in C++.
 - Use RPC-backed SQL functions for multi-row memory mutations that need fewer round trips or
   transactional guarantees. The split-flush path now uses
   `split_conversation_item_with_episode_stub(...)` for exactly that reason.
+- Preserve archived transcript rows in `conversation_messages`; working-memory hydration filters
+  them out at the PostgREST relationship layer instead of deleting them from storage.
 
 ## Initial implementation recommendation
 
