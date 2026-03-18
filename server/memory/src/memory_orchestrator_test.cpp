@@ -158,11 +158,32 @@ class RecordingMidTermFlushDecider final : public MidTermFlushDecider {
         : decision_(std::move(decision)) {}
 
     absl::StatusOr<MidTermFlushDecision> Decide(const Conversation& conversation) override {
+        absl::StatusOr<MidTermFlushDecision> decision = MidTermFlushDecision{};
         {
             std::lock_guard<std::mutex> lock(mutex_);
             requests_.push_back(conversation);
+            decision = decision_;
         }
-        return decision_;
+        return decision;
+    }
+
+    [[nodiscard]] bool WaitForRequestCount(std::size_t expected_count) const {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (requests_.size() >= expected_count) {
+                    return true;
+                }
+            }
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    }
+
+    void SetDecision(absl::StatusOr<MidTermFlushDecision> decision) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        decision_ = std::move(decision);
     }
 
     [[nodiscard]] std::vector<Conversation> requests() const {
@@ -370,6 +391,7 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderCanSuppressAutomaticFlushQueueing) {
                     ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
                                                                  Ts("2026-03-08T14:00:01Z")))
                     .ok());
+    ASSERT_TRUE(decider->WaitForRequestCount(1U));
     EXPECT_TRUE(compactor->requests().empty());
     ASSERT_EQ(decider->requests().size(), 1U);
 
@@ -411,6 +433,261 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseConversationItemForAsyncFlus
     ASSERT_EQ(requests[0].flush_candidate.ongoing_episode.messages.size(), 2U);
 }
 
+TEST_F(MemoryOrchestratorTest, FullFlushDecisionRebasesToSplitWhenNewMessagesArriveBeforeDrain) {
+    std::promise<void> release_promise;
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(
+        CompactedMidTermEpisode{
+            .tier1_detail = std::string("full detail"),
+            .tier2_summary = "summary",
+            .tier3_ref = "stub ref",
+            .tier3_keywords = { "memory" },
+            .salience = kExpandableEpisodeSalienceThreshold,
+            .embedding = {},
+        },
+        release_promise.get_future().share());
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
+        .should_flush = true,
+        .conversation_item_index = 0U,
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, nullptr, decider);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_001", "u1", Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "a1",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_002", "u2", Ts("2026-03-08T14:00:02Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_002", "a2",
+                                                                 Ts("2026-03-08T14:00:03Z")))
+                    .ok());
+
+    const WorkingMemoryState& pending_state = handler->memory().snapshot();
+    ASSERT_EQ(pending_state.conversation.items.size(), 1U);
+    ASSERT_TRUE(pending_state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(pending_state.conversation.items[0].ongoing_episode->messages.size(), 4U);
+
+    release_promise.set_value();
+    const absl::StatusOr<std::size_t> drained = WaitForDrain(*handler, 1U);
+    ASSERT_TRUE(drained.ok()) << drained.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_EQ(state.mid_term_episodes.size(), 1U);
+    ASSERT_EQ(state.conversation.items.size(), 2U);
+    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
+    ASSERT_TRUE(state.conversation.items[0].episode_stub.has_value());
+    EXPECT_EQ(state.conversation.items[0].episode_stub->content, "stub ref");
+    EXPECT_EQ(state.conversation.items[1].type, ConversationItemType::OngoingEpisode);
+    ASSERT_TRUE(state.conversation.items[1].ongoing_episode.has_value());
+    ASSERT_EQ(state.conversation.items[1].ongoing_episode->messages.size(), 2U);
+    EXPECT_EQ(state.conversation.items[1].ongoing_episode->messages[0].content, "u2");
+    EXPECT_EQ(state.conversation.items[1].ongoing_episode->messages[1].content, "a2");
+}
+
+TEST_F(MemoryOrchestratorTest, NoFlushAnalysisDrainsCleanlyAndLaterAnalysisCanRunAgain) {
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
+        .should_flush = false,
+        .conversation_item_index = std::nullopt,
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, nullptr, decider);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_001", "u1", Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "a1",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(decider->WaitForRequestCount(1U));
+    EXPECT_TRUE(compactor->requests().empty());
+
+    decider->SetDecision(MidTermFlushDecision{
+        .should_flush = true,
+        .conversation_item_index = 0U,
+    });
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_002", "u2", Ts("2026-03-08T14:00:02Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_002", "a2",
+                                                                 Ts("2026-03-08T14:00:03Z")))
+                    .ok());
+
+    ASSERT_TRUE(decider->WaitForRequestCount(2U));
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+    EXPECT_EQ(decider->requests().size(), 2U);
+    EXPECT_EQ(compactor->requests().size(), 1U);
+
+    const absl::StatusOr<std::size_t> drained = WaitForDrain(*handler, 1U);
+    ASSERT_TRUE(drained.ok()) << drained.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_EQ(state.mid_term_episodes.size(), 1U);
+    EXPECT_EQ(state.mid_term_episodes[0].episode_id, "ep_srv_test_1");
+}
+
+TEST_F(MemoryOrchestratorTest, NextTurnPropagatesPendingAnalysisFailureBeforeMutation) {
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto decider =
+        std::make_shared<RecordingMidTermFlushDecider>(absl::InternalError("decider failed"));
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, nullptr, decider);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_001", "u1", Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "a1",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(decider->WaitForRequestCount(1U));
+
+    const WorkingMemoryState& before_state = handler->memory().snapshot();
+    ASSERT_EQ(before_state.conversation.items.size(), 1U);
+    ASSERT_TRUE(before_state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(before_state.conversation.items[0].ongoing_episode->messages.size(), 2U);
+
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_002", "u2", Ts("2026-03-08T14:00:02Z")));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
+
+    const WorkingMemoryState& after_state = handler->memory().snapshot();
+    ASSERT_EQ(after_state.conversation.items.size(), 1U);
+    ASSERT_TRUE(after_state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(after_state.conversation.items[0].ongoing_episode->messages.size(), 2U);
+    EXPECT_EQ(after_state.conversation.items[0].ongoing_episode->messages[0].content, "u1");
+    EXPECT_EQ(after_state.conversation.items[0].ongoing_episode->messages[1].content, "a1");
+}
+
+TEST_F(MemoryOrchestratorTest,
+       AsyncAnalysisUsesConversationSnapshotEvenWhenLiveConversationChanges) {
+    std::promise<void> release_promise;
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(
+        CompactedMidTermEpisode{
+            .tier1_detail = std::string("full detail"),
+            .tier2_summary = "summary",
+            .tier3_ref = "stub ref",
+            .tier3_keywords = { "memory" },
+            .salience = kExpandableEpisodeSalienceThreshold,
+            .embedding = {},
+        },
+        release_promise.get_future().share());
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
+        .should_flush = true,
+        .conversation_item_index = 0U,
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, nullptr, decider);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_001", "u1", Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "a1",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(decider->WaitForRequestCount(1U));
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_002", "u2", Ts("2026-03-08T14:00:02Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_002", "a2",
+                                                                 Ts("2026-03-08T14:00:03Z")))
+                    .ok());
+
+    const std::vector<Conversation> decider_requests = decider->requests();
+    ASSERT_EQ(decider_requests.size(), 1U);
+    ASSERT_EQ(decider_requests[0].items.size(), 1U);
+    ASSERT_TRUE(decider_requests[0].items[0].ongoing_episode.has_value());
+    ASSERT_EQ(decider_requests[0].items[0].ongoing_episode->messages.size(), 2U);
+    EXPECT_EQ(decider_requests[0].items[0].ongoing_episode->messages[0].content, "u1");
+    EXPECT_EQ(decider_requests[0].items[0].ongoing_episode->messages[1].content, "a1");
+
+    const std::vector<MidTermCompactionRequest> compactor_requests = compactor->requests();
+    ASSERT_EQ(compactor_requests.size(), 1U);
+    ASSERT_EQ(compactor_requests[0].flush_candidate.ongoing_episode.messages.size(), 2U);
+    EXPECT_EQ(compactor_requests[0].flush_candidate.ongoing_episode.messages[0].content, "u1");
+    EXPECT_EQ(compactor_requests[0].flush_candidate.ongoing_episode.messages[1].content, "a1");
+
+    const WorkingMemoryState& live_state = handler->memory().snapshot();
+    ASSERT_EQ(live_state.conversation.items.size(), 1U);
+    ASSERT_TRUE(live_state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(live_state.conversation.items[0].ongoing_episode->messages.size(), 4U);
+
+    release_promise.set_value();
+    ASSERT_TRUE(WaitForDrain(*handler, 1U).ok());
+}
+
+TEST_F(MemoryOrchestratorTest, DrainFailsWhenRebasedFullFlushWouldSplitAtAssistantMessage) {
+    std::promise<void> release_promise;
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(
+        CompactedMidTermEpisode{
+            .tier1_detail = std::string("full detail"),
+            .tier2_summary = "summary",
+            .tier3_ref = "stub ref",
+            .tier3_keywords = { "memory" },
+            .salience = kExpandableEpisodeSalienceThreshold,
+            .embedding = {},
+        },
+        release_promise.get_future().share());
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
+        .should_flush = true,
+        .conversation_item_index = 0U,
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, nullptr, decider);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_001", "u1", Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "a1",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    AppendAssistantMessage(handler->mutable_memory().mutable_conversation(), "bad assistant append",
+                           Ts("2026-03-08T14:00:02Z"));
+
+    release_promise.set_value();
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.mid_term_episodes.empty());
+    ASSERT_EQ(state.conversation.items.size(), 1U);
+    ASSERT_TRUE(state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(state.conversation.items[0].ongoing_episode->messages.size(), 3U);
+    EXPECT_EQ(state.conversation.items[0].ongoing_episode->messages[2].content,
+              "bad assistant append");
+}
+
 TEST_F(MemoryOrchestratorTest, HandleAssistantReplyPropagatesFlushDeciderFailure) {
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     auto decider =
@@ -424,11 +701,12 @@ TEST_F(MemoryOrchestratorTest, HandleAssistantReplyPropagatesFlushDeciderFailure
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status = handler->HandleAssistantReply(
-        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
 
-    ASSERT_FALSE(status.ok());
-    EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInternal).ok());
     EXPECT_TRUE(compactor->requests().empty());
 }
 
@@ -447,11 +725,12 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsMissingConversationItemWhenFlu
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status = handler->HandleAssistantReply(
-        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
 
-    ASSERT_FALSE(status.ok());
-    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
     EXPECT_TRUE(compactor->requests().empty());
 }
 
@@ -470,11 +749,12 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsConversationItemWhenFlushNotRe
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status = handler->HandleAssistantReply(
-        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
 
-    ASSERT_FALSE(status.ok());
-    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
     EXPECT_TRUE(compactor->requests().empty());
 }
 
@@ -493,11 +773,12 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsOutOfRangeConversationItem) {
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status = handler->HandleAssistantReply(
-        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
 
-    ASSERT_FALSE(status.ok());
-    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
     EXPECT_TRUE(compactor->requests().empty());
 }
 
@@ -1228,11 +1509,12 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtOutOfRange) {
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status = handler->HandleAssistantReply(
-        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
 
-    ASSERT_FALSE(status.ok());
-    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
     EXPECT_TRUE(compactor->requests().empty());
 }
 
@@ -1253,11 +1535,12 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtTooSmall) {
                                                        Ts("2026-03-08T14:00:00Z")))
                     .ok());
 
-    const absl::Status status = handler->HandleAssistantReply(
-        GatewayAssistantReply("srv_test", "turn_001", "hi there", Ts("2026-03-08T14:00:01Z")));
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
 
-    ASSERT_FALSE(status.ok());
-    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
     EXPECT_TRUE(compactor->requests().empty());
 }
 
@@ -1283,11 +1566,12 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtReferencesAssistantMessage) {
                         GatewayUserQuery("srv_test", "turn_002", "u2", Ts("2026-03-08T14:00:02Z")))
                     .ok());
 
-    const absl::Status status = handler->HandleAssistantReply(
-        GatewayAssistantReply("srv_test", "turn_002", "a2", Ts("2026-03-08T14:00:03Z")));
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_002", "a2",
+                                                                 Ts("2026-03-08T14:00:03Z")))
+                    .ok());
 
-    ASSERT_FALSE(status.ok());
-    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
     EXPECT_TRUE(compactor->requests().empty());
 }
 

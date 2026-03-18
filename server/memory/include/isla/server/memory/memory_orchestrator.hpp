@@ -115,27 +115,30 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
-    struct FlushTarget {
-        std::size_t conversation_item_index;
-        std::optional<std::size_t> split_at_message_index;
-    };
-
-    [[nodiscard]] absl::StatusOr<std::optional<FlushTarget>>
-    MaybeChooseFlushConversationItem() const;
-    [[nodiscard]] absl::StatusOr<
-        std::optional<std::pair<OngoingEpisodeFlushCandidate, std::optional<std::size_t>>>>
-    MaybeCaptureFlushCandidate(const Message& assistant_message);
+    [[nodiscard]] absl::Status QueueMidTermAnalysis(const Conversation& conversation_snapshot);
     [[nodiscard]] absl::Status
     QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate,
                       std::optional<std::size_t> split_at_message_index = std::nullopt);
     [[nodiscard]] std::string NextEpisodeId();
 
+    struct CompletedFlushBuildInput {
+        CompactedMidTermEpisode compacted;
+        Timestamp episode_created_at;
+        Timestamp stub_timestamp;
+        std::optional<std::size_t> split_at_message_index;
+    };
+
+    struct AsyncMidTermFlushResult {
+        std::optional<CompletedFlushBuildInput> completed_flush;
+        std::size_t captured_message_count = 0;
+    };
+
     struct PendingMidTermFlush {
         // Owned and polled only by the orchestrator thread. The future's async task may run on a
         // worker thread, but pending_mid_term_flushes_ itself is not shared concurrently.
-        std::size_t conversation_item_index = 0;
-        std::future<absl::StatusOr<CompletedOngoingEpisodeFlush>> future;
-        bool was_split = false;
+        std::optional<std::size_t> conversation_item_index;
+        std::future<absl::StatusOr<AsyncMidTermFlushResult>> future;
+        bool freeze_tail_before_append = false;
     };
 
     std::string session_id_;
