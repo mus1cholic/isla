@@ -103,6 +103,15 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
                                       .openai_config = config_.openai_config,
                                       .openai_client = config_.openai_client,
                                   }) {
+    absl::StatusOr<MidTermMemoryComponents> created_components =
+        CreateMidTermMemoryComponents(config_);
+    if (!created_components.ok()) {
+        mid_term_memory_initialization_status_ = created_components.status();
+    } else {
+        mid_term_flush_decider_ = std::move(created_components->flush_decider);
+        mid_term_compactor_ = std::move(created_components->compactor);
+    }
+
     worker_ = std::thread([this] {
         try {
             WorkerLoop();
@@ -950,27 +959,19 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         // upsert below runs after insertion so connect-time persistence does not block unrelated
         // lifecycle work behind this mutex.
         std::lock_guard<std::mutex> lock(mutex_);
-        MidTermMemoryComponents mid_term_components;
-        absl::StatusOr<MidTermMemoryComponents> created_components =
-            CreateMidTermMemoryComponents(config_);
-        if (!created_components.ok()) {
-            if (config_.mid_term_memory_enabled) {
-                LOG(WARNING) << "AI gateway stub disabled mid-term memory for session="
-                             << SanitizeForLog(session_id) << " detail='"
-                             << SanitizeForLog(created_components.status().message()) << "'";
-            }
-        } else {
-            mid_term_components = std::move(*created_components);
+        if (config_.mid_term_memory_enabled && !mid_term_memory_initialization_status_.ok()) {
+            LOG(WARNING) << "AI gateway stub disabled mid-term memory for session="
+                         << SanitizeForLog(session_id) << " detail='"
+                         << SanitizeForLog(mid_term_memory_initialization_status_.message()) << "'";
         }
         absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
             isla::server::memory::MemoryOrchestrator::Create(
-                std::string(session_id),
-                isla::server::memory::MemoryOrchestratorInit{
-                    .user_id = config_.memory_user_id,
-                    .store = config_.memory_store,
-                    .mid_term_flush_decider = std::move(mid_term_components.flush_decider),
-                    .mid_term_compactor = std::move(mid_term_components.compactor),
-                });
+                std::string(session_id), isla::server::memory::MemoryOrchestratorInit{
+                                             .user_id = config_.memory_user_id,
+                                             .store = config_.memory_store,
+                                             .mid_term_flush_decider = mid_term_flush_decider_,
+                                             .mid_term_compactor = mid_term_compactor_,
+                                         });
         if (!orchestrator.ok()) {
             failed_session_starts_.insert_or_assign(std::string(session_id), orchestrator.status());
             return orchestrator.status();

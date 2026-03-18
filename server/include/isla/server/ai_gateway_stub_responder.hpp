@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_executor.hpp"
 #include "isla/server/ai_gateway_planner.hpp"
@@ -115,6 +116,9 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
     GatewayStubResponderConfig config_;
     GatewayPlanExecutor executor_;
+    isla::server::memory::MidTermFlushDeciderPtr mid_term_flush_decider_;
+    isla::server::memory::MidTermCompactorPtr mid_term_compactor_;
+    absl::Status mid_term_memory_initialization_status_ = absl::OkStatus();
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::thread worker_;
