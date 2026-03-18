@@ -693,8 +693,9 @@ class SupabaseMemoryStore final : public MemoryStore {
                 PersistedConversationItem& item =
                     snapshot.conversation_items[static_cast<std::size_t>(item_index)];
                 if (!item.ongoing_episode.has_value()) {
-                    return absl::InternalError("supabase conversation_messages row referenced a "
-                                               "non-ongoing conversation item");
+                    // Keep archived transcript rows for episode stubs in storage, but only
+                    // hydrate messages that still belong to a live ongoing episode.
+                    continue;
                 }
                 item.ongoing_episode->messages.push_back(Message{
                     .role = message_json.at("role").get<MessageRole>(),
