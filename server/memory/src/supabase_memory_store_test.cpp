@@ -726,7 +726,7 @@ TEST(SupabaseMemoryStoreTest,
 
 TEST(SupabaseMemoryStoreTest,
      SplitConversationItemWithEpisodeStubShiftsMultipleLaterItemsAndMessagesFromHighestIndex) {
-    const std::string later_items_body = "[{\"item_index\":2},{\"item_index\":1}]";
+    const std::string later_items_body = R"([{"item_index":2},{"item_index":1}])";
     const std::string message_rows_body =
         "[{\"item_index\":0,\"message_index\":0,\"role\":\"user\",\"content\":\"hello\","
         "\"created_at\":\"2026-03-08T14:00:00Z\"},"
@@ -865,7 +865,7 @@ TEST(SupabaseMemoryStoreTest,
         "\"created_at\":\"2026-03-08T14:00:01Z\"},"
         "{\"item_index\":0,\"message_index\":2,\"role\":\"user\",\"content\":\"follow up\","
         "\"created_at\":\"2026-03-08T14:00:02Z\"}]";
-    const std::string failure_body = "{\"message\":\"supabase unavailable\"}";
+    const std::string failure_body = R"({"message":"supabase unavailable"})";
     SequentialHttpServer server({
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
             std::to_string(later_items_body.size()) + "\r\n\r\n" + later_items_body,
