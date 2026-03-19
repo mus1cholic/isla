@@ -14,6 +14,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/embedding_client.hpp"
 #include "isla/server/llm_client.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 #include "nlohmann/json.hpp"
@@ -21,6 +22,8 @@
 namespace isla::server::memory {
 namespace {
 
+using isla::server::EmbeddingClient;
+using isla::server::EmbeddingRequest;
 using isla::server::LlmClient;
 using isla::server::LlmEvent;
 using isla::server::LlmRequest;
@@ -168,8 +171,6 @@ absl::StatusOr<CompactedMidTermEpisode> ParseCompactorResponse(const std::string
         .tier3_ref = std::move(*tier3_ref),
         .tier3_keywords = std::move(tier3_keywords),
         .salience = salience,
-        // TODO: Populate embeddings via an embedding service once the compaction pipeline
-        // defines where that enrichment step should happen.
         .embedding = {},
     };
 }
@@ -177,9 +178,12 @@ absl::StatusOr<CompactedMidTermEpisode> ParseCompactorResponse(const std::string
 class LlmMidTermCompactor final : public MidTermCompactor {
   public:
     LlmMidTermCompactor(std::shared_ptr<const LlmClient> llm_client, std::string model,
-                        std::string system_prompt)
+                        std::string system_prompt,
+                        std::shared_ptr<const EmbeddingClient> embedding_client,
+                        std::string embedding_model)
         : llm_client_(std::move(llm_client)), model_(std::move(model)),
-          system_prompt_(std::move(system_prompt)) {}
+          system_prompt_(std::move(system_prompt)), embedding_client_(std::move(embedding_client)),
+          embedding_model_(std::move(embedding_model)) {}
 
     [[nodiscard]] absl::StatusOr<CompactedMidTermEpisode>
     Compact(const MidTermCompactionRequest& request) override {
@@ -239,6 +243,22 @@ class LlmMidTermCompactor final : public MidTermCompactor {
             return compacted.status();
         }
 
+        if (embedding_client_ != nullptr) {
+            absl::StatusOr<Embedding> embedding = embedding_client_->Embed(EmbeddingRequest{
+                .model = embedding_model_,
+                .text = compacted->tier2_summary,
+            });
+            if (!embedding.ok()) {
+                LOG(WARNING) << "LlmMidTermCompactor embedding call failed session_id="
+                             << SanitizeForLog(request.session_id) << " conversation_item_index="
+                             << request.flush_candidate.conversation_item_index
+                             << " model=" << SanitizeForLog(embedding_model_) << " detail='"
+                             << SanitizeForLog(embedding.status().message()) << "'";
+                return embedding.status();
+            }
+            compacted->embedding = std::move(*embedding);
+        }
+
         VLOG(1) << "LlmMidTermCompactor compacted session_id=" << SanitizeForLog(request.session_id)
                 << " conversation_item_index=" << request.flush_candidate.conversation_item_index
                 << " salience=" << compacted->salience
@@ -251,26 +271,41 @@ class LlmMidTermCompactor final : public MidTermCompactor {
     std::shared_ptr<const LlmClient> llm_client_;
     std::string model_;
     std::string system_prompt_;
+    std::shared_ptr<const EmbeddingClient> embedding_client_;
+    std::string embedding_model_;
 };
 
 } // namespace
 
 absl::StatusOr<MidTermCompactorPtr>
 CreateLlmMidTermCompactor(std::shared_ptr<const isla::server::LlmClient> llm_client,
-                          std::string model) {
+                          std::string model,
+                          std::shared_ptr<const isla::server::EmbeddingClient> embedding_client,
+                          std::string embedding_model) {
     if (!llm_client) {
         return invalid_argument("LlmMidTermCompactor requires a non-null llm client");
     }
     if (model.empty()) {
         return invalid_argument("LlmMidTermCompactor requires a non-empty model name");
     }
+    if (embedding_client != nullptr && embedding_model.empty()) {
+        return invalid_argument(
+            "LlmMidTermCompactor requires a non-empty embedding model when an embedding client is "
+            "provided");
+    }
+    if (embedding_client == nullptr && !embedding_model.empty()) {
+        return invalid_argument(
+            "LlmMidTermCompactor requires an embedding client when an embedding model is "
+            "provided");
+    }
     absl::StatusOr<std::string> system_prompt =
         LoadPrompt(PromptAsset::kMidTermCompactorSystemPrompt);
     if (!system_prompt.ok()) {
         return system_prompt.status();
     }
-    return std::make_shared<LlmMidTermCompactor>(std::move(llm_client), std::move(model),
-                                                 std::move(*system_prompt));
+    return std::make_shared<LlmMidTermCompactor>(
+        std::move(llm_client), std::move(model), std::move(*system_prompt),
+        std::move(embedding_client), std::move(embedding_model));
 }
 
 } // namespace isla::server::memory
