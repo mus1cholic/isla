@@ -10,6 +10,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "isla/server/ai_gateway_llm_runtime_config.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/memory/supabase_memory_store.hpp"
 #include "isla/server/openai_responses_client.hpp"
@@ -18,6 +19,7 @@ namespace isla::server::ai_gateway {
 
 struct ParsedStartupConfig {
     GatewayServerConfig server_config;
+    GatewayLlmRuntimeConfig llm_runtime_config;
     OpenAiResponsesClientConfig openai_config;
     isla::server::memory::SupabaseMemoryStoreConfig supabase_config;
     bool telemetry_logging_enabled = false;

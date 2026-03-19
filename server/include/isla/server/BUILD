@@ -15,6 +15,7 @@ cc_library(
     hdrs = [
         "ai_gateway_telemetry.hpp",
         "ai_gateway_executor.hpp",
+        "ai_gateway_llm_runtime_config.hpp",
         "ai_gateway_logging_utils.hpp",
         "ai_gateway_logging_telemetry_sink.hpp",
         "ai_gateway_planner.hpp",

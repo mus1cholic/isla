@@ -224,6 +224,46 @@ void ApplyTelemetryEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLook
     }
 }
 
+void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> main_model = env_lookup("AI_GATEWAY_MAIN_LLM_MODEL");
+        main_model.has_value()) {
+        parsed->llm_runtime_config.main_model = *main_model;
+    }
+    if (const std::optional<std::string> decider_model =
+            env_lookup("AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL");
+        decider_model.has_value()) {
+        parsed->llm_runtime_config.mid_term_flush_decider_model = *decider_model;
+    }
+    if (const std::optional<std::string> compactor_model =
+            env_lookup("AI_GATEWAY_MID_TERM_COMPACTOR_MODEL");
+        compactor_model.has_value()) {
+        parsed->llm_runtime_config.mid_term_compactor_model = *compactor_model;
+    }
+}
+
+absl::Status ValidateOptionalModelOverride(std::string_view field_name, std::string_view value) {
+    if (!value.empty() && TrimAscii(value).empty()) {
+        return absl::InvalidArgumentError(std::string(field_name) +
+                                          " must not be blank or whitespace-only");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateLlmRuntimeConfig(const GatewayLlmRuntimeConfig& config) {
+    if (const absl::Status status =
+            ValidateOptionalModelOverride("main-llm-model", config.main_model);
+        !status.ok()) {
+        return status;
+    }
+    if (const absl::Status status = ValidateOptionalModelOverride(
+            "mid-term-flush-decider-model", config.mid_term_flush_decider_model);
+        !status.ok()) {
+        return status;
+    }
+    return ValidateOptionalModelOverride("mid-term-compactor-model",
+                                         config.mid_term_compactor_model);
+}
+
 } // namespace
 
 absl::StatusOr<StartupEnvMap> LoadDotEnvFile(std::string_view path) {
@@ -411,6 +451,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     ApplyOpenAiEnvDefaults(&parsed.openai_config, env_lookup);
     ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
     ApplyTelemetryEnvDefaults(&parsed, env_lookup);
+    ApplyLlmRuntimeEnvDefaults(&parsed, env_lookup);
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -514,6 +555,34 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         } else if (*handled) {
             continue;
         }
+        constexpr std::string_view kMainLlmModelPrefix = "--main-llm-model=";
+        if (argument.starts_with(kMainLlmModelPrefix)) {
+            const std::string model = argument.substr(kMainLlmModelPrefix.size());
+            if (model.empty()) {
+                return absl::InvalidArgumentError("main-llm-model must not be empty");
+            }
+            parsed.llm_runtime_config.main_model = model;
+            continue;
+        }
+        constexpr std::string_view kMidTermFlushDeciderModelPrefix =
+            "--mid-term-flush-decider-model=";
+        if (argument.starts_with(kMidTermFlushDeciderModelPrefix)) {
+            const std::string model = argument.substr(kMidTermFlushDeciderModelPrefix.size());
+            if (model.empty()) {
+                return absl::InvalidArgumentError("mid-term-flush-decider-model must not be empty");
+            }
+            parsed.llm_runtime_config.mid_term_flush_decider_model = model;
+            continue;
+        }
+        constexpr std::string_view kMidTermCompactorModelPrefix = "--mid-term-compactor-model=";
+        if (argument.starts_with(kMidTermCompactorModelPrefix)) {
+            const std::string model = argument.substr(kMidTermCompactorModelPrefix.size());
+            if (model.empty()) {
+                return absl::InvalidArgumentError("mid-term-compactor-model must not be empty");
+            }
+            parsed.llm_runtime_config.mid_term_compactor_model = model;
+            continue;
+        }
         if (argument.starts_with("--supabase-url=")) {
             parsed.supabase_config.url = argument.substr(15);
             parsed.supabase_config.enabled = true;
@@ -569,6 +638,10 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     absl::Status openai_status = ValidateOpenAiStartupConfig(parsed.openai_config);
     if (!openai_status.ok()) {
         return openai_status;
+    }
+    if (const absl::Status llm_runtime_status = ValidateLlmRuntimeConfig(parsed.llm_runtime_config);
+        !llm_runtime_status.ok()) {
+        return llm_runtime_status;
     }
     if (parsed.supabase_config.enabled) {
         const absl::Status supabase_status =

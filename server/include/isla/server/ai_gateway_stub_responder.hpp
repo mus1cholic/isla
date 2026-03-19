@@ -13,6 +13,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_executor.hpp"
+#include "isla/server/ai_gateway_llm_runtime_config.hpp"
 #include "isla/server/ai_gateway_planner.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
@@ -21,7 +22,7 @@
 
 namespace isla::server::ai_gateway {
 
-inline constexpr std::string_view kDefaultMidTermMemoryModel = "gpt-5.4-mini";
+inline constexpr std::string_view kDefaultMidTermMemoryModel = kDefaultMidTermFlushDeciderModel;
 
 struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
@@ -32,6 +33,7 @@ struct GatewayStubResponderConfig {
     std::chrono::milliseconds session_start_persistence_retry_delay{ 100 };
     std::string memory_user_id = "gateway_user";
     isla::server::memory::MemoryStorePtr memory_store;
+    GatewayLlmRuntimeConfig llm_runtime_config;
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
     std::function<void(const ExecutionPlan&)> on_execution_plan;

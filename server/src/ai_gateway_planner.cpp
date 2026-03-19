@@ -1,13 +1,13 @@
 #include "isla/server/ai_gateway_planner.hpp"
 
 #include "absl/status/statusor.h"
+#include "isla/server/ai_gateway_llm_runtime_config.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
 
 constexpr std::string_view kMainStepName = "main";
-constexpr std::string_view kMainModel = "gpt-5.3-chat-latest";
 
 } // namespace
 
@@ -21,7 +21,7 @@ absl::StatusOr<ExecutionPlan> CreateOpenAiPlan() {
     plan.steps.emplace_back(OpenAiLlmStep{
         .step_name = std::string(kMainStepName),
         .system_prompt = *system_prompt,
-        .model = std::string(kMainModel),
+        .model = std::string(kDefaultMainLlmModel),
         .reasoning_effort = OpenAiReasoningEffort::kMedium,
     });
     return plan;

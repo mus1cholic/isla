@@ -141,6 +141,62 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
 }
 
+TEST(GatewayStepRegistryTest, OverridesPlannerSelectedModelWhenRuntimeConfigIsSet) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "provider response");
+    GatewayStepRegistry registry(GatewayStepRegistryConfig{
+        .llm_runtime_config =
+            GatewayLlmRuntimeConfig{
+                .main_model = "gpt-4.1-mini",
+            },
+        .openai_client = client,
+    });
+
+    const absl::StatusOr<ExecutionStepResult> result =
+        registry.ExecuteStep(0,
+                             ExecutionStep(OpenAiLlmStep{
+                                 .step_name = "main",
+                                 .system_prompt = "system",
+                                 .model = "gpt-5.3-chat-latest",
+                             }),
+                             ExecutionRuntimeInput{
+                                 .system_prompt = "runtime system",
+                                 .user_text = "hello",
+                             });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    const OpenAiResponsesRequest last_request = client->last_request_snapshot();
+    EXPECT_EQ(last_request.model, "gpt-4.1-mini");
+    EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
+}
+
+TEST(GatewayStepRegistryTest, LeavesNonMainStepModelUnchangedWhenMainOverrideIsSet) {
+    auto client = test::MakeFakeOpenAiResponsesClient(absl::OkStatus(), "provider response");
+    GatewayStepRegistry registry(GatewayStepRegistryConfig{
+        .llm_runtime_config =
+            GatewayLlmRuntimeConfig{
+                .main_model = "gpt-4.1-mini",
+            },
+        .openai_client = client,
+    });
+
+    const absl::StatusOr<ExecutionStepResult> result =
+        registry.ExecuteStep(0,
+                             ExecutionStep(OpenAiLlmStep{
+                                 .step_name = "summary",
+                                 .system_prompt = "system",
+                                 .model = "gpt-4.1-nano",
+                             }),
+                             ExecutionRuntimeInput{
+                                 .system_prompt = "runtime system",
+                                 .user_text = "hello",
+                             });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    const OpenAiResponsesRequest last_request = client->last_request_snapshot();
+    EXPECT_EQ(last_request.model, "gpt-4.1-nano");
+    EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
+}
+
 TEST(GatewayStepRegistryTest, UsesConfiguredLlmClientWhenPresent) {
     auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(), "provider response");
     GatewayStepRegistry registry(GatewayStepRegistryConfig{
