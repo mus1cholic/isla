@@ -10,6 +10,7 @@
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server {
+class EmbeddingClient;
 class LlmClient;
 } // namespace isla::server
 
@@ -43,8 +44,9 @@ using MidTermCompactorPtr = std::shared_ptr<MidTermCompactor>;
 
 // Creates the LLM-backed compactor. The returned implementation validates the model's JSON schema
 // strictly so malformed compaction output is rejected before it reaches working memory.
-[[nodiscard]] absl::StatusOr<MidTermCompactorPtr>
-CreateLlmMidTermCompactor(std::shared_ptr<const isla::server::LlmClient> llm_client,
-                          std::string model);
+[[nodiscard]] absl::StatusOr<MidTermCompactorPtr> CreateLlmMidTermCompactor(
+    std::shared_ptr<const isla::server::LlmClient> llm_client, std::string model,
+    std::shared_ptr<const isla::server::EmbeddingClient> embedding_client = nullptr,
+    std::string embedding_model = "");
 
 } // namespace isla::server::memory

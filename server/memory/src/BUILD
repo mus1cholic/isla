@@ -300,6 +300,7 @@ cc_test(
     name = "mid_term_compactor_test",
     srcs = ["mid_term_compactor_test.cpp"],
     deps = [
+        "//server/src:embedding_client_mock",
         "//server/src:llm_client_mock",
         ":mid_term_compactor",
         ":prompt_loader",

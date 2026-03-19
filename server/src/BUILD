@@ -381,6 +381,20 @@ cc_library(
 )
 
 cc_library(
+    name = "embedding_client_mock",
+    testonly = True,
+    hdrs = ["embedding_client_mock.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+        "//server/memory/src:__pkg__",
+    ],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
     name = "llm_client_mock",
     testonly = True,
     hdrs = ["llm_client_mock.hpp"],
