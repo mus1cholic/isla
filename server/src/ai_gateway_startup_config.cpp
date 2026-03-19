@@ -241,9 +241,27 @@ void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLoo
     }
 }
 
-absl::Status ValidateLlmRuntimeConfig(const GatewayLlmRuntimeConfig& config) {
-    static_cast<void>(config);
+absl::Status ValidateOptionalModelOverride(std::string_view field_name, std::string_view value) {
+    if (!value.empty() && TrimAscii(value).empty()) {
+        return absl::InvalidArgumentError(std::string(field_name) +
+                                          " must not be blank or whitespace-only");
+    }
     return absl::OkStatus();
+}
+
+absl::Status ValidateLlmRuntimeConfig(const GatewayLlmRuntimeConfig& config) {
+    if (const absl::Status status =
+            ValidateOptionalModelOverride("main-llm-model", config.main_model);
+        !status.ok()) {
+        return status;
+    }
+    if (const absl::Status status = ValidateOptionalModelOverride(
+            "mid-term-flush-decider-model", config.mid_term_flush_decider_model);
+        !status.ok()) {
+        return status;
+    }
+    return ValidateOptionalModelOverride("mid-term-compactor-model",
+                                         config.mid_term_compactor_model);
 }
 
 } // namespace
@@ -392,32 +410,24 @@ absl::Status ValidateOpenAiStartupConfig(const OpenAiResponsesClientConfig& conf
 
 StartupLogContext BuildStartupLogContext(int argc, char** argv, const StartupEnvLookup& env_lookup,
                                          const ParsedStartupConfig& parsed) {
-    const bool openai_cli_configured =
-        HasArgumentPrefix(argc, argv, "--openai-api-key=") ||
-        HasArgumentPrefix(argc, argv, "--openai-scheme=") ||
-        HasArgumentPrefix(argc, argv, "--openai-host=") ||
-        HasArgumentPrefix(argc, argv, "--openai-port=") ||
-        HasArgumentPrefix(argc, argv, "--openai-target=") ||
-        HasArgumentPrefix(argc, argv, "--openai-organization=") ||
-        HasArgumentPrefix(argc, argv, "--openai-project-id=") ||
-        HasArgumentPrefix(argc, argv, "--openai-project=") ||
-        HasArgumentPrefix(argc, argv, "--openai-timeout-ms=") ||
-        HasArgumentPrefix(argc, argv, "--main-llm-model=") ||
-        HasArgumentPrefix(argc, argv, "--mid-term-flush-decider-model=") ||
-        HasArgumentPrefix(argc, argv, "--mid-term-compactor-model=");
-    const bool openai_env_configured =
-        HasNonEmptyEnvVar("OPENAI_API_KEY", env_lookup) ||
-        HasNonEmptyEnvVar("OPENAI_SCHEME", env_lookup) ||
-        HasNonEmptyEnvVar("OPENAI_HOST", env_lookup) ||
-        HasNonEmptyEnvVar("OPENAI_PORT", env_lookup) ||
-        HasNonEmptyEnvVar("OPENAI_TARGET", env_lookup) ||
-        HasNonEmptyEnvVar("OPENAI_ORGANIZATION", env_lookup) ||
-        HasNonEmptyEnvVar("OPENAI_PROJECT_ID", env_lookup) ||
-        HasNonEmptyEnvVar("OPENAI_PROJECT", env_lookup) ||
-        HasNonEmptyEnvVar("OPENAI_TIMEOUT_MS", env_lookup) ||
-        HasNonEmptyEnvVar("AI_GATEWAY_MAIN_LLM_MODEL", env_lookup) ||
-        HasNonEmptyEnvVar("AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL", env_lookup) ||
-        HasNonEmptyEnvVar("AI_GATEWAY_MID_TERM_COMPACTOR_MODEL", env_lookup);
+    const bool openai_cli_configured = HasArgumentPrefix(argc, argv, "--openai-api-key=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-scheme=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-host=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-port=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-target=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-organization=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-project-id=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-project=") ||
+                                       HasArgumentPrefix(argc, argv, "--openai-timeout-ms=");
+    const bool openai_env_configured = HasNonEmptyEnvVar("OPENAI_API_KEY", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_SCHEME", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_HOST", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_PORT", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_TARGET", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_ORGANIZATION", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_PROJECT_ID", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_PROJECT", env_lookup) ||
+                                       HasNonEmptyEnvVar("OPENAI_TIMEOUT_MS", env_lookup);
 
     StartupLogContext context;
     context.config_source = openai_cli_configured && openai_env_configured ? "cli+env"

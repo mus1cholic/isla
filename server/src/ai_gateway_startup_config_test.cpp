@@ -316,6 +316,41 @@ TEST(AiGatewayStartupConfigTest, AcceptsIndependentMidTermModelOverrides) {
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
 }
 
+TEST(AiGatewayStartupConfigTest, RejectsWhitespaceOnlyMainLlmModelFromEnvironment) {
+    std::array<char*, 1> argv = { kArg0.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "OPENAI_API_KEY") {
+                                          return "env_key";
+                                      }
+                                      if (name == "AI_GATEWAY_MAIN_LLM_MODEL") {
+                                          return "   ";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_FALSE(parsed.ok());
+    EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(parsed.status().message(), "main-llm-model must not be blank or whitespace-only");
+}
+
+TEST(AiGatewayStartupConfigTest, RejectsWhitespaceOnlyMidTermCompactorModelFromCli) {
+    auto kWhitespaceMidTermCompactorModel = std::to_array("--mid-term-compactor-model=   ");
+    std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(),
+                                  kWhitespaceMidTermCompactorModel.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_FALSE(parsed.ok());
+    EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(parsed.status().message(),
+              "mid-term-compactor-model must not be blank or whitespace-only");
+}
+
 TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFromEnvironmentDefaults) {
     std::array<char*, 2> argv = { kArg0.data(), kApiKey.data() };
 
@@ -522,6 +557,21 @@ TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsMixedSourceWhenCli
     EXPECT_FALSE(context.organization_configured);
     EXPECT_TRUE(context.project_configured);
     EXPECT_FALSE(context.supabase_configured);
+}
+
+TEST(AiGatewayStartupConfigTest, BuildStartupLogContextIgnoresModelOnlyOverridesForConfigSource) {
+    std::array<char*, 2> argv = { kArg0.data(), kMainLlmModel.data() };
+    const auto env_lookup = [](std::string_view name) -> std::optional<std::string> {
+        if (name == "AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL") {
+            return "gpt-4.1-mini";
+        }
+        return std::nullopt;
+    };
+    const StartupLogContext context = BuildStartupLogContext(
+        static_cast<int>(argv.size()), argv.data(), env_lookup, ParsedStartupConfig{});
+
+    EXPECT_EQ(context.config_source, "unknown");
+    EXPECT_EQ(context.api_key_source, "unknown");
 }
 
 TEST(AiGatewayStartupConfigTest, UsesSupabaseEnvironmentDefaultsWhenConfigured) {

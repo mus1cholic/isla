@@ -7,6 +7,19 @@
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
+namespace {
+
+constexpr std::string_view kMainStepName = "main";
+
+std::string ResolveModelForStep(const GatewayLlmRuntimeConfig& runtime_config,
+                                const OpenAiLlmStep& step) {
+    if (step.step_name == kMainStepName && !runtime_config.main_model.empty()) {
+        return runtime_config.main_model;
+    }
+    return step.model;
+}
+
+} // namespace
 
 GatewayStepRegistry::GatewayStepRegistry(GatewayStepRegistryConfig config)
     : config_(std::move(config)) {
@@ -37,9 +50,7 @@ std::string GatewayStepRegistry::StepName(const ExecutionStep& step) const {
 absl::StatusOr<ExecutionStepResult>
 GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& step,
                                  const ExecutionRuntimeInput& runtime_input) const {
-    const std::string effective_model = config_.llm_runtime_config.main_model.empty()
-                                            ? step.model
-                                            : config_.llm_runtime_config.main_model;
+    const std::string effective_model = ResolveModelForStep(config_.llm_runtime_config, step);
     VLOG(1) << "AI gateway step registry dispatching openai llm step_index=" << step_index
             << " step_name='" << SanitizeForLog(step.step_name) << "' model='"
             << SanitizeForLog(effective_model) << "'";
