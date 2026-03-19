@@ -9,37 +9,42 @@
 #include <variant>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 
+#include "ai_gateway_test_mocks.hpp"
 #include "isla/shared/ai_gateway_protocol.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
 
 namespace protocol = isla::shared::ai_gateway;
+using ::testing::_;
+using ::testing::NiceMock;
 
 absl::StatusOr<protocol::GatewayMessage> parse_frame(const std::string& frame) {
     return protocol::parse_json_message(frame);
 }
 
-class FakeWebSocketConnection final : public GatewayWebSocketConnection {
+class RecordingWebSocketConnection final : public NiceMock<test::MockGatewayWebSocketConnection> {
   public:
-    [[nodiscard]] absl::Status SendTextFrame(std::string_view frame) override {
-        if (fail_next_send_) {
-            fail_next_send_ = false;
-            return absl::UnavailableError("send failed");
-        }
-        sent_frames.emplace_back(frame);
-        return absl::OkStatus();
-    }
-
-    void Close(GatewayTransportCloseMode mode) override {
-        ++close_calls;
-        close_modes.push_back(mode);
+    RecordingWebSocketConnection() {
+        ON_CALL(*this, SendTextFrame(_)).WillByDefault([this](std::string_view frame) {
+            if (fail_next_send_) {
+                fail_next_send_ = false;
+                return absl::UnavailableError("send failed");
+            }
+            sent_frames.emplace_back(frame);
+            return absl::OkStatus();
+        });
+        ON_CALL(*this, Close(_)).WillByDefault([this](GatewayTransportCloseMode mode) {
+            ++close_calls;
+            close_modes.push_back(mode);
+        });
     }
 
     bool fail_next_send_ = false;
@@ -48,22 +53,22 @@ class FakeWebSocketConnection final : public GatewayWebSocketConnection {
     std::vector<std::string> sent_frames;
 };
 
-class RecordingEventSink final : public GatewaySessionEventSink {
+class RecordingEventSink final : public NiceMock<test::MockGatewaySessionEventSink> {
   public:
-    void OnSessionStarted(const SessionStartedEvent& event) override {
-        started_sessions.push_back(event);
-    }
-
-    void OnTurnAccepted(const TurnAcceptedEvent& event) override {
-        accepted_turns.push_back(event);
-    }
-
-    void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) override {
-        cancel_requests.push_back(event);
-    }
-
-    void OnSessionClosed(const SessionClosedEvent& event) override {
-        closed_sessions.push_back(event);
+    RecordingEventSink() {
+        ON_CALL(*this, OnSessionStarted(_)).WillByDefault([this](const SessionStartedEvent& event) {
+            started_sessions.push_back(event);
+        });
+        ON_CALL(*this, OnTurnAccepted(_)).WillByDefault([this](const TurnAcceptedEvent& event) {
+            accepted_turns.push_back(event);
+        });
+        ON_CALL(*this, OnTurnCancelRequested(_))
+            .WillByDefault([this](const TurnCancelRequestedEvent& event) {
+                cancel_requests.push_back(event);
+            });
+        ON_CALL(*this, OnSessionClosed(_)).WillByDefault([this](const SessionClosedEvent& event) {
+            closed_sessions.push_back(event);
+        });
     }
 
     std::vector<SessionStartedEvent> started_sessions;
@@ -72,10 +77,14 @@ class RecordingEventSink final : public GatewaySessionEventSink {
     std::vector<SessionClosedEvent> closed_sessions;
 };
 
-class RecordingTelemetrySink final : public TelemetrySink {
+class RecordingTelemetrySink final : public NiceMock<test::MockTelemetrySink> {
   public:
-    void OnTurnAccepted(const TurnTelemetryContext& context) const override {
-        accepted_turns.push_back({ .session_id = context.session_id, .turn_id = context.turn_id });
+    RecordingTelemetrySink() {
+        ON_CALL(*this, OnTurnAccepted(_))
+            .WillByDefault([this](const TurnTelemetryContext& context) {
+                accepted_turns.push_back(
+                    { .session_id = context.session_id, .turn_id = context.turn_id });
+            });
     }
 
     mutable std::vector<TurnAcceptedEvent> accepted_turns;
@@ -142,8 +151,8 @@ TEST(AiGatewayWebSocketSessionTest, SequentialSessionIdGeneratorCreatesOrderedId
 TEST(AiGatewayWebSocketSessionTest, FactoryGeneratesPerConnectionSessionIds) {
     GatewayWebSocketSessionFactory factory(
         std::make_unique<SequentialSessionIdGenerator>("srv_test_"));
-    FakeWebSocketConnection first_connection;
-    FakeWebSocketConnection second_connection;
+    RecordingWebSocketConnection first_connection;
+    RecordingWebSocketConnection second_connection;
 
     const std::unique_ptr<GatewayWebSocketSessionAdapter> first =
         factory.CreateSession(first_connection);
@@ -155,7 +164,7 @@ TEST(AiGatewayWebSocketSessionTest, FactoryGeneratesPerConnectionSessionIds) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, SessionStartWritesSessionStartedFrame) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -172,7 +181,7 @@ TEST(AiGatewayWebSocketSessionTest, SessionStartWritesSessionStartedFrame) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, AcceptedTurnIsForwardedToEventSink) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -189,7 +198,7 @@ TEST(AiGatewayWebSocketSessionTest, AcceptedTurnIsForwardedToEventSink) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, AcceptedTurnCreatesTelemetryContextAtGatewayBoundary) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink, telemetry_sink);
@@ -212,7 +221,7 @@ TEST(AiGatewayWebSocketSessionTest, AcceptedTurnCreatesTelemetryContextAtGateway
 }
 
 TEST(AiGatewayWebSocketSessionTest, RejectedClientFrameSendsErrorAndKeepsSessionOpen) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -238,7 +247,7 @@ TEST(AiGatewayWebSocketSessionTest, RejectedClientFrameSendsErrorAndKeepsSession
 }
 
 TEST(AiGatewayWebSocketSessionTest, TurnCancelIsForwardedToEventSink) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -258,7 +267,7 @@ TEST(AiGatewayWebSocketSessionTest, TurnCancelIsForwardedToEventSink) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, ServerOwnedEmitTextOutputAndCompletionPreserveFrameOrder) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -288,7 +297,7 @@ TEST(AiGatewayWebSocketSessionTest, ServerOwnedEmitTextOutputAndCompletionPreser
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitTextOutputRejectsWithoutActiveTurn) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -305,7 +314,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTextOutputRejectsWithoutActiveTurn) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitTextOutputSendFailureClosesSession) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -332,7 +341,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTextOutputSendFailureClosesSession) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendsFrameAfterTextOutput) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -356,7 +365,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendsFrameAfterTextOutput) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputRejectsWithoutMatchingTurnState) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -377,7 +386,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputRejectsWithoutMatchingTurnSta
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendFailureClosesSession) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -404,7 +413,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendFailureClosesSession) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendsFrameAfterCancelRequest) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -428,7 +437,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendsFrameAfterCancelReques
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledRejectsWithoutCancelRequest) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -449,7 +458,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledRejectsWithoutCancelRequest
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendFailureClosesSession) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -477,7 +486,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendFailureClosesSession) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitErrorSendsFrameWithTurnId) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -500,7 +509,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitErrorSendsFrameWithTurnId) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitErrorRejectsEmptyCode) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -517,7 +526,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitErrorRejectsEmptyCode) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, EmitErrorSendFailureClosesSession) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -538,7 +547,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitErrorSendFailureClosesSession) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, SessionEndClosesTransportAfterReply) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -566,7 +575,7 @@ TEST(AiGatewayWebSocketSessionTest, SessionEndClosesTransportAfterReply) {
 }
 
 TEST(AiGatewayWebSocketSessionTest, TransportErrorTerminatesActiveTurnBeforeClose) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -602,7 +611,7 @@ TEST(AiGatewayWebSocketSessionTest, TransportErrorTerminatesActiveTurnBeforeClos
 }
 
 TEST(AiGatewayWebSocketSessionTest, TransportCloseNotifiesInflightTurnWithoutSendingFrames) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -625,7 +634,7 @@ TEST(AiGatewayWebSocketSessionTest, TransportCloseNotifiesInflightTurnWithoutSen
 }
 
 TEST(AiGatewayWebSocketSessionTest, SendFailureClosesConnectionAndReturnsError) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
     connection.fail_next_send_ = true;
@@ -645,7 +654,7 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureClosesConnectionAndReturnsError) 
 }
 
 TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAfterProtocolEnd) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -668,7 +677,7 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAft
 }
 
 TEST(AiGatewayWebSocketSessionTest, ClosedSessionIgnoresDuplicateTransportClose) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -681,7 +690,7 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionIgnoresDuplicateTransportClose)
 }
 
 TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAfterTransportError) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -707,7 +716,7 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAft
 }
 
 TEST(AiGatewayWebSocketSessionTest, TransportErrorBeforeSessionStartClosesWithoutFrames) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -725,7 +734,7 @@ TEST(AiGatewayWebSocketSessionTest, TransportErrorBeforeSessionStartClosesWithou
 
 TEST(AiGatewayWebSocketSessionTest,
      TransportErrorAfterSessionStartWithoutTurnClosesWithoutTurnFrames) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -743,7 +752,7 @@ TEST(AiGatewayWebSocketSessionTest,
 }
 
 TEST(AiGatewayWebSocketSessionTest, SendFailureDuringTransportErrorStopsFurtherFrames) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -768,7 +777,7 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureDuringTransportErrorStopsFurtherF
 }
 
 TEST(AiGatewayWebSocketSessionTest, HandleSendFailureClosesSessionWithoutClosingTransport) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
@@ -791,7 +800,7 @@ TEST(AiGatewayWebSocketSessionTest, HandleSendFailureClosesSessionWithoutClosing
 }
 
 TEST(AiGatewayWebSocketSessionTest, ServerShutdownClosesSessionWithoutTransportWarningPath) {
-    FakeWebSocketConnection connection;
+    RecordingWebSocketConnection connection;
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 

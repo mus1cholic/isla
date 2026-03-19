@@ -13,6 +13,10 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "memory_store_mock.hpp"
+#include "mid_term_compactor_mock.hpp"
+#include "mid_term_flush_decider_mock.hpp"
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -21,66 +25,72 @@ namespace {
 
 using nlohmann::json;
 using namespace std::chrono_literals;
+using ::testing::_;
+using ::testing::NiceMock;
+using ::testing::Return;
 
-class RecordingMemoryStore final : public MemoryStore {
+class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
   public:
-    absl::Status UpsertSession(const MemorySessionRecord& record) override {
-        if (!upsert_session_status.ok()) {
-            return upsert_session_status;
-        }
-        session_records.push_back(record);
-        return absl::OkStatus();
-    }
-
-    absl::Status AppendConversationMessage(const ConversationMessageWrite& write) override {
-        if (!append_message_status.ok()) {
-            return append_message_status;
-        }
-        message_writes.push_back(write);
-        return absl::OkStatus();
-    }
-
-    absl::Status ReplaceConversationItemWithEpisodeStub(const EpisodeStubWrite& write) override {
-        if (!replace_stub_status.ok()) {
-            return replace_stub_status;
-        }
-        stub_writes.push_back(write);
-        return absl::OkStatus();
-    }
-
-    absl::Status SplitConversationItemWithEpisodeStub(const SplitEpisodeStubWrite& write) override {
-        if (!split_stub_status.ok()) {
-            return split_stub_status;
-        }
-        split_stub_writes.push_back(write);
-        return absl::OkStatus();
-    }
-
-    absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) override {
-        if (!upsert_episode_status.ok()) {
-            return upsert_episode_status;
-        }
-        episode_writes.push_back(write);
-        return absl::OkStatus();
-    }
-
-    absl::StatusOr<std::vector<Episode>>
-    ListMidTermEpisodes(std::string_view session_id) const override {
-        static_cast<void>(session_id);
-        return std::vector<Episode>{};
-    }
-
-    absl::StatusOr<std::optional<Episode>>
-    GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const override {
-        static_cast<void>(session_id);
-        static_cast<void>(episode_id);
-        return std::nullopt;
-    }
-
-    absl::StatusOr<std::optional<MemoryStoreSnapshot>>
-    LoadSnapshot(std::string_view session_id) const override {
-        static_cast<void>(session_id);
-        return std::nullopt;
+    RecordingMemoryStore() {
+        ON_CALL(*this, WarmUp()).WillByDefault(Return(absl::OkStatus()));
+        ON_CALL(*this, UpsertSession(_)).WillByDefault([this](const MemorySessionRecord& record) {
+            if (!upsert_session_status.ok()) {
+                return upsert_session_status;
+            }
+            session_records.push_back(record);
+            return absl::OkStatus();
+        });
+        ON_CALL(*this, AppendConversationMessage(_))
+            .WillByDefault([this](const ConversationMessageWrite& write) {
+                if (!append_message_status.ok()) {
+                    return append_message_status;
+                }
+                message_writes.push_back(write);
+                return absl::OkStatus();
+            });
+        ON_CALL(*this, ReplaceConversationItemWithEpisodeStub(_))
+            .WillByDefault([this](const EpisodeStubWrite& write) {
+                if (!replace_stub_status.ok()) {
+                    return replace_stub_status;
+                }
+                stub_writes.push_back(write);
+                return absl::OkStatus();
+            });
+        ON_CALL(*this, SplitConversationItemWithEpisodeStub(_))
+            .WillByDefault([this](const SplitEpisodeStubWrite& write) {
+                if (!split_stub_status.ok()) {
+                    return split_stub_status;
+                }
+                split_stub_writes.push_back(write);
+                return absl::OkStatus();
+            });
+        ON_CALL(*this, UpsertMidTermEpisode(_))
+            .WillByDefault([this](const MidTermEpisodeWrite& write) {
+                if (!upsert_episode_status.ok()) {
+                    return upsert_episode_status;
+                }
+                episode_writes.push_back(write);
+                return absl::OkStatus();
+            });
+        ON_CALL(*this, ListMidTermEpisodes(_))
+            .WillByDefault([](std::string_view session_id) -> absl::StatusOr<std::vector<Episode>> {
+                static_cast<void>(session_id);
+                return std::vector<Episode>{};
+            });
+        ON_CALL(*this, GetMidTermEpisode(_, _))
+            .WillByDefault(
+                [](std::string_view session_id,
+                   std::string_view episode_id) -> absl::StatusOr<std::optional<Episode>> {
+                    static_cast<void>(session_id);
+                    static_cast<void>(episode_id);
+                    return std::nullopt;
+                });
+        ON_CALL(*this, LoadSnapshot(_))
+            .WillByDefault([](std::string_view session_id)
+                               -> absl::StatusOr<std::optional<MemoryStoreSnapshot>> {
+                static_cast<void>(session_id);
+                return std::nullopt;
+            });
     }
 
     std::vector<MemorySessionRecord> session_records;
@@ -101,7 +111,7 @@ std::shared_future<void> MakeReadyFuture() {
     return ready_promise.get_future().share();
 }
 
-class RecordingMidTermCompactor final : public MidTermCompactor {
+class RecordingMidTermCompactor final : public NiceMock<test::MockMidTermCompactor> {
   public:
     explicit RecordingMidTermCompactor(absl::StatusOr<CompactedMidTermEpisode> result =
                                            CompactedMidTermEpisode{
@@ -113,16 +123,15 @@ class RecordingMidTermCompactor final : public MidTermCompactor {
                                                .embedding = {},
                                            },
                                        std::shared_future<void> release_signal = MakeReadyFuture())
-        : result_(std::move(result)), release_signal_(std::move(release_signal)) {}
-
-    absl::StatusOr<CompactedMidTermEpisode>
-    Compact(const MidTermCompactionRequest& request) override {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            requests_.push_back(request);
-        }
-        release_signal_.wait();
-        return result_;
+        : result_(std::move(result)), release_signal_(std::move(release_signal)) {
+        ON_CALL(*this, Compact(_)).WillByDefault([this](const MidTermCompactionRequest& request) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                requests_.push_back(request);
+            }
+            release_signal_.wait();
+            return result_;
+        });
     }
 
     [[nodiscard]] bool WaitForRequestCount(std::size_t expected_count) const {
@@ -151,20 +160,20 @@ class RecordingMidTermCompactor final : public MidTermCompactor {
     std::shared_future<void> release_signal_;
 };
 
-class RecordingMidTermFlushDecider final : public MidTermFlushDecider {
+class RecordingMidTermFlushDecider final : public NiceMock<test::MockMidTermFlushDecider> {
   public:
     explicit RecordingMidTermFlushDecider(
         absl::StatusOr<MidTermFlushDecision> decision = MidTermFlushDecision{})
-        : decision_(std::move(decision)) {}
-
-    absl::StatusOr<MidTermFlushDecision> Decide(const Conversation& conversation) override {
-        absl::StatusOr<MidTermFlushDecision> decision = MidTermFlushDecision{};
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            requests_.push_back(conversation);
-            decision = decision_;
-        }
-        return decision;
+        : decision_(std::move(decision)) {
+        ON_CALL(*this, Decide(_)).WillByDefault([this](const Conversation& conversation) {
+            absl::StatusOr<MidTermFlushDecision> decision = MidTermFlushDecision{};
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                requests_.push_back(conversation);
+                decision = decision_;
+            }
+            return decision;
+        });
     }
 
     [[nodiscard]] bool WaitForRequestCount(std::size_t expected_count) const {
