@@ -1,6 +1,7 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
 exports_files([
+    "llm_client.hpp",
     "openai_responses_curl_transport.hpp",
     "openai_responses_http_utils.hpp",
     "openai_responses_inprocess_transport.hpp",
@@ -25,6 +26,8 @@ cc_library(
         "ai_gateway_session_handler.hpp",
         "ai_gateway_stub_responder.hpp",
         "ai_gateway_stub_responder_utils.hpp",
+        "llm_client.hpp",
+        "openai_llm_client.hpp",
         "ai_gateway_websocket_session.hpp",
         "openai_responses_curl_transport.hpp",
         "openai_responses_http_utils.hpp",

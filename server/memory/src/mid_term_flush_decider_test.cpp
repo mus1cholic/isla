@@ -10,19 +10,18 @@
 #include <nlohmann/json.hpp>
 
 #include "absl/status/status.h"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
-#include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::memory {
 namespace {
 
-using isla::server::ai_gateway::OpenAiResponsesClient;
-using isla::server::ai_gateway::OpenAiResponsesCompletedEvent;
-using isla::server::ai_gateway::OpenAiResponsesEvent;
-using isla::server::ai_gateway::OpenAiResponsesEventCallback;
-using isla::server::ai_gateway::OpenAiResponsesRequest;
-using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
+using isla::server::LlmClient;
+using isla::server::LlmCompletedEvent;
+using isla::server::LlmEventCallback;
+using isla::server::LlmRequest;
+using isla::server::LlmTextDeltaEvent;
 using nlohmann::json;
 
 Timestamp Ts(std::string_view text) {
@@ -30,24 +29,23 @@ Timestamp Ts(std::string_view text) {
 }
 
 // ---------------------------------------------------------------------------
-// Fake OpenAI client that delivers a canned response
+// Fake LLM client that delivers a canned response
 // ---------------------------------------------------------------------------
 
-class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
+class FakeLlmClient final : public LlmClient {
   public:
-    explicit FakeOpenAiResponsesClient(std::string canned_response)
+    explicit FakeLlmClient(std::string canned_response)
         : canned_response_(std::move(canned_response)) {}
 
-    FakeOpenAiResponsesClient(std::string canned_response, absl::Status stream_status)
+    FakeLlmClient(std::string canned_response, absl::Status stream_status)
         : canned_response_(std::move(canned_response)), stream_status_(std::move(stream_status)) {}
 
     [[nodiscard]] absl::Status Validate() const override {
         return absl::OkStatus();
     }
 
-    [[nodiscard]] absl::Status
-    StreamResponse(const OpenAiResponsesRequest& request,
-                   const OpenAiResponsesEventCallback& on_event) const override {
+    [[nodiscard]] absl::Status StreamResponse(const LlmRequest& request,
+                                              const LlmEventCallback& on_event) const override {
         last_request_model_ = request.model;
         last_request_system_prompt_ = request.system_prompt;
         last_request_user_text_ = request.user_text;
@@ -58,14 +56,16 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
 
         // Deliver canned response as a single text delta + completed event.
         if (!canned_response_.empty()) {
-            const absl::Status delta_status =
-                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = canned_response_ });
+            const absl::Status delta_status = on_event(LlmTextDeltaEvent{
+                .text_delta = canned_response_,
+            });
             if (!delta_status.ok()) {
                 return delta_status;
             }
         }
-        absl::Status completed_status =
-            on_event(OpenAiResponsesCompletedEvent{ .response_id = "resp_test" });
+        absl::Status completed_status = on_event(LlmCompletedEvent{
+            .response_id = "resp_test",
+        });
         if (!completed_status.ok()) {
             return completed_status;
         }
@@ -95,12 +95,12 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
 // ---------------------------------------------------------------------------
 
 struct DeciderWithFake {
-    std::shared_ptr<FakeOpenAiResponsesClient> fake_client;
+    std::shared_ptr<FakeLlmClient> fake_client;
     MidTermFlushDeciderPtr decider;
 };
 
 DeciderWithFake MakeDecider(std::string canned_response) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>(std::move(canned_response));
+    auto fake = std::make_shared<FakeLlmClient>(std::move(canned_response));
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
         CreateLlmMidTermFlushDecider(fake, "test-model");
     if (!decider.ok()) {
@@ -110,7 +110,7 @@ DeciderWithFake MakeDecider(std::string canned_response) {
 }
 
 DeciderWithFake MakeFailingDecider(absl::Status failure_status) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>("", std::move(failure_status));
+    auto fake = std::make_shared<FakeLlmClient>("", std::move(failure_status));
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
         CreateLlmMidTermFlushDecider(fake, "test-model");
     if (!decider.ok()) {
@@ -457,7 +457,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideHandlesEmptyConversation) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsEmptyLlmResponse) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>("");
+    auto fake = std::make_shared<FakeLlmClient>("");
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
         CreateLlmMidTermFlushDecider(fake, "test-model");
     ASSERT_TRUE(decider.ok()) << decider.status();
@@ -471,7 +471,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsEmptyLlmResponse) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, FactorySucceedsWithValidInputs) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>(
+    auto fake = std::make_shared<FakeLlmClient>(
         R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "test"})");
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
         CreateLlmMidTermFlushDecider(fake, "gpt-4o-mini");
@@ -489,7 +489,7 @@ TEST(LlmMidTermFlushDeciderTest, FactoryFailsForNullClient) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, FactoryFailsForEmptyModel) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>("");
+    auto fake = std::make_shared<FakeLlmClient>("");
     absl::StatusOr<MidTermFlushDeciderPtr> decider = CreateLlmMidTermFlushDecider(fake, "");
 
     ASSERT_FALSE(decider.ok());

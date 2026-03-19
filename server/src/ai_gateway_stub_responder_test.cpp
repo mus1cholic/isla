@@ -388,6 +388,30 @@ class RecordingLiveSession final : public GatewayLiveSession {
     bool closed_ = false;
 };
 
+class ResponderRegistryAttachment {
+  public:
+    explicit ResponderRegistryAttachment(GatewayStubResponder& responder)
+        : responder_(responder), registry_(&responder_) {
+        responder_.AttachSessionRegistry(&registry_);
+    }
+
+    ~ResponderRegistryAttachment() {
+        registry_.NotifyServerStopping();
+        responder_.AttachSessionRegistry(nullptr);
+    }
+
+    ResponderRegistryAttachment(const ResponderRegistryAttachment&) = delete;
+    ResponderRegistryAttachment& operator=(const ResponderRegistryAttachment&) = delete;
+
+    [[nodiscard]] GatewaySessionRegistry& registry() {
+        return registry_;
+    }
+
+  private:
+    GatewayStubResponder& responder_;
+    GatewaySessionRegistry registry_;
+};
+
 class GatewayStubResponderTest : public ::testing::Test {
   protected:
     GatewayStubResponderTest()
@@ -395,9 +419,9 @@ class GatewayStubResponderTest : public ::testing::Test {
               .response_delay = 20ms,
               .openai_client = MakeEchoOpenAiResponsesClient(),
           }),
-          registry_(&responder_), session_(std::make_shared<RecordingLiveSession>("srv_test")) {
-        responder_.AttachSessionRegistry(&registry_);
-        registry_.RegisterSession(session_);
+          session_(std::make_shared<RecordingLiveSession>("srv_test")) {
+        registry_attachment_ = std::make_unique<ResponderRegistryAttachment>(responder_);
+        registry_attachment_->registry().RegisterSession(session_);
     }
 
     void SetUp() override {
@@ -405,7 +429,7 @@ class GatewayStubResponderTest : public ::testing::Test {
     }
 
     GatewayStubResponder responder_;
-    GatewaySessionRegistry registry_;
+    std::unique_ptr<ResponderRegistryAttachment> registry_attachment_;
     std::shared_ptr<RecordingLiveSession> session_;
 };
 
@@ -489,9 +513,9 @@ TEST(GatewayStubResponderStandaloneTest, SessionStartPersistsSessionBeforeFirstT
         .memory_store = store,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
 
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
@@ -525,9 +549,9 @@ TEST(GatewayStubResponderStandaloneTest, SessionStartRetriesTransientPersistence
         .memory_store = store,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
 
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
@@ -552,9 +576,9 @@ TEST(GatewayStubResponderStandaloneTest, SessionStartDoesNotRetryNonRetryableFai
         .memory_store = store,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
 
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
@@ -579,9 +603,9 @@ TEST(GatewayStubResponderStandaloneTest, DuplicateSessionStartDoesNotPoisonHealt
         .memory_store = store,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
 
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
@@ -626,9 +650,9 @@ TEST(GatewayStubResponderStandaloneTest,
         .memory_store = store,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
 
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
@@ -674,9 +698,9 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
         .memory_user_id = "gateway_user",
         .openai_client = capturing_client,
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
     const std::shared_ptr<const TurnTelemetryContext> telemetry_context =
@@ -690,10 +714,11 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
     });
 
     ASSERT_TRUE(session->WaitForEventCount(2U));
+    const std::vector<OpenAiResponsesRequest> requests = capturing_client->requests_snapshot();
     auto main_request = std::find_if(
-        capturing_client->requests.rbegin(), capturing_client->requests.rend(),
+        requests.rbegin(), requests.rend(),
         [](const OpenAiResponsesRequest& request) { return !IsMidTermMemoryRequest(request); });
-    ASSERT_NE(main_request, capturing_client->requests.rend());
+    ASSERT_NE(main_request, requests.rend());
     EXPECT_NE(main_request->system_prompt.find("<persistent_memory_cache>"), std::string::npos);
     EXPECT_EQ(main_request->system_prompt.find("- [user | "), std::string::npos);
     EXPECT_EQ(main_request->system_prompt.find("- [assistant | "), std::string::npos);
@@ -728,9 +753,9 @@ TEST_F(GatewayStubResponderTest,
         .memory_user_id = "gateway_user",
         .openai_client = capturing_client,
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -748,10 +773,11 @@ TEST_F(GatewayStubResponderTest,
     });
     ASSERT_TRUE(session->WaitForEventCount(4U));
 
+    const std::vector<OpenAiResponsesRequest> requests = capturing_client->requests_snapshot();
     auto second_request = std::find_if(
-        capturing_client->requests.rbegin(), capturing_client->requests.rend(),
+        requests.rbegin(), requests.rend(),
         [](const OpenAiResponsesRequest& request) { return !IsMidTermMemoryRequest(request); });
-    ASSERT_NE(second_request, capturing_client->requests.rend());
+    ASSERT_NE(second_request, requests.rend());
     const std::string& second_request_context = second_request->user_text;
     EXPECT_NE(second_request_context.find("<conversation>"), std::string::npos);
     EXPECT_NE(second_request_context.find("] hello"), std::string::npos);
@@ -764,7 +790,7 @@ TEST_F(GatewayStubResponderTest,
               std::string::npos);
 }
 
-TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurnIntoLaterPrompt) {
+TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringEventuallyFlushesCompletedTurnIntoLaterPrompt) {
     const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
         isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
     const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
@@ -833,9 +859,9 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
         .async_emit_timeout = 2s,
         .openai_client = client,
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -854,12 +880,36 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
     });
     ASSERT_TRUE(session->WaitForEventCount(4U));
 
+    auto prompt_contains_mid_term_summary = [&]() -> bool {
+        const absl::StatusOr<std::string> prompt = responder.RenderSessionMemoryPrompt("srv_test");
+        if (!prompt.ok()) {
+            return false;
+        }
+        return prompt->find("First exchange summary.") != std::string::npos &&
+               prompt->find("First exchange ref.") != std::string::npos;
+    };
+
+    std::size_t expected_event_count = 4U;
+    int turn_number = 3;
+    while (turn_number <= 8 && !prompt_contains_mid_term_summary()) {
+        responder.OnTurnAccepted(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_" + std::to_string(turn_number),
+            .text = turn_number == 3 ? "third turn" : "later turn " + std::to_string(turn_number),
+        });
+        expected_event_count += 2U;
+        ASSERT_TRUE(session->WaitForEventCount(expected_event_count));
+        ++turn_number;
+    }
+    ASSERT_TRUE(prompt_contains_mid_term_summary());
+
     responder.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = "srv_test",
-        .turn_id = "turn_3",
-        .text = "third turn",
+        .turn_id = "turn_visibility_probe",
+        .text = "visibility probe",
     });
-    ASSERT_TRUE(session->WaitForEventCount(6U));
+    expected_event_count += 2U;
+    ASSERT_TRUE(session->WaitForEventCount(expected_event_count));
 
     std::vector<OpenAiResponsesRequest> requests;
     {
@@ -882,18 +932,18 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringFlushesCompletedTurn
     ASSERT_NE(compactor_request, requests.end());
     EXPECT_EQ(compactor_request->model, kDefaultMidTermMemoryModel);
 
-    const auto third_reply_request =
+    const auto later_reply_request =
         std::find_if(requests.begin(), requests.end(),
                      [&decider_prompt, &compactor_prompt](const OpenAiResponsesRequest& request) {
                          return request.system_prompt != *decider_prompt &&
                                 request.system_prompt != *compactor_prompt &&
-                                request.user_text.find("] third turn") != std::string::npos;
+                                request.user_text.find("ep_srv_test_1") != std::string::npos;
                      });
-    ASSERT_NE(third_reply_request, requests.end());
-    EXPECT_NE(third_reply_request->user_text.find("<mid_term_episodes>"), std::string::npos);
-    EXPECT_EQ(third_reply_request->user_text.find("<mid_term_episodes>\n- (none)"),
+    ASSERT_NE(later_reply_request, requests.end());
+    EXPECT_NE(later_reply_request->user_text.find("<mid_term_episodes>"), std::string::npos);
+    EXPECT_EQ(later_reply_request->user_text.find("<mid_term_episodes>\n- (none)"),
               std::string::npos);
-    EXPECT_NE(third_reply_request->user_text.find("ep_srv_test_1"), std::string::npos);
+    EXPECT_NE(later_reply_request->user_text.find("ep_srv_test_1"), std::string::npos);
 
     const absl::StatusOr<std::string> prompt = responder.RenderSessionMemoryPrompt("srv_test");
     ASSERT_TRUE(prompt.ok()) << prompt.status();
@@ -911,9 +961,9 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_FALSE(responder.IsMidTermMemoryConfigured());
     EXPECT_FALSE(responder.IsMidTermMemoryAvailable());
     EXPECT_TRUE(responder.MidTermMemoryInitializationStatus().ok());
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
 
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
@@ -1012,9 +1062,9 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecu
         .openai_client = MakeEchoOpenAiResponsesClient(),
         .on_execution_plan = [&](const ExecutionPlan& plan) { execution_plan = plan; },
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -1048,9 +1098,9 @@ TEST(GatewayStubResponderStandaloneTest, MissingSessionMemoryStillEmitsFailureTe
         .memory_user_id = "gateway_user",
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
 
     responder.OnTurnAccepted(TurnAcceptedEvent{
@@ -1198,7 +1248,7 @@ TEST_F(GatewayStubResponderTest, ServerStoppingEmitsErrorThenCompletionForPendin
         .text = "hello",
     });
 
-    responder_.OnServerStopping(registry_);
+    responder_.OnServerStopping(registry_attachment_->registry());
 
     ASSERT_TRUE(session_->WaitForEventCount(2U));
     const std::vector<EmittedEvent> events = session_->events();
@@ -1218,7 +1268,7 @@ TEST_F(GatewayStubResponderTest, SessionClosedBeforeReplyDropsPendingTurn) {
     });
 
     session_->MarkClosed();
-    registry_.OnSessionClosed(SessionClosedEvent{
+    registry_attachment_->registry().OnSessionClosed(SessionClosedEvent{
         .session_id = "srv_test",
         .session_started = true,
         .inflight_turn_id = std::string("turn_1"),
@@ -1259,9 +1309,9 @@ TEST(GatewayStubResponderStandaloneTest, SessionClosedDuringExecutionDropsLaterE
                 });
             }),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -1480,9 +1530,9 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
                 });
             }),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -1525,9 +1575,9 @@ TEST(GatewayStubResponderStandaloneTest, OpenAiProviderFailureEmitsMappedErrorAn
         .openai_client =
             test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down")),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -1552,9 +1602,9 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnWithoutSessionStartFailsClo
         .response_delay = 0ms,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
 
     responder.OnTurnAccepted(TurnAcceptedEvent{
@@ -1602,9 +1652,9 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
                 });
             }),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -1633,9 +1683,9 @@ TEST(GatewayStubResponderStandaloneTest, SessionCloseAfterSessionStartRemovesEmp
         .response_delay = 0ms,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -1659,9 +1709,9 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnDuringShutdownDoesNotBlockO
         .response_delay = 0ms,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -1717,10 +1767,10 @@ TEST(GatewayStubResponderStandaloneTest,
                 allow_user_query_finish_future.wait();
             },
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session_one = std::make_shared<RecordingLiveSession>("srv_one");
     auto session_two = std::make_shared<RecordingLiveSession>("srv_two");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session_one);
     registry.RegisterSession(session_two);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_one" });
@@ -1770,9 +1820,9 @@ TEST(GatewayStubResponderStandaloneTest, SameSessionRenderWaitsForOngoingMemoryM
                 allow_user_query_finish_future.wait();
             },
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
 
@@ -1805,10 +1855,10 @@ TEST(GatewayStubResponderStandaloneTest, ConcurrentMultiSessionTurnsKeepMemoryIs
         .response_delay = 0ms,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
-    GatewaySessionRegistry registry(&responder);
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
     auto session_one = std::make_shared<RecordingLiveSession>("srv_one");
     auto session_two = std::make_shared<RecordingLiveSession>("srv_two");
-    responder.AttachSessionRegistry(&registry);
     registry.RegisterSession(session_one);
     registry.RegisterSession(session_two);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_one" });

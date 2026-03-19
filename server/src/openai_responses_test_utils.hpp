@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -38,8 +39,11 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
-        last_request = request;
-        requests.push_back(request);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            last_request = request;
+            requests.push_back(request);
+        }
         if (stream_handler_) {
             return stream_handler_(request, on_event);
         }
@@ -64,10 +68,21 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
         });
     }
 
+    [[nodiscard]] OpenAiResponsesRequest last_request_snapshot() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_request;
+    }
+
+    [[nodiscard]] std::vector<OpenAiResponsesRequest> requests_snapshot() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requests;
+    }
+
     mutable OpenAiResponsesRequest last_request;
     mutable std::vector<OpenAiResponsesRequest> requests;
 
   private:
+    mutable std::mutex mutex_;
     absl::Status status_;
     std::string full_text_;
     std::string response_id_;
