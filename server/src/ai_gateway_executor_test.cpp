@@ -3,7 +3,6 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -105,6 +104,8 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
 
 TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {
     auto client = std::make_shared<test::MockOpenAiResponsesClient>();
+    EXPECT_CALL(*client, Validate()).Times(0);
+    EXPECT_CALL(*client, StreamResponse(_, _)).Times(0);
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
         .openai_client = client,
     });
@@ -150,12 +151,12 @@ TEST(GatewayPlanExecutorTest, MapsMissingProviderConfigurationToInternalError) {
                 },
             },
     },
-                                             ExecutionRuntimeInput{
-                                                 .user_text = "shared input",
-                                             });
+    ExecutionRuntimeInput{
+        .user_text = "shared input",
+    });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionFailure>(outcome));
-    const ExecutionFailure& failure = std::get<ExecutionFailure>(outcome);
+    const auto& failure = std::get<ExecutionFailure>(outcome);
     EXPECT_EQ(failure.code, "internal_error");
     EXPECT_EQ(failure.message, "execution step failed");
     EXPECT_FALSE(failure.retryable);
