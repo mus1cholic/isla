@@ -21,10 +21,27 @@ cc_library(
         ":ai_gateway_logging_telemetry_sink",
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
+        ":gemini_api_embedding_client",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "gemini_api_embedding_client",
+    srcs = ["gemini_api_embedding_client.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":http_json_client",
+        ":ai_gateway_logging_utils",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@boost.beast//:boost.beast",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 
@@ -278,6 +295,7 @@ cc_library(
         "//server/memory/src:mid_term_flush_decider",
         ":ai_gateway_executor",
         ":ai_gateway_logging_utils",
+        ":gemini_api_embedding_client",
         ":openai_llm_client",
         ":ai_gateway_planner",
         ":ai_gateway_server",
@@ -518,6 +536,18 @@ cc_test(
         ":openai_llms",
         ":openai_responses_test_utils",
         "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "gemini_api_embedding_client_test",
+    srcs = ["gemini_api_embedding_client_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":gemini_api_embedding_client",
+        "@boost.beast//:boost.beast",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 

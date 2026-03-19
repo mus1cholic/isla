@@ -211,6 +211,52 @@ void ApplySupabaseEnvDefaults(isla::server::memory::SupabaseMemoryStoreConfig* c
     config->enabled = !config->url.empty() || !config->service_role_key.empty();
 }
 
+void ApplyGeminiApiEmbeddingEnvDefaults(GeminiApiEmbeddingClientConfig* config,
+                                        const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> api_key = env_lookup("GEMINI_API_KEY");
+        api_key.has_value()) {
+        config->api_key = *api_key;
+    }
+    if (const std::optional<std::string> scheme = env_lookup("GEMINI_API_SCHEME");
+        scheme.has_value()) {
+        config->scheme = *scheme;
+    }
+    if (const std::optional<std::string> host = env_lookup("GEMINI_API_HOST");
+        host.has_value()) {
+        config->host = *host;
+    }
+    if (const std::optional<std::string> port = env_lookup("GEMINI_API_PORT");
+        port.has_value()) {
+        const absl::StatusOr<int> parsed_port = ParseIntArgument(*port, "GEMINI_API_PORT");
+        if (!parsed_port.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid GEMINI_API_PORT value='"
+                         << SanitizeForLog(*port) << "' detail='"
+                         << SanitizeForLog(parsed_port.status().message()) << "'";
+        } else if (*parsed_port < 0 || *parsed_port > 65535) {
+            LOG(WARNING) << "AI gateway ignored out-of-range GEMINI_API_PORT value='"
+                         << SanitizeForLog(*port) << "'";
+        } else {
+            config->port = static_cast<std::uint16_t>(*parsed_port);
+        }
+    }
+    if (const std::optional<std::string> timeout_ms = env_lookup("GEMINI_API_TIMEOUT_MS");
+        timeout_ms.has_value()) {
+        const absl::StatusOr<int> parsed_timeout =
+            ParseIntArgument(*timeout_ms, "GEMINI_API_TIMEOUT_MS");
+        if (!parsed_timeout.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid GEMINI_API_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "' detail='"
+                         << SanitizeForLog(parsed_timeout.status().message()) << "'";
+        } else if (*parsed_timeout <= 0) {
+            LOG(WARNING) << "AI gateway ignored non-positive GEMINI_API_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "'";
+        } else {
+            config->request_timeout = std::chrono::milliseconds(*parsed_timeout);
+        }
+    }
+    config->enabled = !config->api_key.empty();
+}
+
 void ApplyTelemetryEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLookup& env_lookup) {
     if (const std::optional<std::string> enabled = env_lookup("AI_GATEWAY_TELEMETRY_LOG");
         enabled.has_value()) {
@@ -239,6 +285,11 @@ void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLoo
         compactor_model.has_value()) {
         parsed->llm_runtime_config.mid_term_compactor_model = *compactor_model;
     }
+    if (const std::optional<std::string> embedding_model =
+            env_lookup("AI_GATEWAY_MID_TERM_EMBEDDING_MODEL");
+        embedding_model.has_value()) {
+        parsed->llm_runtime_config.mid_term_embedding_model = *embedding_model;
+    }
 }
 
 absl::Status ValidateOptionalModelOverride(std::string_view field_name, std::string_view value) {
@@ -260,8 +311,14 @@ absl::Status ValidateLlmRuntimeConfig(const GatewayLlmRuntimeConfig& config) {
         !status.ok()) {
         return status;
     }
-    return ValidateOptionalModelOverride("mid-term-compactor-model",
-                                         config.mid_term_compactor_model);
+    if (const absl::Status status =
+            ValidateOptionalModelOverride("mid-term-compactor-model",
+                                          config.mid_term_compactor_model);
+        !status.ok()) {
+        return status;
+    }
+    return ValidateOptionalModelOverride("mid-term-embedding-model",
+                                         config.mid_term_embedding_model);
 }
 
 } // namespace
@@ -450,6 +507,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     ParsedStartupConfig parsed;
     ApplyOpenAiEnvDefaults(&parsed.openai_config, env_lookup);
     ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
+    ApplyGeminiApiEmbeddingEnvDefaults(&parsed.gemini_api_embedding_config, env_lookup);
     ApplyTelemetryEnvDefaults(&parsed, env_lookup);
     ApplyLlmRuntimeEnvDefaults(&parsed, env_lookup);
 
@@ -583,6 +641,69 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             parsed.llm_runtime_config.mid_term_compactor_model = model;
             continue;
         }
+        constexpr std::string_view kMidTermEmbeddingModelPrefix = "--mid-term-embedding-model=";
+        if (argument.starts_with(kMidTermEmbeddingModelPrefix)) {
+            const std::string model = argument.substr(kMidTermEmbeddingModelPrefix.size());
+            if (model.empty()) {
+                return absl::InvalidArgumentError("mid-term-embedding-model must not be empty");
+            }
+            parsed.llm_runtime_config.mid_term_embedding_model = model;
+            continue;
+        }
+        constexpr std::string_view kGeminiApiKeyPrefix = "--gemini-api-key=";
+        if (argument.starts_with(kGeminiApiKeyPrefix)) {
+            parsed.gemini_api_embedding_config.api_key = argument.substr(kGeminiApiKeyPrefix.size());
+            parsed.gemini_api_embedding_config.enabled = true;
+            continue;
+        }
+        constexpr std::string_view kGeminiApiSchemePrefix = "--gemini-api-scheme=";
+        if (argument.starts_with(kGeminiApiSchemePrefix)) {
+            parsed.gemini_api_embedding_config.scheme =
+                argument.substr(kGeminiApiSchemePrefix.size());
+            parsed.gemini_api_embedding_config.enabled = true;
+            continue;
+        }
+        constexpr std::string_view kGeminiApiHostPrefix = "--gemini-api-host=";
+        if (argument.starts_with(kGeminiApiHostPrefix)) {
+            parsed.gemini_api_embedding_config.host =
+                argument.substr(kGeminiApiHostPrefix.size());
+            parsed.gemini_api_embedding_config.enabled = true;
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled =
+                TryParseIntFlag(argument, "--gemini-api-port=", "gemini-api-port",
+                                [&parsed](int port) -> absl::Status {
+                                    if (port < 0 || port > 65535) {
+                                        return absl::InvalidArgumentError(
+                                            "gemini-api-port must be between 0 and 65535");
+                                    }
+                                    parsed.gemini_api_embedding_config.port =
+                                        static_cast<std::uint16_t>(port);
+                                    parsed.gemini_api_embedding_config.enabled = true;
+                                    return absl::OkStatus();
+                                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled =
+                TryParseIntFlag(argument, "--gemini-api-timeout-ms=", "gemini-api-timeout-ms",
+                                [&parsed](int timeout_ms) -> absl::Status {
+                                    if (timeout_ms <= 0) {
+                                        return absl::InvalidArgumentError(
+                                            "gemini-api-timeout-ms must be greater than zero");
+                                    }
+                                    parsed.gemini_api_embedding_config.request_timeout =
+                                        std::chrono::milliseconds(timeout_ms);
+                                    parsed.gemini_api_embedding_config.enabled = true;
+                                    return absl::OkStatus();
+                                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
         if (argument.starts_with("--supabase-url=")) {
             parsed.supabase_config.url = argument.substr(15);
             parsed.supabase_config.enabled = true;
@@ -642,6 +763,13 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     if (const absl::Status llm_runtime_status = ValidateLlmRuntimeConfig(parsed.llm_runtime_config);
         !llm_runtime_status.ok()) {
         return llm_runtime_status;
+    }
+    if (parsed.gemini_api_embedding_config.enabled) {
+        const absl::Status gemini_embedding_status =
+            ValidateGeminiApiEmbeddingClientConfig(parsed.gemini_api_embedding_config);
+        if (!gemini_embedding_status.ok()) {
+            return gemini_embedding_status;
+        }
     }
     if (parsed.supabase_config.enabled) {
         const absl::Status supabase_status =
