@@ -10,40 +10,38 @@
 #include <nlohmann/json.hpp>
 
 #include "absl/status/status.h"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
-#include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::memory {
 namespace {
 
-using isla::server::ai_gateway::OpenAiResponsesClient;
-using isla::server::ai_gateway::OpenAiResponsesCompletedEvent;
-using isla::server::ai_gateway::OpenAiResponsesEvent;
-using isla::server::ai_gateway::OpenAiResponsesEventCallback;
-using isla::server::ai_gateway::OpenAiResponsesRequest;
-using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
+using isla::server::LlmClient;
+using isla::server::LlmCompletedEvent;
+using isla::server::LlmEventCallback;
+using isla::server::LlmRequest;
+using isla::server::LlmTextDeltaEvent;
 using nlohmann::json;
 
 Timestamp Ts(std::string_view text) {
     return json(text).get<Timestamp>();
 }
 
-class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
+class FakeLlmClient final : public LlmClient {
   public:
-    explicit FakeOpenAiResponsesClient(std::string canned_response)
+    explicit FakeLlmClient(std::string canned_response)
         : canned_response_(std::move(canned_response)) {}
 
-    FakeOpenAiResponsesClient(std::string canned_response, absl::Status stream_status)
+    FakeLlmClient(std::string canned_response, absl::Status stream_status)
         : canned_response_(std::move(canned_response)), stream_status_(std::move(stream_status)) {}
 
     [[nodiscard]] absl::Status Validate() const override {
         return absl::OkStatus();
     }
 
-    [[nodiscard]] absl::Status
-    StreamResponse(const OpenAiResponsesRequest& request,
-                   const OpenAiResponsesEventCallback& on_event) const override {
+    [[nodiscard]] absl::Status StreamResponse(const LlmRequest& request,
+                                              const LlmEventCallback& on_event) const override {
         last_request_model_ = request.model;
         last_request_system_prompt_ = request.system_prompt;
         last_request_user_text_ = request.user_text;
@@ -53,18 +51,18 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
         }
 
         if (!canned_response_.empty()) {
-            const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
+            const absl::Status first_status = on_event(LlmTextDeltaEvent{
                 .text_delta = canned_response_.substr(0, canned_response_.size() / 2U) });
             if (!first_status.ok()) {
                 return first_status;
             }
-            const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
+            const absl::Status second_status = on_event(LlmTextDeltaEvent{
                 .text_delta = canned_response_.substr(canned_response_.size() / 2U) });
             if (!second_status.ok()) {
                 return second_status;
             }
         }
-        return on_event(OpenAiResponsesCompletedEvent{ .response_id = "resp_test" });
+        return on_event(LlmCompletedEvent{ .response_id = "resp_test" });
     }
 
     [[nodiscard]] const std::string& last_request_model() const {
@@ -88,7 +86,7 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
 };
 
 struct CompactorWithFake {
-    std::shared_ptr<FakeOpenAiResponsesClient> fake_client;
+    std::shared_ptr<FakeLlmClient> fake_client;
     MidTermCompactorPtr compactor;
 };
 
@@ -117,7 +115,7 @@ MidTermCompactionRequest MakeCompactionRequest() {
 }
 
 CompactorWithFake MakeCompactor(std::string canned_response) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>(std::move(canned_response));
+    auto fake = std::make_shared<FakeLlmClient>(std::move(canned_response));
     absl::StatusOr<MidTermCompactorPtr> compactor = CreateLlmMidTermCompactor(fake, "test-model");
     if (!compactor.ok()) {
         return { .fake_client = fake, .compactor = nullptr };
@@ -126,7 +124,7 @@ CompactorWithFake MakeCompactor(std::string canned_response) {
 }
 
 CompactorWithFake MakeFailingCompactor(absl::Status failure_status) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>("", std::move(failure_status));
+    auto fake = std::make_shared<FakeLlmClient>("", std::move(failure_status));
     absl::StatusOr<MidTermCompactorPtr> compactor = CreateLlmMidTermCompactor(fake, "test-model");
     if (!compactor.ok()) {
         return { .fake_client = fake, .compactor = nullptr };
@@ -463,7 +461,7 @@ TEST(LlmMidTermCompactorTest, CompactPropagatesLlmFailure) {
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsEmptyLlmResponse) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>("");
+    auto fake = std::make_shared<FakeLlmClient>("");
     absl::StatusOr<MidTermCompactorPtr> compactor = CreateLlmMidTermCompactor(fake, "test-model");
     ASSERT_TRUE(compactor.ok()) << compactor.status();
     ASSERT_NE(*compactor, nullptr);
@@ -476,7 +474,7 @@ TEST(LlmMidTermCompactorTest, CompactRejectsEmptyLlmResponse) {
 }
 
 TEST(LlmMidTermCompactorTest, FactorySucceedsWithValidInputs) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>(R"({
+    auto fake = std::make_shared<FakeLlmClient>(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
@@ -498,7 +496,7 @@ TEST(LlmMidTermCompactorTest, FactoryFailsForNullClient) {
 }
 
 TEST(LlmMidTermCompactorTest, FactoryFailsForEmptyModel) {
-    auto fake = std::make_shared<FakeOpenAiResponsesClient>("");
+    auto fake = std::make_shared<FakeLlmClient>("");
     absl::StatusOr<MidTermCompactorPtr> compactor = CreateLlmMidTermCompactor(fake, "");
 
     ASSERT_FALSE(compactor.ok());

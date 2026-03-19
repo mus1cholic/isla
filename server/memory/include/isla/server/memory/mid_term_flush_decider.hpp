@@ -8,9 +8,9 @@
 #include "absl/status/statusor.h"
 #include "isla/server/memory/memory_types.hpp"
 
-namespace isla::server::ai_gateway {
-class OpenAiResponsesClient;
-} // namespace isla::server::ai_gateway
+namespace isla::server {
+class LlmClient;
+} // namespace isla::server
 
 namespace isla::server::memory {
 
@@ -33,13 +33,10 @@ class MidTermFlushDecider {
 
 using MidTermFlushDeciderPtr = std::shared_ptr<MidTermFlushDecider>;
 
-// TODO: Introduce an LlmClient abstraction to decouple the flush decider (and
-// future LLM-based components) from the OpenAI-specific transport. The concrete
-// OpenAiResponsesClient would become one implementation of that interface.
 // Creates the LLM-backed flush decider. The returned implementation validates the model's JSON
 // response against the live conversation before handing the decision back to the orchestrator.
-[[nodiscard]] absl::StatusOr<MidTermFlushDeciderPtr> CreateLlmMidTermFlushDecider(
-    std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> responses_client,
-    std::string model);
+[[nodiscard]] absl::StatusOr<MidTermFlushDeciderPtr>
+CreateLlmMidTermFlushDecider(std::shared_ptr<const isla::server::LlmClient> llm_client,
+                             std::string model);
 
 } // namespace isla::server::memory

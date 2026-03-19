@@ -6,6 +6,7 @@
 
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_planner.hpp"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
@@ -13,6 +14,7 @@ namespace isla::server::ai_gateway {
 struct GatewayStepRegistryConfig {
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
+    std::shared_ptr<const isla::server::LlmClient> llm_client;
 };
 
 class GatewayStepRegistry final {

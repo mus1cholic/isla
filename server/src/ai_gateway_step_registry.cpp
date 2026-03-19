@@ -2,6 +2,7 @@
 
 #include "absl/log/log.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/openai_llm_client.hpp"
 #include "isla/server/openai_llms.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
@@ -11,6 +12,17 @@ GatewayStepRegistry::GatewayStepRegistry(GatewayStepRegistryConfig config)
     : config_(std::move(config)) {
     if (config_.openai_client == nullptr && config_.openai_config.enabled) {
         config_.openai_client = CreateOpenAiResponsesClient(config_.openai_config);
+    }
+    if (config_.llm_client == nullptr && config_.openai_client != nullptr) {
+        const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> llm_client =
+            isla::server::CreateOpenAiLlmClient(config_.openai_client);
+        if (llm_client.ok()) {
+            config_.llm_client = *llm_client;
+        } else {
+            LOG(WARNING) << "AI gateway step registry could not adapt OpenAI responses client to "
+                            "a generic llm client detail='"
+                         << SanitizeForLog(llm_client.status().message()) << "'";
+        }
     }
 }
 
@@ -29,7 +41,7 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
             << " step_name='" << SanitizeForLog(step.step_name) << "' model='"
             << SanitizeForLog(step.model) << "'";
     ScopedTelemetryPhase step_phase(runtime_input.telemetry_context, telemetry::kPhaseExecutorStep);
-    OpenAiLLMs openai_llms(step.step_name, step.system_prompt, step.model, config_.openai_client,
+    OpenAiLLMs openai_llms(step.step_name, step.system_prompt, step.model, config_.llm_client,
                            step.reasoning_effort);
     return openai_llms.GenerateContent(step_index, runtime_input);
 }

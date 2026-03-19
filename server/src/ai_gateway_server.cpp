@@ -657,16 +657,30 @@ class GatewaySessionRegistry::Impl {
         }
     }
 
+    void NotifyServerStopping(GatewaySessionRegistry& registry) {
+        std::call_once(server_stopping_once_, [this, &registry] {
+            if (application_sink_ != nullptr) {
+                application_sink_->OnServerStopping(registry);
+            }
+        });
+    }
+
   private:
     GatewayApplicationEventSink* application_sink_ = nullptr;
     mutable std::mutex mutex_;
     absl::flat_hash_map<std::string, std::weak_ptr<GatewayLiveSession>> sessions_;
+    std::once_flag server_stopping_once_;
 };
 
 GatewaySessionRegistry::GatewaySessionRegistry(GatewayApplicationEventSink* application_sink)
     : impl_(std::make_unique<Impl>(application_sink)) {}
 
-GatewaySessionRegistry::~GatewaySessionRegistry() = default;
+GatewaySessionRegistry::~GatewaySessionRegistry() {
+    // Give sinks a last chance to stop background work that may still reference
+    // this registry. This prevents teardown races when callers destroy the
+    // registry without issuing an explicit server-stopping signal first.
+    NotifyServerStopping();
+}
 
 void GatewaySessionRegistry::RegisterSession(const std::shared_ptr<GatewayLiveSession>& session) {
     impl_->RegisterSession(session);
@@ -679,6 +693,10 @@ GatewaySessionRegistry::FindSession(std::string_view session_id) const {
 
 std::size_t GatewaySessionRegistry::SessionCount() const {
     return impl_->SessionCount();
+}
+
+void GatewaySessionRegistry::NotifyServerStopping() {
+    impl_->NotifyServerStopping(*this);
 }
 
 void GatewaySessionRegistry::OnSessionStarted(const SessionStartedEvent& event) {
@@ -806,8 +824,8 @@ class GatewayServer::Impl {
         if (application_sink_ != nullptr) {
             LOG(INFO) << "AI gateway server finalizing accepted turns before stop"
                       << " active_sessions=" << sessions_to_stop.size();
-            application_sink_->OnServerStopping(session_registry_);
         }
+        session_registry_.NotifyServerStopping();
         reap_cv_.notify_all();
 
         for (const auto& session : sessions_to_stop) {

@@ -71,6 +71,7 @@ class GatewaySessionRegistry final : public GatewaySessionEventSink {
     [[nodiscard]] std::shared_ptr<GatewayLiveSession>
     FindSession(std::string_view session_id) const;
     [[nodiscard]] std::size_t SessionCount() const;
+    void NotifyServerStopping();
 
     void OnSessionStarted(const SessionStartedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;

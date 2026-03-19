@@ -14,17 +14,17 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
-#include "isla/server/openai_responses_client.hpp"
 #include "nlohmann/json.hpp"
 
 namespace isla::server::memory {
 namespace {
 
-using isla::server::ai_gateway::OpenAiResponsesClient;
-using isla::server::ai_gateway::OpenAiResponsesEvent;
-using isla::server::ai_gateway::OpenAiResponsesRequest;
-using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
+using isla::server::LlmClient;
+using isla::server::LlmEvent;
+using isla::server::LlmRequest;
+using isla::server::LlmTextDeltaEvent;
 using isla::server::ai_gateway::SanitizeForLog;
 using nlohmann::json;
 
@@ -176,9 +176,9 @@ absl::StatusOr<CompactedMidTermEpisode> ParseCompactorResponse(const std::string
 
 class LlmMidTermCompactor final : public MidTermCompactor {
   public:
-    LlmMidTermCompactor(std::shared_ptr<const OpenAiResponsesClient> responses_client,
-                        std::string model, std::string system_prompt)
-        : responses_client_(std::move(responses_client)), model_(std::move(model)),
+    LlmMidTermCompactor(std::shared_ptr<const LlmClient> llm_client, std::string model,
+                        std::string system_prompt)
+        : llm_client_(std::move(llm_client)), model_(std::move(model)),
           system_prompt_(std::move(system_prompt)) {}
 
     [[nodiscard]] absl::StatusOr<CompactedMidTermEpisode>
@@ -193,18 +193,18 @@ class LlmMidTermCompactor final : public MidTermCompactor {
         const std::string user_text = input_json.dump();
 
         std::string output_text;
-        absl::Status stream_status = responses_client_->StreamResponse(
-            OpenAiResponsesRequest{
+        absl::Status stream_status = llm_client_->StreamResponse(
+            LlmRequest{
                 .model = model_,
                 .system_prompt = system_prompt_,
                 .user_text = user_text,
-                .reasoning_effort = isla::server::ai_gateway::OpenAiReasoningEffort::kMedium,
+                .reasoning_effort = isla::server::LlmReasoningEffort::kMedium,
             },
-            [&output_text](const OpenAiResponsesEvent& event) -> absl::Status {
+            [&output_text](const LlmEvent& event) -> absl::Status {
                 return std::visit(
                     [&output_text](const auto& concrete_event) -> absl::Status {
                         using Event = std::decay_t<decltype(concrete_event)>;
-                        if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                        if constexpr (std::is_same_v<Event, LlmTextDeltaEvent>) {
                             output_text.append(concrete_event.text_delta);
                         }
                         return absl::OkStatus();
@@ -248,18 +248,18 @@ class LlmMidTermCompactor final : public MidTermCompactor {
     }
 
   private:
-    std::shared_ptr<const OpenAiResponsesClient> responses_client_;
+    std::shared_ptr<const LlmClient> llm_client_;
     std::string model_;
     std::string system_prompt_;
 };
 
 } // namespace
 
-absl::StatusOr<MidTermCompactorPtr> CreateLlmMidTermCompactor(
-    std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> responses_client,
-    std::string model) {
-    if (!responses_client) {
-        return invalid_argument("LlmMidTermCompactor requires a non-null responses client");
+absl::StatusOr<MidTermCompactorPtr>
+CreateLlmMidTermCompactor(std::shared_ptr<const isla::server::LlmClient> llm_client,
+                          std::string model) {
+    if (!llm_client) {
+        return invalid_argument("LlmMidTermCompactor requires a non-null llm client");
     }
     if (model.empty()) {
         return invalid_argument("LlmMidTermCompactor requires a non-empty model name");
@@ -269,7 +269,7 @@ absl::StatusOr<MidTermCompactorPtr> CreateLlmMidTermCompactor(
     if (!system_prompt.ok()) {
         return system_prompt.status();
     }
-    return std::make_shared<LlmMidTermCompactor>(std::move(responses_client), std::move(model),
+    return std::make_shared<LlmMidTermCompactor>(std::move(llm_client), std::move(model),
                                                  std::move(*system_prompt));
 }
 
