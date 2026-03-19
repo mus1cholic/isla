@@ -262,8 +262,8 @@ TEST(OpenAiLlmstest, ConvertsLlmClientExceptionToInternalError) {
 }
 
 TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {
-    auto client =
-        std::make_shared<FakeLlmClient>(absl::OkStatus(), std::string(kMaxTextOutputBytes + 1U, 'x'));
+    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(),
+                                                  std::string(kMaxTextOutputBytes + 1U, 'x'));
     OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =

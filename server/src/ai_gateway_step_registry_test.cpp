@@ -133,10 +133,11 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
                              });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(client->last_request.model, "gpt-5.3-chat-latest");
-    EXPECT_EQ(client->last_request.system_prompt, "runtime system");
-    EXPECT_EQ(client->last_request.user_text, "hello");
-    EXPECT_EQ(client->last_request.reasoning_effort, OpenAiReasoningEffort::kNone);
+    const OpenAiResponsesRequest last_request = client->last_request_snapshot();
+    EXPECT_EQ(last_request.model, "gpt-5.3-chat-latest");
+    EXPECT_EQ(last_request.system_prompt, "runtime system");
+    EXPECT_EQ(last_request.user_text, "hello");
+    EXPECT_EQ(last_request.reasoning_effort, OpenAiReasoningEffort::kNone);
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
 }
 

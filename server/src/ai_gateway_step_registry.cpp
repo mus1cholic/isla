@@ -2,8 +2,8 @@
 
 #include "absl/log/log.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
-#include "isla/server/openai_llms.hpp"
 #include "isla/server/openai_llm_client.hpp"
+#include "isla/server/openai_llms.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {

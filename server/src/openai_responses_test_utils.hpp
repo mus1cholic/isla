@@ -78,11 +78,10 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
         return requests;
     }
 
-    mutable OpenAiResponsesRequest last_request;
-    mutable std::vector<OpenAiResponsesRequest> requests;
-
   private:
     mutable std::mutex mutex_;
+    mutable OpenAiResponsesRequest last_request;
+    mutable std::vector<OpenAiResponsesRequest> requests;
     absl::Status status_;
     std::string full_text_;
     std::string response_id_;

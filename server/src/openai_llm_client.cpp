@@ -55,8 +55,8 @@ class OpenAiLlmClient final : public LlmClient {
         return responses_client_->WarmUp();
     }
 
-    [[nodiscard]] absl::Status
-    StreamResponse(const LlmRequest& request, const LlmEventCallback& on_event) const override {
+    [[nodiscard]] absl::Status StreamResponse(const LlmRequest& request,
+                                              const LlmEventCallback& on_event) const override {
         const absl::StatusOr<OpenAiReasoningEffort> reasoning_effort =
             ToOpenAiReasoningEffort(request.reasoning_effort);
         if (!reasoning_effort.ok()) {

@@ -71,10 +71,12 @@ TEST(OpenAiLlmClientTest, TranslatesRequestsAndEvents) {
         });
 
     ASSERT_TRUE(status.ok()) << status;
-    ASSERT_EQ(responses_client->last_request.model, "gpt-5.4-mini");
-    ASSERT_EQ(responses_client->last_request.system_prompt, "system");
-    ASSERT_EQ(responses_client->last_request.user_text, "user");
-    EXPECT_EQ(responses_client->last_request.reasoning_effort, OpenAiReasoningEffort::kXHigh);
+    const ai_gateway::OpenAiResponsesRequest last_request =
+        responses_client->last_request_snapshot();
+    ASSERT_EQ(last_request.model, "gpt-5.4-mini");
+    ASSERT_EQ(last_request.system_prompt, "system");
+    ASSERT_EQ(last_request.user_text, "user");
+    EXPECT_EQ(last_request.reasoning_effort, OpenAiReasoningEffort::kXHigh);
     ASSERT_EQ(deltas.size(), 2U);
     EXPECT_EQ(deltas[0] + deltas[1], "hello world");
     EXPECT_EQ(response_id, "resp_test");

@@ -715,9 +715,10 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
 
     ASSERT_TRUE(session->WaitForEventCount(2U));
     const std::vector<OpenAiResponsesRequest> requests = capturing_client->requests_snapshot();
-    auto main_request = std::find_if(
-        requests.rbegin(), requests.rend(),
-        [](const OpenAiResponsesRequest& request) { return !IsMidTermMemoryRequest(request); });
+    auto main_request =
+        std::find_if(requests.rbegin(), requests.rend(), [](const OpenAiResponsesRequest& request) {
+            return !IsMidTermMemoryRequest(request);
+        });
     ASSERT_NE(main_request, requests.rend());
     EXPECT_NE(main_request->system_prompt.find("<persistent_memory_cache>"), std::string::npos);
     EXPECT_EQ(main_request->system_prompt.find("- [user | "), std::string::npos);
@@ -774,9 +775,10 @@ TEST_F(GatewayStubResponderTest,
     ASSERT_TRUE(session->WaitForEventCount(4U));
 
     const std::vector<OpenAiResponsesRequest> requests = capturing_client->requests_snapshot();
-    auto second_request = std::find_if(
-        requests.rbegin(), requests.rend(),
-        [](const OpenAiResponsesRequest& request) { return !IsMidTermMemoryRequest(request); });
+    auto second_request =
+        std::find_if(requests.rbegin(), requests.rend(), [](const OpenAiResponsesRequest& request) {
+            return !IsMidTermMemoryRequest(request);
+        });
     ASSERT_NE(second_request, requests.rend());
     const std::string& second_request_context = second_request->user_text;
     EXPECT_NE(second_request_context.find("<conversation>"), std::string::npos);
@@ -790,7 +792,8 @@ TEST_F(GatewayStubResponderTest,
               std::string::npos);
 }
 
-TEST(GatewayStubResponderStandaloneTest, MidTermMemoryWiringEventuallyFlushesCompletedTurnIntoLaterPrompt) {
+TEST(GatewayStubResponderStandaloneTest,
+     MidTermMemoryWiringEventuallyFlushesCompletedTurnIntoLaterPrompt) {
     const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
         isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
     const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(

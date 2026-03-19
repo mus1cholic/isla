@@ -658,20 +658,18 @@ class GatewaySessionRegistry::Impl {
     }
 
     void NotifyServerStopping(GatewaySessionRegistry& registry) {
-        if (server_stopping_notified_) {
-            return;
-        }
-        server_stopping_notified_ = true;
-        if (application_sink_ != nullptr) {
-            application_sink_->OnServerStopping(registry);
-        }
+        std::call_once(server_stopping_once_, [this, &registry] {
+            if (application_sink_ != nullptr) {
+                application_sink_->OnServerStopping(registry);
+            }
+        });
     }
 
   private:
     GatewayApplicationEventSink* application_sink_ = nullptr;
     mutable std::mutex mutex_;
     absl::flat_hash_map<std::string, std::weak_ptr<GatewayLiveSession>> sessions_;
-    bool server_stopping_notified_ = false;
+    std::once_flag server_stopping_once_;
 };
 
 GatewaySessionRegistry::GatewaySessionRegistry(GatewayApplicationEventSink* application_sink)
