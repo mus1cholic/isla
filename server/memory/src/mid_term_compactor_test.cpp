@@ -496,6 +496,8 @@ TEST(LlmMidTermCompactorTest, CompactPropagatesEmbeddingFailure) {
     })";
     auto fake = std::make_shared<isla::server::test::MockLlmClient>();
     auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*fake, Validate()).Times(0);
+    EXPECT_CALL(*embedding_client, Validate()).Times(0);
     EXPECT_CALL(*fake, StreamResponse(_, _))
         .WillOnce(
             [response](const LlmRequest& request, const isla::server::LlmEventCallback& on_event) {
@@ -563,6 +565,16 @@ TEST(LlmMidTermCompactorTest, FactoryFailsForEmbeddingClientWithoutEmbeddingMode
 
     const absl::StatusOr<MidTermCompactorPtr> compactor =
         CreateLlmMidTermCompactor(fake, "test-model", embedding_client, "");
+
+    ASSERT_FALSE(compactor.ok());
+    EXPECT_EQ(compactor.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LlmMidTermCompactorTest, FactoryFailsForEmbeddingModelWithoutEmbeddingClient) {
+    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
+
+    const absl::StatusOr<MidTermCompactorPtr> compactor =
+        CreateLlmMidTermCompactor(fake, "test-model", nullptr, "gemini-embedding-2-preview");
 
     ASSERT_FALSE(compactor.ok());
     EXPECT_EQ(compactor.status().code(), absl::StatusCode::kInvalidArgument);
