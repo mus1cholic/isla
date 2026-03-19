@@ -1,64 +1,21 @@
 #include "isla/server/ai_gateway_step_registry.hpp"
 
-#include <functional>
 #include <memory>
 #include <string>
-#include <string_view>
-#include <type_traits>
-#include <utility>
 #include <variant>
-#include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "ai_gateway_telemetry_test_utils.hpp"
+#include "llm_client_mock.hpp"
 #include "openai_responses_test_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
 
-class FakeLlmClient final : public isla::server::LlmClient {
-  public:
-    using StreamHandler = std::function<absl::Status(const isla::server::LlmRequest&,
-                                                     const isla::server::LlmEventCallback&)>;
-
-    explicit FakeLlmClient(absl::Status status = absl::OkStatus(), std::string full_text = "",
-                           StreamHandler stream_handler = {})
-        : status_(std::move(status)), full_text_(std::move(full_text)),
-          stream_handler_(std::move(stream_handler)) {}
-
-    [[nodiscard]] absl::Status Validate() const override {
-        return absl::OkStatus();
-    }
-
-    [[nodiscard]] absl::Status
-    StreamResponse(const isla::server::LlmRequest& request,
-                   const isla::server::LlmEventCallback& on_event) const override {
-        last_request = request;
-        if (stream_handler_) {
-            return stream_handler_(request, on_event);
-        }
-        if (!status_.ok()) {
-            return status_;
-        }
-        const absl::Status delta_status = on_event(isla::server::LlmTextDeltaEvent{
-            .text_delta = full_text_,
-        });
-        if (!delta_status.ok()) {
-            return delta_status;
-        }
-        return on_event(isla::server::LlmCompletedEvent{
-            .response_id = "resp_test",
-        });
-    }
-
-    mutable isla::server::LlmRequest last_request;
-
-  private:
-    absl::Status status_;
-    std::string full_text_;
-    StreamHandler stream_handler_;
-};
+using ::testing::_;
+using ::testing::Return;
 
 TEST(GatewayStepRegistryTest, RejectsMissingConfiguredLlmClient) {
     GatewayStepRegistry registry;
@@ -198,7 +155,23 @@ TEST(GatewayStepRegistryTest, LeavesNonMainStepModelUnchangedWhenMainOverrideIsS
 }
 
 TEST(GatewayStepRegistryTest, UsesConfiguredLlmClientWhenPresent) {
-    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(), "provider response");
+    auto client = std::make_shared<isla::server::test::MockLlmClient>();
+    isla::server::LlmRequest captured_request;
+    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
+    EXPECT_CALL(*client, StreamResponse(_, _))
+        .WillOnce([&captured_request](const isla::server::LlmRequest& request,
+                                      const isla::server::LlmEventCallback& on_event) {
+            captured_request = request;
+            const absl::Status delta_status = on_event(isla::server::LlmTextDeltaEvent{
+                .text_delta = "provider response",
+            });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(isla::server::LlmCompletedEvent{
+                .response_id = "resp_test",
+            });
+        });
     GatewayStepRegistry registry(GatewayStepRegistryConfig{
         .llm_client = client,
     });
@@ -216,10 +189,10 @@ TEST(GatewayStepRegistryTest, UsesConfiguredLlmClientWhenPresent) {
                              });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(client->last_request.model, "gpt-5.3-chat-latest");
-    EXPECT_EQ(client->last_request.system_prompt, "runtime system");
-    EXPECT_EQ(client->last_request.user_text, "hello");
-    EXPECT_EQ(client->last_request.reasoning_effort, isla::server::LlmReasoningEffort::kNone);
+    EXPECT_EQ(captured_request.model, "gpt-5.3-chat-latest");
+    EXPECT_EQ(captured_request.system_prompt, "runtime system");
+    EXPECT_EQ(captured_request.user_text, "hello");
+    EXPECT_EQ(captured_request.reasoning_effort, isla::server::LlmReasoningEffort::kNone);
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
 }
 

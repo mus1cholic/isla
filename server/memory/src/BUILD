@@ -169,6 +169,48 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "memory_store_mock",
+    testonly = True,
+    hdrs = ["memory_store_mock.hpp"],
+    visibility = [
+        "//server/memory/src:__pkg__",
+        "//server/src:__pkg__",
+    ],
+    deps = [
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "mid_term_compactor_mock",
+    testonly = True,
+    hdrs = ["mid_term_compactor_mock.hpp"],
+    visibility = [
+        "//server/memory/src:__pkg__",
+        "//server/src:__pkg__",
+    ],
+    deps = [
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "mid_term_flush_decider_mock",
+    testonly = True,
+    hdrs = ["mid_term_flush_decider_mock.hpp"],
+    visibility = [
+        "//server/memory/src:__pkg__",
+        "//server/src:__pkg__",
+    ],
+    deps = [
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "@googletest//:gtest",
+    ],
+)
+
 cc_test(
     name = "conversation_test",
     srcs = ["conversation_test.cpp"],
@@ -211,7 +253,10 @@ cc_test(
     name = "memory_orchestrator_test",
     srcs = ["memory_orchestrator_test.cpp"],
     deps = [
+        ":memory_store_mock",
         ":memory_orchestrator",
+        ":mid_term_compactor_mock",
+        ":mid_term_flush_decider_mock",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
@@ -231,6 +276,7 @@ cc_test(
     name = "mid_term_memory_test",
     srcs = ["mid_term_memory_test.cpp"],
     deps = [
+        ":memory_store_mock",
         ":mid_term_memory",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
@@ -254,6 +300,7 @@ cc_test(
     name = "mid_term_compactor_test",
     srcs = ["mid_term_compactor_test.cpp"],
     deps = [
+        "//server/src:llm_client_mock",
         ":mid_term_compactor",
         ":prompt_loader",
         "//server/include/isla/server:server_headers",
@@ -266,6 +313,7 @@ cc_test(
     name = "mid_term_flush_decider_test",
     srcs = ["mid_term_flush_decider_test.cpp"],
     deps = [
+        "//server/src:llm_client_mock",
         ":mid_term_flush_decider",
         ":prompt_loader",
         "//server/include/isla/server:server_headers",
