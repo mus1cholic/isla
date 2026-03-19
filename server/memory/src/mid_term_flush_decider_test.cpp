@@ -1,69 +1,122 @@
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 
-#include <gmock/gmock.h>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <variant>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include "absl/status/status.h"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
-#include "server/src/llm_client_mock.hpp"
 
 namespace isla::server::memory {
 namespace {
 
+using isla::server::LlmClient;
+using isla::server::LlmCompletedEvent;
+using isla::server::LlmEventCallback;
 using isla::server::LlmRequest;
+using isla::server::LlmTextDeltaEvent;
 using nlohmann::json;
-using ::testing::_;
 
 Timestamp Ts(std::string_view text) {
     return json(text).get<Timestamp>();
 }
 
+// ---------------------------------------------------------------------------
+// Fake LLM client that delivers a canned response
+// ---------------------------------------------------------------------------
+
+class FakeLlmClient final : public LlmClient {
+  public:
+    explicit FakeLlmClient(std::string canned_response)
+        : canned_response_(std::move(canned_response)) {}
+
+    FakeLlmClient(std::string canned_response, absl::Status stream_status)
+        : canned_response_(std::move(canned_response)), stream_status_(std::move(stream_status)) {}
+
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status StreamResponse(const LlmRequest& request,
+                                              const LlmEventCallback& on_event) const override {
+        last_request_model_ = request.model;
+        last_request_system_prompt_ = request.system_prompt;
+        last_request_user_text_ = request.user_text;
+
+        if (!stream_status_.ok()) {
+            return stream_status_;
+        }
+
+        // Deliver canned response as a single text delta + completed event.
+        if (!canned_response_.empty()) {
+            const absl::Status delta_status = on_event(LlmTextDeltaEvent{
+                .text_delta = canned_response_,
+            });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+        }
+        absl::Status completed_status = on_event(LlmCompletedEvent{
+            .response_id = "resp_test",
+        });
+        if (!completed_status.ok()) {
+            return completed_status;
+        }
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] const std::string& last_request_model() const {
+        return last_request_model_;
+    }
+    [[nodiscard]] const std::string& last_request_system_prompt() const {
+        return last_request_system_prompt_;
+    }
+    [[nodiscard]] const std::string& last_request_user_text() const {
+        return last_request_user_text_;
+    }
+
+  private:
+    std::string canned_response_;
+    absl::Status stream_status_ = absl::OkStatus();
+    mutable std::string last_request_model_;
+    mutable std::string last_request_system_prompt_;
+    mutable std::string last_request_user_text_;
+};
+
+// ---------------------------------------------------------------------------
+// Helper: build a decider with a canned LLM response
+// ---------------------------------------------------------------------------
+
 struct DeciderWithFake {
-    std::shared_ptr<isla::server::test::MockLlmClient> fake_client;
-    std::shared_ptr<LlmRequest> last_request;
+    std::shared_ptr<FakeLlmClient> fake_client;
     MidTermFlushDeciderPtr decider;
 };
 
 DeciderWithFake MakeDecider(std::string canned_response) {
-    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
-    auto last_request = std::make_shared<LlmRequest>();
-    EXPECT_CALL(*fake, StreamResponse(_, _))
-        .WillOnce([last_request, canned_response = std::move(canned_response)](
-                      const LlmRequest& request, const isla::server::LlmEventCallback& on_event) {
-            *last_request = request;
-            return isla::server::test::EmitLlmResponse(canned_response, on_event);
-        });
+    auto fake = std::make_shared<FakeLlmClient>(std::move(canned_response));
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
         CreateLlmMidTermFlushDecider(fake, "test-model");
     if (!decider.ok()) {
-        return { .fake_client = fake, .last_request = last_request, .decider = nullptr };
+        return { .fake_client = fake, .decider = nullptr };
     }
-    return { .fake_client = fake, .last_request = last_request, .decider = std::move(*decider) };
+    return { .fake_client = fake, .decider = std::move(*decider) };
 }
 
 DeciderWithFake MakeFailingDecider(absl::Status failure_status) {
-    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
-    auto last_request = std::make_shared<LlmRequest>();
-    EXPECT_CALL(*fake, StreamResponse(_, _))
-        .WillOnce([last_request, failure_status = std::move(failure_status)](
-                      const LlmRequest& request,
-                      const isla::server::LlmEventCallback& on_event) -> absl::Status {
-            static_cast<void>(on_event);
-            *last_request = request;
-            return failure_status;
-        });
+    auto fake = std::make_shared<FakeLlmClient>("", std::move(failure_status));
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
         CreateLlmMidTermFlushDecider(fake, "test-model");
     if (!decider.ok()) {
-        return { .fake_client = fake, .last_request = last_request, .decider = nullptr };
+        return { .fake_client = fake, .decider = nullptr };
     }
-    return { .fake_client = fake, .last_request = last_request, .decider = std::move(*decider) };
+    return { .fake_client = fake, .decider = std::move(*decider) };
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +209,7 @@ Conversation MakeSixMessageConversation() {
 TEST(LlmMidTermFlushDeciderTest, DecideReturnsNoFlushWhenLlmSaysNo) {
     const std::string response =
         R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "Active discussion"})";
-    auto [fake, last_request, decider] = MakeDecider(response);
+    auto [fake, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -171,7 +224,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideReturnsNoFlushWhenLlmSaysNo) {
 TEST(LlmMidTermFlushDeciderTest, DecideReturnsFullFlushWhenLlmFlushesEntireEpisode) {
     const std::string response =
         R"({"should_flush": true, "item_id": "i1", "split_at": null, "reasoning": "Topic completed"})";
-    auto [fake, last_request, decider] = MakeDecider(response);
+    auto [fake, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeConversationWithStubAndEpisode();
@@ -187,7 +240,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideReturnsFullFlushWhenLlmFlushesEntireEpiso
 TEST(LlmMidTermFlushDeciderTest, DecideReturnsSplitFlushWhenLlmSplits) {
     const std::string response =
         R"({"should_flush": true, "item_id": "i0", "split_at": "m4", "reasoning": "Topic shift at m4"})";
-    auto [fake, last_request, decider] = MakeDecider(response);
+    auto [fake, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSixMessageConversation();
@@ -204,7 +257,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideReturnsSplitFlushWhenLlmSplits) {
 TEST(LlmMidTermFlushDeciderTest, DecidePassesCorrectJsonToLlm) {
     const std::string response =
         R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "No boundary"})";
-    auto [fake, last_request, decider] = MakeDecider(response);
+    auto [fake, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeConversationWithStubAndEpisode();
@@ -212,7 +265,7 @@ TEST(LlmMidTermFlushDeciderTest, DecidePassesCorrectJsonToLlm) {
     ASSERT_TRUE(decision.ok()) << decision.status();
 
     // Parse the user_text that was sent to the LLM.
-    const json sent = json::parse(last_request->user_text);
+    const json sent = json::parse(fake->last_request_user_text());
 
     ASSERT_TRUE(sent.contains("items"));
     ASSERT_EQ(sent["items"].size(), 2U);
@@ -238,23 +291,23 @@ TEST(LlmMidTermFlushDeciderTest, DecidePassesCorrectJsonToLlm) {
 TEST(LlmMidTermFlushDeciderTest, DecideUsesCorrectModelAndSystemPrompt) {
     const std::string response =
         R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "No"})";
-    auto [fake, last_request, decider] = MakeDecider(response);
+    auto [fake, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
     ASSERT_TRUE(decision.ok()) << decision.status();
 
-    EXPECT_EQ(last_request->model, "test-model");
+    EXPECT_EQ(fake->last_request_model(), "test-model");
     // Verify the system prompt matches the embedded asset (correct wiring).
     const absl::StatusOr<std::string> expected_prompt =
         LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
     ASSERT_TRUE(expected_prompt.ok()) << expected_prompt.status();
-    EXPECT_EQ(last_request->system_prompt, *expected_prompt);
+    EXPECT_EQ(fake->last_request_system_prompt(), *expected_prompt);
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidJson) {
-    auto [fake, last_request, decider] = MakeDecider("not valid json at all");
+    auto [fake, decider] = MakeDecider("not valid json at all");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -265,7 +318,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidJson) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingShouldFlushField) {
-    auto [fake, last_request, decider] = MakeDecider(R"({"item_id": "i0"})");
+    auto [fake, decider] = MakeDecider(R"({"item_id": "i0"})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -276,7 +329,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingShouldFlushField) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingItemIdWhenFlushing) {
-    auto [fake, last_request, decider] =
+    auto [fake, decider] =
         MakeDecider(R"({"should_flush": true, "split_at": null, "reasoning": "Yes"})");
     ASSERT_NE(decider, nullptr);
 
@@ -288,7 +341,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingItemIdWhenFlushing) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidItemIdFormat) {
-    auto [fake, last_request, decider] = MakeDecider(
+    auto [fake, decider] = MakeDecider(
         R"({"should_flush": true, "item_id": "bad", "split_at": null, "reasoning": "Yes"})");
     ASSERT_NE(decider, nullptr);
 
@@ -300,7 +353,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidItemIdFormat) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidSplitAtFormat) {
-    auto [fake, last_request, decider] = MakeDecider(
+    auto [fake, decider] = MakeDecider(
         R"({"should_flush": true, "item_id": "i0", "split_at": "bad", "reasoning": "Yes"})");
     ASSERT_NE(decider, nullptr);
 
@@ -312,8 +365,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidSplitAtFormat) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecidePropagatesLlmFailure) {
-    auto [fake, last_request, decider] =
-        MakeFailingDecider(absl::InternalError("LLM service unavailable"));
+    auto [fake, decider] = MakeFailingDecider(absl::InternalError("LLM service unavailable"));
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -324,7 +376,7 @@ TEST(LlmMidTermFlushDeciderTest, DecidePropagatesLlmFailure) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsInconsistentNoFlushWithItemId) {
-    auto [fake, last_request, decider] = MakeDecider(
+    auto [fake, decider] = MakeDecider(
         R"({"should_flush": false, "item_id": "i0", "split_at": null, "reasoning": "No"})");
     ASSERT_NE(decider, nullptr);
 
@@ -336,7 +388,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInconsistentNoFlushWithItemId) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsInconsistentNoFlushWithSplitAt) {
-    auto [fake, last_request, decider] = MakeDecider(
+    auto [fake, decider] = MakeDecider(
         R"({"should_flush": false, "item_id": null, "split_at": "m3", "reasoning": "No"})");
     ASSERT_NE(decider, nullptr);
 
@@ -349,7 +401,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInconsistentNoFlushWithSplitAt) {
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsItemIndexOutOfBounds) {
     // Conversation has 1 item (index 0), but LLM returns item_id "i5".
-    auto [fake, last_request, decider] = MakeDecider(
+    auto [fake, decider] = MakeDecider(
         R"({"should_flush": true, "item_id": "i5", "split_at": null, "reasoning": "Yes"})");
     ASSERT_NE(decider, nullptr);
 
@@ -362,7 +414,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsItemIndexOutOfBounds) {
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsSplitAtOutOfBounds) {
     // Conversation has 4 messages (indices 0-3), but LLM returns split_at "m10".
-    auto [fake, last_request, decider] = MakeDecider(
+    auto [fake, decider] = MakeDecider(
         R"({"should_flush": true, "item_id": "i0", "split_at": "m10", "reasoning": "Yes"})");
     ASSERT_NE(decider, nullptr);
 
@@ -375,7 +427,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsSplitAtOutOfBounds) {
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsSplitAtOnEpisodeStub) {
     // LLM tries to split an episode stub (item i0), which has no messages.
-    auto [fake, last_request, decider] = MakeDecider(
+    auto [fake, decider] = MakeDecider(
         R"({"should_flush": true, "item_id": "i0", "split_at": "m0", "reasoning": "Yes"})");
     ASSERT_NE(decider, nullptr);
 
@@ -389,7 +441,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsSplitAtOnEpisodeStub) {
 TEST(LlmMidTermFlushDeciderTest, DecideHandlesEmptyConversation) {
     const std::string response =
         R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "Empty"})";
-    auto [fake, last_request, decider] = MakeDecider(response);
+    auto [fake, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
     Conversation conversation;
@@ -400,17 +452,12 @@ TEST(LlmMidTermFlushDeciderTest, DecideHandlesEmptyConversation) {
     EXPECT_FALSE(decision->should_flush);
 
     // Verify the serialized JSON has an empty items array.
-    const json sent = json::parse(last_request->user_text);
+    const json sent = json::parse(fake->last_request_user_text());
     EXPECT_TRUE(sent["items"].empty());
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsEmptyLlmResponse) {
-    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
-    EXPECT_CALL(*fake, StreamResponse(_, _))
-        .WillOnce([](const LlmRequest& request, const isla::server::LlmEventCallback& on_event) {
-            static_cast<void>(request);
-            return isla::server::test::EmitLlmResponse("", on_event);
-        });
+    auto fake = std::make_shared<FakeLlmClient>("");
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
         CreateLlmMidTermFlushDecider(fake, "test-model");
     ASSERT_TRUE(decider.ok()) << decider.status();
@@ -424,7 +471,8 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsEmptyLlmResponse) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, FactorySucceedsWithValidInputs) {
-    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
+    auto fake = std::make_shared<FakeLlmClient>(
+        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "test"})");
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
         CreateLlmMidTermFlushDecider(fake, "gpt-4o-mini");
 
@@ -441,7 +489,7 @@ TEST(LlmMidTermFlushDeciderTest, FactoryFailsForNullClient) {
 }
 
 TEST(LlmMidTermFlushDeciderTest, FactoryFailsForEmptyModel) {
-    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
+    auto fake = std::make_shared<FakeLlmClient>("");
     absl::StatusOr<MidTermFlushDeciderPtr> decider = CreateLlmMidTermFlushDecider(fake, "");
 
     ASSERT_FALSE(decider.ok());

@@ -16,24 +16,18 @@
 #include <variant>
 #include <vector>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "absl/status/status.h"
-#include "ai_gateway_test_mocks.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 #include "openai_responses_test_utils.hpp"
-#include "server/memory/src/memory_store_mock.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
 
 using namespace std::chrono_literals;
-using ::testing::_;
-using ::testing::NiceMock;
-using ::testing::Return;
 
 absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& request,
                                           const OpenAiResponsesEventCallback& on_event,
@@ -164,46 +158,43 @@ bool ContainsTelemetryName(const std::vector<TelemetryPhaseRecord>& phases, std:
            }) != phases.end();
 }
 
-class RecordingTelemetrySink final : public NiceMock<test::MockTelemetrySink> {
+class RecordingTelemetrySink final : public TelemetrySink {
   public:
-    RecordingTelemetrySink() {
-        ON_CALL(*this, OnEvent(_, _, _))
-            .WillByDefault([this](const TurnTelemetryContext& context, std::string_view event_name,
-                                  TurnTelemetryContext::Clock::time_point at) {
-                static_cast<void>(context);
-                static_cast<void>(at);
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    events_.push_back(TelemetryEventRecord{ .name = std::string(event_name) });
-                }
-                cv_.notify_all();
+    void OnEvent(const TurnTelemetryContext& context, std::string_view event_name,
+                 TurnTelemetryContext::Clock::time_point at) const override {
+        static_cast<void>(context);
+        static_cast<void>(at);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            events_.push_back(TelemetryEventRecord{ .name = std::string(event_name) });
+        }
+        cv_.notify_all();
+    }
+
+    void OnPhase(const TurnTelemetryContext& context, std::string_view phase_name,
+                 TurnTelemetryContext::Clock::time_point started_at,
+                 TurnTelemetryContext::Clock::time_point completed_at) const override {
+        static_cast<void>(context);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            phases_.push_back(TelemetryPhaseRecord{
+                .name = std::string(phase_name),
+                .started_at = started_at,
+                .completed_at = completed_at,
             });
-        ON_CALL(*this, OnPhase(_, _, _, _))
-            .WillByDefault([this](const TurnTelemetryContext& context, std::string_view phase_name,
-                                  TurnTelemetryContext::Clock::time_point started_at,
-                                  TurnTelemetryContext::Clock::time_point completed_at) {
-                static_cast<void>(context);
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    phases_.push_back(TelemetryPhaseRecord{
-                        .name = std::string(phase_name),
-                        .started_at = started_at,
-                        .completed_at = completed_at,
-                    });
-                }
-                cv_.notify_all();
-            });
-        ON_CALL(*this, OnTurnFinished(_, _, _))
-            .WillByDefault([this](const TurnTelemetryContext& context, std::string_view outcome,
-                                  TurnTelemetryContext::Clock::time_point finished_at) {
-                static_cast<void>(context);
-                static_cast<void>(finished_at);
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    finished_.push_back(TurnFinishedRecord{ .outcome = std::string(outcome) });
-                }
-                cv_.notify_all();
-            });
+        }
+        cv_.notify_all();
+    }
+
+    void OnTurnFinished(const TurnTelemetryContext& context, std::string_view outcome,
+                        TurnTelemetryContext::Clock::time_point finished_at) const override {
+        static_cast<void>(context);
+        static_cast<void>(finished_at);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            finished_.push_back(TurnFinishedRecord{ .outcome = std::string(outcome) });
+        }
+        cv_.notify_all();
     }
 
     bool WaitForFinishedCount(std::size_t expected_count) const {
@@ -442,64 +433,61 @@ class GatewayStubResponderTest : public ::testing::Test {
     std::shared_ptr<RecordingLiveSession> session_;
 };
 
-class RecordingGatewayMemoryStore final
-    : public NiceMock<isla::server::memory::test::MockMemoryStore> {
+class RecordingGatewayMemoryStore final : public isla::server::memory::MemoryStore {
   public:
-    RecordingGatewayMemoryStore() {
-        ON_CALL(*this, WarmUp()).WillByDefault(Return(absl::OkStatus()));
-        ON_CALL(*this, UpsertSession(_))
-            .WillByDefault([this](const isla::server::memory::MemorySessionRecord& record) {
-                ++upsert_session_attempts;
-                if (next_upsert_session_status_index < upsert_session_statuses.size()) {
-                    const absl::Status status =
-                        upsert_session_statuses[next_upsert_session_status_index++];
-                    if (!status.ok()) {
-                        return status;
-                    }
-                }
-                session_records.push_back(record);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, AppendConversationMessage(_))
-            .WillByDefault([this](const isla::server::memory::ConversationMessageWrite& write) {
-                message_writes.push_back(write);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, ReplaceConversationItemWithEpisodeStub(_))
-            .WillByDefault([](const isla::server::memory::EpisodeStubWrite& write) {
-                static_cast<void>(write);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, SplitConversationItemWithEpisodeStub(_))
-            .WillByDefault([](const isla::server::memory::SplitEpisodeStubWrite& write) {
-                static_cast<void>(write);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, UpsertMidTermEpisode(_))
-            .WillByDefault([](const isla::server::memory::MidTermEpisodeWrite& write) {
-                static_cast<void>(write);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, ListMidTermEpisodes(_))
-            .WillByDefault([](std::string_view session_id)
-                               -> absl::StatusOr<std::vector<isla::server::memory::Episode>> {
-                static_cast<void>(session_id);
-                return std::vector<isla::server::memory::Episode>{};
-            });
-        ON_CALL(*this, GetMidTermEpisode(_, _))
-            .WillByDefault([](std::string_view session_id, std::string_view episode_id)
-                               -> absl::StatusOr<std::optional<isla::server::memory::Episode>> {
-                static_cast<void>(session_id);
-                static_cast<void>(episode_id);
-                return std::nullopt;
-            });
-        ON_CALL(*this, LoadSnapshot(_))
-            .WillByDefault(
-                [](std::string_view session_id)
-                    -> absl::StatusOr<std::optional<isla::server::memory::MemoryStoreSnapshot>> {
-                    static_cast<void>(session_id);
-                    return std::nullopt;
-                });
+    absl::Status UpsertSession(const isla::server::memory::MemorySessionRecord& record) override {
+        ++upsert_session_attempts;
+        if (next_upsert_session_status_index < upsert_session_statuses.size()) {
+            const absl::Status status = upsert_session_statuses[next_upsert_session_status_index++];
+            if (!status.ok()) {
+                return status;
+            }
+        }
+        session_records.push_back(record);
+        return absl::OkStatus();
+    }
+
+    absl::Status AppendConversationMessage(
+        const isla::server::memory::ConversationMessageWrite& write) override {
+        message_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status ReplaceConversationItemWithEpisodeStub(
+        const isla::server::memory::EpisodeStubWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status SplitConversationItemWithEpisodeStub(
+        const isla::server::memory::SplitEpisodeStubWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::StatusOr<std::vector<isla::server::memory::Episode>>
+    ListMidTermEpisodes(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::vector<isla::server::memory::Episode>{};
+    }
+
+    absl::StatusOr<std::optional<isla::server::memory::Episode>>
+    GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const override {
+        static_cast<void>(session_id);
+        static_cast<void>(episode_id);
+        return std::nullopt;
+    }
+
+    absl::StatusOr<std::optional<isla::server::memory::MemoryStoreSnapshot>>
+    LoadSnapshot(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::nullopt;
     }
 
     std::vector<isla::server::memory::MemorySessionRecord> session_records;

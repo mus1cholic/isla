@@ -10,14 +10,9 @@
 #include <gtest/gtest.h>
 
 #include "ai_gateway_telemetry_test_utils.hpp"
-#include "openai_responses_client_mock.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
-
-using ::testing::_;
-using ::testing::InSequence;
-using ::testing::Return;
 
 void ExpectExecutorTelemetryRecorded(const test::RecordingTelemetrySink& telemetry_sink) {
     const std::vector<test::TelemetryEventRecord> events = telemetry_sink.events();
@@ -27,6 +22,74 @@ void ExpectExecutorTelemetryRecorded(const test::RecordingTelemetrySink& telemet
     EXPECT_EQ(events[1].name, telemetry::kEventExecutorCompleted);
     EXPECT_TRUE(test::ContainsTelemetryPhase(phases, telemetry::kPhaseExecutorTotal));
 }
+
+class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {
+  public:
+    explicit FailingOpenAiResponsesClient(absl::Status status) : status_(std::move(status)) {}
+
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const OpenAiResponsesRequest& request,
+                   const OpenAiResponsesEventCallback& on_event) const override {
+        static_cast<void>(request);
+        static_cast<void>(on_event);
+        return status_;
+    }
+
+  private:
+    absl::Status status_;
+};
+
+class SequencedOpenAiResponsesClient final : public OpenAiResponsesClient {
+  public:
+    explicit SequencedOpenAiResponsesClient(std::vector<std::string> outputs)
+        : outputs_(std::move(outputs)) {}
+
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const OpenAiResponsesRequest& request,
+                   const OpenAiResponsesEventCallback& on_event) const override {
+        call_order.push_back(request.model);
+        if (next_index_ >= outputs_.size()) {
+            return absl::InternalError("unexpected extra provider call");
+        }
+        const std::string& output = outputs_[next_index_++];
+        absl::Status delta_status = on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = output });
+        if (!delta_status.ok()) {
+            return delta_status;
+        }
+        return on_event(OpenAiResponsesCompletedEvent{
+            .response_id = "resp_" + std::to_string(next_index_),
+        });
+    }
+
+    mutable std::vector<std::string> call_order;
+
+  private:
+    std::vector<std::string> outputs_;
+    mutable std::size_t next_index_ = 0;
+};
+
+class ThrowingOpenAiResponsesClient final : public OpenAiResponsesClient {
+  public:
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const OpenAiResponsesRequest& request,
+                   const OpenAiResponsesEventCallback& on_event) const override {
+        static_cast<void>(request);
+        static_cast<void>(on_event);
+        throw std::runtime_error("boom");
+    }
+};
 
 TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
     GatewayPlanExecutor executor;
@@ -50,24 +113,8 @@ TEST(GatewayPlanExecutorTest, RejectsEmptyPlan) {
 }
 
 TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
-    auto client = std::make_shared<test::MockOpenAiResponsesClient>();
-    {
-        InSequence sequence;
-        EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-        EXPECT_CALL(*client, StreamResponse(_, _))
-            .WillOnce([](const OpenAiResponsesRequest& request,
-                         const OpenAiResponsesEventCallback& on_event) {
-                EXPECT_EQ(request.model, "model_a");
-                return test::EmitOpenAiResponse("alpha", on_event, "resp_1");
-            });
-        EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-        EXPECT_CALL(*client, StreamResponse(_, _))
-            .WillOnce([](const OpenAiResponsesRequest& request,
-                         const OpenAiResponsesEventCallback& on_event) {
-                EXPECT_EQ(request.model, "model_b");
-                return test::EmitOpenAiResponse("beta", on_event, "resp_2");
-            });
-    }
+    auto client = std::make_shared<SequencedOpenAiResponsesClient>(
+        std::vector<std::string>{ "alpha", "beta" });
     auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
         .openai_client = client,
@@ -96,6 +143,8 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
     });
 
     ASSERT_TRUE(std::holds_alternative<ExecutionResult>(outcome));
+    EXPECT_EQ(client->call_order, std::vector<std::string>({ "model_a", "model_b" }));
+
     const auto& result = std::get<ExecutionResult>(outcome);
     ASSERT_EQ(result.step_results.size(), 2U);
     EXPECT_EQ(std::get<LlmCallResult>(result.step_results[0]).output_text, "alpha");
@@ -104,7 +153,8 @@ TEST(GatewayPlanExecutorTest, ExecutesItemsInOrderAndCollectsResults) {
 }
 
 TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {
-    auto client = std::make_shared<test::MockOpenAiResponsesClient>();
+    auto client = std::make_shared<SequencedOpenAiResponsesClient>(
+        std::vector<std::string>{ "alpha", "beta" });
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
         .openai_client = client,
     });
@@ -135,6 +185,7 @@ TEST(GatewayPlanExecutorTest, StopsAtFirstFailingItem) {
     EXPECT_EQ(failure.code, "bad_request");
     EXPECT_EQ(failure.message, "execution step rejected the request");
     EXPECT_FALSE(failure.retryable);
+    EXPECT_TRUE(client->call_order.empty());
 }
 
 TEST(GatewayPlanExecutorTest, MapsMissingProviderConfigurationToInternalError) {
@@ -162,17 +213,8 @@ TEST(GatewayPlanExecutorTest, MapsMissingProviderConfigurationToInternalError) {
 }
 
 TEST(GatewayPlanExecutorTest, MapsInternalStepFailuresToStablePublicError) {
-    auto client = std::make_shared<test::MockOpenAiResponsesClient>();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce([](const OpenAiResponsesRequest& request,
-                     const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            static_cast<void>(request);
-            static_cast<void>(on_event);
-            throw std::runtime_error("boom");
-        });
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
-        .openai_client = client,
+        .openai_client = std::make_shared<ThrowingOpenAiResponsesClient>(),
     });
 
     const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
@@ -199,12 +241,9 @@ TEST(GatewayPlanExecutorTest, MapsInternalStepFailuresToStablePublicError) {
 }
 
 TEST(GatewayPlanExecutorTest, MapsUnauthenticatedProviderFailuresToAuthenticationError) {
-    auto client = std::make_shared<test::MockOpenAiResponsesClient>();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce(Return(absl::UnauthenticatedError("bad api key")));
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
-        .openai_client = client,
+        .openai_client = std::make_shared<FailingOpenAiResponsesClient>(
+            absl::UnauthenticatedError("bad api key")),
     });
 
     const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
@@ -229,12 +268,9 @@ TEST(GatewayPlanExecutorTest, MapsUnauthenticatedProviderFailuresToAuthenticatio
 }
 
 TEST(GatewayPlanExecutorTest, MapsPermissionDeniedProviderFailuresToPermissionDenied) {
-    auto client = std::make_shared<test::MockOpenAiResponsesClient>();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce(Return(absl::PermissionDeniedError("project mismatch")));
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
-        .openai_client = client,
+        .openai_client = std::make_shared<FailingOpenAiResponsesClient>(
+            absl::PermissionDeniedError("project mismatch")),
     });
 
     const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{
@@ -259,12 +295,9 @@ TEST(GatewayPlanExecutorTest, MapsPermissionDeniedProviderFailuresToPermissionDe
 }
 
 TEST(GatewayPlanExecutorTest, MapsResourceExhaustedProviderFailuresToResponseTooLarge) {
-    auto client = std::make_shared<test::MockOpenAiResponsesClient>();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce(Return(absl::ResourceExhaustedError("too much output")));
     GatewayPlanExecutor executor(GatewayStepRegistryConfig{
-        .openai_client = client,
+        .openai_client = std::make_shared<FailingOpenAiResponsesClient>(
+            absl::ResourceExhaustedError("too much output")),
     });
 
     const ExecutionOutcome outcome = executor.Execute(ExecutionPlan{

@@ -1,31 +1,80 @@
 #include "isla/server/openai_llms.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "ai_gateway_telemetry_test_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
-#include "llm_client_mock.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
 
-using ::testing::_;
-using ::testing::Return;
+class FakeLlmClient final : public isla::server::LlmClient {
+  public:
+    using StreamHandler = std::function<absl::Status(const isla::server::LlmRequest&,
+                                                     const isla::server::LlmEventCallback&)>;
 
-std::shared_ptr<isla::server::test::MockLlmClient> MakeMockLlmClient() {
-    auto client = std::make_shared<isla::server::test::MockLlmClient>();
-    EXPECT_CALL(*client, WarmUp()).Times(0);
-    return client;
-}
+    explicit FakeLlmClient(absl::Status status = absl::OkStatus(), std::string full_text = "",
+                           std::string response_id = "resp_test",
+                           absl::Status validate_status = absl::OkStatus(),
+                           StreamHandler stream_handler = {})
+        : status_(std::move(status)), full_text_(std::move(full_text)),
+          response_id_(std::move(response_id)), validate_status_(std::move(validate_status)),
+          stream_handler_(std::move(stream_handler)) {}
+
+    [[nodiscard]] absl::Status Validate() const override {
+        return validate_status_;
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const isla::server::LlmRequest& request,
+                   const isla::server::LlmEventCallback& on_event) const override {
+        last_request = request;
+        requests.push_back(request);
+        if (stream_handler_) {
+            return stream_handler_(request, on_event);
+        }
+        if (!status_.ok()) {
+            return status_;
+        }
+        const std::size_t midpoint = full_text_.size() / 2U;
+        const absl::Status first_status = on_event(isla::server::LlmTextDeltaEvent{
+            .text_delta = full_text_.substr(0, midpoint),
+        });
+        if (!first_status.ok()) {
+            return first_status;
+        }
+        const absl::Status second_status = on_event(isla::server::LlmTextDeltaEvent{
+            .text_delta = full_text_.substr(midpoint),
+        });
+        if (!second_status.ok()) {
+            return second_status;
+        }
+        return on_event(isla::server::LlmCompletedEvent{
+            .response_id = response_id_,
+        });
+    }
+
+    mutable isla::server::LlmRequest last_request;
+    mutable std::vector<isla::server::LlmRequest> requests;
+
+  private:
+    absl::Status status_;
+    std::string full_text_;
+    std::string response_id_;
+    absl::Status validate_status_;
+    StreamHandler stream_handler_;
+};
 
 TEST(OpenAiReasoningEffortTest, MapsAllSupportedEffortValuesToSchemaStrings) {
     ASSERT_TRUE(TryOpenAiReasoningEffortToString(OpenAiReasoningEffort::kNone).has_value());
@@ -48,7 +97,7 @@ TEST(OpenAiReasoningEffortTest, ReturnsNulloptForUnknownEffortValue) {
 }
 
 TEST(OpenAiLlmstest, RejectsInvalidReasoningEffort) {
-    auto client = MakeMockLlmClient();
+    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(), "hello world");
     OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.3-chat-latest", client,
                            static_cast<OpenAiReasoningEffort>(999));
 
@@ -99,15 +148,7 @@ TEST(OpenAiLlmstest, RejectsMissingConfiguredLlmClient) {
 }
 
 TEST(OpenAiLlmstest, UsesInjectedLlmClientWhenConfigured) {
-    auto client = MakeMockLlmClient();
-    isla::server::LlmRequest captured_request;
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce([&captured_request](const isla::server::LlmRequest& request,
-                                      const isla::server::LlmEventCallback& on_event) {
-            captured_request = request;
-            return isla::server::test::EmitLlmResponse("hello world", on_event);
-        });
+    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(), "hello world");
     OpenAiLLMs openai_llms("main", "system prompt", "gpt-5.3-chat-latest", client,
                            OpenAiReasoningEffort::kMedium);
 
@@ -115,44 +156,28 @@ TEST(OpenAiLlmstest, UsesInjectedLlmClientWhenConfigured) {
         openai_llms.GenerateContent(0, ExecutionRuntimeInput{ .user_text = "hi" });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    ASSERT_EQ(captured_request.model, "gpt-5.3-chat-latest");
-    ASSERT_EQ(captured_request.system_prompt, "system prompt");
-    ASSERT_EQ(captured_request.user_text, "hi");
-    EXPECT_EQ(captured_request.reasoning_effort, isla::server::LlmReasoningEffort::kMedium);
+    ASSERT_EQ(client->last_request.model, "gpt-5.3-chat-latest");
+    ASSERT_EQ(client->last_request.system_prompt, "system prompt");
+    ASSERT_EQ(client->last_request.user_text, "hi");
+    EXPECT_EQ(client->last_request.reasoning_effort, isla::server::LlmReasoningEffort::kMedium);
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "hello world");
 }
 
 TEST(OpenAiLlmstest, UsesRuntimeSystemPromptOverrideWhenProvided) {
-    auto client = MakeMockLlmClient();
-    isla::server::LlmRequest captured_request;
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce([&captured_request](const isla::server::LlmRequest& request,
-                                      const isla::server::LlmEventCallback& on_event) {
-            captured_request = request;
-            return isla::server::test::EmitLlmResponse("hello world", on_event);
-        });
+    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(), "hello world");
     OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result = openai_llms.GenerateContent(
         0, ExecutionRuntimeInput{ .system_prompt = "rendered system prompt", .user_text = "ctx" });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    ASSERT_EQ(captured_request.system_prompt, "rendered system prompt");
-    ASSERT_EQ(captured_request.user_text, "ctx");
-    EXPECT_EQ(captured_request.reasoning_effort, isla::server::LlmReasoningEffort::kNone);
+    ASSERT_EQ(client->last_request.system_prompt, "rendered system prompt");
+    ASSERT_EQ(client->last_request.user_text, "ctx");
+    EXPECT_EQ(client->last_request.reasoning_effort, isla::server::LlmReasoningEffort::kNone);
 }
 
 TEST(OpenAiLlmstest, PropagatesTelemetryContextToLlmClient) {
-    auto client = MakeMockLlmClient();
-    isla::server::LlmRequest captured_request;
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce([&captured_request](const isla::server::LlmRequest& request,
-                                      const isla::server::LlmEventCallback& on_event) {
-            captured_request = request;
-            return isla::server::test::EmitLlmResponse("hello world", on_event);
-        });
+    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(), "hello world");
     OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.3-chat-latest", client);
     const std::shared_ptr<const TurnTelemetryContext> telemetry_context =
         MakeTurnTelemetryContext("srv_test", "turn_telemetry");
@@ -165,18 +190,11 @@ TEST(OpenAiLlmstest, PropagatesTelemetryContextToLlmClient) {
                                        });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(captured_request.telemetry_context, telemetry_context);
+    EXPECT_EQ(client->last_request.telemetry_context, telemetry_context);
 }
 
 TEST(OpenAiLlmstest, RecordsProviderTotalAndAggregationPhases) {
-    auto client = MakeMockLlmClient();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce([](const isla::server::LlmRequest& request,
-                     const isla::server::LlmEventCallback& on_event) {
-            static_cast<void>(request);
-            return isla::server::test::EmitLlmResponse("hello world", on_event);
-        });
+    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(), "hello world");
     auto telemetry_sink = std::make_shared<test::RecordingTelemetrySink>();
     OpenAiLLMs openai_llms("main", "planner prompt", "gpt-5.3-chat-latest", client);
 
@@ -200,10 +218,7 @@ TEST(OpenAiLlmstest, RecordsProviderTotalAndAggregationPhases) {
 }
 
 TEST(OpenAiLlmstest, PropagatesInjectedLlmClientFailure) {
-    auto client = MakeMockLlmClient();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce(Return(absl::UnavailableError("rate limited")));
+    auto client = std::make_shared<FakeLlmClient>(absl::UnavailableError("rate limited"));
     OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =
@@ -215,8 +230,8 @@ TEST(OpenAiLlmstest, PropagatesInjectedLlmClientFailure) {
 }
 
 TEST(OpenAiLlmstest, PropagatesInjectedLlmClientValidationFailure) {
-    auto client = MakeMockLlmClient();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::UnauthenticatedError("bad api key")));
+    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(), "", "resp_test",
+                                                  absl::UnauthenticatedError("bad api key"));
     OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =
@@ -228,11 +243,10 @@ TEST(OpenAiLlmstest, PropagatesInjectedLlmClientValidationFailure) {
 }
 
 TEST(OpenAiLlmstest, ConvertsLlmClientExceptionToInternalError) {
-    auto client = MakeMockLlmClient();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce([](const isla::server::LlmRequest& request,
-                     const isla::server::LlmEventCallback& on_event) -> absl::Status {
+    auto client = std::make_shared<FakeLlmClient>(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [](const isla::server::LlmRequest& request,
+           const isla::server::LlmEventCallback& on_event) -> absl::Status {
             static_cast<void>(request);
             static_cast<void>(on_event);
             throw std::runtime_error("boom");
@@ -248,15 +262,8 @@ TEST(OpenAiLlmstest, ConvertsLlmClientExceptionToInternalError) {
 }
 
 TEST(OpenAiLlmstest, RejectsProviderOutputThatExceedsMaximumLength) {
-    auto client = MakeMockLlmClient();
-    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
-    EXPECT_CALL(*client, StreamResponse(_, _))
-        .WillOnce([](const isla::server::LlmRequest& request,
-                     const isla::server::LlmEventCallback& on_event) {
-            static_cast<void>(request);
-            return isla::server::test::EmitLlmResponse(std::string(kMaxTextOutputBytes + 1U, 'x'),
-                                                       on_event);
-        });
+    auto client = std::make_shared<FakeLlmClient>(absl::OkStatus(),
+                                                  std::string(kMaxTextOutputBytes + 1U, 'x'));
     OpenAiLLMs openai_llms("main", "", "gpt-5.3-chat-latest", client);
 
     const absl::StatusOr<ExecutionStepResult> result =
