@@ -261,11 +261,9 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     EXPECT_EQ(parsed->openai_config.request_timeout, std::chrono::milliseconds(2500));
     ASSERT_TRUE(parsed->openai_config.project.has_value());
     EXPECT_EQ(*parsed->openai_config.project, "proj_env_123");
-    EXPECT_EQ(parsed->llm_runtime_config.main_model, std::string(kDefaultMainLlmModel));
-    EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model,
-              std::string(kDefaultMidTermFlushDeciderModel));
-    EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model,
-              std::string(kDefaultMidTermCompactorModel));
+    EXPECT_TRUE(parsed->llm_runtime_config.main_model.empty());
+    EXPECT_TRUE(parsed->llm_runtime_config.mid_term_flush_decider_model.empty());
+    EXPECT_TRUE(parsed->llm_runtime_config.mid_term_compactor_model.empty());
 }
 
 TEST(AiGatewayStartupConfigTest, UsesLlmModelEnvironmentDefaultsWhenCliOmitted) {

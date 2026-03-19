@@ -21,6 +21,25 @@ void handle_signal(int /*unused*/) {
     g_stop_requested = 1;
 }
 
+std::string ResolveMainModel(const isla::server::ai_gateway::GatewayLlmRuntimeConfig& config) {
+    return config.main_model.empty() ? std::string(isla::server::ai_gateway::kDefaultMainLlmModel)
+                                     : config.main_model;
+}
+
+std::string
+ResolveMidTermFlushDeciderModel(const isla::server::ai_gateway::GatewayLlmRuntimeConfig& config) {
+    return config.mid_term_flush_decider_model.empty()
+               ? std::string(isla::server::ai_gateway::kDefaultMidTermFlushDeciderModel)
+               : config.mid_term_flush_decider_model;
+}
+
+std::string
+ResolveMidTermCompactorModel(const isla::server::ai_gateway::GatewayLlmRuntimeConfig& config) {
+    return config.mid_term_compactor_model.empty()
+               ? std::string(isla::server::ai_gateway::kDefaultMidTermCompactorModel)
+               : config.mid_term_compactor_model;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -137,13 +156,13 @@ int main(int argc, char** argv) {
               << (log_context.telemetry_event_logging_enabled ? "true" : "false");
     LOG(INFO) << "AI gateway llm models main="
               << isla::server::ai_gateway::SanitizeForLog(
-                     startup_config->llm_runtime_config.main_model)
+                     ResolveMainModel(startup_config->llm_runtime_config))
               << " mid_term_flush_decider="
               << isla::server::ai_gateway::SanitizeForLog(
-                     startup_config->llm_runtime_config.mid_term_flush_decider_model)
+                     ResolveMidTermFlushDeciderModel(startup_config->llm_runtime_config))
               << " mid_term_compactor="
               << isla::server::ai_gateway::SanitizeForLog(
-                     startup_config->llm_runtime_config.mid_term_compactor_model);
+                     ResolveMidTermCompactorModel(startup_config->llm_runtime_config));
     if (mid_term_memory_configured && !mid_term_memory_available) {
         LOG(WARNING) << "AI gateway mid-term memory degraded to working-memory-only detail='"
                      << isla::server::ai_gateway::SanitizeForLog(mid_term_memory_status.message())

@@ -242,15 +242,7 @@ void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLoo
 }
 
 absl::Status ValidateLlmRuntimeConfig(const GatewayLlmRuntimeConfig& config) {
-    if (config.main_model.empty()) {
-        return absl::InvalidArgumentError("main-llm-model must not be empty");
-    }
-    if (config.mid_term_flush_decider_model.empty()) {
-        return absl::InvalidArgumentError("mid-term-flush-decider-model must not be empty");
-    }
-    if (config.mid_term_compactor_model.empty()) {
-        return absl::InvalidArgumentError("mid-term-compactor-model must not be empty");
-    }
+    static_cast<void>(config);
     return absl::OkStatus();
 }
 
@@ -555,20 +547,30 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         }
         constexpr std::string_view kMainLlmModelPrefix = "--main-llm-model=";
         if (argument.starts_with(kMainLlmModelPrefix)) {
-            parsed.llm_runtime_config.main_model = argument.substr(kMainLlmModelPrefix.size());
+            const std::string model = argument.substr(kMainLlmModelPrefix.size());
+            if (model.empty()) {
+                return absl::InvalidArgumentError("main-llm-model must not be empty");
+            }
+            parsed.llm_runtime_config.main_model = model;
             continue;
         }
         constexpr std::string_view kMidTermFlushDeciderModelPrefix =
             "--mid-term-flush-decider-model=";
         if (argument.starts_with(kMidTermFlushDeciderModelPrefix)) {
-            parsed.llm_runtime_config.mid_term_flush_decider_model =
-                argument.substr(kMidTermFlushDeciderModelPrefix.size());
+            const std::string model = argument.substr(kMidTermFlushDeciderModelPrefix.size());
+            if (model.empty()) {
+                return absl::InvalidArgumentError("mid-term-flush-decider-model must not be empty");
+            }
+            parsed.llm_runtime_config.mid_term_flush_decider_model = model;
             continue;
         }
         constexpr std::string_view kMidTermCompactorModelPrefix = "--mid-term-compactor-model=";
         if (argument.starts_with(kMidTermCompactorModelPrefix)) {
-            parsed.llm_runtime_config.mid_term_compactor_model =
-                argument.substr(kMidTermCompactorModelPrefix.size());
+            const std::string model = argument.substr(kMidTermCompactorModelPrefix.size());
+            if (model.empty()) {
+                return absl::InvalidArgumentError("mid-term-compactor-model must not be empty");
+            }
+            parsed.llm_runtime_config.mid_term_compactor_model = model;
             continue;
         }
         if (argument.starts_with("--supabase-url=")) {

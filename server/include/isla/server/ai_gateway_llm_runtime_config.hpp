@@ -15,9 +15,9 @@ inline constexpr std::string_view kDefaultMidTermFlushDeciderModel = "gpt-5.4-mi
 inline constexpr std::string_view kDefaultMidTermCompactorModel = "gpt-5.4-mini";
 
 struct GatewayLlmRuntimeConfig {
-    std::string main_model = std::string(kDefaultMainLlmModel);
-    std::string mid_term_flush_decider_model = std::string(kDefaultMidTermFlushDeciderModel);
-    std::string mid_term_compactor_model = std::string(kDefaultMidTermCompactorModel);
+    std::string main_model;
+    std::string mid_term_flush_decider_model;
+    std::string mid_term_compactor_model;
 };
 
 } // namespace isla::server::ai_gateway
