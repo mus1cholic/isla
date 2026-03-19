@@ -221,12 +221,10 @@ void ApplyGeminiApiEmbeddingEnvDefaults(GeminiApiEmbeddingClientConfig* config,
         scheme.has_value()) {
         config->scheme = *scheme;
     }
-    if (const std::optional<std::string> host = env_lookup("GEMINI_API_HOST");
-        host.has_value()) {
+    if (const std::optional<std::string> host = env_lookup("GEMINI_API_HOST"); host.has_value()) {
         config->host = *host;
     }
-    if (const std::optional<std::string> port = env_lookup("GEMINI_API_PORT");
-        port.has_value()) {
+    if (const std::optional<std::string> port = env_lookup("GEMINI_API_PORT"); port.has_value()) {
         const absl::StatusOr<int> parsed_port = ParseIntArgument(*port, "GEMINI_API_PORT");
         if (!parsed_port.ok()) {
             LOG(WARNING) << "AI gateway ignored invalid GEMINI_API_PORT value='"
@@ -311,9 +309,8 @@ absl::Status ValidateLlmRuntimeConfig(const GatewayLlmRuntimeConfig& config) {
         !status.ok()) {
         return status;
     }
-    if (const absl::Status status =
-            ValidateOptionalModelOverride("mid-term-compactor-model",
-                                          config.mid_term_compactor_model);
+    if (const absl::Status status = ValidateOptionalModelOverride("mid-term-compactor-model",
+                                                                  config.mid_term_compactor_model);
         !status.ok()) {
         return status;
     }
@@ -652,7 +649,8 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         }
         constexpr std::string_view kGeminiApiKeyPrefix = "--gemini-api-key=";
         if (argument.starts_with(kGeminiApiKeyPrefix)) {
-            parsed.gemini_api_embedding_config.api_key = argument.substr(kGeminiApiKeyPrefix.size());
+            parsed.gemini_api_embedding_config.api_key =
+                argument.substr(kGeminiApiKeyPrefix.size());
             parsed.gemini_api_embedding_config.enabled = true;
             continue;
         }
@@ -665,8 +663,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         }
         constexpr std::string_view kGeminiApiHostPrefix = "--gemini-api-host=";
         if (argument.starts_with(kGeminiApiHostPrefix)) {
-            parsed.gemini_api_embedding_config.host =
-                argument.substr(kGeminiApiHostPrefix.size());
+            parsed.gemini_api_embedding_config.host = argument.substr(kGeminiApiHostPrefix.size());
             parsed.gemini_api_embedding_config.enabled = true;
             continue;
         }

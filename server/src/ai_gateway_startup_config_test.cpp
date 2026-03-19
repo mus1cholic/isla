@@ -218,8 +218,7 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     EXPECT_TRUE(parsed->gemini_api_embedding_config.enabled);
     EXPECT_EQ(parsed->gemini_api_embedding_config.api_key, "gemini_key_cli");
     EXPECT_EQ(parsed->gemini_api_embedding_config.host, "localhost");
-    EXPECT_EQ(parsed->gemini_api_embedding_config.request_timeout,
-              std::chrono::milliseconds(3200));
+    EXPECT_EQ(parsed->gemini_api_embedding_config.request_timeout, std::chrono::milliseconds(3200));
     EXPECT_TRUE(parsed->supabase_config.enabled);
     EXPECT_EQ(parsed->supabase_config.url, "https://project.supabase.co");
     EXPECT_EQ(parsed->supabase_config.service_role_key, "service_role_key");
@@ -358,8 +357,7 @@ TEST(AiGatewayStartupConfigTest, UsesGeminiApiEnvironmentDefaultsWhenConfigured)
     EXPECT_TRUE(parsed->gemini_api_embedding_config.enabled);
     EXPECT_EQ(parsed->gemini_api_embedding_config.api_key, "env_gemini_key");
     EXPECT_EQ(parsed->gemini_api_embedding_config.host, "gemini.env.host");
-    EXPECT_EQ(parsed->gemini_api_embedding_config.request_timeout,
-              std::chrono::milliseconds(3200));
+    EXPECT_EQ(parsed->gemini_api_embedding_config.request_timeout, std::chrono::milliseconds(3200));
 }
 
 TEST(AiGatewayStartupConfigTest, RejectsWhitespaceOnlyMainLlmModelFromEnvironment) {

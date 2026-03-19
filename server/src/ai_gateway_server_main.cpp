@@ -106,8 +106,8 @@ int main(int argc, char** argv) {
 
     if (startup_config->gemini_api_embedding_config.enabled) {
         absl::StatusOr<std::shared_ptr<const isla::server::EmbeddingClient>>
-            created_embedding_client =
-                isla::server::CreateGeminiApiEmbeddingClient(startup_config->gemini_api_embedding_config);
+            created_embedding_client = isla::server::CreateGeminiApiEmbeddingClient(
+                startup_config->gemini_api_embedding_config);
         if (!created_embedding_client.ok()) {
             LOG(ERROR) << "AI gateway failed to create Gemini API embedding client detail='"
                        << isla::server::ai_gateway::SanitizeForLog(
@@ -119,10 +119,10 @@ int main(int argc, char** argv) {
         if (embedding_client != nullptr) {
             const auto embedding_warmup_start = std::chrono::steady_clock::now();
             const absl::Status embedding_warmup_status = embedding_client->WarmUp();
-            const auto embedding_warmup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                 std::chrono::steady_clock::now() -
-                                                 embedding_warmup_start)
-                                                 .count();
+            const auto embedding_warmup_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - embedding_warmup_start)
+                    .count();
             if (embedding_warmup_status.ok()) {
                 LOG(INFO) << "AI gateway Gemini API embedding connection warmup succeeded "
                           << "duration_ms=" << embedding_warmup_ms;
@@ -236,8 +236,7 @@ int main(int argc, char** argv) {
                   << " scheme="
                   << isla::server::ai_gateway::SanitizeForLog(
                          startup_config->gemini_api_embedding_config.scheme)
-                  << ":" << startup_config->gemini_api_embedding_config.port
-                  << " timeout_ms="
+                  << ":" << startup_config->gemini_api_embedding_config.port << " timeout_ms="
                   << startup_config->gemini_api_embedding_config.request_timeout.count();
     } else {
         LOG(INFO) << "AI gateway Gemini API embeddings disabled";

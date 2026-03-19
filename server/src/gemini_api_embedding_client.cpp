@@ -146,8 +146,7 @@ class GeminiApiEmbeddingClient final : public EmbeddingClient {
         return http_client_->WarmUp();
     }
 
-    [[nodiscard]] absl::StatusOr<Embedding>
-    Embed(const EmbeddingRequest& request) const override {
+    [[nodiscard]] absl::StatusOr<Embedding> Embed(const EmbeddingRequest& request) const override {
         if (absl::Status status = Validate(); !status.ok()) {
             return status;
         }
@@ -169,9 +168,8 @@ class GeminiApiEmbeddingClient final : public EmbeddingClient {
             .body = BuildEmbeddingRequestBody(request.text).dump(),
         };
 
-        VLOG(1) << "GeminiApiEmbeddingClient dispatching host='"
-                << SanitizeForLog(config_.host) << "' model='"
-                << SanitizeForLog(request.model) << "'";
+        VLOG(1) << "GeminiApiEmbeddingClient dispatching host='" << SanitizeForLog(config_.host)
+                << "' model='" << SanitizeForLog(request.model) << "'";
 
         const absl::StatusOr<HttpResponse> response = http_client_->Execute(http_request);
         if (!response.ok()) {
@@ -182,11 +180,12 @@ class GeminiApiEmbeddingClient final : public EmbeddingClient {
             return response.status();
         }
         if (response->status_code < 200U || response->status_code >= 300U) {
-            const absl::Status status = MapGeminiApiHttpError(response->status_code, response->body);
+            const absl::Status status =
+                MapGeminiApiHttpError(response->status_code, response->body);
             LOG(WARNING) << "GeminiApiEmbeddingClient request failed host='"
                          << SanitizeForLog(config_.host) << "' model='"
-                         << SanitizeForLog(request.model) << "' status_code="
-                         << response->status_code << " detail='"
+                         << SanitizeForLog(request.model)
+                         << "' status_code=" << response->status_code << " detail='"
                          << SanitizeForLog(status.message()) << "'";
             return status;
         }

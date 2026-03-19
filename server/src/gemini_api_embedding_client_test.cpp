@@ -159,8 +159,8 @@ GeminiApiEmbeddingClientConfig MakeConfig(std::uint16_t port) {
 }
 
 TEST(GeminiApiEmbeddingClientTest, ValidateRejectsMissingApiKey) {
-    const absl::Status status = ValidateGeminiApiEmbeddingClientConfig(
-        GeminiApiEmbeddingClientConfig{
+    const absl::Status status =
+        ValidateGeminiApiEmbeddingClientConfig(GeminiApiEmbeddingClientConfig{
             .enabled = true,
             .api_key = "",
         });
@@ -170,8 +170,7 @@ TEST(GeminiApiEmbeddingClientTest, ValidateRejectsMissingApiKey) {
 }
 
 TEST(GeminiApiEmbeddingClientTest, EmbedPostsEmbedContentRequestAndParsesEmbedding) {
-    const std::string response_body =
-        R"({"embedding":{"values":[0.25,-0.5,1.75]}})";
+    const std::string response_body = R"({"embedding":{"values":[0.25,-0.5,1.75]}})";
     OneShotHttpServer server("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                              "Content-Length: " +
                              std::to_string(response_body.size()) + "\r\n\r\n" + response_body);
@@ -189,9 +188,8 @@ TEST(GeminiApiEmbeddingClientTest, EmbedPostsEmbedContentRequestAndParsesEmbeddi
     EXPECT_EQ(*embedding, (memory::Embedding{ 0.25, -0.5, 1.75 }));
     ASSERT_TRUE(server.WaitForRequest());
     const std::string request = server.request_text();
-    EXPECT_NE(
-        request.find("POST /v1beta/models/gemini-embedding-2-preview:embedContent HTTP/1.1"),
-        std::string::npos);
+    EXPECT_NE(request.find("POST /v1beta/models/gemini-embedding-2-preview:embedContent HTTP/1.1"),
+              std::string::npos);
     EXPECT_NE(request.find("x-goog-api-key: api_key_test"), std::string::npos);
     const std::size_t body_pos = request.find("\r\n\r\n");
     ASSERT_NE(body_pos, std::string::npos);

@@ -20,7 +20,7 @@ struct GeminiApiEmbeddingClientConfig {
     std::uint16_t port = 443;
     std::optional<std::string> trusted_ca_cert_pem;
     std::chrono::milliseconds request_timeout{ std::chrono::seconds(60) };
-    std::string user_agent = "isla-gemini-api-embedding/phase-1";
+    std::string user_agent = "isla-gemini-api-embedding";
 };
 
 [[nodiscard]] absl::Status
