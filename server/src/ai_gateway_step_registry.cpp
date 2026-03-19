@@ -18,6 +18,10 @@ GatewayStepRegistry::GatewayStepRegistry(GatewayStepRegistryConfig config)
             isla::server::CreateOpenAiLlmClient(config_.openai_client);
         if (llm_client.ok()) {
             config_.llm_client = *llm_client;
+        } else {
+            LOG(WARNING) << "AI gateway step registry could not adapt OpenAI responses client to "
+                            "a generic llm client detail='"
+                         << SanitizeForLog(llm_client.status().message()) << "'";
         }
     }
 }

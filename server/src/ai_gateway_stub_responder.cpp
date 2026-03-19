@@ -17,9 +17,9 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/ai_gateway_stub_responder_utils.hpp"
-#include "isla/server/openai_llm_client.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
+#include "isla/server/openai_llm_client.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
