@@ -16,6 +16,8 @@
 #include "isla/server/ai_gateway_llm_runtime_config.hpp"
 #include "isla/server/ai_gateway_planner.hpp"
 #include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/embedding_client.hpp"
+#include "isla/server/gemini_api_embedding_client.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 #include "isla/server/memory/memory_store.hpp"
 #include "isla/server/openai_responses_client.hpp"
@@ -36,6 +38,8 @@ struct GatewayStubResponderConfig {
     GatewayLlmRuntimeConfig llm_runtime_config;
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
+    GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
+    std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
     std::function<void(const ExecutionPlan&)> on_execution_plan;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>
         on_user_query_memory_ready;

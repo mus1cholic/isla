@@ -10,6 +10,7 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
+#include "isla/server/gemini_api_embedding_client.hpp"
 #include "isla/server/memory/supabase_memory_store.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
@@ -38,6 +39,13 @@ ResolveMidTermCompactorModel(const isla::server::ai_gateway::GatewayLlmRuntimeCo
     return config.mid_term_compactor_model.empty()
                ? std::string(isla::server::ai_gateway::kDefaultMidTermCompactorModel)
                : config.mid_term_compactor_model;
+}
+
+std::string
+ResolveMidTermEmbeddingModel(const isla::server::ai_gateway::GatewayLlmRuntimeConfig& config) {
+    return config.mid_term_embedding_model.empty()
+               ? std::string(isla::server::ai_gateway::kDefaultMidTermEmbeddingModel)
+               : config.mid_term_embedding_model;
 }
 
 } // namespace
@@ -76,6 +84,7 @@ int main(int argc, char** argv) {
     // Create the OpenAI client eagerly so we can warm up its transport
     // connection before any client session arrives.
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client;
+    std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
     if (startup_config->openai_config.enabled) {
         openai_client =
             isla::server::ai_gateway::CreateOpenAiResponsesClient(startup_config->openai_config);
@@ -92,6 +101,38 @@ int main(int argc, char** argv) {
                          << openai_warmup_ms << " detail='"
                          << isla::server::ai_gateway::SanitizeForLog(openai_warmup_status.message())
                          << "'";
+        }
+    }
+
+    if (startup_config->gemini_api_embedding_config.enabled) {
+        absl::StatusOr<std::shared_ptr<const isla::server::EmbeddingClient>>
+            created_embedding_client = isla::server::CreateGeminiApiEmbeddingClient(
+                startup_config->gemini_api_embedding_config);
+        if (!created_embedding_client.ok()) {
+            LOG(ERROR) << "AI gateway failed to create Gemini API embedding client detail='"
+                       << isla::server::ai_gateway::SanitizeForLog(
+                              created_embedding_client.status().message())
+                       << "'";
+            return 1;
+        }
+        embedding_client = std::move(*created_embedding_client);
+        if (embedding_client != nullptr) {
+            const auto embedding_warmup_start = std::chrono::steady_clock::now();
+            const absl::Status embedding_warmup_status = embedding_client->WarmUp();
+            const auto embedding_warmup_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - embedding_warmup_start)
+                    .count();
+            if (embedding_warmup_status.ok()) {
+                LOG(INFO) << "AI gateway Gemini API embedding connection warmup succeeded "
+                          << "duration_ms=" << embedding_warmup_ms;
+            } else {
+                LOG(WARNING) << "AI gateway Gemini API embedding connection warmup failed "
+                             << "duration_ms=" << embedding_warmup_ms << " detail='"
+                             << isla::server::ai_gateway::SanitizeForLog(
+                                    embedding_warmup_status.message())
+                             << "'";
+            }
         }
     }
 
@@ -121,6 +162,8 @@ int main(int argc, char** argv) {
             .llm_runtime_config = startup_config->llm_runtime_config,
             .openai_config = startup_config->openai_config,
             .openai_client = openai_client,
+            .gemini_api_embedding_config = startup_config->gemini_api_embedding_config,
+            .embedding_client = embedding_client,
         });
     isla::server::ai_gateway::GatewayServer server(startup_config->server_config, &responder);
     responder.AttachSessionRegistry(&server.session_registry());
@@ -162,7 +205,10 @@ int main(int argc, char** argv) {
                      ResolveMidTermFlushDeciderModel(startup_config->llm_runtime_config))
               << " mid_term_compactor="
               << isla::server::ai_gateway::SanitizeForLog(
-                     ResolveMidTermCompactorModel(startup_config->llm_runtime_config));
+                     ResolveMidTermCompactorModel(startup_config->llm_runtime_config))
+              << " mid_term_embedding="
+              << isla::server::ai_gateway::SanitizeForLog(
+                     ResolveMidTermEmbeddingModel(startup_config->llm_runtime_config));
     if (mid_term_memory_configured && !mid_term_memory_available) {
         LOG(WARNING) << "AI gateway mid-term memory degraded to working-memory-only detail='"
                      << isla::server::ai_gateway::SanitizeForLog(mid_term_memory_status.message())
@@ -182,6 +228,18 @@ int main(int argc, char** argv) {
                   << " timeout_ms=" << startup_config->supabase_config.request_timeout.count();
     } else {
         LOG(INFO) << "AI gateway Supabase memory store disabled";
+    }
+    if (startup_config->gemini_api_embedding_config.enabled) {
+        LOG(INFO) << "AI gateway using Gemini API embeddings host="
+                  << isla::server::ai_gateway::SanitizeForLog(
+                         startup_config->gemini_api_embedding_config.host)
+                  << " scheme="
+                  << isla::server::ai_gateway::SanitizeForLog(
+                         startup_config->gemini_api_embedding_config.scheme)
+                  << ":" << startup_config->gemini_api_embedding_config.port << " timeout_ms="
+                  << startup_config->gemini_api_embedding_config.request_timeout.count();
+    } else {
+        LOG(INFO) << "AI gateway Gemini API embeddings disabled";
     }
     LOG(INFO) << "AI gateway listening on "
               << isla::server::ai_gateway::SanitizeForLog(startup_config->server_config.bind_host)

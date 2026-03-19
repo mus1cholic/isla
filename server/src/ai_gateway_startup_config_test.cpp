@@ -44,6 +44,11 @@ auto kTimeout = std::to_array("--openai-timeout-ms=1500");
 auto kMainLlmModel = std::to_array("--main-llm-model=gpt-4.1-mini");
 auto kMidTermFlushDeciderModel = std::to_array("--mid-term-flush-decider-model=gpt-4.1-mini");
 auto kMidTermCompactorModel = std::to_array("--mid-term-compactor-model=gpt-4.1-nano");
+auto kMidTermEmbeddingModel =
+    std::to_array("--mid-term-embedding-model=gemini-embedding-2-preview");
+auto kGeminiApiKey = std::to_array("--gemini-api-key=gemini_key_cli");
+auto kGeminiApiHost = std::to_array("--gemini-api-host=localhost");
+auto kGeminiApiTimeout = std::to_array("--gemini-api-timeout-ms=3200");
 auto kSupabaseUrl = std::to_array("--supabase-url=https://project.supabase.co");
 auto kSupabaseKey = std::to_array("--supabase-service-role-key=service_role_key");
 auto kSupabaseSchema = std::to_array("--supabase-schema=private_mem");
@@ -160,7 +165,7 @@ TEST(AiGatewayStartupConfigTest, LooksLikeOpenAiProjectIdRecognizesExpectedPrefi
 }
 
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
-    std::array<char*, 19> argv = { kArg0.data(),
+    std::array<char*, 23> argv = { kArg0.data(),
                                    kHost.data(),
                                    kPort.data(),
                                    kBacklog.data(),
@@ -175,6 +180,10 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
                                    kMainLlmModel.data(),
                                    kMidTermFlushDeciderModel.data(),
                                    kMidTermCompactorModel.data(),
+                                   kMidTermEmbeddingModel.data(),
+                                   kGeminiApiKey.data(),
+                                   kGeminiApiHost.data(),
+                                   kGeminiApiTimeout.data(),
                                    kSupabaseUrl.data(),
                                    kSupabaseKey.data(),
                                    kSupabaseSchema.data(),
@@ -205,6 +214,11 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     EXPECT_EQ(parsed->llm_runtime_config.main_model, "gpt-4.1-mini");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1-mini");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_embedding_model, "gemini-embedding-2-preview");
+    EXPECT_TRUE(parsed->gemini_api_embedding_config.enabled);
+    EXPECT_EQ(parsed->gemini_api_embedding_config.api_key, "gemini_key_cli");
+    EXPECT_EQ(parsed->gemini_api_embedding_config.host, "localhost");
+    EXPECT_EQ(parsed->gemini_api_embedding_config.request_timeout, std::chrono::milliseconds(3200));
     EXPECT_TRUE(parsed->supabase_config.enabled);
     EXPECT_EQ(parsed->supabase_config.url, "https://project.supabase.co");
     EXPECT_EQ(parsed->supabase_config.service_role_key, "service_role_key");
@@ -264,6 +278,7 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     EXPECT_TRUE(parsed->llm_runtime_config.main_model.empty());
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_flush_decider_model.empty());
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_compactor_model.empty());
+    EXPECT_TRUE(parsed->llm_runtime_config.mid_term_embedding_model.empty());
 }
 
 TEST(AiGatewayStartupConfigTest, UsesLlmModelEnvironmentDefaultsWhenCliOmitted) {
@@ -284,6 +299,9 @@ TEST(AiGatewayStartupConfigTest, UsesLlmModelEnvironmentDefaultsWhenCliOmitted) 
                                       if (name == "AI_GATEWAY_MID_TERM_COMPACTOR_MODEL") {
                                           return "gpt-4.1-nano";
                                       }
+                                      if (name == "AI_GATEWAY_MID_TERM_EMBEDDING_MODEL") {
+                                          return "gemini-embedding-2-preview";
+                                      }
                                       return std::nullopt;
                                   });
 
@@ -291,6 +309,7 @@ TEST(AiGatewayStartupConfigTest, UsesLlmModelEnvironmentDefaultsWhenCliOmitted) 
     EXPECT_EQ(parsed->llm_runtime_config.main_model, "gpt-4.1");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1-mini");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_embedding_model, "gemini-embedding-2-preview");
 }
 
 TEST(AiGatewayStartupConfigTest, AcceptsIndependentMidTermModelOverrides) {
@@ -314,6 +333,31 @@ TEST(AiGatewayStartupConfigTest, AcceptsIndependentMidTermModelOverrides) {
     ASSERT_TRUE(parsed.ok()) << parsed.status();
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
+}
+
+TEST(AiGatewayStartupConfigTest, UsesGeminiApiEnvironmentDefaultsWhenConfigured) {
+    std::array<char*, 2> argv = { kArg0.data(), kApiKey.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "GEMINI_API_KEY") {
+                                          return "env_gemini_key";
+                                      }
+                                      if (name == "GEMINI_API_HOST") {
+                                          return "gemini.env.host";
+                                      }
+                                      if (name == "GEMINI_API_TIMEOUT_MS") {
+                                          return "3200";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_TRUE(parsed->gemini_api_embedding_config.enabled);
+    EXPECT_EQ(parsed->gemini_api_embedding_config.api_key, "env_gemini_key");
+    EXPECT_EQ(parsed->gemini_api_embedding_config.host, "gemini.env.host");
+    EXPECT_EQ(parsed->gemini_api_embedding_config.request_timeout, std::chrono::milliseconds(3200));
 }
 
 TEST(AiGatewayStartupConfigTest, RejectsWhitespaceOnlyMainLlmModelFromEnvironment) {

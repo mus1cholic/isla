@@ -17,6 +17,7 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/ai_gateway_stub_responder_utils.hpp"
+#include "isla/server/gemini_api_embedding_client.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/openai_llm_client.hpp"
@@ -42,6 +43,12 @@ std::string ResolveMidTermCompactorModel(const GatewayStubResponderConfig& confi
     return config.llm_runtime_config.mid_term_compactor_model.empty()
                ? std::string(kDefaultMidTermCompactorModel)
                : config.llm_runtime_config.mid_term_compactor_model;
+}
+
+std::string ResolveMidTermEmbeddingModel(const GatewayStubResponderConfig& config) {
+    return config.llm_runtime_config.mid_term_embedding_model.empty()
+               ? std::string(kDefaultMidTermEmbeddingModel)
+               : config.llm_runtime_config.mid_term_embedding_model;
 }
 
 template <typename StartFn>
@@ -99,9 +106,22 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
         return decider.status();
     }
 
+    std::shared_ptr<const isla::server::EmbeddingClient> embedding_client = config.embedding_client;
+    if (embedding_client == nullptr && config.gemini_api_embedding_config.enabled) {
+        absl::StatusOr<std::shared_ptr<const isla::server::EmbeddingClient>> created_embedding =
+            isla::server::CreateGeminiApiEmbeddingClient(config.gemini_api_embedding_config);
+        if (!created_embedding.ok()) {
+            return created_embedding.status();
+        }
+        embedding_client = std::move(*created_embedding);
+    }
+
     absl::StatusOr<isla::server::memory::MidTermCompactorPtr> compactor =
-        isla::server::memory::CreateLlmMidTermCompactor(*llm_client,
-                                                        ResolveMidTermCompactorModel(config));
+        isla::server::memory::CreateLlmMidTermCompactor(
+            *llm_client, ResolveMidTermCompactorModel(config), std::move(embedding_client),
+            config.gemini_api_embedding_config.enabled || config.embedding_client != nullptr
+                ? ResolveMidTermEmbeddingModel(config)
+                : std::string());
     if (!compactor.ok()) {
         return compactor.status();
     }
@@ -123,6 +143,7 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
     mid_term_memory_configured_ = (config_.openai_client != nullptr);
     const std::string flush_decider_model = ResolveMidTermFlushDeciderModel(config_);
     const std::string compactor_model = ResolveMidTermCompactorModel(config_);
+    const std::string embedding_model = ResolveMidTermEmbeddingModel(config_);
     if (!mid_term_memory_configured_) {
         LOG(INFO) << "AI gateway stub mid-term memory not configured because no OpenAI responses"
                   << " client was provided";
@@ -133,14 +154,16 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
             mid_term_memory_initialization_status_ = created_components.status();
             LOG(WARNING) << "AI gateway stub degraded mid-term memory to working-memory-only"
                          << " flush_decider_model=" << SanitizeForLog(flush_decider_model)
-                         << " compactor_model=" << SanitizeForLog(compactor_model) << " detail='"
+                         << " compactor_model=" << SanitizeForLog(compactor_model)
+                         << " embedding_model=" << SanitizeForLog(embedding_model) << " detail='"
                          << SanitizeForLog(mid_term_memory_initialization_status_.message()) << "'";
         } else {
             mid_term_flush_decider_ = std::move(created_components->flush_decider);
             mid_term_compactor_ = std::move(created_components->compactor);
             LOG(INFO) << "AI gateway stub enabled mid-term memory flush_decider_model="
                       << SanitizeForLog(flush_decider_model)
-                      << " compactor_model=" << SanitizeForLog(compactor_model);
+                      << " compactor_model=" << SanitizeForLog(compactor_model)
+                      << " embedding_model=" << SanitizeForLog(embedding_model);
         }
     }
 
