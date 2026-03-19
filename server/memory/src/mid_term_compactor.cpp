@@ -244,9 +244,13 @@ class LlmMidTermCompactor final : public MidTermCompactor {
         }
 
         if (embedding_client_ != nullptr) {
+            // TODO(memory): Thread compaction telemetry into embedding requests once
+            // MidTermCompactionRequest carries a telemetry context so flush-time
+            // observability stays consistent across LLM and embedding calls.
             absl::StatusOr<Embedding> embedding = embedding_client_->Embed(EmbeddingRequest{
                 .model = embedding_model_,
                 .text = compacted->tier2_summary,
+                .telemetry_context = nullptr,
             });
             if (!embedding.ok()) {
                 LOG(WARNING) << "LlmMidTermCompactor embedding call failed session_id="

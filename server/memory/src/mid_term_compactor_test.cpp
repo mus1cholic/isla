@@ -60,10 +60,10 @@ MidTermCompactionRequest MakeCompactionRequest() {
     };
 }
 
-CompactorWithFake
-MakeCompactor(std::string canned_response,
-              std::shared_ptr<isla::server::test::MockEmbeddingClient> embedding_client = nullptr,
-              std::string embedding_model = "") {
+CompactorWithFake MakeCompactor(
+    std::string canned_response,
+    const std::shared_ptr<isla::server::test::MockEmbeddingClient>& embedding_client = nullptr,
+    std::string embedding_model = "") {
     auto fake = std::make_shared<isla::server::test::MockLlmClient>();
     auto last_request = std::make_shared<LlmRequest>();
     auto last_embedding_request = std::make_shared<EmbeddingRequest>();
@@ -73,7 +73,7 @@ MakeCompactor(std::string canned_response,
                       const LlmRequest& request, const isla::server::LlmEventCallback& on_event) {
             *last_request = request;
             const std::size_t midpoint = canned_response.size() / 2U;
-            const absl::Status first_status = on_event(isla::server::LlmTextDeltaEvent{
+            absl::Status first_status = on_event(isla::server::LlmTextDeltaEvent{
                 .text_delta = canned_response.substr(0, midpoint),
             });
             if (!first_status.ok()) {
@@ -142,12 +142,11 @@ TEST(LlmMidTermCompactorTest, CompactReturnsValidTieredOutput) {
         "tier3_keywords": ["export crash", "export_report.cpp", "optional", "debugging", "regression test"],
         "salience": 8
     })";
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(response);
-    ASSERT_NE(compactor, nullptr);
+    const CompactorWithFake built = MakeCompactor(response);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_TRUE(compacted.ok()) << compacted.status();
     ASSERT_TRUE(compacted->tier1_detail.has_value());
@@ -174,12 +173,11 @@ TEST(LlmMidTermCompactorTest, CompactAcceptsNullTier1Detail) {
         "tier3_keywords": ["coordination", "debugging", "next step", "task", "planning"],
         "salience": 4
     })";
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(response);
-    ASSERT_NE(compactor, nullptr);
+    const CompactorWithFake built = MakeCompactor(response);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_TRUE(compacted.ok()) << compacted.status();
     EXPECT_FALSE(compacted->tier1_detail.has_value());
@@ -193,15 +191,14 @@ TEST(LlmMidTermCompactorTest, CompactPassesCorrectJsonToLlm) {
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 5
     })";
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(response);
-    ASSERT_NE(compactor, nullptr);
+    const CompactorWithFake built = MakeCompactor(response);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
     ASSERT_TRUE(compacted.ok()) << compacted.status();
 
-    const json sent = json::parse(last_request->user_text);
+    const json sent = json::parse(built.last_request->user_text);
     ASSERT_TRUE(sent.contains("messages"));
     ASSERT_EQ(sent["messages"].size(), 3U);
     EXPECT_EQ(sent["messages"][0]["role"], "user");
@@ -220,17 +217,16 @@ TEST(LlmMidTermCompactorTest, CompactHandlesEmptyEpisodeMessages) {
         "tier3_keywords": ["empty episode", "compaction", "memory", "llm", "summary"],
         "salience": 1
     })";
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(response);
-    ASSERT_NE(compactor, nullptr);
+    const CompactorWithFake built = MakeCompactor(response);
+    ASSERT_NE(built.compactor, nullptr);
 
     MidTermCompactionRequest request = MakeCompactionRequest();
     request.flush_candidate.ongoing_episode.messages.clear();
 
-    const absl::StatusOr<CompactedMidTermEpisode> compacted = compactor->Compact(request);
+    const absl::StatusOr<CompactedMidTermEpisode> compacted = built.compactor->Compact(request);
 
     ASSERT_TRUE(compacted.ok()) << compacted.status();
-    const json sent = json::parse(last_request->user_text);
+    const json sent = json::parse(built.last_request->user_text);
     ASSERT_TRUE(sent.contains("messages"));
     EXPECT_TRUE(sent["messages"].empty());
 }
@@ -243,71 +239,66 @@ TEST(LlmMidTermCompactorTest, CompactUsesCorrectModelAndSystemPrompt) {
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 5
     })";
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(response);
-    ASSERT_NE(compactor, nullptr);
+    const CompactorWithFake built = MakeCompactor(response);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
     ASSERT_TRUE(compacted.ok()) << compacted.status();
 
-    EXPECT_EQ(last_request->model, "test-model");
+    EXPECT_EQ(built.last_request->model, "test-model");
     const absl::StatusOr<std::string> expected_prompt =
         LoadPrompt(PromptAsset::kMidTermCompactorSystemPrompt);
     ASSERT_TRUE(expected_prompt.ok()) << expected_prompt.status();
-    EXPECT_EQ(last_request->system_prompt, *expected_prompt);
+    EXPECT_EQ(built.last_request->system_prompt, *expected_prompt);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsInvalidJson) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor("not json");
-    ASSERT_NE(compactor, nullptr);
+    const CompactorWithFake built = MakeCompactor("not json");
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsMissingFields) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
         "salience": 5
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsWrongFieldTypes) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": [],
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 5
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsExtraFields) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
@@ -315,166 +306,158 @@ TEST(LlmMidTermCompactorTest, CompactRejectsExtraFields) {
         "salience": 5,
         "extra": "nope"
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsEmptyRequiredStrings) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "",
         "tier3_ref": "Reference sentence.",
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 5
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsEmptyTier3Ref) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "",
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 5
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsEmptyTier1DetailWhenPresent) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": "",
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 5
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsSalienceBelowRange) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 0
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsSalienceAboveRange) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 11
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsNonIntegerSalience) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
         "tier3_keywords": ["one", "two", "three", "four", "five"],
         "salience": 5.5
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsWrongKeywordCount) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
         "tier3_keywords": ["one", "two", "three", "four"],
         "salience": 5
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsEmptyKeywordEntry) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
-        MakeCompactor(R"({
+    const CompactorWithFake built = MakeCompactor(R"({
         "tier1_detail": null,
         "tier2_summary": "Summary text.",
         "tier3_ref": "Reference sentence.",
         "tier3_keywords": ["one", "", "three", "four", "five"],
         "salience": 5
     })");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermCompactorTest, CompactPropagatesLlmFailure) {
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
+    const CompactorWithFake built =
         MakeFailingCompactor(absl::InternalError("LLM service unavailable"));
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInternal);
@@ -489,17 +472,18 @@ TEST(LlmMidTermCompactorTest, CompactGeneratesEmbeddingWhenEmbeddingClientConfig
         "salience": 6
     })";
     auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
-    auto [fake, fake_embedding_client, last_request, last_embedding_request, compactor] =
+    const CompactorWithFake built =
         MakeCompactor(response, embedding_client, "gemini-embedding-2-preview");
-    ASSERT_NE(compactor, nullptr);
+    ASSERT_NE(built.compactor, nullptr);
 
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        compactor->Compact(MakeCompactionRequest());
+        built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_TRUE(compacted.ok()) << compacted.status();
     EXPECT_EQ(compacted->embedding, (Embedding{ 0.1, 0.2, 0.3 }));
-    EXPECT_EQ(last_embedding_request->model, "gemini-embedding-2-preview");
-    EXPECT_EQ(last_embedding_request->text, "The discussion focused on debugging an export crash.");
+    EXPECT_EQ(built.last_embedding_request->model, "gemini-embedding-2-preview");
+    EXPECT_EQ(built.last_embedding_request->text,
+              "The discussion focused on debugging an export crash.");
 }
 
 TEST(LlmMidTermCompactorTest, CompactPropagatesEmbeddingFailure) {
