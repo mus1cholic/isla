@@ -37,11 +37,14 @@ std::string GatewayStepRegistry::StepName(const ExecutionStep& step) const {
 absl::StatusOr<ExecutionStepResult>
 GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& step,
                                  const ExecutionRuntimeInput& runtime_input) const {
+    const std::string effective_model = config_.llm_runtime_config.main_model.empty()
+                                            ? step.model
+                                            : config_.llm_runtime_config.main_model;
     VLOG(1) << "AI gateway step registry dispatching openai llm step_index=" << step_index
             << " step_name='" << SanitizeForLog(step.step_name) << "' model='"
-            << SanitizeForLog(step.model) << "'";
+            << SanitizeForLog(effective_model) << "'";
     ScopedTelemetryPhase step_phase(runtime_input.telemetry_context, telemetry::kPhaseExecutorStep);
-    OpenAiLLMs openai_llms(step.step_name, step.system_prompt, step.model, config_.llm_client,
+    OpenAiLLMs openai_llms(step.step_name, step.system_prompt, effective_model, config_.llm_client,
                            step.reasoning_effort);
     return openai_llms.GenerateContent(step_index, runtime_input);
 }

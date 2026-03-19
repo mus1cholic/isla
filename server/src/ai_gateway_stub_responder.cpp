@@ -81,15 +81,15 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
     }
 
     absl::StatusOr<isla::server::memory::MidTermFlushDeciderPtr> decider =
-        isla::server::memory::CreateLlmMidTermFlushDecider(*llm_client,
-                                                           std::string(kDefaultMidTermMemoryModel));
+        isla::server::memory::CreateLlmMidTermFlushDecider(
+            *llm_client, config.llm_runtime_config.mid_term_flush_decider_model);
     if (!decider.ok()) {
         return decider.status();
     }
 
     absl::StatusOr<isla::server::memory::MidTermCompactorPtr> compactor =
-        isla::server::memory::CreateLlmMidTermCompactor(*llm_client,
-                                                        std::string(kDefaultMidTermMemoryModel));
+        isla::server::memory::CreateLlmMidTermCompactor(
+            *llm_client, config.llm_runtime_config.mid_term_compactor_model);
     if (!compactor.ok()) {
         return compactor.status();
     }
@@ -104,6 +104,7 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
     : config_(std::move(config)), executor_(GatewayStepRegistryConfig{
+                                      .llm_runtime_config = config_.llm_runtime_config,
                                       .openai_config = config_.openai_config,
                                       .openai_client = config_.openai_client,
                                   }) {
@@ -117,13 +118,19 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
         if (!created_components.ok()) {
             mid_term_memory_initialization_status_ = created_components.status();
             LOG(WARNING) << "AI gateway stub degraded mid-term memory to working-memory-only"
-                         << " model=" << SanitizeForLog(kDefaultMidTermMemoryModel) << " detail='"
+                         << " flush_decider_model="
+                         << SanitizeForLog(config_.llm_runtime_config.mid_term_flush_decider_model)
+                         << " compactor_model="
+                         << SanitizeForLog(config_.llm_runtime_config.mid_term_compactor_model)
+                         << " detail='"
                          << SanitizeForLog(mid_term_memory_initialization_status_.message()) << "'";
         } else {
             mid_term_flush_decider_ = std::move(created_components->flush_decider);
             mid_term_compactor_ = std::move(created_components->compactor);
-            LOG(INFO) << "AI gateway stub enabled mid-term memory model="
-                      << SanitizeForLog(kDefaultMidTermMemoryModel);
+            LOG(INFO) << "AI gateway stub enabled mid-term memory flush_decider_model="
+                      << SanitizeForLog(config_.llm_runtime_config.mid_term_flush_decider_model)
+                      << " compactor_model="
+                      << SanitizeForLog(config_.llm_runtime_config.mid_term_compactor_model);
         }
     }
 

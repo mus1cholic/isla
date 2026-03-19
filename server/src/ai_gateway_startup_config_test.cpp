@@ -41,6 +41,9 @@ auto kOrg = std::to_array("--openai-organization=org_123");
 auto kProject = std::to_array("--openai-project=proj_123");
 auto kProjectId = std::to_array("--openai-project-id=proj_456");
 auto kTimeout = std::to_array("--openai-timeout-ms=1500");
+auto kMainLlmModel = std::to_array("--main-llm-model=gpt-4.1-mini");
+auto kMidTermFlushDeciderModel = std::to_array("--mid-term-flush-decider-model=gpt-4.1-mini");
+auto kMidTermCompactorModel = std::to_array("--mid-term-compactor-model=gpt-4.1-nano");
 auto kSupabaseUrl = std::to_array("--supabase-url=https://project.supabase.co");
 auto kSupabaseKey = std::to_array("--supabase-service-role-key=service_role_key");
 auto kSupabaseSchema = std::to_array("--supabase-schema=private_mem");
@@ -49,8 +52,6 @@ auto kTelemetryLog = std::to_array("--telemetry-log");
 auto kTelemetryLogEvents = std::to_array("--telemetry-log-events");
 auto kBadScheme = std::to_array("--openai-scheme=ftp");
 auto kBadPort = std::to_array("--openai-port=70000");
-
-class RemovedMidTermFlagTest : public ::testing::TestWithParam<const char*> {};
 
 TEST(AiGatewayStartupConfigTest, LoadDotEnvFileParsesBasicAssignments) {
     const std::filesystem::path path = MakeUniqueTestEnvPath("isla_ai_gateway_test");
@@ -159,12 +160,25 @@ TEST(AiGatewayStartupConfigTest, LooksLikeOpenAiProjectIdRecognizesExpectedPrefi
 }
 
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
-    std::array<char*, 16> argv = {
-        kArg0.data(),        kHost.data(),        kPort.data(),           kBacklog.data(),
-        kApiKey.data(),      kScheme.data(),      kOpenAiHost.data(),     kOpenAiPort.data(),
-        kTarget.data(),      kOrg.data(),         kProject.data(),        kTimeout.data(),
-        kSupabaseUrl.data(), kSupabaseKey.data(), kSupabaseSchema.data(), kSupabaseTimeout.data()
-    };
+    std::array<char*, 19> argv = { kArg0.data(),
+                                   kHost.data(),
+                                   kPort.data(),
+                                   kBacklog.data(),
+                                   kApiKey.data(),
+                                   kScheme.data(),
+                                   kOpenAiHost.data(),
+                                   kOpenAiPort.data(),
+                                   kTarget.data(),
+                                   kOrg.data(),
+                                   kProject.data(),
+                                   kTimeout.data(),
+                                   kMainLlmModel.data(),
+                                   kMidTermFlushDeciderModel.data(),
+                                   kMidTermCompactorModel.data(),
+                                   kSupabaseUrl.data(),
+                                   kSupabaseKey.data(),
+                                   kSupabaseSchema.data(),
+                                   kSupabaseTimeout.data() };
 
     const absl::StatusOr<ParsedStartupConfig> parsed =
         ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
@@ -188,6 +202,9 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     ASSERT_TRUE(parsed->openai_config.project.has_value());
     EXPECT_EQ(*parsed->openai_config.project, "proj_123");
     EXPECT_EQ(parsed->openai_config.request_timeout, std::chrono::milliseconds(1500));
+    EXPECT_EQ(parsed->llm_runtime_config.main_model, "gpt-4.1-mini");
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1-mini");
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
     EXPECT_TRUE(parsed->supabase_config.enabled);
     EXPECT_EQ(parsed->supabase_config.url, "https://project.supabase.co");
     EXPECT_EQ(parsed->supabase_config.service_role_key, "service_role_key");
@@ -244,6 +261,61 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     EXPECT_EQ(parsed->openai_config.request_timeout, std::chrono::milliseconds(2500));
     ASSERT_TRUE(parsed->openai_config.project.has_value());
     EXPECT_EQ(*parsed->openai_config.project, "proj_env_123");
+    EXPECT_EQ(parsed->llm_runtime_config.main_model, std::string(kDefaultMainLlmModel));
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model,
+              std::string(kDefaultMidTermFlushDeciderModel));
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model,
+              std::string(kDefaultMidTermCompactorModel));
+}
+
+TEST(AiGatewayStartupConfigTest, UsesLlmModelEnvironmentDefaultsWhenCliOmitted) {
+    std::array<char*, 1> argv = { kArg0.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "OPENAI_API_KEY") {
+                                          return "env_key";
+                                      }
+                                      if (name == "AI_GATEWAY_MAIN_LLM_MODEL") {
+                                          return "gpt-4.1";
+                                      }
+                                      if (name == "AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL") {
+                                          return "gpt-4.1-mini";
+                                      }
+                                      if (name == "AI_GATEWAY_MID_TERM_COMPACTOR_MODEL") {
+                                          return "gpt-4.1-nano";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_EQ(parsed->llm_runtime_config.main_model, "gpt-4.1");
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1-mini");
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
+}
+
+TEST(AiGatewayStartupConfigTest, AcceptsIndependentMidTermModelOverrides) {
+    std::array<char*, 1> argv = { kArg0.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "OPENAI_API_KEY") {
+                                          return "env_key";
+                                      }
+                                      if (name == "AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL") {
+                                          return "gpt-4.1";
+                                      }
+                                      if (name == "AI_GATEWAY_MID_TERM_COMPACTOR_MODEL") {
+                                          return "gpt-4.1-nano";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1");
+    EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
 }
 
 TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFromEnvironmentDefaults) {
@@ -382,24 +454,6 @@ TEST(AiGatewayStartupConfigTest, RejectsInvalidOpenAiPort) {
     EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_EQ(parsed.status().message(), "openai-port must be between 0 and 65535");
 }
-
-TEST_P(RemovedMidTermFlagTest, RejectsRemovedMidTermFlags) {
-    std::string removed_flag = GetParam();
-    std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), removed_flag.data() };
-
-    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
-        static_cast<int>(argv.size()), argv.data(),
-        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
-
-    ASSERT_FALSE(parsed.ok());
-    EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_EQ(parsed.status().message(), "unknown argument: " + removed_flag);
-}
-
-INSTANTIATE_TEST_SUITE_P(RemovedMidTermFlags, RemovedMidTermFlagTest,
-                         ::testing::Values("--mid-term-memory",
-                                           "--mid-term-flush-decider-model=gpt-4.1-mini",
-                                           "--mid-term-compactor-model=gpt-4.1-nano"));
 
 TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsCliOnlySource) {
     std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), kOrg.data() };

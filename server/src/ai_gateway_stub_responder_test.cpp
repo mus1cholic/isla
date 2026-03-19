@@ -954,6 +954,116 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_NE(prompt->find("First exchange ref."), std::string::npos);
 }
 
+TEST(GatewayStubResponderStandaloneTest, MidTermMemoryUsesConfiguredModelOverrides) {
+    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
+    auto recorded_requests = std::make_shared<std::vector<OpenAiResponsesRequest>>();
+    auto requests_mutex = std::make_shared<std::mutex>();
+    auto compactor_finished = std::make_shared<std::promise<void>>();
+    std::future<void> compactor_finished_future = compactor_finished->get_future();
+    auto compactor_finished_once = std::make_shared<std::once_flag>();
+    auto decider_call_count = std::make_shared<int>(0);
+    auto client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [recorded_requests, requests_mutex, decider_prompt = *decider_prompt,
+         compactor_prompt = *compactor_prompt, compactor_finished, compactor_finished_once,
+         decider_call_count](const OpenAiResponsesRequest& request,
+                             const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            {
+                std::lock_guard<std::mutex> lock(*requests_mutex);
+                recorded_requests->push_back(request);
+            }
+            if (request.system_prompt == decider_prompt) {
+                const int call_index = (*decider_call_count)++;
+                if (call_index == 0) {
+                    return EmitResponseText(R"json({
+                        "should_flush": true,
+                        "item_id": "i0",
+                        "split_at": null,
+                        "reasoning": "Completed first exchange."
+                    })json",
+                                            on_event, "resp_decider");
+                }
+                return EmitResponseText(R"json({
+                    "should_flush": false,
+                    "item_id": null,
+                    "split_at": null,
+                    "reasoning": "No additional completed episode."
+                })json",
+                                        on_event, "resp_decider");
+            }
+            if (request.system_prompt == compactor_prompt) {
+                const absl::Status status = EmitResponseText(R"json({
+                    "tier1_detail": "First exchange detail.",
+                    "tier2_summary": "First exchange summary.",
+                    "tier3_ref": "First exchange ref.",
+                    "tier3_keywords": ["first", "exchange", "summary", "memory", "test"],
+                    "salience": 8
+                })json",
+                                                             on_event, "resp_compactor");
+                if (status.ok()) {
+                    std::call_once(*compactor_finished_once,
+                                   [compactor_finished] { compactor_finished->set_value(); });
+                }
+                return status;
+            }
+            const std::string reply =
+                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
+            return EmitResponseText(reply, on_event);
+        });
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .llm_runtime_config =
+            GatewayLlmRuntimeConfig{
+                .main_model = std::string(kDefaultMainLlmModel),
+                .mid_term_flush_decider_model = "gpt-4.1-mini",
+                .mid_term_compactor_model = "gpt-4.1-nano",
+            },
+        .openai_client = client,
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = "hello",
+    });
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+    ASSERT_EQ(compactor_finished_future.wait_for(2s), std::future_status::ready);
+
+    std::vector<OpenAiResponsesRequest> requests;
+    {
+        std::lock_guard<std::mutex> lock(*requests_mutex);
+        requests = *recorded_requests;
+    }
+
+    const auto decider_request = std::find_if(
+        requests.begin(), requests.end(), [&decider_prompt](const OpenAiResponsesRequest& request) {
+            return request.system_prompt == *decider_prompt;
+        });
+    ASSERT_NE(decider_request, requests.end());
+    EXPECT_EQ(decider_request->model, "gpt-4.1-mini");
+
+    const auto compactor_request =
+        std::find_if(requests.begin(), requests.end(),
+                     [&compactor_prompt](const OpenAiResponsesRequest& request) {
+                         return request.system_prompt == *compactor_prompt;
+                     });
+    ASSERT_NE(compactor_request, requests.end());
+    EXPECT_EQ(compactor_request->model, "gpt-4.1-nano");
+}
+
 TEST(GatewayStubResponderStandaloneTest,
      MidTermMemoryNotConfiguredStillAllowsSessionMemoryStartup) {
 

@@ -224,6 +224,36 @@ void ApplyTelemetryEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLook
     }
 }
 
+void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> main_model = env_lookup("AI_GATEWAY_MAIN_LLM_MODEL");
+        main_model.has_value()) {
+        parsed->llm_runtime_config.main_model = *main_model;
+    }
+    if (const std::optional<std::string> decider_model =
+            env_lookup("AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL");
+        decider_model.has_value()) {
+        parsed->llm_runtime_config.mid_term_flush_decider_model = *decider_model;
+    }
+    if (const std::optional<std::string> compactor_model =
+            env_lookup("AI_GATEWAY_MID_TERM_COMPACTOR_MODEL");
+        compactor_model.has_value()) {
+        parsed->llm_runtime_config.mid_term_compactor_model = *compactor_model;
+    }
+}
+
+absl::Status ValidateLlmRuntimeConfig(const GatewayLlmRuntimeConfig& config) {
+    if (config.main_model.empty()) {
+        return absl::InvalidArgumentError("main-llm-model must not be empty");
+    }
+    if (config.mid_term_flush_decider_model.empty()) {
+        return absl::InvalidArgumentError("mid-term-flush-decider-model must not be empty");
+    }
+    if (config.mid_term_compactor_model.empty()) {
+        return absl::InvalidArgumentError("mid-term-compactor-model must not be empty");
+    }
+    return absl::OkStatus();
+}
+
 } // namespace
 
 absl::StatusOr<StartupEnvMap> LoadDotEnvFile(std::string_view path) {
@@ -370,24 +400,32 @@ absl::Status ValidateOpenAiStartupConfig(const OpenAiResponsesClientConfig& conf
 
 StartupLogContext BuildStartupLogContext(int argc, char** argv, const StartupEnvLookup& env_lookup,
                                          const ParsedStartupConfig& parsed) {
-    const bool openai_cli_configured = HasArgumentPrefix(argc, argv, "--openai-api-key=") ||
-                                       HasArgumentPrefix(argc, argv, "--openai-scheme=") ||
-                                       HasArgumentPrefix(argc, argv, "--openai-host=") ||
-                                       HasArgumentPrefix(argc, argv, "--openai-port=") ||
-                                       HasArgumentPrefix(argc, argv, "--openai-target=") ||
-                                       HasArgumentPrefix(argc, argv, "--openai-organization=") ||
-                                       HasArgumentPrefix(argc, argv, "--openai-project-id=") ||
-                                       HasArgumentPrefix(argc, argv, "--openai-project=") ||
-                                       HasArgumentPrefix(argc, argv, "--openai-timeout-ms=");
-    const bool openai_env_configured = HasNonEmptyEnvVar("OPENAI_API_KEY", env_lookup) ||
-                                       HasNonEmptyEnvVar("OPENAI_SCHEME", env_lookup) ||
-                                       HasNonEmptyEnvVar("OPENAI_HOST", env_lookup) ||
-                                       HasNonEmptyEnvVar("OPENAI_PORT", env_lookup) ||
-                                       HasNonEmptyEnvVar("OPENAI_TARGET", env_lookup) ||
-                                       HasNonEmptyEnvVar("OPENAI_ORGANIZATION", env_lookup) ||
-                                       HasNonEmptyEnvVar("OPENAI_PROJECT_ID", env_lookup) ||
-                                       HasNonEmptyEnvVar("OPENAI_PROJECT", env_lookup) ||
-                                       HasNonEmptyEnvVar("OPENAI_TIMEOUT_MS", env_lookup);
+    const bool openai_cli_configured =
+        HasArgumentPrefix(argc, argv, "--openai-api-key=") ||
+        HasArgumentPrefix(argc, argv, "--openai-scheme=") ||
+        HasArgumentPrefix(argc, argv, "--openai-host=") ||
+        HasArgumentPrefix(argc, argv, "--openai-port=") ||
+        HasArgumentPrefix(argc, argv, "--openai-target=") ||
+        HasArgumentPrefix(argc, argv, "--openai-organization=") ||
+        HasArgumentPrefix(argc, argv, "--openai-project-id=") ||
+        HasArgumentPrefix(argc, argv, "--openai-project=") ||
+        HasArgumentPrefix(argc, argv, "--openai-timeout-ms=") ||
+        HasArgumentPrefix(argc, argv, "--main-llm-model=") ||
+        HasArgumentPrefix(argc, argv, "--mid-term-flush-decider-model=") ||
+        HasArgumentPrefix(argc, argv, "--mid-term-compactor-model=");
+    const bool openai_env_configured =
+        HasNonEmptyEnvVar("OPENAI_API_KEY", env_lookup) ||
+        HasNonEmptyEnvVar("OPENAI_SCHEME", env_lookup) ||
+        HasNonEmptyEnvVar("OPENAI_HOST", env_lookup) ||
+        HasNonEmptyEnvVar("OPENAI_PORT", env_lookup) ||
+        HasNonEmptyEnvVar("OPENAI_TARGET", env_lookup) ||
+        HasNonEmptyEnvVar("OPENAI_ORGANIZATION", env_lookup) ||
+        HasNonEmptyEnvVar("OPENAI_PROJECT_ID", env_lookup) ||
+        HasNonEmptyEnvVar("OPENAI_PROJECT", env_lookup) ||
+        HasNonEmptyEnvVar("OPENAI_TIMEOUT_MS", env_lookup) ||
+        HasNonEmptyEnvVar("AI_GATEWAY_MAIN_LLM_MODEL", env_lookup) ||
+        HasNonEmptyEnvVar("AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL", env_lookup) ||
+        HasNonEmptyEnvVar("AI_GATEWAY_MID_TERM_COMPACTOR_MODEL", env_lookup);
 
     StartupLogContext context;
     context.config_source = openai_cli_configured && openai_env_configured ? "cli+env"
@@ -411,6 +449,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     ApplyOpenAiEnvDefaults(&parsed.openai_config, env_lookup);
     ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
     ApplyTelemetryEnvDefaults(&parsed, env_lookup);
+    ApplyLlmRuntimeEnvDefaults(&parsed, env_lookup);
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -514,6 +553,24 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         } else if (*handled) {
             continue;
         }
+        constexpr std::string_view kMainLlmModelPrefix = "--main-llm-model=";
+        if (argument.starts_with(kMainLlmModelPrefix)) {
+            parsed.llm_runtime_config.main_model = argument.substr(kMainLlmModelPrefix.size());
+            continue;
+        }
+        constexpr std::string_view kMidTermFlushDeciderModelPrefix =
+            "--mid-term-flush-decider-model=";
+        if (argument.starts_with(kMidTermFlushDeciderModelPrefix)) {
+            parsed.llm_runtime_config.mid_term_flush_decider_model =
+                argument.substr(kMidTermFlushDeciderModelPrefix.size());
+            continue;
+        }
+        constexpr std::string_view kMidTermCompactorModelPrefix = "--mid-term-compactor-model=";
+        if (argument.starts_with(kMidTermCompactorModelPrefix)) {
+            parsed.llm_runtime_config.mid_term_compactor_model =
+                argument.substr(kMidTermCompactorModelPrefix.size());
+            continue;
+        }
         if (argument.starts_with("--supabase-url=")) {
             parsed.supabase_config.url = argument.substr(15);
             parsed.supabase_config.enabled = true;
@@ -569,6 +626,10 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     absl::Status openai_status = ValidateOpenAiStartupConfig(parsed.openai_config);
     if (!openai_status.ok()) {
         return openai_status;
+    }
+    if (const absl::Status llm_runtime_status = ValidateLlmRuntimeConfig(parsed.llm_runtime_config);
+        !llm_runtime_status.ok()) {
+        return llm_runtime_status;
     }
     if (parsed.supabase_config.enabled) {
         const absl::Status supabase_status =

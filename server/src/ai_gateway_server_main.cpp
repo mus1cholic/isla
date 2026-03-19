@@ -99,6 +99,7 @@ int main(int argc, char** argv) {
     isla::server::ai_gateway::GatewayStubResponder responder(
         isla::server::ai_gateway::GatewayStubResponderConfig{
             .memory_store = *memory_store,
+            .llm_runtime_config = startup_config->llm_runtime_config,
             .openai_config = startup_config->openai_config,
             .openai_client = openai_client,
         });
@@ -134,9 +135,15 @@ int main(int argc, char** argv) {
               << (log_context.telemetry_logging_enabled ? "true" : "false")
               << " telemetry_event_logging_enabled="
               << (log_context.telemetry_event_logging_enabled ? "true" : "false");
-    LOG(INFO) << "AI gateway mid-term memory model="
+    LOG(INFO) << "AI gateway llm models main="
               << isla::server::ai_gateway::SanitizeForLog(
-                     isla::server::ai_gateway::kDefaultMidTermMemoryModel);
+                     startup_config->llm_runtime_config.main_model)
+              << " mid_term_flush_decider="
+              << isla::server::ai_gateway::SanitizeForLog(
+                     startup_config->llm_runtime_config.mid_term_flush_decider_model)
+              << " mid_term_compactor="
+              << isla::server::ai_gateway::SanitizeForLog(
+                     startup_config->llm_runtime_config.mid_term_compactor_model);
     if (mid_term_memory_configured && !mid_term_memory_available) {
         LOG(WARNING) << "AI gateway mid-term memory degraded to working-memory-only detail='"
                      << isla::server::ai_gateway::SanitizeForLog(mid_term_memory_status.message())
