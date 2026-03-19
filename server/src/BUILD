@@ -380,6 +380,47 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "llm_client_mock",
+    testonly = True,
+    hdrs = ["llm_client_mock.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+        "//server/memory/src:__pkg__",
+    ],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "openai_responses_client_mock",
+    testonly = True,
+    hdrs = ["openai_responses_client_mock.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+        "//client/src:__pkg__",
+    ],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "ai_gateway_test_mocks",
+    testonly = True,
+    hdrs = ["ai_gateway_test_mocks.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+    ],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@googletest//:gtest",
+    ],
+)
+
 cc_test(
     name = "openai_llm_client_test",
     srcs = ["openai_llm_client_test.cpp"],
@@ -408,6 +449,7 @@ cc_test(
         "//server/include/isla/server:server_headers",
         ":ai_gateway_step_registry",
         ":ai_gateway_telemetry_test_utils",
+        ":llm_client_mock",
         ":openai_responses_test_utils",
         "@googletest//:gtest_main",
     ],
@@ -432,6 +474,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_executor",
+        ":openai_responses_client_mock",
         ":ai_gateway_telemetry_test_utils",
         ":openai_llms",
         "@googletest//:gtest_main",
@@ -457,6 +500,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_telemetry_test_utils",
+        ":llm_client_mock",
         ":openai_llms",
         ":openai_responses_test_utils",
         "@googletest//:gtest_main",
@@ -489,8 +533,10 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_server",
+        ":ai_gateway_test_mocks",
         ":openai_responses_test_utils",
         ":ai_gateway_stub_responder",
+        "//server/memory/src:memory_store_mock",
         "@abseil-cpp//absl/status",
         "@googletest//:gtest_main",
     ],
@@ -501,6 +547,7 @@ cc_test(
     srcs = ["ai_gateway_websocket_session_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_test_mocks",
         ":ai_gateway_websocket_session",
         "@boost.uuid//:boost.uuid",
         "@googletest//:gtest_main",
