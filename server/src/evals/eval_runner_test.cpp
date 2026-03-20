@@ -282,6 +282,43 @@ TEST(EvalRunnerTest, CapturesStructuredMidTermEpisodesAfterFlushIsApplied) {
     EXPECT_TRUE(artifacts->post_turn_mid_term_episodes[0].expandable);
 }
 
+TEST(EvalRunnerTest, RejectsDuplicateTurnIdsInEvalCase) {
+    auto client =
+        MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test", absl::OkStatus());
+
+    EvalRunner runner(EvalRunnerConfig{
+        .responder_config =
+            isla::server::ai_gateway::GatewayStubResponderConfig{
+                .response_delay = 0ms,
+                .async_emit_timeout = 2s,
+                .openai_client = client,
+            },
+    });
+
+    const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
+        .benchmark_name = "isla_custom_memory",
+        .case_id = "duplicate_turn_ids",
+        .session_id = "eval_session_duplicate_turns",
+        .setup_turns =
+            {
+                EvalTurnInput{
+                    .turn_id = "turn_1",
+                    .user_text = "hello",
+                },
+            },
+        .evaluated_turn =
+            EvalTurnInput{
+                .turn_id = "turn_1",
+                .user_text = "what did i just say?",
+            },
+    });
+
+    ASSERT_FALSE(artifacts.ok());
+    EXPECT_EQ(artifacts.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(artifacts.status().message()).find("must not reuse turn_id"),
+              std::string::npos);
+}
+
 TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptContext) {
     auto store = std::make_shared<RecordingMemoryStore>();
     const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(

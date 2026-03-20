@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "isla/server/memory/memory_types.hpp"
@@ -250,7 +251,27 @@ absl::Status ValidateCase(const EvalCase& eval_case) {
             return status;
         }
     }
-    return ValidateTurnInput(eval_case.evaluated_turn, "evaluated");
+    if (absl::Status status = ValidateTurnInput(eval_case.evaluated_turn, "evaluated");
+        !status.ok()) {
+        return status;
+    }
+
+    std::vector<std::string_view> seen_turn_ids;
+    seen_turn_ids.reserve(eval_case.setup_turns.size() + 1U);
+    for (const EvalTurnInput& turn : eval_case.setup_turns) {
+        if (std::find(seen_turn_ids.begin(), seen_turn_ids.end(), turn.turn_id) !=
+            seen_turn_ids.end()) {
+            return invalid_argument(
+                absl::StrCat("eval case must not reuse turn_id '", turn.turn_id, "'"));
+        }
+        seen_turn_ids.push_back(turn.turn_id);
+    }
+    if (std::find(seen_turn_ids.begin(), seen_turn_ids.end(), eval_case.evaluated_turn.turn_id) !=
+        seen_turn_ids.end()) {
+        return invalid_argument(absl::StrCat("eval case must not reuse turn_id '",
+                                             eval_case.evaluated_turn.turn_id, "'"));
+    }
+    return absl::OkStatus();
 }
 
 const EvalTurnInput* FindTurnById(const EvalCase& eval_case, std::string_view turn_id) {
@@ -316,6 +337,8 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         }
         const EvalTurnInput* turn = FindTurnById(eval_case, turn_id);
         if (turn == nullptr) {
+            LOG(WARNING) << "Eval runner observed unknown turn_id '" << turn_id << "' for session '"
+                         << session_id << "' while resolving conversation message time override";
             return std::nullopt;
         }
         switch (role) {
