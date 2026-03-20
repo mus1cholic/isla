@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "isla/server/memory/memory_types.hpp"
 
 namespace isla::server::evals {
@@ -28,7 +29,7 @@ using isla::server::memory::WorkingMemoryState;
 using namespace std::chrono_literals;
 
 absl::Status invalid_argument(std::string_view message) {
-    return absl::InvalidArgumentError(std::string(message));
+    return absl::InvalidArgumentError(message);
 }
 
 struct RecordingSessionEvent {
@@ -227,10 +228,10 @@ std::vector<EvalMidTermEpisodeArtifact> BuildMidTermArtifacts(const WorkingMemor
 
 absl::Status ValidateTurnInput(const EvalTurnInput& turn, std::string_view role) {
     if (turn.turn_id.empty()) {
-        return invalid_argument(std::string(role) + " turn must include a non-empty turn_id");
+        return invalid_argument(absl::StrCat(role, " turn must include a non-empty turn_id"));
     }
     if (turn.user_text.empty()) {
-        return invalid_argument(std::string(role) + " turn must include non-empty user_text");
+        return invalid_argument(absl::StrCat(role, " turn must include non-empty user_text"));
     }
     return absl::OkStatus();
 }
