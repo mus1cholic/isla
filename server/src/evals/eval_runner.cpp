@@ -2,11 +2,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -23,7 +24,6 @@ using isla::server::ai_gateway::GatewaySessionRegistry;
 using isla::server::ai_gateway::GatewayStubResponder;
 using isla::server::ai_gateway::SessionStartedEvent;
 using isla::server::ai_gateway::TurnAcceptedEvent;
-using isla::server::ai_gateway::TurnTelemetryContext;
 using isla::server::memory::IsExpandableEpisode;
 using isla::server::memory::WorkingMemoryState;
 using namespace std::chrono_literals;
@@ -100,22 +100,9 @@ class RecordingLiveSession final : public GatewayLiveSession {
 
     [[nodiscard]] bool WaitForTurnTerminal(std::string_view turn_id,
                                            std::chrono::milliseconds timeout) const {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (std::chrono::steady_clock::now() < deadline) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (std::any_of(events_.begin(), events_.end(),
-                                [turn_id](const RecordingSessionEvent& event) {
-                                    return event.turn_id == turn_id &&
-                                           (event.op == "turn.completed" ||
-                                            event.op == "turn.cancelled");
-                                })) {
-                    return true;
-                }
-            }
-            std::this_thread::sleep_for(5ms);
-        }
-        return false;
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, timeout,
+                            [this, turn_id] { return HasTerminalEventLocked(turn_id); });
     }
 
     [[nodiscard]] std::vector<RecordingSessionEvent> events() const {
@@ -124,13 +111,25 @@ class RecordingLiveSession final : public GatewayLiveSession {
     }
 
   private:
+    [[nodiscard]] bool HasTerminalEventLocked(std::string_view turn_id) const {
+        return std::any_of(
+            events_.begin(), events_.end(), [turn_id](const RecordingSessionEvent& event) {
+                return event.turn_id == turn_id &&
+                       (event.op == "turn.completed" || event.op == "turn.cancelled");
+            });
+    }
+
     void RecordEvent(RecordingSessionEvent event) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        events_.push_back(std::move(event));
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            events_.push_back(std::move(event));
+        }
+        cv_.notify_all();
     }
 
     std::string session_id_;
     mutable std::mutex mutex_;
+    mutable std::condition_variable cv_;
     std::vector<RecordingSessionEvent> events_;
 };
 

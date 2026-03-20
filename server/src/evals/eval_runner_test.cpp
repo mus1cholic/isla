@@ -187,10 +187,14 @@ TEST(EvalRunnerTest, CapturesStructuredMidTermEpisodesAfterFlushIsApplied) {
                     .turn_id = "turn_1",
                     .user_text = "hello",
                 },
+                EvalTurnInput{
+                    .turn_id = "turn_2",
+                    .user_text = "tell me something else first",
+                },
             },
         .evaluated_turn =
             EvalTurnInput{
-                .turn_id = "turn_2",
+                .turn_id = "turn_3",
                 .user_text = "can you summarize what we were talking about?",
             },
     });

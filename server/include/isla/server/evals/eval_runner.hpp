@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <memory>
 
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_stub_responder.hpp"
