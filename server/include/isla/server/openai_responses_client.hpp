@@ -5,14 +5,67 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <variant>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/openai_reasoning_effort.hpp"
 
 namespace isla::server::ai_gateway {
+
+// Provider-facing function tool definition for the Responses API.
+//
+// This is intentionally separate from the provider-neutral `tools::ToolDefinition` so the gateway
+// can evolve its internal tool contracts without leaking provider-specific fields everywhere.
+struct OpenAiResponsesFunctionTool {
+    std::string name;
+    std::string description;
+    std::string parameters_json_schema;
+    bool strict = true;
+};
+
+// Input item passed to the Responses API when continuing a tool-calling loop.
+//
+// `raw_json` is used to replay provider-owned items from a previous response verbatim, including
+// reasoning and function_call items that reasoning models expect to see again alongside tool
+// outputs. It should contain one complete JSON object.
+struct OpenAiResponsesRawInputItem {
+    std::string raw_json;
+};
+
+// Explicit user/assistant message item for the Responses API input list.
+struct OpenAiResponsesMessageInputItem {
+    std::string role;
+    std::string content;
+};
+
+// Function output item sent back to the model after the application executes a tool call.
+struct OpenAiResponsesFunctionCallOutputInputItem {
+    std::string call_id;
+    std::string output;
+};
+
+using OpenAiResponsesInputItem =
+    std::variant<OpenAiResponsesRawInputItem, OpenAiResponsesMessageInputItem,
+                 OpenAiResponsesFunctionCallOutputInputItem>;
+
+// Output item surfaced by the Responses API in `response.output`.
+//
+// `raw_json` preserves a semantically equivalent provider object suitable for later replay.
+// It is not guaranteed to match the original provider bytes exactly after parse/dump
+// normalization. For function calls, `call_id`, `name`, and `arguments_json` expose the fields
+// the gateway needs for application tool dispatch.
+struct OpenAiResponsesOutputItem {
+    std::string type;
+    std::string raw_json;
+    std::optional<std::string> call_id;
+    std::optional<std::string> name;
+    std::optional<std::string> arguments_json;
+};
 
 struct OpenAiResponsesClientConfig {
     bool enabled = false;
@@ -28,10 +81,18 @@ struct OpenAiResponsesClientConfig {
     std::string user_agent = "isla-ai-gateway/phase-3.5";
 };
 
+// Request payload for one OpenAI Responses API call.
+//
+// `input_items` and `function_tools` are non-owning views so callers can reuse immutable vectors
+// across tool-loop rounds without copying them into each request object. Their backing storage must
+// stay alive for the duration of `StreamResponse(...)`.
 struct OpenAiResponsesRequest {
     std::string model;
     std::string system_prompt;
     std::string user_text;
+    std::span<const OpenAiResponsesInputItem> input_items;
+    std::span<const OpenAiResponsesFunctionTool> function_tools;
+    bool parallel_tool_calls = true;
     OpenAiReasoningEffort reasoning_effort = OpenAiReasoningEffort::kNone;
     std::shared_ptr<const TurnTelemetryContext> telemetry_context;
 };
@@ -42,6 +103,7 @@ struct OpenAiResponsesTextDeltaEvent {
 
 struct OpenAiResponsesCompletedEvent {
     std::string response_id;
+    std::vector<OpenAiResponsesOutputItem> output_items;
 };
 
 using OpenAiResponsesEvent =

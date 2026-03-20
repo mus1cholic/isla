@@ -1,5 +1,7 @@
 #include "isla/server/openai_responses_sse_parser.hpp"
 
+#include <algorithm>
+
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "ai_gateway_string_utils.hpp"
@@ -12,6 +14,58 @@ namespace {
 
 absl::Status internal_error(std::string_view message) {
     return absl::InternalError(std::string(message));
+}
+
+absl::StatusOr<std::vector<OpenAiResponsesOutputItem>>
+ParseResponseOutputItems(const nlohmann::json& event_json) {
+    std::vector<OpenAiResponsesOutputItem> output_items;
+    if (!event_json.contains("response") || !event_json["response"].is_object()) {
+        return output_items;
+    }
+    const nlohmann::json& response = event_json["response"];
+    if (!response.contains("output") || !response["output"].is_array()) {
+        return output_items;
+    }
+    output_items.reserve(response["output"].size());
+    for (const auto& item : response["output"]) {
+        if (!item.is_object()) {
+            continue;
+        }
+        const absl::StatusOr<std::optional<std::string>> type =
+            ReadOptionalStringField(item, "type");
+        if (!type.ok()) {
+            return type.status();
+        }
+        OpenAiResponsesOutputItem output_item{
+            .type = type->value_or(""),
+            .raw_json = item.dump(),
+            .call_id = std::nullopt,
+            .name = std::nullopt,
+            .arguments_json = std::nullopt,
+        };
+        if (output_item.type == "function_call") {
+            const absl::StatusOr<std::optional<std::string>> call_id =
+                ReadOptionalStringField(item, "call_id");
+            if (!call_id.ok()) {
+                return call_id.status();
+            }
+            const absl::StatusOr<std::optional<std::string>> name =
+                ReadOptionalStringField(item, "name");
+            if (!name.ok()) {
+                return name.status();
+            }
+            const absl::StatusOr<std::optional<std::string>> arguments =
+                ReadOptionalStringField(item, "arguments");
+            if (!arguments.ok()) {
+                return arguments.status();
+            }
+            output_item.call_id = *call_id;
+            output_item.name = *name;
+            output_item.arguments_json = *arguments;
+        }
+        output_items.push_back(std::move(output_item));
+    }
+    return output_items;
 }
 
 std::optional<std::string> ExtractCompletedText(const nlohmann::json& event_json) {
@@ -132,16 +186,28 @@ absl::Status DispatchStreamEvent(const nlohmann::json& event_json, SseParseSumma
         });
     }
     if (type == "response.completed") {
+        const absl::StatusOr<std::vector<OpenAiResponsesOutputItem>> output_items =
+            ParseResponseOutputItems(event_json);
+        if (!output_items.ok()) {
+            return output_items.status();
+        }
         if (!summary->saw_delta) {
             const std::optional<std::string> completed_text = ExtractCompletedText(event_json);
-            if (!completed_text.has_value() || completed_text->empty()) {
+            const bool has_function_call =
+                std::find_if(output_items->begin(), output_items->end(),
+                             [](const OpenAiResponsesOutputItem& output_item) {
+                                 return output_item.type == "function_call";
+                             }) != output_items->end();
+            if ((!completed_text.has_value() || completed_text->empty()) && !has_function_call) {
                 return internal_error(
                     "openai responses completed without any recoverable output text");
             }
-            const absl::Status delta_status =
-                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = *completed_text });
-            if (!delta_status.ok()) {
-                return delta_status;
+            if (completed_text.has_value() && !completed_text->empty()) {
+                const absl::Status delta_status =
+                    on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = *completed_text });
+                if (!delta_status.ok()) {
+                    return delta_status;
+                }
             }
         }
         summary->saw_completed = true;
@@ -156,6 +222,7 @@ absl::Status DispatchStreamEvent(const nlohmann::json& event_json, SseParseSumma
         }
         return on_event(OpenAiResponsesCompletedEvent{
             .response_id = std::move(response_id),
+            .output_items = *output_items,
         });
     }
 

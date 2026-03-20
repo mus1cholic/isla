@@ -107,6 +107,11 @@ class MemoryOrchestrator {
     // Renders the full prompt bundle as a single string.
     [[nodiscard]] absl::StatusOr<std::string> RenderFullWorkingMemory() const;
 
+    // Returns full Tier 1 detail for one expandable mid-term episode currently known to the
+    // session. Missing episodes return NotFound; non-expandable episodes return FailedPrecondition.
+    [[nodiscard]] absl::StatusOr<std::string>
+    ExpandMidTermEpisode(std::string_view episode_id) const;
+
     [[nodiscard]] const std::string& session_id() const {
         return session_id_;
     }

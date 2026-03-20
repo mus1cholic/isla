@@ -9,6 +9,7 @@
 #include "isla/server/ai_gateway_planner.hpp"
 #include "isla/server/llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
+#include "isla/server/tools/tool_registry.hpp"
 
 namespace isla::server::ai_gateway {
 
@@ -17,6 +18,7 @@ struct GatewayStepRegistryConfig {
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
     std::shared_ptr<const isla::server::LlmClient> llm_client;
+    std::shared_ptr<const isla::server::tools::ToolRegistry> tool_registry;
 };
 
 class GatewayStepRegistry final {

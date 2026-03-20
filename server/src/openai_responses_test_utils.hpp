@@ -13,6 +13,33 @@
 
 namespace isla::server::ai_gateway::test {
 
+struct OpenAiResponsesRequestSnapshot {
+    std::string model;
+    std::string system_prompt;
+    std::string user_text;
+    std::vector<OpenAiResponsesInputItem> input_items;
+    std::vector<OpenAiResponsesFunctionTool> function_tools;
+    bool parallel_tool_calls = true;
+    OpenAiReasoningEffort reasoning_effort = OpenAiReasoningEffort::kNone;
+    std::shared_ptr<const TurnTelemetryContext> telemetry_context;
+};
+
+[[nodiscard]] inline OpenAiResponsesRequestSnapshot
+TakeRequestSnapshot(const OpenAiResponsesRequest& request) {
+    return OpenAiResponsesRequestSnapshot{
+        .model = request.model,
+        .system_prompt = request.system_prompt,
+        .user_text = request.user_text,
+        .input_items = std::vector<OpenAiResponsesInputItem>(request.input_items.begin(),
+                                                             request.input_items.end()),
+        .function_tools = std::vector<OpenAiResponsesFunctionTool>(request.function_tools.begin(),
+                                                                   request.function_tools.end()),
+        .parallel_tool_calls = request.parallel_tool_calls,
+        .reasoning_effort = request.reasoning_effort,
+        .telemetry_context = request.telemetry_context,
+    };
+}
+
 class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
     using StreamHandler = std::function<absl::Status(const OpenAiResponsesRequest&,
@@ -41,8 +68,8 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
                    const OpenAiResponsesEventCallback& on_event) const override {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            last_request = request;
-            requests.push_back(request);
+            last_request = TakeRequestSnapshot(request);
+            requests.push_back(TakeRequestSnapshot(request));
         }
         if (stream_handler_) {
             return stream_handler_(request, on_event);
@@ -68,20 +95,20 @@ class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
         });
     }
 
-    [[nodiscard]] OpenAiResponsesRequest last_request_snapshot() const {
+    [[nodiscard]] OpenAiResponsesRequestSnapshot last_request_snapshot() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return last_request;
     }
 
-    [[nodiscard]] std::vector<OpenAiResponsesRequest> requests_snapshot() const {
+    [[nodiscard]] std::vector<OpenAiResponsesRequestSnapshot> requests_snapshot() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return requests;
     }
 
   private:
     mutable std::mutex mutex_;
-    mutable OpenAiResponsesRequest last_request;
-    mutable std::vector<OpenAiResponsesRequest> requests;
+    mutable OpenAiResponsesRequestSnapshot last_request;
+    mutable std::vector<OpenAiResponsesRequestSnapshot> requests;
     absl::Status status_;
     std::string full_text_;
     std::string response_id_;
