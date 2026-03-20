@@ -62,6 +62,19 @@ cc_library(
 )
 
 cc_library(
+    name = "eval_runner",
+    srcs = ["evals/eval_runner.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "ai_gateway_string_utils",
     srcs = ["ai_gateway_string_utils.cpp"],
     hdrs = ["ai_gateway_string_utils.hpp"],
@@ -527,6 +540,18 @@ cc_test(
         ":openai_responses_client_mock",
         ":ai_gateway_telemetry_test_utils",
         ":openai_llms",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "eval_runner_test",
+    srcs = ["evals/eval_runner_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:prompt_loader",
+        ":eval_runner",
+        ":openai_responses_test_utils",
         "@googletest//:gtest_main",
     ],
 )

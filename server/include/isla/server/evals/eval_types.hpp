@@ -1,0 +1,74 @@
+#pragma once
+
+#include <chrono>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "isla/server/memory/memory_timestamp_utils.hpp"
+
+namespace isla::server::evals {
+
+struct EvalTurnInput {
+    std::string turn_id;
+    std::string user_text;
+};
+
+// Benchmark-first case shape for the initial app-boundary eval runner.
+//
+// Setup turns establish session state and memory prior to the evaluated turn. The runner captures
+// artifacts around `evaluated_turn`.
+struct EvalCase {
+    std::string benchmark_name;
+    std::string case_id;
+    std::string session_id;
+    std::vector<EvalTurnInput> setup_turns;
+    EvalTurnInput evaluated_turn;
+};
+
+struct EvalPromptArtifacts {
+    std::string system_prompt;
+    std::string working_memory_context;
+    std::string full_prompt;
+};
+
+struct EvalMidTermEpisodeArtifact {
+    std::string episode_id;
+    isla::server::memory::Timestamp created_at;
+    int salience = 0;
+    std::string tier2_summary;
+    bool expandable = false;
+};
+
+struct EvalEmittedEvent {
+    std::string op;
+    std::string turn_id;
+    std::string payload;
+};
+
+struct EvalFailure {
+    std::string code;
+    std::string message;
+};
+
+enum class EvalTurnStatus {
+    kSucceeded,
+    kFailed,
+    kCancelled,
+};
+
+struct EvalArtifacts {
+    std::string benchmark_name;
+    std::string case_id;
+    std::string session_id;
+    std::string evaluated_turn_id;
+    EvalPromptArtifacts prompt;
+    std::vector<EvalMidTermEpisodeArtifact> pre_turn_mid_term_episodes;
+    std::vector<EvalMidTermEpisodeArtifact> post_turn_mid_term_episodes;
+    std::vector<EvalEmittedEvent> emitted_events;
+    EvalTurnStatus status = EvalTurnStatus::kSucceeded;
+    std::optional<std::string> final_reply;
+    std::optional<EvalFailure> failure;
+};
+
+} // namespace isla::server::evals

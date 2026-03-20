@@ -1232,6 +1232,16 @@ GatewayStubResponder::RenderSessionMemoryPrompt(std::string_view session_id) con
     return session_memory->orchestrator.RenderFullWorkingMemory();
 }
 
+absl::StatusOr<isla::server::memory::WorkingMemoryState>
+GatewayStubResponder::SnapshotSessionWorkingMemoryState(std::string_view session_id) const {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(session_id);
+    if (session_memory == nullptr) {
+        return absl::NotFoundError("memory orchestrator not found for session");
+    }
+    std::lock_guard<std::mutex> lock(session_memory->mutex);
+    return session_memory->orchestrator.memory().snapshot();
+}
+
 bool GatewayStubResponder::WaitForAcceptedTurns(std::size_t expected_count) {
     std::unique_lock<std::mutex> lock(mutex_);
     return cv_.wait_for(lock, std::chrono::seconds(2),
