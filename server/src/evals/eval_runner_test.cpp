@@ -414,6 +414,10 @@ TEST(EvalRunnerTest, RejectsConversationAssistantMessageWithoutPriorUser) {
 
     ASSERT_FALSE(artifacts.ok());
     EXPECT_EQ(artifacts.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(artifacts.status().message()).find("eval case replay validation failed"),
+              std::string::npos);
+    EXPECT_NE(std::string(artifacts.status().message()).find("conversation message at index 0"),
+              std::string::npos);
     EXPECT_NE(std::string(artifacts.status().message()).find("must follow a prior user message"),
               std::string::npos);
 }

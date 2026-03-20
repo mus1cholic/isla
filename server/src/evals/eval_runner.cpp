@@ -322,7 +322,8 @@ absl::StatusOr<ReplayPlan> BuildReplayPlan(const EvalCase& eval_case) {
 
     std::size_t next_history_turn = 1U;
     std::optional<std::string> open_turn_id = std::nullopt;
-    for (const EvalConversationMessage& message : eval_case.conversation) {
+    for (std::size_t index = 0; index < eval_case.conversation.size(); ++index) {
+        const EvalConversationMessage& message = eval_case.conversation[index];
         if (message.role == MessageRole::User) {
             open_turn_id = absl::StrCat("history_turn_", next_history_turn++);
             plan.history_messages.push_back(ReplayMessage{
@@ -334,8 +335,9 @@ absl::StatusOr<ReplayPlan> BuildReplayPlan(const EvalCase& eval_case) {
             continue;
         }
         if (!open_turn_id.has_value()) {
-            return invalid_argument(
-                "conversation assistant message must follow a prior user message");
+            return invalid_argument(absl::StrCat("conversation message at index ", index,
+                                                 " (role=assistant) must follow a prior user "
+                                                 "message"));
         }
         plan.history_messages.push_back(ReplayMessage{
             .turn_id = *open_turn_id,
@@ -368,7 +370,8 @@ absl::Status ValidateCase(const EvalCase& eval_case) {
         return status;
     }
     if (absl::StatusOr<ReplayPlan> plan = BuildReplayPlan(eval_case); !plan.ok()) {
-        return plan.status();
+        return invalid_argument(
+            absl::StrCat("eval case replay validation failed: ", plan.status().message()));
     }
     return absl::OkStatus();
 }

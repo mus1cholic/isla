@@ -558,7 +558,7 @@ bool ValidateArtifacts(const BenchmarkCaseDefinition& definition, const EvalArti
 ordered_json BuildCaseArtifactJson(const BenchmarkCaseDefinition& definition) {
     ordered_json history = ordered_json::array();
     for (const EvalConversationMessage& message : definition.eval_case.conversation) {
-        history.push_back(EvalConversationMessageToJson(message));
+        history.push_back(ordered_json(EvalConversationMessageToJson(message)));
     }
 
     ordered_json payload = ordered_json::object();
