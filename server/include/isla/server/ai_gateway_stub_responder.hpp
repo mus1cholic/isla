@@ -62,6 +62,8 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void OnServerStopping(GatewaySessionRegistry& session_registry) override;
     [[nodiscard]] absl::StatusOr<std::string>
     RenderSessionMemoryPrompt(std::string_view session_id) const;
+    [[nodiscard]] absl::StatusOr<isla::server::memory::WorkingMemoryState>
+    SnapshotSessionWorkingMemoryState(std::string_view session_id) const;
     [[nodiscard]] bool WaitForAcceptedTurns(std::size_t expected_count);
     [[nodiscard]] bool IsMidTermMemoryConfigured() const;
     [[nodiscard]] bool IsMidTermMemoryAvailable() const;
