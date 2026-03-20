@@ -33,6 +33,7 @@
 #include <boost/asio/write.hpp>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include "ai_gateway_telemetry_test_utils.hpp"
 #include "openai_responses_inprocess_transport_test_hooks.hpp"
@@ -748,6 +749,137 @@ TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody
     ASSERT_TRUE(server.WaitForRequest());
     EXPECT_NE(server.request_text().find("\"reasoning\":{\"effort\":\"xhigh\"}"),
               std::string::npos);
+}
+
+TEST(OpenAiResponsesClientTest, SerializesFunctionToolsAndReplayInputItemsInRequestBody) {
+    const std::string body =
+        "data: "
+        "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tool\",\"output\":[{\"type\":"
+        "\"function_call\",\"call_id\":\"call_1\",\"name\":\"expand_mid_term\",\"arguments\":\"{"
+        "\\\"episode_id\\\":\\\"ep_123\\\"}\"}]}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    OneShotHttpServer server("HTTP/1.1 200 OK\r\n"
+                             "Content-Type: text/event-stream\r\n"
+                             "Content-Length: " +
+                             std::to_string(body.size()) +
+                             "\r\n"
+                             "\r\n" +
+                             body);
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.3-chat-latest",
+            .system_prompt = "system prompt",
+            .input_items =
+                {
+                    OpenAiResponsesRawInputItem{
+                        .raw_json = R"json({"type":"function_call","call_id":"call_1","name":"expand_mid_term","arguments":"{\"episode_id\":\"ep_123\"}"})json",
+                    },
+                    OpenAiResponsesFunctionCallOutputInputItem{
+                        .call_id = "call_1",
+                        .output = "expanded tier1 detail",
+                    },
+                },
+            .function_tools =
+                {
+                    OpenAiResponsesFunctionTool{
+                        .name = "expand_mid_term",
+                        .description = "Load full Tier 1 detail.",
+                        .parameters_json_schema =
+                            R"json({"type":"object","properties":{"episode_id":{"type":"string"}},"required":["episode_id"],"additionalProperties":false})json",
+                        .strict = true,
+                    },
+                },
+            .parallel_tool_calls = false,
+        },
+        [](const OpenAiResponsesEvent& event) -> absl::Status {
+            static_cast<void>(event);
+            return absl::OkStatus();
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequest());
+    const std::string request_text = server.request_text();
+    const std::size_t body_pos = request_text.find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const nlohmann::json request_json = nlohmann::json::parse(request_text.substr(body_pos + 4U));
+    ASSERT_TRUE(request_json["input"].is_array());
+    ASSERT_EQ(request_json["input"].size(), 2U);
+    EXPECT_EQ(request_json["input"][0]["type"], "function_call");
+    EXPECT_EQ(request_json["input"][1]["type"], "function_call_output");
+    EXPECT_EQ(request_json["input"][1]["call_id"], "call_1");
+    EXPECT_EQ(request_json["input"][1]["output"], "expanded tier1 detail");
+    ASSERT_TRUE(request_json["tools"].is_array());
+    ASSERT_EQ(request_json["tools"].size(), 1U);
+    EXPECT_EQ(request_json["tools"][0]["type"], "function");
+    EXPECT_EQ(request_json["tools"][0]["name"], "expand_mid_term");
+    EXPECT_EQ(request_json["parallel_tool_calls"], false);
+}
+
+TEST(OpenAiResponsesClientTest, CompletedEventSurfacesFunctionCallOutputItems) {
+    const std::string body =
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tool\",\"output\":["
+        "{\"type\":\"reasoning\",\"id\":\"rs_1\"},"
+        "{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"expand_mid_term\","
+        "\"arguments\":\"{\\\"episode_id\\\":\\\"ep_123\\\"}\"}"
+        "]}}\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    OneShotHttpServer server("HTTP/1.1 200 OK\r\n"
+                             "Content-Type: text/event-stream\r\n"
+                             "Content-Length: " +
+                             std::to_string(body.size()) +
+                             "\r\n"
+                             "\r\n" +
+                             body);
+
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .target = "/v1/responses",
+    });
+
+    std::optional<OpenAiResponsesCompletedEvent> completed_event;
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.3-chat-latest",
+            .user_text = "hello",
+        },
+        [&completed_event](const OpenAiResponsesEvent& event) -> absl::Status {
+            return std::visit(
+                [&completed_event](const auto& concrete_event) -> absl::Status {
+                    using Event = std::decay_t<decltype(concrete_event)>;
+                    if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
+                        completed_event = concrete_event;
+                    }
+                    return absl::OkStatus();
+                },
+                event);
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(completed_event.has_value());
+    ASSERT_EQ(completed_event->output_items.size(), 2U);
+    EXPECT_EQ(completed_event->output_items[0].type, "reasoning");
+    EXPECT_EQ(completed_event->output_items[1].type, "function_call");
+    ASSERT_TRUE(completed_event->output_items[1].call_id.has_value());
+    ASSERT_TRUE(completed_event->output_items[1].name.has_value());
+    ASSERT_TRUE(completed_event->output_items[1].arguments_json.has_value());
+    EXPECT_EQ(*completed_event->output_items[1].call_id, "call_1");
+    EXPECT_EQ(*completed_event->output_items[1].name, "expand_mid_term");
+    EXPECT_EQ(*completed_event->output_items[1].arguments_json,
+              R"json({"episode_id":"ep_123"})json");
 }
 
 TEST(OpenAiResponsesClientTest, RejectsInvalidReasoningEffortBeforeRequestDispatch) {

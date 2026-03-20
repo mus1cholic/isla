@@ -891,4 +891,19 @@ absl::StatusOr<std::string> MemoryOrchestrator::RenderWorkingMemoryContext() con
     return memory_.RenderWorkingMemoryContext();
 }
 
+absl::StatusOr<std::string>
+MemoryOrchestrator::ExpandMidTermEpisode(std::string_view episode_id) const {
+    for (const Episode& episode : memory_.snapshot().mid_term_episodes) {
+        if (episode.episode_id != episode_id) {
+            continue;
+        }
+        if (!IsExpandableEpisode(episode)) {
+            return absl::FailedPreconditionError(
+                "mid-term episode does not have expandable Tier 1 detail available");
+        }
+        return *episode.tier1_detail;
+    }
+    return absl::NotFoundError("mid-term episode was not found");
+}
+
 } // namespace isla::server::memory

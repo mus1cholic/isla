@@ -22,6 +22,62 @@ absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
 }
 
+absl::StatusOr<nlohmann::json> SerializeInputItem(const OpenAiResponsesInputItem& item) {
+    return std::visit(
+        [](const auto& concrete_item) -> absl::StatusOr<nlohmann::json> {
+            using Item = std::decay_t<decltype(concrete_item)>;
+            if constexpr (std::is_same_v<Item, OpenAiResponsesRawInputItem>) {
+                const nlohmann::json parsed =
+                    nlohmann::json::parse(concrete_item.raw_json, nullptr, false);
+                if (parsed.is_discarded()) {
+                    return invalid_argument(
+                        "openai responses raw input item must contain valid JSON");
+                }
+                return parsed;
+            } else if constexpr (std::is_same_v<Item, OpenAiResponsesMessageInputItem>) {
+                return nlohmann::json{
+                    { "role", concrete_item.role },
+                    { "content", concrete_item.content },
+                };
+            } else {
+                return nlohmann::json{
+                    { "type", "function_call_output" },
+                    { "call_id", concrete_item.call_id },
+                    { "output", concrete_item.output },
+                };
+            }
+        },
+        item);
+}
+
+absl::StatusOr<nlohmann::json>
+SerializeFunctionTools(const std::vector<OpenAiResponsesFunctionTool>& function_tools) {
+    nlohmann::json tools = nlohmann::json::array();
+    for (const OpenAiResponsesFunctionTool& tool : function_tools) {
+        if (tool.name.empty()) {
+            return invalid_argument("openai responses function tool name must not be empty");
+        }
+        if (tool.parameters_json_schema.empty()) {
+            return invalid_argument(
+                "openai responses function tool parameters_json_schema must not be empty");
+        }
+        const nlohmann::json parameters =
+            nlohmann::json::parse(tool.parameters_json_schema, nullptr, false);
+        if (!parameters.is_object()) {
+            return invalid_argument(
+                "openai responses function tool parameters_json_schema must be a JSON object");
+        }
+        tools.push_back(nlohmann::json{
+            { "type", "function" },
+            { "name", tool.name },
+            { "description", tool.description },
+            { "parameters", parameters },
+            { "strict", tool.strict },
+        });
+    }
+    return tools;
+}
+
 absl::StatusOr<TransportStreamResult>
 ExecuteTransport(const OpenAiResponsesClientConfig& config, const std::string& request_json,
                  const OpenAiResponsesEventCallback& on_event) {
@@ -120,8 +176,9 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
         if (request.model.empty()) {
             return invalid_argument("openai responses request must include model");
         }
-        if (request.user_text.empty()) {
-            return invalid_argument("openai responses request must include user_text");
+        if (request.user_text.empty() && request.input_items.empty()) {
+            return invalid_argument(
+                "openai responses request must include user_text or input_items");
         }
         const std::optional<std::string_view> reasoning_effort =
             TryOpenAiReasoningEffortToString(request.reasoning_effort);
@@ -133,15 +190,42 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
             TurnTelemetryContext::Clock::now();
         nlohmann::json body = {
             { "model", request.model },
-            { "input", request.user_text },
             { "reasoning",
               {
                   { "effort", *reasoning_effort },
               } },
             { "stream", true },
         };
+        if (request.input_items.empty()) {
+            body["input"] = request.user_text;
+        } else {
+            nlohmann::json input = nlohmann::json::array();
+            if (!request.user_text.empty()) {
+                input.push_back(nlohmann::json{
+                    { "role", "user" },
+                    { "content", request.user_text },
+                });
+            }
+            for (const OpenAiResponsesInputItem& item : request.input_items) {
+                const absl::StatusOr<nlohmann::json> serialized_item = SerializeInputItem(item);
+                if (!serialized_item.ok()) {
+                    return serialized_item.status();
+                }
+                input.push_back(*serialized_item);
+            }
+            body["input"] = std::move(input);
+        }
         if (!request.system_prompt.empty()) {
             body["instructions"] = request.system_prompt;
+        }
+        if (!request.function_tools.empty()) {
+            const absl::StatusOr<nlohmann::json> tools =
+                SerializeFunctionTools(request.function_tools);
+            if (!tools.ok()) {
+                return tools.status();
+            }
+            body["tools"] = *tools;
+            body["parallel_tool_calls"] = request.parallel_tool_calls;
         }
 
         VLOG(1) << "AI gateway openai responses dispatching host='" << SanitizeForLog(config_.host)

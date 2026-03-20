@@ -71,20 +71,29 @@ absl::StatusOr<ToolResult> ExpandMidTermTool::Execute(const ToolExecutionContext
             call, "expand_mid_term accepts only one argument: a non-empty string field "
                   "'episode_id'.");
     }
-    if (const auto episode_id_it = arguments.find("episode_id");
-        episode_id_it == arguments.end() || !episode_id_it->is_string() ||
+    const auto episode_id_it = arguments.find("episode_id");
+    if (episode_id_it == arguments.end() || !episode_id_it->is_string() ||
         episode_id_it->get<std::string>().empty()) {
         return BuildErrorResult(
             call, "expand_mid_term requires a JSON object with a non-empty string field "
                   "'episode_id'.");
     }
+    if (context.session_reader == nullptr) {
+        return absl::FailedPreconditionError(
+            "expand_mid_term requires a session-backed tool reader");
+    }
+    const std::string episode_id = episode_id_it->get<std::string>();
+    const absl::StatusOr<std::string> detail =
+        context.session_reader->ExpandMidTermEpisode(episode_id);
+    if (!detail.ok()) {
+        return BuildErrorResult(call, detail.status().message());
+    }
 
     return ToolResult{
         .call_id = call.call_id,
         .tool_name = std::string(kName),
-        .output_text =
-            "expand_mid_term is declared but not yet wired to session memory in this build.",
-        .is_error = true,
+        .output_text = *detail,
+        .is_error = false,
     };
 }
 

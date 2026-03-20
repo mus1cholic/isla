@@ -21,6 +21,8 @@
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/openai_llm_client.hpp"
+#include "isla/server/tools/expand_mid_term_tool.hpp"
+#include "isla/server/tools/tool_registry.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -49,6 +51,43 @@ std::string ResolveMidTermEmbeddingModel(const GatewayStubResponderConfig& confi
     return config.llm_runtime_config.mid_term_embedding_model.empty()
                ? std::string(kDefaultMidTermEmbeddingModel)
                : config.llm_runtime_config.mid_term_embedding_model;
+}
+
+class CallbackToolSessionReader final : public isla::server::tools::ToolSessionReader {
+  public:
+    using ExpandFn = std::function<absl::StatusOr<std::string>(std::string_view)>;
+
+    explicit CallbackToolSessionReader(ExpandFn expand_fn) : expand_fn_(std::move(expand_fn)) {}
+
+    [[nodiscard]] absl::StatusOr<std::string>
+    ExpandMidTermEpisode(std::string_view episode_id) const override {
+        return expand_fn_(episode_id);
+    }
+
+  private:
+    ExpandFn expand_fn_;
+};
+
+std::shared_ptr<const isla::server::tools::ToolRegistry> CreateDefaultToolRegistry() {
+    const absl::StatusOr<isla::server::tools::ToolRegistry> registry =
+        isla::server::tools::ToolRegistry::Create(
+            { std::make_shared<const isla::server::tools::ExpandMidTermTool>() });
+    if (!registry.ok()) {
+        LOG(ERROR) << "AI gateway failed to build default tool registry detail='"
+                   << SanitizeForLog(registry.status().message()) << "'";
+        return nullptr;
+    }
+    return std::make_shared<const isla::server::tools::ToolRegistry>(*registry);
+}
+
+GatewayStepRegistryConfig BuildExecutorConfig(const GatewayStubResponderConfig& config) {
+    return GatewayStepRegistryConfig{
+        .llm_runtime_config = config.llm_runtime_config,
+        .openai_config = config.openai_config,
+        .openai_client = config.openai_client,
+        .llm_client = nullptr,
+        .tool_registry = CreateDefaultToolRegistry(),
+    };
 }
 
 template <typename StartFn>
@@ -135,11 +174,7 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
 } // namespace
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
-    : config_(std::move(config)), executor_(GatewayStepRegistryConfig{
-                                      .llm_runtime_config = config_.llm_runtime_config,
-                                      .openai_config = config_.openai_config,
-                                      .openai_client = config_.openai_client,
-                                  }) {
+    : config_(config), executor_(BuildExecutorConfig(config)) {
     mid_term_memory_configured_ = (config_.openai_client != nullptr);
     const std::string flush_decider_model = ResolveMidTermFlushDeciderModel(config_);
     const std::string compactor_model = ResolveMidTermCompactorModel(config_);
@@ -782,6 +817,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
                                                .system_prompt = turn.rendered_system_prompt,
                                                .user_text = turn.rendered_working_memory_context,
                                                .telemetry_context = turn.telemetry_context,
+                                               .tool_execution_context = BuildToolExecutionContext(
+                                                   turn.session_id, turn.telemetry_context),
                                            });
     if (const auto* failure = std::get_if<ExecutionFailure>(&executor_outcome)) {
         LOG(ERROR) << "AI gateway stub executor failed session=" << SanitizeForLog(turn.session_id)
@@ -1153,6 +1190,35 @@ absl::Status GatewayStubResponder::HandleSuccessfulReplyMemory(const PendingTurn
     return session_memory->orchestrator.HandleAssistantReply(
         isla::server::memory::GatewayAssistantReply(turn.session_id, turn.turn_id,
                                                     std::string(reply_text), NowTimestamp()));
+}
+
+absl::StatusOr<std::string>
+GatewayStubResponder::ExpandMidTermEpisodeForSession(std::string_view session_id,
+                                                     std::string_view episode_id) const {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(session_id);
+    if (session_memory == nullptr) {
+        return absl::NotFoundError("memory orchestrator not found for session");
+    }
+    std::lock_guard<std::mutex> lock(session_memory->mutex);
+    return session_memory->orchestrator.ExpandMidTermEpisode(episode_id);
+}
+
+std::optional<isla::server::tools::ToolExecutionContext>
+GatewayStubResponder::BuildToolExecutionContext(
+    std::string_view session_id,
+    std::shared_ptr<const TurnTelemetryContext> telemetry_context) const {
+    if (session_id.empty()) {
+        return std::nullopt;
+    }
+    return isla::server::tools::ToolExecutionContext{
+        .session_id = std::string(session_id),
+        .telemetry_context = std::move(telemetry_context),
+        .session_reader = std::make_shared<CallbackToolSessionReader>(
+            [this, session_id = std::string(session_id)](
+                std::string_view episode_id) -> absl::StatusOr<std::string> {
+                return ExpandMidTermEpisodeForSession(session_id, episode_id);
+            }),
+    };
 }
 
 absl::StatusOr<std::string>

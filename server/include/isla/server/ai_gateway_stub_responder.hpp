@@ -121,6 +121,11 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     HandleAcceptedTurnMemory(const TurnAcceptedEvent& event);
     [[nodiscard]] absl::Status HandleSuccessfulReplyMemory(const PendingTurn& turn,
                                                            std::string_view reply_text);
+    [[nodiscard]] absl::StatusOr<std::string>
+    ExpandMidTermEpisodeForSession(std::string_view session_id, std::string_view episode_id) const;
+    [[nodiscard]] std::optional<isla::server::tools::ToolExecutionContext>
+    BuildToolExecutionContext(std::string_view session_id,
+                              std::shared_ptr<const TurnTelemetryContext> telemetry_context) const;
 
     GatewayStubResponderConfig config_;
     GatewayPlanExecutor executor_;

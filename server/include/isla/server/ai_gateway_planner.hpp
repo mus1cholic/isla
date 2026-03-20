@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -9,6 +10,7 @@
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/openai_reasoning_effort.hpp"
+#include "isla/server/tools/tool_context.hpp"
 
 namespace isla::server::ai_gateway {
 
@@ -16,6 +18,9 @@ struct ExecutionRuntimeInput {
     std::string system_prompt;
     std::string user_text;
     std::shared_ptr<const TurnTelemetryContext> telemetry_context;
+    // Optional session-scoped tool context for the current turn. When absent, execution falls back
+    // to plain text-only model calls even if a registry is configured.
+    std::optional<isla::server::tools::ToolExecutionContext> tool_execution_context;
 };
 
 struct OpenAiLlmStep {
