@@ -125,11 +125,17 @@ runs:
                 break
               }
 
-              $parentDir = [System.IO.Path]::GetDirectoryName(($currentDir -replace '/', '\'))
-              if ([string]::IsNullOrWhiteSpace($parentDir)) {
+              # Keep the package walk slash-normalized so it works on Linux and Windows.
+              $lastSlash = $currentDir.LastIndexOf('/')
+              if ($lastSlash -lt 0) {
                 $currentDir = "."
               } else {
-                $currentDir = $parentDir -replace '\\', '/'
+                $parentDir = $currentDir.Substring(0, $lastSlash)
+                if ([string]::IsNullOrWhiteSpace($parentDir)) {
+                  $currentDir = "."
+                } else {
+                  $currentDir = $parentDir
+                }
               }
             }
 
