@@ -3,7 +3,7 @@
 #include <filesystem>
 
 #include "absl/status/status.h"
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 #include "isla/server/evals/eval_types.hpp"
 

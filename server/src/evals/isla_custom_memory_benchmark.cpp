@@ -147,7 +147,15 @@ std::filesystem::path FindRepositoryRoot(std::filesystem::path start) {
 
 std::string DisplayPath(const std::filesystem::path& path) {
     const std::filesystem::path repo_root = FindRepositoryRoot(std::filesystem::current_path());
-    const std::filesystem::path normalized_path = std::filesystem::weakly_canonical(path);
+    std::error_code error;
+    std::filesystem::path normalized_path = std::filesystem::weakly_canonical(path, error);
+    if (error) {
+        error.clear();
+        normalized_path = std::filesystem::absolute(path, error);
+        if (error) {
+            normalized_path = path;
+        }
+    }
     const std::string current_text = repo_root.generic_string();
     const std::string path_text = normalized_path.generic_string();
     const std::string current_lower = ToLowerAscii(current_text);
