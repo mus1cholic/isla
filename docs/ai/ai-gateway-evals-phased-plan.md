@@ -1,6 +1,6 @@
 # AI Gateway Evaluation Phased Plan
 
-Last updated: 2026-03-19
+Last updated: 2026-03-20
 
 ## Purpose
 
@@ -46,12 +46,43 @@ Evaluation work MUST preserve the boundaries already established in those docume
 
 The current implementation also has explicit evaluation-relevant limitations:
 
-- there is no dedicated evaluation runner or benchmark adapter surface yet
+- a small app-boundary eval runner now exists, but there are still no benchmark adapters,
+  autoraters, or standalone eval CLI surfaces yet
 - the live gateway path records memory event times with wall-clock `NowTimestamp()` in the
   responder path instead of allowing benchmark-supplied event time
 - mid-term flush stub timestamps are also generated from wall-clock time inside the orchestrator
 - the current prompt does not inject an explicit benchmark "current time" for temporally-scoped
   evaluation questions
+- the current runner captures prompt artifacts, emitted events, and structured mid-term snapshots,
+  but it does not yet capture expansion traces, flush/compaction traces, or benchmark-supplied
+  time metadata
+
+> [!NOTE]
+> **Current status (2026-03-20):**
+> - Phase 0 is implemented.
+> - Phase 1 is partially implemented as an initial slice.
+> - The current implemented Phase-1 slice now provides:
+>   - a small benchmark-first eval core in:
+>     - `server/include/isla/server/evals/eval_types.hpp`
+>     - `server/include/isla/server/evals/eval_runner.hpp`
+>     - `server/src/evals/eval_runner.cpp`
+>   - a canonical `gateway_app_boundary` runner that executes through
+>     `GatewayStubResponder` with an in-process recording session instead of the WebSocket layer
+>   - captured prompt artifacts for the evaluated turn:
+>     - rendered system prompt
+>     - rendered working-memory context
+>     - rendered full prompt
+>   - structured pre-turn and post-turn mid-term snapshots using the live responder-owned session
+>     memory
+>   - emitted turn event capture for the evaluated turn
+>   - focused regression coverage in:
+>     - `server/src/evals/eval_runner_test.cpp`
+> - The current implemented slice does not yet provide:
+>   - benchmark adapters such as LOCOMO or LongMemEval
+>   - benchmark-supplied time injection
+>   - standalone eval binaries or JSON-driven eval input
+>   - autoraters
+>   - full structured trace capture for expansion, flush, or compaction decisions
 
 Those limitations make time-aware evaluation a first-order requirement rather than a later polish
 task.
@@ -220,6 +251,24 @@ The initial eval runner SHOULD capture at least:
 - execution outcome and normalized public failure, when present
 - telemetry summary
 
+Current implementation note (2026-03-20):
+
+- the current Phase-1 runner captures:
+  - benchmark identity
+  - session and turn ids
+  - rendered prompt artifacts for the evaluated turn
+  - structured pre-turn and post-turn mid-term snapshots
+  - final assistant reply when successful
+  - normalized failure when present
+  - emitted events for the evaluated turn
+- the current runner does not yet capture:
+  - benchmark event timeline
+  - benchmark evaluation reference time
+  - explicit prompt-visible mid-term rendering as a separately stored artifact
+  - mid-term expansion traces
+  - mid-term flush/compaction traces
+  - telemetry summary aggregation beyond what is already available through the underlying sink
+
 The runner MAY later capture:
 
 - provider request/response metadata
@@ -314,6 +363,28 @@ Freeze the first evaluation architecture and scope before implementation begins.
 
 ## Phase 1: Eval Core + Artifact Capture
 
+> [!NOTE]
+> **Status (2026-03-20): Partially implemented.**
+> - The repo now has a small eval core and a working `gateway_app_boundary` runner.
+> - The runner currently executes through the real responder path and captures:
+>   - rendered prompt artifacts for the evaluated turn
+>   - structured mid-term snapshots before and after the evaluated turn
+>   - emitted turn events
+>   - final reply or normalized failure
+> - The current slice intentionally stops short of:
+>   - benchmark adapters
+>   - standalone eval binaries
+>   - time-aware replay
+>   - autoraters
+>   - full expansion/flush/compaction trace capture
+> - Key implemented files:
+>   - `server/include/isla/server/evals/eval_types.hpp`
+>   - `server/include/isla/server/evals/eval_runner.hpp`
+>   - `server/src/evals/eval_runner.cpp`
+>   - `server/src/evals/eval_runner_test.cpp`
+> - Supporting responder seam added:
+>   - `GatewayStubResponder::SnapshotSessionWorkingMemoryState(...)`
+
 ### Goal
 
 Add a minimal generic evaluation core that can execute Isla cases and capture reusable artifacts.
@@ -350,6 +421,10 @@ Add a minimal generic evaluation core that can execute Isla cases and capture re
   artifacts.
 - Artifacts are rich enough to support more than one autorater without rerunning the turn.
 - The canonical benchmark execution mode is explicitly defined and implemented.
+- Remaining work before Phase 1 is fully complete:
+  - capture the rest of the canonical artifact set that is still missing from the current runner
+  - decide whether a small standalone eval CLI belongs in Phase 1 or should wait until Phase 2
+  - add a first local benchmark surface beyond unit-style runner tests
 
 ## Phase 2: Time-Aware Replay + Benchmark Clock Injection
 
@@ -374,6 +449,10 @@ Teach the live evaluation path to replay benchmark chronology faithfully instead
   patching timestamps after execution.
 - This phase is required before LOCOMO and LongMemEval results are treated as trustworthy.
 - Prompt-visible benchmark "current time" SHOULD be explicit instead of implied by the host date.
+- The current Phase-1 runner already proves the canonical app-boundary execution path; Phase 2
+  SHOULD extend that runner rather than introducing a second benchmark execution stack.
+- The current runner's structured mid-term snapshots make it possible to verify benchmark-time
+  propagation once timestamp injection lands.
 
 ### Exit Criteria
 
@@ -399,6 +478,8 @@ integration.
 - Harden artifact persistence and replay diagnostics.
 - Add deterministic fake-provider coverage where useful so infrastructure bugs are isolated from
   upstream model variance.
+- Reuse the current Phase-1 runner tests as infrastructure regression coverage, but do not treat
+  them as the local benchmark itself.
 
 ### Exit Criteria
 
@@ -603,6 +684,11 @@ The critical-path rule is:
 
 ## Changelog
 
+- 2026-03-20: completed the first implementation slice of Phase 1 by adding a small
+  benchmark-first eval core, a canonical app-boundary runner over `GatewayStubResponder`, prompt
+  artifact capture for the evaluated turn, structured pre/post mid-term snapshots, emitted-event
+  capture, and focused regression coverage; updated the plan to distinguish what Phase 1 now
+  provides versus the remaining work still deferred to later phases.
 - 2026-03-19: added the initial evaluation phased plan covering benchmark-first organization,
   time-aware replay requirements for memory benchmarks, multiple autoraters for memory and final
   answer quality, benchmark adapter sequencing, and later holistic/tool-use expansion.
