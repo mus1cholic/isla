@@ -46,6 +46,22 @@ cc_library(
 )
 
 cc_library(
+    name = "tools",
+    srcs = [
+        "tools/expand_mid_term_tool.cpp",
+        "tools/tool_registry.cpp",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
     name = "ai_gateway_string_utils",
     srcs = ["ai_gateway_string_utils.cpp"],
     hdrs = ["ai_gateway_string_utils.hpp"],
@@ -548,6 +564,19 @@ cc_test(
         "@boost.beast//:boost.beast",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "tools_test",
+    srcs = [
+        "tools/expand_mid_term_tool_test.cpp",
+        "tools/tool_registry_test.cpp",
+    ],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":tools",
+        "@googletest//:gtest_main",
     ],
 )
 
