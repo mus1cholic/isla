@@ -174,8 +174,9 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
 } // namespace
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
-    : config_(config), executor_(BuildExecutorConfig(config)) {
-    mid_term_memory_configured_ = (config_.openai_client != nullptr);
+    : config_(std::move(config)), executor_(BuildExecutorConfig(config_)),
+      mid_term_memory_configured_(config_.openai_client != nullptr) {
+
     const std::string flush_decider_model = ResolveMidTermFlushDeciderModel(config_);
     const std::string compactor_model = ResolveMidTermCompactorModel(config_);
     const std::string embedding_model = ResolveMidTermEmbeddingModel(config_);

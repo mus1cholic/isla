@@ -27,15 +27,15 @@ std::string ResolveModelForStep(const GatewayLlmRuntimeConfig& runtime_config,
 }
 
 absl::Status invalid_argument(std::string_view message) {
-    return absl::InvalidArgumentError(std::string(message));
+    return absl::InvalidArgumentError(message);
 }
 
 absl::Status failed_precondition(std::string_view message) {
-    return absl::FailedPreconditionError(std::string(message));
+    return absl::FailedPreconditionError(message);
 }
 
 absl::Status resource_exhausted(std::string_view message) {
-    return absl::ResourceExhaustedError(std::string(message));
+    return absl::ResourceExhaustedError(message);
 }
 
 std::vector<OpenAiResponsesFunctionTool>

@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -52,7 +53,8 @@ absl::StatusOr<nlohmann::json> SerializeInputItem(const OpenAiResponsesInputItem
 
 absl::StatusOr<nlohmann::json>
 SerializeFunctionTools(const std::vector<OpenAiResponsesFunctionTool>& function_tools) {
-    nlohmann::json tools = nlohmann::json::array();
+    std::vector<nlohmann::json> tools;
+    tools.reserve(function_tools.size());
     for (const OpenAiResponsesFunctionTool& tool : function_tools) {
         if (tool.name.empty()) {
             return invalid_argument("openai responses function tool name must not be empty");
@@ -75,7 +77,7 @@ SerializeFunctionTools(const std::vector<OpenAiResponsesFunctionTool>& function_
             { "strict", tool.strict },
         });
     }
-    return tools;
+    return nlohmann::json(std::move(tools));
 }
 
 absl::StatusOr<TransportStreamResult>
@@ -199,9 +201,10 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
         if (request.input_items.empty()) {
             body["input"] = request.user_text;
         } else {
-            nlohmann::json input = nlohmann::json::array();
+            std::vector<nlohmann::json> input_items;
+            input_items.reserve(request.input_items.size() + (request.user_text.empty() ? 0U : 1U));
             if (!request.user_text.empty()) {
-                input.push_back(nlohmann::json{
+                input_items.push_back(nlohmann::json{
                     { "role", "user" },
                     { "content", request.user_text },
                 });
@@ -211,9 +214,9 @@ class OpenAiResponsesClientImpl final : public OpenAiResponsesClient {
                 if (!serialized_item.ok()) {
                     return serialized_item.status();
                 }
-                input.push_back(*serialized_item);
+                input_items.push_back(*serialized_item);
             }
-            body["input"] = std::move(input);
+            body["input"] = nlohmann::json(std::move(input_items));
         }
         if (!request.system_prompt.empty()) {
             body["instructions"] = request.system_prompt;
