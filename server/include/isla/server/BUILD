@@ -10,6 +10,11 @@ exports_files([
     "openai_responses_json_utils.hpp",
     "openai_responses_sse_parser.hpp",
     "openai_responses_transport_utils.hpp",
+    "tools/expand_mid_term_tool.hpp",
+    "tools/tool.hpp",
+    "tools/tool_context.hpp",
+    "tools/tool_registry.hpp",
+    "tools/tool_types.hpp",
 ])
 
 cc_library(
@@ -40,6 +45,11 @@ cc_library(
         "openai_responses_json_utils.hpp",
         "openai_responses_sse_parser.hpp",
         "openai_responses_transport_utils.hpp",
+        "tools/expand_mid_term_tool.hpp",
+        "tools/tool.hpp",
+        "tools/tool_context.hpp",
+        "tools/tool_registry.hpp",
+        "tools/tool_types.hpp",
     ],
     strip_include_prefix = "/server/include",
     visibility = ["//visibility:public"],
