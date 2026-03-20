@@ -98,6 +98,9 @@ class MemoryOrchestrator {
     // valid, and returns how many flushes were committed during this pass.
     [[nodiscard]] absl::StatusOr<std::size_t> DrainCompletedMidTermCompactions();
 
+    // Returns whether any async mid-term analysis or compaction work is still pending.
+    [[nodiscard]] bool HasPendingMidTermCompactions() const;
+
     // Renders only the system-prompt portion of the orchestrator's current working memory.
     [[nodiscard]] absl::StatusOr<std::string> RenderSystemPrompt() const;
 

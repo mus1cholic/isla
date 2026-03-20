@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -229,6 +230,14 @@ std::vector<EvalMidTermEpisodeArtifact> BuildMidTermArtifacts(const WorkingMemor
 std::vector<EvalTimelineEventArtifact>
 BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case,
                                 const std::vector<RecordingSessionEvent>& events) {
+    absl::flat_hash_map<std::string, std::string> final_reply_by_turn;
+    for (const RecordingSessionEvent& event : events) {
+        if (event.op != "text.output") {
+            continue;
+        }
+        final_reply_by_turn.insert_or_assign(event.turn_id, event.payload);
+    }
+
     std::vector<EvalTimelineEventArtifact> timeline;
     timeline.reserve(2U * (eval_case.setup_turns.size() + 1U) +
                      (eval_case.session_start_time.has_value() ? 1U : 0U) +
@@ -246,7 +255,7 @@ BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case,
         });
     }
 
-    auto append_turn_events = [&timeline, &events](const EvalTurnInput& turn) {
+    auto append_turn_events = [&timeline, &final_reply_by_turn](const EvalTurnInput& turn) {
         timeline.push_back(EvalTimelineEventArtifact{
             .kind = EvalTimelineEventKind::kConversationMessage,
             .turn_id = turn.turn_id,
@@ -257,7 +266,11 @@ BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case,
             .runtime_observed = true,
         });
 
-        const std::optional<std::string> assistant_reply = ExtractFinalReply(events, turn.turn_id);
+        std::optional<std::string> assistant_reply = std::nullopt;
+        const auto reply_it = final_reply_by_turn.find(turn.turn_id);
+        if (reply_it != final_reply_by_turn.end()) {
+            assistant_reply = reply_it->second;
+        }
         if (assistant_reply.has_value() || turn.assistant_create_time.has_value()) {
             timeline.push_back(EvalTimelineEventArtifact{
                 .kind = EvalTimelineEventKind::kConversationMessage,
@@ -355,10 +368,19 @@ absl::Status ValidateBenchmarkTimelineCase(const EvalBenchmarkTimelineCase& time
     if (timeline_case.evaluated_turn_id.empty()) {
         return invalid_argument("benchmark timeline case must include evaluated_turn_id");
     }
+
+    std::vector<std::string_view> seen_turn_ids;
+    seen_turn_ids.reserve(timeline_case.turns.size());
     for (const EvalTurnInput& turn : timeline_case.turns) {
         if (absl::Status status = ValidateTurnInput(turn, "benchmark timeline"); !status.ok()) {
             return status;
         }
+        if (std::find(seen_turn_ids.begin(), seen_turn_ids.end(), turn.turn_id) !=
+            seen_turn_ids.end()) {
+            return invalid_argument(absl::StrCat("benchmark timeline case must not reuse turn_id '",
+                                                 turn.turn_id, "'"));
+        }
+        seen_turn_ids.push_back(turn.turn_id);
     }
     return absl::OkStatus();
 }
@@ -538,7 +560,7 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     }
 
     const absl::StatusOr<WorkingMemoryState> post_turn_state =
-        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id);
+        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id, config_.event_timeout);
     if (!post_turn_state.ok()) {
         return post_turn_state.status();
     }
