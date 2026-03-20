@@ -131,7 +131,7 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
         if (runtime_input.user_text.empty()) {
             return invalid_argument("openai llms input must include user_text");
         }
-        const absl::Status client_status = config_.openai_client->Validate();
+        absl::Status client_status = config_.openai_client->Validate();
         if (!client_status.ok()) {
             return client_status;
         }
@@ -150,8 +150,8 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
                     .system_prompt = std::string(effective_system_prompt),
                     .user_text =
                         include_initial_user_text ? runtime_input.user_text : std::string(),
-                    .input_items = replay_input_items,
-                    .function_tools = function_tools,
+                    .input_items = std::span<const OpenAiResponsesInputItem>(replay_input_items),
+                    .function_tools = std::span<const OpenAiResponsesFunctionTool>(function_tools),
                     .parallel_tool_calls = false,
                     .reasoning_effort = step.reasoning_effort,
                     .telemetry_context = runtime_input.telemetry_context,

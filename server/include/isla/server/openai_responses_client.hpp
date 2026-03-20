@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -54,9 +55,10 @@ using OpenAiResponsesInputItem =
 
 // Output item surfaced by the Responses API in `response.output`.
 //
-// `raw_json` preserves the original provider object exactly so later requests can replay it
-// without lossy re-serialization. For function calls, `call_id`, `name`, and `arguments_json`
-// expose the fields the gateway needs for application tool dispatch.
+// `raw_json` preserves a semantically equivalent provider object suitable for later replay.
+// It is not guaranteed to match the original provider bytes exactly after parse/dump
+// normalization. For function calls, `call_id`, `name`, and `arguments_json` expose the fields
+// the gateway needs for application tool dispatch.
 struct OpenAiResponsesOutputItem {
     std::string type;
     std::string raw_json;
@@ -79,12 +81,17 @@ struct OpenAiResponsesClientConfig {
     std::string user_agent = "isla-ai-gateway/phase-3.5";
 };
 
+// Request payload for one OpenAI Responses API call.
+//
+// `input_items` and `function_tools` are non-owning views so callers can reuse immutable vectors
+// across tool-loop rounds without copying them into each request object. Their backing storage must
+// stay alive for the duration of `StreamResponse(...)`.
 struct OpenAiResponsesRequest {
     std::string model;
     std::string system_prompt;
     std::string user_text;
-    std::vector<OpenAiResponsesInputItem> input_items;
-    std::vector<OpenAiResponsesFunctionTool> function_tools;
+    std::span<const OpenAiResponsesInputItem> input_items;
+    std::span<const OpenAiResponsesFunctionTool> function_tools;
     bool parallel_tool_calls = true;
     OpenAiReasoningEffort reasoning_effort = OpenAiReasoningEffort::kNone;
     std::shared_ptr<const TurnTelemetryContext> telemetry_context;

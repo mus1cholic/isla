@@ -71,7 +71,7 @@ TEST(OpenAiLlmClientTest, TranslatesRequestsAndEvents) {
         });
 
     ASSERT_TRUE(status.ok()) << status;
-    const ai_gateway::OpenAiResponsesRequest last_request =
+    const ai_gateway::test::OpenAiResponsesRequestSnapshot last_request =
         responses_client->last_request_snapshot();
     ASSERT_EQ(last_request.model, "gpt-5.4-mini");
     ASSERT_EQ(last_request.system_prompt, "system");

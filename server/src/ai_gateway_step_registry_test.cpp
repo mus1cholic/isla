@@ -105,7 +105,7 @@ TEST(GatewayStepRegistryTest, UsesConfiguredOpenAiResponsesClientWhenPresent) {
                              });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    const OpenAiResponsesRequest last_request = client->last_request_snapshot();
+    const test::OpenAiResponsesRequestSnapshot last_request = client->last_request_snapshot();
     EXPECT_EQ(last_request.model, "gpt-5.3-chat-latest");
     EXPECT_EQ(last_request.system_prompt, "runtime system");
     EXPECT_EQ(last_request.user_text, "hello");
@@ -136,7 +136,7 @@ TEST(GatewayStepRegistryTest, OverridesPlannerSelectedModelWhenRuntimeConfigIsSe
                              });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    const OpenAiResponsesRequest last_request = client->last_request_snapshot();
+    const test::OpenAiResponsesRequestSnapshot last_request = client->last_request_snapshot();
     EXPECT_EQ(last_request.model, "gpt-4.1-mini");
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
 }
@@ -164,7 +164,7 @@ TEST(GatewayStepRegistryTest, LeavesNonMainStepModelUnchangedWhenMainOverrideIsS
                              });
 
     ASSERT_TRUE(result.ok()) << result.status();
-    const OpenAiResponsesRequest last_request = client->last_request_snapshot();
+    const test::OpenAiResponsesRequestSnapshot last_request = client->last_request_snapshot();
     EXPECT_EQ(last_request.model, "gpt-4.1-nano");
     EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "provider response");
 }

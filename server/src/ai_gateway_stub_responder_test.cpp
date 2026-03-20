@@ -726,11 +726,13 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
     });
 
     ASSERT_TRUE(session->WaitForEventCount(2U));
-    const std::vector<OpenAiResponsesRequest> requests = capturing_client->requests_snapshot();
-    auto main_request =
-        std::find_if(requests.rbegin(), requests.rend(), [](const OpenAiResponsesRequest& request) {
-            return !IsMidTermMemoryRequest(request);
+    const std::vector<test::OpenAiResponsesRequestSnapshot> requests =
+        capturing_client->requests_snapshot();
+    auto main_request = std::find_if(requests.rbegin(), requests.rend(), [](const auto& request) {
+        return !IsMidTermMemoryRequest(OpenAiResponsesRequest{
+            .system_prompt = request.system_prompt,
         });
+    });
     ASSERT_NE(main_request, requests.rend());
     EXPECT_NE(main_request->system_prompt.find("<persistent_memory_cache>"), std::string::npos);
     EXPECT_EQ(main_request->system_prompt.find("- [user | "), std::string::npos);
@@ -786,11 +788,13 @@ TEST_F(GatewayStubResponderTest,
     });
     ASSERT_TRUE(session->WaitForEventCount(4U));
 
-    const std::vector<OpenAiResponsesRequest> requests = capturing_client->requests_snapshot();
-    auto second_request =
-        std::find_if(requests.rbegin(), requests.rend(), [](const OpenAiResponsesRequest& request) {
-            return !IsMidTermMemoryRequest(request);
+    const std::vector<test::OpenAiResponsesRequestSnapshot> requests =
+        capturing_client->requests_snapshot();
+    auto second_request = std::find_if(requests.rbegin(), requests.rend(), [](const auto& request) {
+        return !IsMidTermMemoryRequest(OpenAiResponsesRequest{
+            .system_prompt = request.system_prompt,
         });
+    });
     ASSERT_NE(second_request, requests.rend());
     const std::string& second_request_context = second_request->user_text;
     EXPECT_NE(second_request_context.find("<conversation>"), std::string::npos);
@@ -813,7 +817,7 @@ TEST(GatewayStubResponderStandaloneTest,
     ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
     ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
 
-    auto recorded_requests = std::make_shared<std::vector<OpenAiResponsesRequest>>();
+    auto recorded_requests = std::make_shared<std::vector<test::OpenAiResponsesRequestSnapshot>>();
     auto requests_mutex = std::make_shared<std::mutex>();
     auto compactor_finished = std::make_shared<std::promise<void>>();
     std::future<void> compactor_finished_future = compactor_finished->get_future();
@@ -827,7 +831,7 @@ TEST(GatewayStubResponderStandaloneTest,
                              const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             {
                 std::lock_guard<std::mutex> lock(*requests_mutex);
-                recorded_requests->push_back(request);
+                recorded_requests->push_back(test::TakeRequestSnapshot(request));
             }
             if (request.system_prompt == decider_prompt) {
                 const int call_index = (*decider_call_count)++;
@@ -926,30 +930,29 @@ TEST(GatewayStubResponderStandaloneTest,
     expected_event_count += 2U;
     ASSERT_TRUE(session->WaitForEventCount(expected_event_count));
 
-    std::vector<OpenAiResponsesRequest> requests;
+    std::vector<test::OpenAiResponsesRequestSnapshot> requests;
     {
         std::lock_guard<std::mutex> lock(*requests_mutex);
         requests = *recorded_requests;
     }
 
-    const auto decider_request = std::find_if(
-        requests.begin(), requests.end(), [&decider_prompt](const OpenAiResponsesRequest& request) {
+    const auto decider_request =
+        std::find_if(requests.begin(), requests.end(), [&decider_prompt](const auto& request) {
             return request.system_prompt == *decider_prompt;
         });
     ASSERT_NE(decider_request, requests.end());
     EXPECT_EQ(decider_request->model, kDefaultMidTermMemoryModel);
 
     const auto compactor_request =
-        std::find_if(requests.begin(), requests.end(),
-                     [&compactor_prompt](const OpenAiResponsesRequest& request) {
-                         return request.system_prompt == *compactor_prompt;
-                     });
+        std::find_if(requests.begin(), requests.end(), [&compactor_prompt](const auto& request) {
+            return request.system_prompt == *compactor_prompt;
+        });
     ASSERT_NE(compactor_request, requests.end());
     EXPECT_EQ(compactor_request->model, kDefaultMidTermMemoryModel);
 
     const auto later_reply_request =
         std::find_if(requests.begin(), requests.end(),
-                     [&decider_prompt, &compactor_prompt](const OpenAiResponsesRequest& request) {
+                     [&decider_prompt, &compactor_prompt](const auto& request) {
                          return request.system_prompt != *decider_prompt &&
                                 request.system_prompt != *compactor_prompt &&
                                 request.user_text.find("ep_srv_test_1") != std::string::npos;
@@ -974,7 +977,7 @@ TEST(GatewayStubResponderStandaloneTest, ExpandMidTermToolLoopUsesSessionMemoryD
     ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
     ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
 
-    auto recorded_requests = std::make_shared<std::vector<OpenAiResponsesRequest>>();
+    auto recorded_requests = std::make_shared<std::vector<test::OpenAiResponsesRequestSnapshot>>();
     auto requests_mutex = std::make_shared<std::mutex>();
     auto compactor_finished = std::make_shared<std::promise<void>>();
     std::future<void> compactor_finished_future = compactor_finished->get_future();
@@ -990,7 +993,7 @@ TEST(GatewayStubResponderStandaloneTest, ExpandMidTermToolLoopUsesSessionMemoryD
                            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             {
                 std::lock_guard<std::mutex> lock(*requests_mutex);
-                recorded_requests->push_back(request);
+                recorded_requests->push_back(test::TakeRequestSnapshot(request));
             }
             if (request.system_prompt == decider_prompt) {
                 const int call_index = (*decider_call_count)++;
@@ -1124,13 +1127,13 @@ TEST(GatewayStubResponderStandaloneTest, ExpandMidTermToolLoopUsesSessionMemoryD
 
     EXPECT_EQ(*tool_probe_round, 2);
 
-    std::vector<OpenAiResponsesRequest> requests;
+    std::vector<test::OpenAiResponsesRequestSnapshot> requests;
     {
         std::lock_guard<std::mutex> lock(*requests_mutex);
         requests = *recorded_requests;
     }
     const auto replay_request =
-        std::find_if(requests.begin(), requests.end(), [](const OpenAiResponsesRequest& request) {
+        std::find_if(requests.begin(), requests.end(), [](const auto& request) {
             return request.user_text.empty() && request.input_items.size() == 2U &&
                    std::holds_alternative<OpenAiResponsesFunctionCallOutputInputItem>(
                        request.input_items[1]);
@@ -1152,7 +1155,7 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryUsesConfiguredModelOverrid
     ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
     ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
 
-    auto recorded_requests = std::make_shared<std::vector<OpenAiResponsesRequest>>();
+    auto recorded_requests = std::make_shared<std::vector<test::OpenAiResponsesRequestSnapshot>>();
     auto requests_mutex = std::make_shared<std::mutex>();
     auto compactor_finished = std::make_shared<std::promise<void>>();
     std::future<void> compactor_finished_future = compactor_finished->get_future();
@@ -1166,7 +1169,7 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryUsesConfiguredModelOverrid
                              const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             {
                 std::lock_guard<std::mutex> lock(*requests_mutex);
-                recorded_requests->push_back(request);
+                recorded_requests->push_back(test::TakeRequestSnapshot(request));
             }
             if (request.system_prompt == decider_prompt) {
                 const int call_index = (*decider_call_count)++;
@@ -1232,24 +1235,23 @@ TEST(GatewayStubResponderStandaloneTest, MidTermMemoryUsesConfiguredModelOverrid
     ASSERT_TRUE(session->WaitForEventCount(2U));
     ASSERT_EQ(compactor_finished_future.wait_for(2s), std::future_status::ready);
 
-    std::vector<OpenAiResponsesRequest> requests;
+    std::vector<test::OpenAiResponsesRequestSnapshot> requests;
     {
         std::lock_guard<std::mutex> lock(*requests_mutex);
         requests = *recorded_requests;
     }
 
-    const auto decider_request = std::find_if(
-        requests.begin(), requests.end(), [&decider_prompt](const OpenAiResponsesRequest& request) {
+    const auto decider_request =
+        std::find_if(requests.begin(), requests.end(), [&decider_prompt](const auto& request) {
             return request.system_prompt == *decider_prompt;
         });
     ASSERT_NE(decider_request, requests.end());
     EXPECT_EQ(decider_request->model, "gpt-4.1-mini");
 
     const auto compactor_request =
-        std::find_if(requests.begin(), requests.end(),
-                     [&compactor_prompt](const OpenAiResponsesRequest& request) {
-                         return request.system_prompt == *compactor_prompt;
-                     });
+        std::find_if(requests.begin(), requests.end(), [&compactor_prompt](const auto& request) {
+            return request.system_prompt == *compactor_prompt;
+        });
     ASSERT_NE(compactor_request, requests.end());
     EXPECT_EQ(compactor_request->model, "gpt-4.1-nano");
 }

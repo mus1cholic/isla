@@ -34,6 +34,10 @@ absl::StatusOr<nlohmann::json> SerializeInputItem(const OpenAiResponsesInputItem
                     return invalid_argument(
                         "openai responses raw input item must contain valid JSON");
                 }
+                if (!parsed.is_object()) {
+                    return invalid_argument(
+                        "openai responses raw input item must contain one JSON object");
+                }
                 return parsed;
             } else if constexpr (std::is_same_v<Item, OpenAiResponsesMessageInputItem>) {
                 return nlohmann::json{
@@ -52,7 +56,7 @@ absl::StatusOr<nlohmann::json> SerializeInputItem(const OpenAiResponsesInputItem
 }
 
 absl::StatusOr<nlohmann::json>
-SerializeFunctionTools(const std::vector<OpenAiResponsesFunctionTool>& function_tools) {
+SerializeFunctionTools(std::span<const OpenAiResponsesFunctionTool> function_tools) {
     std::vector<nlohmann::json> tools;
     tools.reserve(function_tools.size());
     for (const OpenAiResponsesFunctionTool& tool : function_tools) {
@@ -65,6 +69,10 @@ SerializeFunctionTools(const std::vector<OpenAiResponsesFunctionTool>& function_
         }
         const nlohmann::json parameters =
             nlohmann::json::parse(tool.parameters_json_schema, nullptr, false);
+        if (parameters.is_discarded()) {
+            return invalid_argument(
+                "openai responses function tool parameters_json_schema must contain valid JSON");
+        }
         if (!parameters.is_object()) {
             return invalid_argument(
                 "openai responses function tool parameters_json_schema must be a JSON object");

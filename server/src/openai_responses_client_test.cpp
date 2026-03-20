@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -752,6 +753,25 @@ TEST(OpenAiResponsesClientTest, SerializesNonDefaultReasoningEffortInRequestBody
 }
 
 TEST(OpenAiResponsesClientTest, SerializesFunctionToolsAndReplayInputItemsInRequestBody) {
+    const std::vector<OpenAiResponsesInputItem> input_items = {
+        OpenAiResponsesRawInputItem{
+            .raw_json =
+                R"json({"type":"function_call","call_id":"call_1","name":"expand_mid_term","arguments":"{\"episode_id\":\"ep_123\"}"})json",
+        },
+        OpenAiResponsesFunctionCallOutputInputItem{
+            .call_id = "call_1",
+            .output = "expanded tier1 detail",
+        },
+    };
+    const std::vector<OpenAiResponsesFunctionTool> function_tools = {
+        OpenAiResponsesFunctionTool{
+            .name = "expand_mid_term",
+            .description = "Load full Tier 1 detail.",
+            .parameters_json_schema =
+                R"json({"type":"object","properties":{"episode_id":{"type":"string"}},"required":["episode_id"],"additionalProperties":false})json",
+            .strict = true,
+        },
+    };
     const std::string body =
         "data: "
         "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tool\",\"output\":[{\"type\":"
@@ -779,26 +799,8 @@ TEST(OpenAiResponsesClientTest, SerializesFunctionToolsAndReplayInputItemsInRequ
         OpenAiResponsesRequest{
             .model = "gpt-5.3-chat-latest",
             .system_prompt = "system prompt",
-            .input_items =
-                {
-                    OpenAiResponsesRawInputItem{
-                        .raw_json = R"json({"type":"function_call","call_id":"call_1","name":"expand_mid_term","arguments":"{\"episode_id\":\"ep_123\"}"})json",
-                    },
-                    OpenAiResponsesFunctionCallOutputInputItem{
-                        .call_id = "call_1",
-                        .output = "expanded tier1 detail",
-                    },
-                },
-            .function_tools =
-                {
-                    OpenAiResponsesFunctionTool{
-                        .name = "expand_mid_term",
-                        .description = "Load full Tier 1 detail.",
-                        .parameters_json_schema =
-                            R"json({"type":"object","properties":{"episode_id":{"type":"string"}},"required":["episode_id"],"additionalProperties":false})json",
-                        .strict = true,
-                    },
-                },
+            .input_items = std::span<const OpenAiResponsesInputItem>(input_items),
+            .function_tools = std::span<const OpenAiResponsesFunctionTool>(function_tools),
             .parallel_tool_calls = false,
         },
         [](const OpenAiResponsesEvent& event) -> absl::Status {
@@ -880,6 +882,71 @@ TEST(OpenAiResponsesClientTest, CompletedEventSurfacesFunctionCallOutputItems) {
     EXPECT_EQ(*completed_event->output_items[1].name, "expand_mid_term");
     EXPECT_EQ(*completed_event->output_items[1].arguments_json,
               R"json({"episode_id":"ep_123"})json");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsNonObjectRawReplayInputItem) {
+    const std::vector<OpenAiResponsesInputItem> input_items = {
+        OpenAiResponsesRawInputItem{
+            .raw_json = R"json(["not","an","object"])json",
+        },
+    };
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 8080,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.3-chat-latest",
+            .input_items = std::span<const OpenAiResponsesInputItem>(input_items),
+        },
+        [](const OpenAiResponsesEvent& event) -> absl::Status {
+            static_cast<void>(event);
+            return absl::OkStatus();
+        });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(), "openai responses raw input item must contain one JSON object");
+}
+
+TEST(OpenAiResponsesClientTest, RejectsMalformedFunctionToolSchemaJson) {
+    const std::vector<OpenAiResponsesFunctionTool> function_tools = {
+        OpenAiResponsesFunctionTool{
+            .name = "expand_mid_term",
+            .description = "Load full Tier 1 detail.",
+            .parameters_json_schema = R"json({"type":"object",)json",
+            .strict = true,
+        },
+    };
+    auto client = CreateOpenAiResponsesClient(OpenAiResponsesClientConfig{
+        .enabled = true,
+        .api_key = "test_key",
+        .scheme = "http",
+        .host = "127.0.0.1",
+        .port = 8080,
+        .target = "/v1/responses",
+    });
+
+    const absl::Status status = client->StreamResponse(
+        OpenAiResponsesRequest{
+            .model = "gpt-5.3-chat-latest",
+            .user_text = "hello",
+            .function_tools = std::span<const OpenAiResponsesFunctionTool>(function_tools),
+        },
+        [](const OpenAiResponsesEvent& event) -> absl::Status {
+            static_cast<void>(event);
+            return absl::OkStatus();
+        });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(status.message(),
+              "openai responses function tool parameters_json_schema must contain valid JSON");
 }
 
 TEST(OpenAiResponsesClientTest, RejectsInvalidReasoningEffortBeforeRequestDispatch) {
