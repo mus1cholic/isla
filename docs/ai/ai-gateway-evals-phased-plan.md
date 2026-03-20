@@ -62,6 +62,10 @@ The current implementation also has explicit evaluation-relevant limitations:
 > - Phase 0 is implemented.
 > - Phase 1 is partially implemented as an initial slice.
 > - Phase 2 is implemented for the evaluation pipeline.
+> - Phase 3 is implemented for the local benchmark slice.
+> - Phase 3.1 is planned as replay-fidelity follow-up work discovered during Phase 3 rollout.
+> - Phase 3.2 is planned to switch benchmark execution from fake-provider main-turn replies to the
+>   real main LLM path.
 > - The current implemented Phase-1 slice now provides:
 >   - a small benchmark-first eval core in:
 >     - `server/include/isla/server/evals/eval_types.hpp`
@@ -90,10 +94,29 @@ The current implementation also has explicit evaluation-relevant limitations:
 >     wall-clock time
 >   - a minimal benchmark-timeline adapter utility that normalizes benchmark-owned turn timelines
 >     into the canonical `EvalCase` shape
->   - a normalized benchmark event timeline artifact that records session start, user/assistant
->     message chronology, and evaluation reference time for temporal debugging
->   - focused regression coverage proving prompt-visible time injection and persisted
->     session/message timestamps through the real responder path
+>   - setup-turn replay directly into session memory while preserving the evaluated turn as the
+>     live executed turn through the real responder path
+>   - a normalized benchmark timeline artifact that records canonical replayed session history:
+>     session start, user/assistant chronology, and evaluation reference time
+>   - focused regression coverage proving replay-time propagation and persisted session/message
+>     timestamps through the real responder path
+> - The current implemented Phase-3 slice now provides:
+>   - a runnable `isla_custom_memory` benchmark surface in:
+>     - `server/include/isla/server/evals/isla_custom_memory_benchmark.hpp`
+>     - `server/src/evals/isla_custom_memory_benchmark.cpp`
+>     - `server/src/evals/isla_custom_memory_main.cpp`
+>     - `server/src/evals/isla_custom_memory_benchmark_test.cpp`
+>   - five hand-authored local benchmark cases covering:
+>     - direct fact recall
+>     - recency and contradiction handling
+>     - mid-term episode visibility
+>     - expandable exact-detail retrieval through the live `expand_mid_term` tool loop
+>     - timestamp-aware replay diagnostics with explicit benchmark clocks
+>   - persisted per-case artifact JSON plus a benchmark-level `report.json`
+>   - deterministic fake-provider execution only for the model/provider seam, while still reading
+>     the real rendered prompt and working-memory context from the app-boundary runner
+>   - benchmark setup replay without synthetic runtime-generated setup replies
+>   - replayed assistant history only for multi-turn setup state, not for the live evaluated turn
 > - Separate from evaluation infrastructure, the real product path still does not yet provide:
 >   - product-visible support for a notion of current/reference time inside the real prompt path
 >   - prompt decoration or timing rules specific to individual external benchmark formats
@@ -311,21 +334,24 @@ Evaluation MUST treat time as an explicit input, not an accidental property of t
 Three different clocks exist and MUST remain distinct:
 
 - benchmark event time
-  - when the benchmark says each message or memory event happened
+  - when the replayed session says each message or memory event happened
 - benchmark evaluation reference time
-  - the benchmark-defined "now" for the evaluated question
+  - the replayed session's effective "now" for the evaluated question
 - runtime/telemetry time
   - real execution time used for latency, traces, and local diagnostics
 
 Rules:
 
 - memory timestamps in benchmark replay MUST come from benchmark event time
-- benchmark evaluation reference time SHOULD be stored as structured eval metadata
+- benchmark evaluation reference time SHOULD be carried as part of replayed eval chronology and
+  stored in structured artifacts
 - the eval framework SHOULD NOT inject benchmark-only prompt context solely to compensate for a
   product limitation that does not yet exist in the real system
 - telemetry and latency recording MUST continue to use runtime clock sources
 - evaluation MUST NOT reuse wall-clock `NowTimestamp()` for benchmark chronology once time-aware
   replay support lands
+- benchmark timeline artifacts SHOULD represent canonical replayed session history rather than
+  splitting entries into benchmark-only versus runtime-observed classes
 
 ## Benchmark-First Organization
 
@@ -453,6 +479,9 @@ Add a minimal generic evaluation core that can execute Isla cases and capture re
 > - The responder now resolves session and conversation timestamps through overrideable seams for
 >   the eval path, while the default production path still falls back to wall-clock time.
 > - Mid-term stub timestamps now derive from conversation chronology instead of wall-clock time.
+> - Setup turns are replayed directly into responder-owned session memory instead of being forced
+>   through synthetic runtime-generated setup replies.
+> - The evaluated turn remains the live executed turn through the real responder path.
 > - Key implemented files:
 >   - `server/include/isla/server/evals/eval_types.hpp`
 >   - `server/src/evals/eval_runner.cpp`
@@ -474,8 +503,9 @@ Teach the live evaluation path to replay benchmark chronology faithfully instead
 - Add a time-control seam for session start, user turn time, assistant reply time, and any other
   prompt-visible memory event timestamps.
 - Replace benchmark-path calls to wall-clock `NowTimestamp()` with benchmark-supplied event time.
-- Preserve benchmark evaluation reference time as structured metadata for later scoring and
-  analysis, without injecting eval-only prompt context that the real product does not yet expose.
+- Preserve benchmark evaluation reference time as part of replayed eval chronology and as a
+  structured artifact, without injecting eval-only prompt context that the real product does not
+  yet expose.
 - Preserve steady-clock telemetry for runtime phase timing.
 - Ensure mid-term episode and episode-stub timestamps remain deterministic under replay.
 
@@ -503,6 +533,27 @@ Teach the live evaluation path to replay benchmark chronology faithfully instead
 
 ## Phase 3: Local Memory Evaluation Set + Runner Hardening
 
+> [!NOTE]
+> **Status (2026-03-20): Implemented.**
+> - Implemented artifacts:
+>   - `server/include/isla/server/evals/eval_json.hpp`
+>   - `server/include/isla/server/evals/isla_custom_memory_benchmark.hpp`
+>   - `server/src/evals/eval_json.cpp`
+>   - `server/src/evals/isla_custom_memory_benchmark.cpp`
+>   - `server/src/evals/isla_custom_memory_main.cpp`
+>   - `server/src/evals/isla_custom_memory_benchmark_test.cpp`
+> - Implemented behavior:
+>   - a local `isla_custom_memory` benchmark now runs through the canonical app-boundary eval
+>     runner with deterministic fake-provider logic at the model/provider seam
+>   - the local benchmark persists per-case artifact JSON and a benchmark summary report
+>   - the benchmark exercises recall, recency, mid-term visibility, live exact-detail expansion,
+>     and benchmark-owned timestamp replay
+>   - benchmark setup state is replayed directly into session memory instead of generating
+>     synthetic setup replies
+> - Remaining limitation:
+>   - the generic eval runner still does not capture dedicated tool-loop or flush/compaction trace
+>     artifacts outside the persisted local benchmark outputs
+
 ### Goal
 
 Land a small Isla-owned benchmark first so the framework can mature before external benchmark
@@ -526,6 +577,81 @@ integration.
 
 - The repository has a local benchmark that can be run repeatedly during development.
 - The framework can catch obvious memory regressions before external benchmark integration lands.
+
+## Phase 3.1: Replay Fidelity Alignment
+
+### Goal
+
+Tighten the evaluation model so replayed benchmark runs look as much like real serving runs as
+possible, while still preserving deterministic control over chronology and inputs.
+
+### Scope
+
+- Treat benchmark timeline artifacts as canonical replayed session history rather than splitting
+  entries into "real runtime" versus "benchmark-only" classes.
+- Introduce explicit eval-specific session or user identity in persistence and logs so replay runs
+  are easy to distinguish from product traffic without changing the serving-path semantics.
+- Move from timestamp override seams toward a clearer replay-clock or session-clock abstraction that
+  both eval replay and future serving-path reference-time features can share.
+- Clarify the role of evaluation reference time as replayed session time, not merely passive report
+  metadata.
+- Keep the evaluated turn on the real responder execution path while continuing to avoid synthetic
+  setup replies.
+
+### Design Notes
+
+- Phase 3.1 is a fidelity and cleanup slice, not a benchmark-adapter slice.
+- This work SHOULD refine the replay model without rewriting the completed local benchmark work in
+  Phase 3.
+- If the real product later gains a first-class notion of current/reference time, eval replay
+  SHOULD reuse that same mechanism instead of maintaining a separate eval-only concept.
+
+### Exit Criteria
+
+- Eval artifacts describe replayed session history without the old benchmark-only versus
+  runtime-observed distinction.
+- Eval persistence and logs can be distinguished cleanly from product traffic.
+- The next replay-clock or session-clock seam is documented clearly enough to guide follow-up
+  implementation work.
+
+## Phase 3.2: Real Main-Turn LLM Execution
+
+### Goal
+
+Replace deterministic fake-provider handling of the evaluated turn with the real main LLM call path
+while preserving the existing replay and artifact-capture model.
+
+### Scope
+
+- Execute the evaluated turn through the same real provider-backed main LLM path used by serving
+  instead of returning benchmark-owned fake main-turn completions.
+- Keep benchmark setup replay behavior unchanged so setup state still enters through replayed
+  session memory rather than synthetic setup replies.
+- Preserve the current artifact capture contract:
+  - replayed benchmark timeline
+  - rendered prompt artifacts
+  - structured pre/post mid-term snapshots
+  - emitted events
+  - final reply and normalized failures
+- Add the configuration needed to run the local benchmark either:
+  - against the real main LLM path, or
+  - against the deterministic fake-provider seam for fast infrastructure debugging
+- Document any remaining cases that still require deterministic stubbing, such as compactor or
+  decider isolation during focused debugging.
+
+### Design Notes
+
+- Phase 3.2 is about real evaluated-turn execution, not about external benchmark adapters.
+- The important boundary is that the main user-facing turn should use the real provider path; setup
+  replay and benchmark chronology control should remain benchmark-owned.
+- This phase SHOULD make it obvious which parts of a run are true serving-path behavior and which
+  parts are still intentionally stubbed for reproducibility or infrastructure isolation.
+
+### Exit Criteria
+
+- The local benchmark can run the evaluated turn through the real main LLM call path.
+- The benchmark still supports a deterministic debug mode for infrastructure-only regression work.
+- Artifact output remains stable enough to support later autoraters and external benchmark adapters.
 
 ## Phase 4: External Benchmark Adapters
 
@@ -710,12 +836,14 @@ Recommended implementation order:
 2. Phase 1
 3. Phase 2
 4. Phase 3
-5. Phase 4
-6. Phase 5
-7. Phase 5.5
-8. Phase 6
-9. Phase 7
-10. Optional Phase 8, only when eval throughput becomes a practical bottleneck
+5. Phase 3.1
+6. Phase 3.2
+7. Phase 4
+8. Phase 5
+9. Phase 5.5
+10. Phase 6
+11. Phase 7
+12. Optional Phase 8, only when eval throughput becomes a practical bottleneck
 
 The critical-path rule is:
 
@@ -727,6 +855,17 @@ The critical-path rule is:
 
 ## Changelog
 
+- 2026-03-20: added Phase 3.2 to make the planned switch from deterministic fake-provider
+  evaluated-turn execution to the real main LLM call path explicit before Phase 4 benchmark
+  adapters.
+- 2026-03-20: updated the phased plan to reflect the current replay model more accurately,
+  clarified that setup turns are replayed directly into session memory while the evaluated turn
+  remains live on the responder path, reframed evaluation reference time as replay chronology
+  rather than passive metadata, and added Phase 3.1 for replay-fidelity alignment work.
+- 2026-03-20: completed Phase 3 by adding a runnable `isla_custom_memory` benchmark, deterministic
+  fake-provider coverage over the real app-boundary eval runner, persisted per-case artifact JSON
+  plus benchmark summary output, a standalone `isla_custom_memory_eval` binary, and focused
+  regression coverage for the new local benchmark slice.
 - 2026-03-20: extended the Phase 2 eval slice with a minimal benchmark-timeline adapter utility
   that normalizes benchmark-owned turn timelines into `EvalCase`, added a normalized benchmark
   event timeline artifact covering session start, user/assistant chronology, and evaluation

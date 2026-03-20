@@ -6,41 +6,48 @@
 #include <vector>
 
 #include "isla/server/memory/memory_timestamp_utils.hpp"
+#include "isla/server/memory/memory_types.hpp"
 
 namespace isla::server::evals {
 
-struct EvalTurnInput {
-    std::string turn_id;
-    std::string user_text;
-    std::optional<isla::server::memory::Timestamp> user_create_time;
-    std::optional<isla::server::memory::Timestamp> assistant_create_time;
+struct EvalConversationMessage {
+    isla::server::memory::MessageRole role = isla::server::memory::MessageRole::User;
+    std::string text;
+    std::optional<isla::server::memory::Timestamp> create_time;
+};
+
+struct EvalInput {
+    std::string text;
+    std::optional<isla::server::memory::Timestamp> create_time;
 };
 
 // Benchmark-first case shape for the initial app-boundary eval runner.
 //
-// Setup turns establish session state and memory prior to the evaluated turn. The runner captures
-// artifacts around `evaluated_turn`.
+// `conversation` replays prior transcript history. `input` is the user turn evaluated by the live
+// responder path. `expected_answer` is benchmark-owned judge input and is not executed by the
+// serving path.
 struct EvalCase {
     std::string benchmark_name;
     std::string case_id;
     std::string session_id;
     std::optional<isla::server::memory::Timestamp> session_start_time;
     std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
-    std::vector<EvalTurnInput> setup_turns;
-    EvalTurnInput evaluated_turn;
+    std::vector<EvalConversationMessage> conversation;
+    EvalInput input;
+    std::optional<std::string> expected_answer;
 };
 
-// Benchmark-owned timeline input shape for adapters that normalize external datasets into one
-// canonical app-boundary eval case. The runner still evaluates exactly one `evaluated_turn_id`;
-// earlier turns become setup state and later turns are not currently supported.
+// Generic transcript-shaped benchmark input for adapters that normalize external datasets into one
+// canonical app-boundary eval case.
 struct EvalBenchmarkTimelineCase {
     std::string benchmark_name;
     std::string case_id;
     std::string session_id;
     std::optional<isla::server::memory::Timestamp> session_start_time;
     std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
-    std::vector<EvalTurnInput> turns;
-    std::string evaluated_turn_id;
+    std::vector<EvalConversationMessage> conversation;
+    EvalInput input;
+    std::optional<std::string> expected_answer;
 };
 
 struct EvalPromptArtifacts {
@@ -86,8 +93,6 @@ struct EvalTimelineEventArtifact {
     std::optional<std::string> role;
     std::optional<isla::server::memory::Timestamp> timestamp;
     std::optional<std::string> text;
-    bool prompt_visible = false;
-    bool runtime_observed = false;
 };
 
 struct EvalArtifacts {
@@ -97,8 +102,6 @@ struct EvalArtifacts {
     std::string evaluated_turn_id;
     std::optional<isla::server::memory::Timestamp> session_start_time;
     std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
-    std::vector<EvalTurnInput> setup_turns;
-    EvalTurnInput evaluated_turn;
     EvalPromptArtifacts prompt;
     std::vector<EvalTimelineEventArtifact> benchmark_timeline;
     std::vector<EvalMidTermEpisodeArtifact> pre_turn_mid_term_episodes;

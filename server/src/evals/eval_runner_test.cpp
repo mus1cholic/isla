@@ -24,6 +24,7 @@ using isla::server::memory::Episode;
 using isla::server::memory::MemorySessionRecord;
 using isla::server::memory::MemoryStore;
 using isla::server::memory::MemoryStoreSnapshot;
+using isla::server::memory::MessageRole;
 using isla::server::memory::ParseTimestamp;
 using isla::server::memory::Timestamp;
 using namespace std::chrono_literals;
@@ -159,17 +160,20 @@ TEST(EvalRunnerTest, RunsCaseThroughAppBoundaryAndCapturesPromptArtifacts) {
         .benchmark_name = "isla_custom_memory",
         .case_id = "basic_app_boundary",
         .session_id = "eval_session_1",
-        .setup_turns =
+        .conversation =
             {
-                EvalTurnInput{
-                    .turn_id = "turn_1",
-                    .user_text = "hello",
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "hello",
+                },
+                EvalConversationMessage{
+                    .role = MessageRole::Assistant,
+                    .text = "nice to meet you",
                 },
             },
-        .evaluated_turn =
-            EvalTurnInput{
-                .turn_id = "turn_2",
-                .user_text = "what did i just say?",
+        .input =
+            EvalInput{
+                .text = "what did i just say?",
             },
     });
 
@@ -179,7 +183,7 @@ TEST(EvalRunnerTest, RunsCaseThroughAppBoundaryAndCapturesPromptArtifacts) {
     EXPECT_EQ(*artifacts->final_reply, "stub reply: what did i just say?");
     EXPECT_NE(artifacts->prompt.system_prompt.find("<persistent_memory_cache>"), std::string::npos);
     EXPECT_NE(artifacts->prompt.working_memory_context.find("] hello"), std::string::npos);
-    EXPECT_NE(artifacts->prompt.working_memory_context.find("] stub reply: hello"),
+    EXPECT_NE(artifacts->prompt.working_memory_context.find("] nice to meet you"),
               std::string::npos);
     EXPECT_NE(artifacts->prompt.working_memory_context.find("] what did i just say?"),
               std::string::npos);
@@ -253,21 +257,24 @@ TEST(EvalRunnerTest, CapturesStructuredMidTermEpisodesAfterFlushIsApplied) {
         .benchmark_name = "isla_custom_memory",
         .case_id = "mid_term_snapshot",
         .session_id = "eval_session_2",
-        .setup_turns =
+        .conversation =
             {
-                EvalTurnInput{
-                    .turn_id = "turn_1",
-                    .user_text = "hello",
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "hello",
                 },
-                EvalTurnInput{
-                    .turn_id = "turn_2",
-                    .user_text = "tell me something else first",
+                EvalConversationMessage{
+                    .role = MessageRole::Assistant,
+                    .text = "stub reply: hello",
+                },
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "tell me something else first",
                 },
             },
-        .evaluated_turn =
-            EvalTurnInput{
-                .turn_id = "turn_3",
-                .user_text = "can you summarize what we were talking about?",
+        .input =
+            EvalInput{
+                .text = "can you summarize what we were talking about?",
             },
     });
 
@@ -348,21 +355,24 @@ TEST(EvalRunnerTest, WaitsForDelayedMidTermFlushBeforeCapturingPostTurnSnapshot)
         .benchmark_name = "isla_custom_memory",
         .case_id = "mid_term_snapshot_delayed_compactor",
         .session_id = "eval_session_delayed_mid_term",
-        .setup_turns =
+        .conversation =
             {
-                EvalTurnInput{
-                    .turn_id = "turn_1",
-                    .user_text = "hello",
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "hello",
                 },
-                EvalTurnInput{
-                    .turn_id = "turn_2",
-                    .user_text = "tell me something else first",
+                EvalConversationMessage{
+                    .role = MessageRole::Assistant,
+                    .text = "stub reply: hello",
+                },
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "tell me something else first",
                 },
             },
-        .evaluated_turn =
-            EvalTurnInput{
-                .turn_id = "turn_3",
-                .user_text = "can you summarize what we were talking about?",
+        .input =
+            EvalInput{
+                .text = "can you summarize what we were talking about?",
             },
     });
 
@@ -372,7 +382,7 @@ TEST(EvalRunnerTest, WaitsForDelayedMidTermFlushBeforeCapturingPostTurnSnapshot)
     EXPECT_TRUE(artifacts->post_turn_mid_term_episodes[0].expandable);
 }
 
-TEST(EvalRunnerTest, RejectsDuplicateTurnIdsInEvalCase) {
+TEST(EvalRunnerTest, RejectsConversationAssistantMessageWithoutPriorUser) {
     auto client =
         MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test", absl::OkStatus());
 
@@ -387,25 +397,57 @@ TEST(EvalRunnerTest, RejectsDuplicateTurnIdsInEvalCase) {
 
     const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
         .benchmark_name = "isla_custom_memory",
-        .case_id = "duplicate_turn_ids",
-        .session_id = "eval_session_duplicate_turns",
-        .setup_turns =
+        .case_id = "assistant_without_prior_user",
+        .session_id = "eval_session_assistant_without_prior_user",
+        .conversation =
             {
-                EvalTurnInput{
-                    .turn_id = "turn_1",
-                    .user_text = "hello",
+                EvalConversationMessage{
+                    .role = MessageRole::Assistant,
+                    .text = "this transcript starts incorrectly",
                 },
             },
-        .evaluated_turn =
-            EvalTurnInput{
-                .turn_id = "turn_1",
-                .user_text = "what did i just say?",
+        .input =
+            EvalInput{
+                .text = "what did i just say?",
             },
     });
 
     ASSERT_FALSE(artifacts.ok());
     EXPECT_EQ(artifacts.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(artifacts.status().message()).find("must not reuse turn_id"),
+    EXPECT_NE(std::string(artifacts.status().message()).find("eval case replay validation failed"),
+              std::string::npos);
+    EXPECT_NE(std::string(artifacts.status().message()).find("conversation message at index 0"),
+              std::string::npos);
+    EXPECT_NE(std::string(artifacts.status().message()).find("must follow a prior user message"),
+              std::string::npos);
+}
+
+TEST(EvalRunnerTest, RejectsEvalCaseWithEmptyInput) {
+    auto client =
+        MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test", absl::OkStatus());
+
+    EvalRunner runner(EvalRunnerConfig{
+        .responder_config =
+            isla::server::ai_gateway::GatewayStubResponderConfig{
+                .response_delay = 0ms,
+                .async_emit_timeout = 2s,
+                .openai_client = client,
+            },
+    });
+
+    const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
+        .benchmark_name = "isla_custom_memory",
+        .case_id = "empty_input",
+        .session_id = "eval_session_empty_input",
+        .input =
+            EvalInput{
+                .text = "",
+            },
+    });
+
+    ASSERT_FALSE(artifacts.ok());
+    EXPECT_EQ(artifacts.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(artifacts.status().message()).find("must include non-empty text"),
               std::string::npos);
 }
 
@@ -417,90 +459,63 @@ TEST(EvalRunnerTest, BuildsEvalCaseFromBenchmarkTimelineInput) {
             .session_id = "eval_session_timeline",
             .session_start_time = Ts("2026-03-14T09:59:00Z"),
             .evaluation_reference_time = Ts("2026-03-20T08:00:00Z"),
-            .turns =
+            .conversation =
                 {
-                    EvalTurnInput{
-                        .turn_id = "turn_1",
-                        .user_text = "hello from setup",
-                        .user_create_time = Ts("2026-03-14T10:00:00Z"),
-                        .assistant_create_time = Ts("2026-03-14T10:00:05Z"),
+                    EvalConversationMessage{
+                        .role = MessageRole::User,
+                        .text = "hello from setup",
+                        .create_time = Ts("2026-03-14T10:00:00Z"),
                     },
-                    EvalTurnInput{
-                        .turn_id = "turn_2",
-                        .user_text = "evaluate this turn",
-                        .user_create_time = Ts("2026-03-15T11:30:00Z"),
-                        .assistant_create_time = Ts("2026-03-15T11:30:07Z"),
+                    EvalConversationMessage{
+                        .role = MessageRole::Assistant,
+                        .text = "setup reply",
+                        .create_time = Ts("2026-03-14T10:00:05Z"),
                     },
                 },
-            .evaluated_turn_id = "turn_2",
+            .input =
+                EvalInput{
+                    .text = "evaluate this turn",
+                    .create_time = Ts("2026-03-15T11:30:00Z"),
+                },
+            .expected_answer = std::string("expected answer"),
         });
 
     ASSERT_TRUE(eval_case.ok()) << eval_case.status();
     EXPECT_EQ(eval_case->benchmark_name, "isla_custom_memory");
     EXPECT_EQ(eval_case->case_id, "timeline_case");
     EXPECT_EQ(eval_case->session_id, "eval_session_timeline");
-    EXPECT_EQ(eval_case->setup_turns.size(), 1U);
-    EXPECT_EQ(eval_case->setup_turns[0].turn_id, "turn_1");
-    EXPECT_EQ(eval_case->evaluated_turn.turn_id, "turn_2");
-    EXPECT_EQ(eval_case->evaluated_turn.user_text, "evaluate this turn");
+    ASSERT_EQ(eval_case->conversation.size(), 2U);
+    EXPECT_EQ(eval_case->conversation[0].role, MessageRole::User);
+    EXPECT_EQ(eval_case->conversation[1].role, MessageRole::Assistant);
+    EXPECT_EQ(eval_case->input.text, "evaluate this turn");
     EXPECT_EQ(eval_case->session_start_time, Ts("2026-03-14T09:59:00Z"));
     EXPECT_EQ(eval_case->evaluation_reference_time, Ts("2026-03-20T08:00:00Z"));
+    ASSERT_TRUE(eval_case->expected_answer.has_value());
+    EXPECT_EQ(*eval_case->expected_answer, "expected answer");
 }
 
-TEST(EvalRunnerTest, RejectsBenchmarkTimelineWithTrailingTurnsAfterEvaluatedTurn) {
+TEST(EvalRunnerTest, RejectsBenchmarkTimelineAssistantMessageWithoutPriorUser) {
     const absl::StatusOr<EvalCase> eval_case =
         BuildEvalCaseFromBenchmarkTimeline(EvalBenchmarkTimelineCase{
             .benchmark_name = "isla_custom_memory",
             .case_id = "timeline_case_invalid",
             .session_id = "eval_session_timeline_invalid",
-            .turns =
+            .conversation =
                 {
-                    EvalTurnInput{
-                        .turn_id = "turn_1",
-                        .user_text = "evaluate this turn first",
-                    },
-                    EvalTurnInput{
-                        .turn_id = "turn_2",
-                        .user_text = "this trailing turn is unsupported",
+                    EvalConversationMessage{
+                        .role = MessageRole::Assistant,
+                        .text = "this should be rejected",
                     },
                 },
-            .evaluated_turn_id = "turn_1",
+            .input =
+                EvalInput{
+                    .text = "evaluate this turn",
+                },
         });
 
     ASSERT_FALSE(eval_case.ok());
     EXPECT_EQ(eval_case.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(
-        std::string(eval_case.status().message()).find("must place evaluated_turn_id on the final"),
-        std::string::npos);
-}
-
-TEST(EvalRunnerTest, RejectsDuplicateTurnIdsInsideBenchmarkTimelineBeforeNormalization) {
-    const absl::StatusOr<EvalCase> eval_case =
-        BuildEvalCaseFromBenchmarkTimeline(EvalBenchmarkTimelineCase{
-            .benchmark_name = "isla_custom_memory",
-            .case_id = "timeline_case_duplicate_turns",
-            .session_id = "eval_session_timeline_duplicate_turns",
-            .turns =
-                {
-                    EvalTurnInput{
-                        .turn_id = "turn_1",
-                        .user_text = "setup turn",
-                    },
-                    EvalTurnInput{
-                        .turn_id = "turn_2",
-                        .user_text = "first evaluated turn copy",
-                    },
-                    EvalTurnInput{
-                        .turn_id = "turn_2",
-                        .user_text = "second evaluated turn copy",
-                    },
-                },
-            .evaluated_turn_id = "turn_2",
-        });
-
-    ASSERT_FALSE(eval_case.ok());
-    EXPECT_EQ(eval_case.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(eval_case.status().message()).find("must not reuse turn_id 'turn_2'"),
+    EXPECT_NE(std::string(eval_case.status().message()).find("must follow a prior user message"),
               std::string::npos);
 }
 
@@ -532,10 +547,9 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptCon
     });
 
     const Timestamp session_start_time = Ts("2026-03-14T09:59:00Z");
-    const Timestamp setup_user_time = Ts("2026-03-14T10:00:00Z");
-    const Timestamp setup_assistant_time = Ts("2026-03-14T10:00:05Z");
+    const Timestamp history_user_time = Ts("2026-03-14T10:00:00Z");
+    const Timestamp history_assistant_time = Ts("2026-03-14T10:00:05Z");
     const Timestamp evaluated_user_time = Ts("2026-03-15T11:30:00Z");
-    const Timestamp evaluated_assistant_time = Ts("2026-03-15T11:30:07Z");
     const Timestamp evaluation_reference_time = Ts("2026-03-20T08:00:00Z");
 
     const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
@@ -544,21 +558,23 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptCon
         .session_id = "eval_session_3",
         .session_start_time = session_start_time,
         .evaluation_reference_time = evaluation_reference_time,
-        .setup_turns =
+        .conversation =
             {
-                EvalTurnInput{
-                    .turn_id = "turn_1",
-                    .user_text = "hello from the past",
-                    .user_create_time = setup_user_time,
-                    .assistant_create_time = setup_assistant_time,
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "hello from the past",
+                    .create_time = history_user_time,
+                },
+                EvalConversationMessage{
+                    .role = MessageRole::Assistant,
+                    .text = "explicit benchmark setup reply",
+                    .create_time = history_assistant_time,
                 },
             },
-        .evaluated_turn =
-            EvalTurnInput{
-                .turn_id = "turn_2",
-                .user_text = "what time is this benchmark evaluated at?",
-                .user_create_time = evaluated_user_time,
-                .assistant_create_time = evaluated_assistant_time,
+        .input =
+            EvalInput{
+                .text = "what time is this benchmark evaluated at?",
+                .create_time = evaluated_user_time,
             },
     });
 
@@ -566,10 +582,9 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptCon
     ASSERT_EQ(store->session_records.size(), 1U);
     EXPECT_EQ(store->session_records[0].created_at, session_start_time);
     ASSERT_GE(store->message_writes.size(), 4U);
-    EXPECT_EQ(store->message_writes[0].create_time, setup_user_time);
-    EXPECT_EQ(store->message_writes[1].create_time, setup_assistant_time);
+    EXPECT_EQ(store->message_writes[0].create_time, history_user_time);
+    EXPECT_EQ(store->message_writes[1].create_time, history_assistant_time);
     EXPECT_EQ(store->message_writes[2].create_time, evaluated_user_time);
-    EXPECT_EQ(store->message_writes[3].create_time, evaluated_assistant_time);
     EXPECT_EQ(artifacts->session_start_time, session_start_time);
     EXPECT_EQ(artifacts->evaluation_reference_time, evaluation_reference_time);
     EXPECT_NE(artifacts->prompt.working_memory_context.find("2026-03-14T10:00:00Z"),
@@ -584,50 +599,40 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptCon
     ASSERT_EQ(artifacts->benchmark_timeline.size(), 6U);
     EXPECT_EQ(artifacts->benchmark_timeline[0].kind, EvalTimelineEventKind::kSessionStart);
     EXPECT_EQ(artifacts->benchmark_timeline[0].timestamp, session_start_time);
-    EXPECT_FALSE(artifacts->benchmark_timeline[0].prompt_visible);
-    EXPECT_TRUE(artifacts->benchmark_timeline[0].runtime_observed);
 
     EXPECT_EQ(artifacts->benchmark_timeline[1].kind, EvalTimelineEventKind::kConversationMessage);
-    EXPECT_EQ(artifacts->benchmark_timeline[1].turn_id, std::optional<std::string>("turn_1"));
+    EXPECT_EQ(artifacts->benchmark_timeline[1].turn_id, std::nullopt);
     EXPECT_EQ(artifacts->benchmark_timeline[1].role, std::optional<std::string>("user"));
-    EXPECT_EQ(artifacts->benchmark_timeline[1].timestamp, setup_user_time);
+    EXPECT_EQ(artifacts->benchmark_timeline[1].timestamp, history_user_time);
     EXPECT_EQ(artifacts->benchmark_timeline[1].text,
               std::optional<std::string>("hello from the past"));
-    EXPECT_TRUE(artifacts->benchmark_timeline[1].prompt_visible);
-    EXPECT_TRUE(artifacts->benchmark_timeline[1].runtime_observed);
 
     EXPECT_EQ(artifacts->benchmark_timeline[2].kind, EvalTimelineEventKind::kConversationMessage);
-    EXPECT_EQ(artifacts->benchmark_timeline[2].turn_id, std::optional<std::string>("turn_1"));
+    EXPECT_EQ(artifacts->benchmark_timeline[2].turn_id, std::nullopt);
     EXPECT_EQ(artifacts->benchmark_timeline[2].role, std::optional<std::string>("assistant"));
-    EXPECT_EQ(artifacts->benchmark_timeline[2].timestamp, setup_assistant_time);
+    EXPECT_EQ(artifacts->benchmark_timeline[2].timestamp, history_assistant_time);
     EXPECT_EQ(artifacts->benchmark_timeline[2].text,
-              std::optional<std::string>("stub reply: hello from the past"));
-    EXPECT_TRUE(artifacts->benchmark_timeline[2].prompt_visible);
-    EXPECT_TRUE(artifacts->benchmark_timeline[2].runtime_observed);
+              std::optional<std::string>("explicit benchmark setup reply"));
 
     EXPECT_EQ(artifacts->benchmark_timeline[3].kind, EvalTimelineEventKind::kConversationMessage);
-    EXPECT_EQ(artifacts->benchmark_timeline[3].turn_id, std::optional<std::string>("turn_2"));
+    EXPECT_EQ(artifacts->benchmark_timeline[3].turn_id,
+              std::optional<std::string>("evaluated_turn"));
     EXPECT_EQ(artifacts->benchmark_timeline[3].role, std::optional<std::string>("user"));
     EXPECT_EQ(artifacts->benchmark_timeline[3].timestamp, evaluated_user_time);
     EXPECT_EQ(artifacts->benchmark_timeline[3].text,
               std::optional<std::string>("what time is this benchmark evaluated at?"));
-    EXPECT_TRUE(artifacts->benchmark_timeline[3].prompt_visible);
-    EXPECT_TRUE(artifacts->benchmark_timeline[3].runtime_observed);
 
     EXPECT_EQ(artifacts->benchmark_timeline[4].kind, EvalTimelineEventKind::kConversationMessage);
-    EXPECT_EQ(artifacts->benchmark_timeline[4].turn_id, std::optional<std::string>("turn_2"));
+    EXPECT_EQ(artifacts->benchmark_timeline[4].turn_id,
+              std::optional<std::string>("evaluated_turn"));
     EXPECT_EQ(artifacts->benchmark_timeline[4].role, std::optional<std::string>("assistant"));
-    EXPECT_EQ(artifacts->benchmark_timeline[4].timestamp, evaluated_assistant_time);
+    EXPECT_EQ(artifacts->benchmark_timeline[4].timestamp, std::nullopt);
     EXPECT_EQ(artifacts->benchmark_timeline[4].text,
               std::optional<std::string>("stub reply: what time is this benchmark evaluated at?"));
-    EXPECT_TRUE(artifacts->benchmark_timeline[4].prompt_visible);
-    EXPECT_TRUE(artifacts->benchmark_timeline[4].runtime_observed);
 
     EXPECT_EQ(artifacts->benchmark_timeline[5].kind,
               EvalTimelineEventKind::kEvaluationReferenceTime);
     EXPECT_EQ(artifacts->benchmark_timeline[5].timestamp, evaluation_reference_time);
-    EXPECT_FALSE(artifacts->benchmark_timeline[5].prompt_visible);
-    EXPECT_FALSE(artifacts->benchmark_timeline[5].runtime_observed);
 }
 
 } // namespace
