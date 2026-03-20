@@ -61,12 +61,8 @@ absl::StatusOr<ToolResult> ToolRegistry::Execute(const ToolExecutionContext& con
     if (!result.ok()) {
         return result.status();
     }
-    if (result->call_id.empty()) {
-        result->call_id = call.call_id;
-    }
-    if (result->tool_name.empty()) {
-        result->tool_name = call.name;
-    }
+    result->call_id = call.call_id;
+    result->tool_name = call.name;
     return result;
 }
 
