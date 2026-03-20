@@ -239,7 +239,7 @@ BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case,
     }
 
     std::vector<EvalTimelineEventArtifact> timeline;
-    timeline.reserve(2U * (eval_case.setup_turns.size() + 1U) +
+    timeline.reserve((2U * (eval_case.setup_turns.size() + 1U)) +
                      (eval_case.session_start_time.has_value() ? 1U : 0U) +
                      (eval_case.evaluation_reference_time.has_value() ? 1U : 0U));
 
