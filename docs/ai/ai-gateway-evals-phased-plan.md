@@ -61,7 +61,7 @@ The current implementation also has explicit evaluation-relevant limitations:
 > **Current status (2026-03-20):**
 > - Phase 0 is implemented.
 > - Phase 1 is partially implemented as an initial slice.
-> - Phase 2 is partially implemented as an initial slice.
+> - Phase 2 is implemented for the evaluation pipeline.
 > - The current implemented Phase-1 slice now provides:
 >   - a small benchmark-first eval core in:
 >     - `server/include/isla/server/evals/eval_types.hpp`
@@ -88,11 +88,13 @@ The current implementation also has explicit evaluation-relevant limitations:
 >     through the app-boundary eval runner
 >   - chronology-aligned mid-term stub timestamps derived from conversation message time instead of
 >     wall-clock time
+>   - a minimal benchmark-timeline adapter utility that normalizes benchmark-owned turn timelines
+>     into the canonical `EvalCase` shape
+>   - a normalized benchmark event timeline artifact that records session start, user/assistant
+>     message chronology, and evaluation reference time for temporal debugging
 >   - focused regression coverage proving prompt-visible time injection and persisted
 >     session/message timestamps through the real responder path
-> - The current implemented Phase-2 slice does not yet provide:
->   - benchmark adapters that ingest external benchmark timelines directly
->   - a richer benchmark event timeline artifact beyond the copied eval-case inputs
+> - Separate from evaluation infrastructure, the real product path still does not yet provide:
 >   - product-visible support for a notion of current/reference time inside the real prompt path
 >   - prompt decoration or timing rules specific to individual external benchmark formats
 
@@ -442,7 +444,7 @@ Add a minimal generic evaluation core that can execute Isla cases and capture re
 ## Phase 2: Time-Aware Replay + Benchmark Clock Injection
 
 > [!NOTE]
-> **Status (2026-03-20): Partially implemented.**
+> **Status (2026-03-20): Implemented for the evaluation pipeline.**
 > - The runner now supports optional benchmark-supplied:
 >   - session start time
 >   - per-turn user message time
@@ -458,11 +460,9 @@ Add a minimal generic evaluation core that can execute Isla cases and capture re
 >   - `server/src/ai_gateway_stub_responder.cpp`
 >   - `server/memory/src/memory_orchestrator.cpp`
 >   - `server/src/evals/eval_runner_test.cpp`
-> - Remaining work for Phase 2:
->   - support direct ingestion of benchmark-owned timelines through adapters
->   - leave benchmark reference time as eval metadata until the real product grows a proper notion
->     of current/reference time for user-facing memory questions
->   - expand artifact capture for benchmark chronology and temporal debugging
+> - This phase does not require product-visible support for a benchmark "current/reference time"
+>   concept in the serving path. That remains a separate product/runtime concern and SHOULD land
+>   as real serving functionality rather than as eval-only prompt injection.
 
 ### Goal
 
@@ -483,7 +483,8 @@ Teach the live evaluation path to replay benchmark chronology faithfully instead
 
 - Time injection SHOULD happen at the gateway/responder and memory-orchestrator seam, not by
   patching timestamps after execution.
-- This phase is required before LOCOMO and LongMemEval results are treated as trustworthy.
+- This phase establishes the generic time-aware replay contract that later benchmark adapters such
+  as LOCOMO and LongMemEval will consume.
 - If the real product later gains a user-facing notion of current/reference time for temporal
   memory questions, evals SHOULD use that real mechanism instead of an eval-only prompt patch.
 - The current Phase-1 runner already proves the canonical app-boundary execution path; Phase 2
@@ -496,10 +497,9 @@ Teach the live evaluation path to replay benchmark chronology faithfully instead
 - The evaluation runner can replay a benchmark timeline with supplied timestamps.
 - Prompt-rendered conversation and mid-term memory reflect benchmark chronology.
 - Telemetry remains based on runtime clock rather than benchmark clock.
-- Remaining work before Phase 2 is fully complete:
-  - validate the current time-injection approach against the first real benchmark adapters
-  - decide which temporal benchmark cases must remain unsupported until the real product exposes a
-    proper notion of current/reference time
+- Benchmark adapters remain future work in later phases and are not required to close this phase.
+- Product-visible reference/current-time semantics remain a separate serving-path feature and are
+  not required to close this phase.
 
 ## Phase 3: Local Memory Evaluation Set + Runner Hardening
 
@@ -720,11 +720,17 @@ Recommended implementation order:
 The critical-path rule is:
 
 - do not treat external memory benchmark numbers as authoritative until Phase 2 is complete
+- do not block Phase 2 completion on future benchmark adapters or on separate serving-path support
+  for a user-facing reference/current-time concept
 - do not use autoraters as hard regression gates until Phase 5.5 has produced enough calibration
   confidence
 
 ## Changelog
 
+- 2026-03-20: extended the Phase 2 eval slice with a minimal benchmark-timeline adapter utility
+  that normalizes benchmark-owned turn timelines into `EvalCase`, added a normalized benchmark
+  event timeline artifact covering session start, user/assistant chronology, and evaluation
+  reference time, and expanded eval-runner coverage for the new adapter and artifact behavior.
 - 2026-03-20: completed the first implementation slice of Phase 2 by adding optional
   benchmark-supplied session and turn timestamps to the eval runner, keeping evaluation reference
   time as structured metadata rather than eval-only prompt context, routing responder-side
