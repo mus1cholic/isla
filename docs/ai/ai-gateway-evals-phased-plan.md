@@ -61,6 +61,7 @@ The current implementation also has explicit evaluation-relevant limitations:
 > **Current status (2026-03-20):**
 > - Phase 0 is implemented.
 > - Phase 1 is partially implemented as an initial slice.
+> - Phase 2 is partially implemented as an initial slice.
 > - The current implemented Phase-1 slice now provides:
 >   - a small benchmark-first eval core in:
 >     - `server/include/isla/server/evals/eval_types.hpp`
@@ -79,10 +80,21 @@ The current implementation also has explicit evaluation-relevant limitations:
 >     - `server/src/evals/eval_runner_test.cpp`
 > - The current implemented slice does not yet provide:
 >   - benchmark adapters such as LOCOMO or LongMemEval
->   - benchmark-supplied time injection
 >   - standalone eval binaries or JSON-driven eval input
 >   - autoraters
 >   - full structured trace capture for expansion, flush, or compaction decisions
+> - The current implemented Phase-2 slice now provides:
+>   - optional benchmark-supplied session start, user-message, and assistant-message timestamps
+>     through the app-boundary eval runner
+>   - chronology-aligned mid-term stub timestamps derived from conversation message time instead of
+>     wall-clock time
+>   - focused regression coverage proving prompt-visible time injection and persisted
+>     session/message timestamps through the real responder path
+> - The current implemented Phase-2 slice does not yet provide:
+>   - benchmark adapters that ingest external benchmark timelines directly
+>   - a richer benchmark event timeline artifact beyond the copied eval-case inputs
+>   - product-visible support for a notion of current/reference time inside the real prompt path
+>   - prompt decoration or timing rules specific to individual external benchmark formats
 
 Those limitations make time-aware evaluation a first-order requirement rather than a later polish
 task.
@@ -256,14 +268,14 @@ Current implementation note (2026-03-20):
 - the current Phase-1 runner captures:
   - benchmark identity
   - session and turn ids
+  - copied eval-case timing metadata for session start, turn times, and evaluation reference time
   - rendered prompt artifacts for the evaluated turn
   - structured pre-turn and post-turn mid-term snapshots
   - final assistant reply when successful
   - normalized failure when present
   - emitted events for the evaluated turn
 - the current runner does not yet capture:
-  - benchmark event timeline
-  - benchmark evaluation reference time
+  - a richer benchmark event timeline beyond the copied eval-case turn inputs
   - explicit prompt-visible mid-term rendering as a separately stored artifact
   - mid-term expansion traces
   - mid-term flush/compaction traces
@@ -306,8 +318,9 @@ Three different clocks exist and MUST remain distinct:
 Rules:
 
 - memory timestamps in benchmark replay MUST come from benchmark event time
-- prompt-visible temporal grounding MUST be derived from benchmark evaluation reference time when
-  a benchmark supplies one
+- benchmark evaluation reference time SHOULD be stored as structured eval metadata
+- the eval framework SHOULD NOT inject benchmark-only prompt context solely to compensate for a
+  product limitation that does not yet exist in the real system
 - telemetry and latency recording MUST continue to use runtime clock sources
 - evaluation MUST NOT reuse wall-clock `NowTimestamp()` for benchmark chronology once time-aware
   replay support lands
@@ -428,6 +441,29 @@ Add a minimal generic evaluation core that can execute Isla cases and capture re
 
 ## Phase 2: Time-Aware Replay + Benchmark Clock Injection
 
+> [!NOTE]
+> **Status (2026-03-20): Partially implemented.**
+> - The runner now supports optional benchmark-supplied:
+>   - session start time
+>   - per-turn user message time
+>   - per-turn assistant reply time
+>   - evaluation reference time
+> - The responder now resolves session and conversation timestamps through overrideable seams for
+>   the eval path, while the default production path still falls back to wall-clock time.
+> - Mid-term stub timestamps now derive from conversation chronology instead of wall-clock time.
+> - Key implemented files:
+>   - `server/include/isla/server/evals/eval_types.hpp`
+>   - `server/src/evals/eval_runner.cpp`
+>   - `server/include/isla/server/ai_gateway_stub_responder.hpp`
+>   - `server/src/ai_gateway_stub_responder.cpp`
+>   - `server/memory/src/memory_orchestrator.cpp`
+>   - `server/src/evals/eval_runner_test.cpp`
+> - Remaining work for Phase 2:
+>   - support direct ingestion of benchmark-owned timelines through adapters
+>   - leave benchmark reference time as eval metadata until the real product grows a proper notion
+>     of current/reference time for user-facing memory questions
+>   - expand artifact capture for benchmark chronology and temporal debugging
+
 ### Goal
 
 Teach the live evaluation path to replay benchmark chronology faithfully instead of relying on wall
@@ -438,8 +474,8 @@ Teach the live evaluation path to replay benchmark chronology faithfully instead
 - Add a time-control seam for session start, user turn time, assistant reply time, and any other
   prompt-visible memory event timestamps.
 - Replace benchmark-path calls to wall-clock `NowTimestamp()` with benchmark-supplied event time.
-- Add an explicit benchmark evaluation reference time to the prompt context for benchmarks that
-  require temporal reasoning relative to "now".
+- Preserve benchmark evaluation reference time as structured metadata for later scoring and
+  analysis, without injecting eval-only prompt context that the real product does not yet expose.
 - Preserve steady-clock telemetry for runtime phase timing.
 - Ensure mid-term episode and episode-stub timestamps remain deterministic under replay.
 
@@ -448,7 +484,8 @@ Teach the live evaluation path to replay benchmark chronology faithfully instead
 - Time injection SHOULD happen at the gateway/responder and memory-orchestrator seam, not by
   patching timestamps after execution.
 - This phase is required before LOCOMO and LongMemEval results are treated as trustworthy.
-- Prompt-visible benchmark "current time" SHOULD be explicit instead of implied by the host date.
+- If the real product later gains a user-facing notion of current/reference time for temporal
+  memory questions, evals SHOULD use that real mechanism instead of an eval-only prompt patch.
 - The current Phase-1 runner already proves the canonical app-boundary execution path; Phase 2
   SHOULD extend that runner rather than introducing a second benchmark execution stack.
 - The current runner's structured mid-term snapshots make it possible to verify benchmark-time
@@ -459,6 +496,10 @@ Teach the live evaluation path to replay benchmark chronology faithfully instead
 - The evaluation runner can replay a benchmark timeline with supplied timestamps.
 - Prompt-rendered conversation and mid-term memory reflect benchmark chronology.
 - Telemetry remains based on runtime clock rather than benchmark clock.
+- Remaining work before Phase 2 is fully complete:
+  - validate the current time-injection approach against the first real benchmark adapters
+  - decide which temporal benchmark cases must remain unsupported until the real product exposes a
+    proper notion of current/reference time
 
 ## Phase 3: Local Memory Evaluation Set + Runner Hardening
 
@@ -684,6 +725,12 @@ The critical-path rule is:
 
 ## Changelog
 
+- 2026-03-20: completed the first implementation slice of Phase 2 by adding optional
+  benchmark-supplied session and turn timestamps to the eval runner, keeping evaluation reference
+  time as structured metadata rather than eval-only prompt context, routing responder-side
+  timestamp resolution through overrideable seams for eval execution, aligning mid-term stub
+  timestamps with conversation chronology, and adding focused regression coverage for prompt and
+  persistence-side time fidelity.
 - 2026-03-20: completed the first implementation slice of Phase 1 by adding a small
   benchmark-first eval core, a canonical app-boundary runner over `GatewayStubResponder`, prompt
   artifact capture for the evaluated turn, structured pre/post mid-term snapshots, emitted-event

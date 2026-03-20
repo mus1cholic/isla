@@ -472,7 +472,8 @@ absl::Status MemoryOrchestrator::QueueMidTermAnalysis(const Conversation& conver
                             .compacted = std::move(*compacted),
                             .episode_created_at =
                                 candidate->ongoing_episode.messages.back().create_time,
-                            .stub_timestamp = NowTimestamp(),
+                            .stub_timestamp =
+                                candidate->ongoing_episode.messages.back().create_time,
                             .split_at_message_index = chosen.split_at_message_index,
                         },
                     .captured_message_count = candidate->ongoing_episode.messages.size(),
@@ -526,7 +527,8 @@ MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_
                                 .compacted = std::move(*compacted),
                                 .episode_created_at =
                                     flush_candidate.ongoing_episode.messages.back().create_time,
-                                .stub_timestamp = NowTimestamp(),
+                                .stub_timestamp =
+                                    flush_candidate.ongoing_episode.messages.back().create_time,
                                 .split_at_message_index = split_at_message_index,
                             },
                         .captured_message_count = flush_candidate.ongoing_episode.messages.size(),

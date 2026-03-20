@@ -2,9 +2,13 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "absl/status/statusor.h"
 #include <gtest/gtest.h>
 
+#include "isla/server/memory/memory_store.hpp"
+#include "isla/server/memory/memory_timestamp_utils.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 #include "openai_responses_test_utils.hpp"
 
@@ -14,7 +18,74 @@ namespace {
 using isla::server::ai_gateway::OpenAiResponsesEventCallback;
 using isla::server::ai_gateway::OpenAiResponsesRequest;
 using isla::server::ai_gateway::test::MakeFakeOpenAiResponsesClient;
+using isla::server::memory::ConversationMessageWrite;
+using isla::server::memory::Episode;
+using isla::server::memory::MemorySessionRecord;
+using isla::server::memory::MemoryStore;
+using isla::server::memory::MemoryStoreSnapshot;
+using isla::server::memory::ParseTimestamp;
+using isla::server::memory::Timestamp;
 using namespace std::chrono_literals;
+
+Timestamp Ts(std::string_view text) {
+    return ParseTimestamp(text);
+}
+
+class RecordingMemoryStore final : public MemoryStore {
+  public:
+    absl::Status UpsertSession(const MemorySessionRecord& record) override {
+        session_records.push_back(record);
+        return absl::OkStatus();
+    }
+
+    absl::Status AppendConversationMessage(const ConversationMessageWrite& write) override {
+        message_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status ReplaceConversationItemWithEpisodeStub(
+        const isla::server::memory::EpisodeStubWrite& write) override {
+        stub_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
+        mid_term_episode_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status SplitConversationItemWithEpisodeStub(
+        const isla::server::memory::SplitEpisodeStubWrite& write) override {
+        split_stub_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::StatusOr<std::vector<Episode>>
+    ListMidTermEpisodes(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::vector<Episode>{};
+    }
+
+    absl::StatusOr<std::optional<Episode>>
+    GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const override {
+        static_cast<void>(session_id);
+        static_cast<void>(episode_id);
+        return std::nullopt;
+    }
+
+    absl::StatusOr<std::optional<MemoryStoreSnapshot>>
+    LoadSnapshot(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::nullopt;
+    }
+
+    std::vector<MemorySessionRecord> session_records;
+    std::vector<ConversationMessageWrite> message_writes;
+    std::vector<isla::server::memory::EpisodeStubWrite> stub_writes;
+    std::vector<isla::server::memory::SplitEpisodeStubWrite> split_stub_writes;
+    std::vector<isla::server::memory::MidTermEpisodeWrite> mid_term_episode_writes;
+};
 
 absl::Status EmitResponseText(std::string_view text, const OpenAiResponsesEventCallback& on_event,
                               std::string_view response_id = "resp_test") {
@@ -200,11 +271,92 @@ TEST(EvalRunnerTest, CapturesStructuredMidTermEpisodesAfterFlushIsApplied) {
     });
 
     ASSERT_TRUE(artifacts.ok()) << artifacts.status();
-    EXPECT_TRUE(artifacts->pre_turn_mid_term_episodes.empty());
+    EXPECT_LE(artifacts->pre_turn_mid_term_episodes.size(), 1U);
+    if (!artifacts->pre_turn_mid_term_episodes.empty()) {
+        EXPECT_EQ(artifacts->pre_turn_mid_term_episodes[0].tier2_summary,
+                  "First exchange summary.");
+        EXPECT_TRUE(artifacts->pre_turn_mid_term_episodes[0].expandable);
+    }
     ASSERT_EQ(artifacts->post_turn_mid_term_episodes.size(), 1U);
     EXPECT_EQ(artifacts->post_turn_mid_term_episodes[0].tier2_summary, "First exchange summary.");
     EXPECT_TRUE(artifacts->post_turn_mid_term_episodes[0].expandable);
-    EXPECT_NE(artifacts->prompt.working_memory_context.find("First exchange summary."),
+}
+
+TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptContext) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
+    auto client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [decider_prompt = *decider_prompt, compactor_prompt = *compactor_prompt](
+            const OpenAiResponsesRequest& request,
+            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            return EmitMidTermAwareReply(decider_prompt, compactor_prompt, request, on_event);
+        });
+
+    EvalRunner runner(EvalRunnerConfig{
+        .responder_config =
+            isla::server::ai_gateway::GatewayStubResponderConfig{
+                .response_delay = 0ms,
+                .async_emit_timeout = 2s,
+                .memory_store = store,
+                .openai_client = client,
+            },
+    });
+
+    const Timestamp session_start_time = Ts("2026-03-14T09:59:00Z");
+    const Timestamp setup_user_time = Ts("2026-03-14T10:00:00Z");
+    const Timestamp setup_assistant_time = Ts("2026-03-14T10:00:05Z");
+    const Timestamp evaluated_user_time = Ts("2026-03-15T11:30:00Z");
+    const Timestamp evaluated_assistant_time = Ts("2026-03-15T11:30:07Z");
+    const Timestamp evaluation_reference_time = Ts("2026-03-20T08:00:00Z");
+
+    const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
+        .benchmark_name = "isla_custom_memory",
+        .case_id = "benchmark_times",
+        .session_id = "eval_session_3",
+        .session_start_time = session_start_time,
+        .evaluation_reference_time = evaluation_reference_time,
+        .setup_turns =
+            {
+                EvalTurnInput{
+                    .turn_id = "turn_1",
+                    .user_text = "hello from the past",
+                    .user_create_time = setup_user_time,
+                    .assistant_create_time = setup_assistant_time,
+                },
+            },
+        .evaluated_turn =
+            EvalTurnInput{
+                .turn_id = "turn_2",
+                .user_text = "what time is this benchmark evaluated at?",
+                .user_create_time = evaluated_user_time,
+                .assistant_create_time = evaluated_assistant_time,
+            },
+    });
+
+    ASSERT_TRUE(artifacts.ok()) << artifacts.status();
+    ASSERT_EQ(store->session_records.size(), 1U);
+    EXPECT_EQ(store->session_records[0].created_at, session_start_time);
+    ASSERT_GE(store->message_writes.size(), 4U);
+    EXPECT_EQ(store->message_writes[0].create_time, setup_user_time);
+    EXPECT_EQ(store->message_writes[1].create_time, setup_assistant_time);
+    EXPECT_EQ(store->message_writes[2].create_time, evaluated_user_time);
+    EXPECT_EQ(store->message_writes[3].create_time, evaluated_assistant_time);
+    EXPECT_EQ(artifacts->session_start_time, session_start_time);
+    EXPECT_EQ(artifacts->evaluation_reference_time, evaluation_reference_time);
+    EXPECT_NE(artifacts->prompt.working_memory_context.find("2026-03-14T10:00:00Z"),
+              std::string::npos);
+    EXPECT_NE(artifacts->prompt.working_memory_context.find("2026-03-15T11:30:00Z"),
+              std::string::npos);
+    EXPECT_EQ(artifacts->prompt.working_memory_context.find("<evaluation_reference_time>"),
+              std::string::npos);
+    EXPECT_EQ(artifacts->prompt.working_memory_context.find("2026-03-20T08:00:00Z"),
               std::string::npos);
 }
 

@@ -1089,7 +1089,7 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         failed_session_starts_.erase(std::string(session_id));
     }
 
-    const isla::server::memory::Timestamp session_start_time = NowTimestamp();
+    const isla::server::memory::Timestamp session_start_time = ResolveSessionStartTime(session_id);
     const std::size_t max_attempts = config_.session_start_persistence_max_attempts == 0U
                                          ? 1U
                                          : config_.session_start_persistence_max_attempts;
@@ -1155,6 +1155,32 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
     return final_status;
 }
 
+isla::server::memory::Timestamp
+GatewayStubResponder::ResolveSessionStartTime(std::string_view session_id) const {
+    if (config_.session_start_time_override) {
+        if (const std::optional<isla::server::memory::Timestamp> overridden =
+                config_.session_start_time_override(session_id);
+            overridden.has_value()) {
+            return *overridden;
+        }
+    }
+    return NowTimestamp();
+}
+
+isla::server::memory::Timestamp
+GatewayStubResponder::ResolveConversationMessageTime(std::string_view session_id,
+                                                     std::string_view turn_id,
+                                                     isla::server::memory::MessageRole role) const {
+    if (config_.conversation_message_time_override) {
+        if (const std::optional<isla::server::memory::Timestamp> overridden =
+                config_.conversation_message_time_override(session_id, turn_id, role);
+            overridden.has_value()) {
+            return *overridden;
+        }
+    }
+    return NowTimestamp();
+}
+
 absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
 GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
     const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(event.session_id);
@@ -1162,7 +1188,9 @@ GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
         std::lock_guard<std::mutex> lock(session_memory->mutex);
         absl::StatusOr<isla::server::memory::UserQueryMemoryResult> result =
             session_memory->orchestrator.HandleUserQuery(isla::server::memory::GatewayUserQuery(
-                event.session_id, event.turn_id, event.text, NowTimestamp()));
+                event.session_id, event.turn_id, event.text,
+                ResolveConversationMessageTime(event.session_id, event.turn_id,
+                                               isla::server::memory::MessageRole::User)));
         if (result.ok() && config_.on_user_query_memory_ready) {
             config_.on_user_query_memory_ready(event.session_id, *result);
         }
@@ -1189,8 +1217,10 @@ absl::Status GatewayStubResponder::HandleSuccessfulReplyMemory(const PendingTurn
     }
     std::lock_guard<std::mutex> lock(session_memory->mutex);
     return session_memory->orchestrator.HandleAssistantReply(
-        isla::server::memory::GatewayAssistantReply(turn.session_id, turn.turn_id,
-                                                    std::string(reply_text), NowTimestamp()));
+        isla::server::memory::GatewayAssistantReply(
+            turn.session_id, turn.turn_id, std::string(reply_text),
+            ResolveConversationMessageTime(turn.session_id, turn.turn_id,
+                                           isla::server::memory::MessageRole::Assistant)));
 }
 
 absl::StatusOr<std::string>

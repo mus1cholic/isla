@@ -253,6 +253,18 @@ absl::Status ValidateCase(const EvalCase& eval_case) {
     return ValidateTurnInput(eval_case.evaluated_turn, "evaluated");
 }
 
+const EvalTurnInput* FindTurnById(const EvalCase& eval_case, std::string_view turn_id) {
+    for (const EvalTurnInput& turn : eval_case.setup_turns) {
+        if (turn.turn_id == turn_id) {
+            return &turn;
+        }
+    }
+    if (eval_case.evaluated_turn.turn_id == turn_id) {
+        return &eval_case.evaluated_turn;
+    }
+    return nullptr;
+}
+
 absl::Status WaitForSuccessfulSetupTurn(const RecordingLiveSession& session,
                                         std::string_view turn_id,
                                         std::chrono::milliseconds timeout) {
@@ -287,6 +299,33 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     isla::server::ai_gateway::GatewayStubResponderConfig responder_config =
         config_.responder_config;
     const auto user_query_hook = responder_config.on_user_query_memory_ready;
+    responder_config.session_start_time_override =
+        [&eval_case](
+            std::string_view session_id) -> std::optional<isla::server::memory::Timestamp> {
+        if (session_id != eval_case.session_id) {
+            return std::nullopt;
+        }
+        return eval_case.session_start_time;
+    };
+    responder_config.conversation_message_time_override =
+        [&eval_case](std::string_view session_id, std::string_view turn_id,
+                     isla::server::memory::MessageRole role)
+        -> std::optional<isla::server::memory::Timestamp> {
+        if (session_id != eval_case.session_id) {
+            return std::nullopt;
+        }
+        const EvalTurnInput* turn = FindTurnById(eval_case, turn_id);
+        if (turn == nullptr) {
+            return std::nullopt;
+        }
+        switch (role) {
+        case isla::server::memory::MessageRole::User:
+            return turn->user_create_time;
+        case isla::server::memory::MessageRole::Assistant:
+            return turn->assistant_create_time;
+        }
+        return std::nullopt;
+    };
     responder_config.on_user_query_memory_ready =
         [&captured_prompt, &capture_next_prompt, &eval_case,
          user_query_hook](std::string_view session_id,
@@ -359,6 +398,10 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         .case_id = eval_case.case_id,
         .session_id = eval_case.session_id,
         .evaluated_turn_id = eval_case.evaluated_turn.turn_id,
+        .session_start_time = eval_case.session_start_time,
+        .evaluation_reference_time = eval_case.evaluation_reference_time,
+        .setup_turns = eval_case.setup_turns,
+        .evaluated_turn = eval_case.evaluated_turn,
         .prompt = *captured_prompt,
         .pre_turn_mid_term_episodes = BuildMidTermArtifacts(*pre_turn_state),
         .post_turn_mid_term_episodes = BuildMidTermArtifacts(*post_turn_state),

@@ -12,6 +12,8 @@ namespace isla::server::evals {
 struct EvalTurnInput {
     std::string turn_id;
     std::string user_text;
+    std::optional<isla::server::memory::Timestamp> user_create_time;
+    std::optional<isla::server::memory::Timestamp> assistant_create_time;
 };
 
 // Benchmark-first case shape for the initial app-boundary eval runner.
@@ -22,6 +24,8 @@ struct EvalCase {
     std::string benchmark_name;
     std::string case_id;
     std::string session_id;
+    std::optional<isla::server::memory::Timestamp> session_start_time;
+    std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
     std::vector<EvalTurnInput> setup_turns;
     EvalTurnInput evaluated_turn;
 };
@@ -62,6 +66,10 @@ struct EvalArtifacts {
     std::string case_id;
     std::string session_id;
     std::string evaluated_turn_id;
+    std::optional<isla::server::memory::Timestamp> session_start_time;
+    std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
+    std::vector<EvalTurnInput> setup_turns;
+    EvalTurnInput evaluated_turn;
     EvalPromptArtifacts prompt;
     std::vector<EvalMidTermEpisodeArtifact> pre_turn_mid_term_episodes;
     std::vector<EvalMidTermEpisodeArtifact> post_turn_mid_term_episodes;

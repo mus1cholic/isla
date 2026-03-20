@@ -41,6 +41,12 @@ struct GatewayStubResponderConfig {
     GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
     std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
     std::function<void(const ExecutionPlan&)> on_execution_plan;
+    std::function<std::optional<isla::server::memory::Timestamp>(std::string_view session_id)>
+        session_start_time_override;
+    std::function<std::optional<isla::server::memory::Timestamp>(
+        std::string_view session_id, std::string_view turn_id,
+        isla::server::memory::MessageRole role)>
+        conversation_message_time_override;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>
         on_user_query_memory_ready;
 };
@@ -119,6 +125,11 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     [[nodiscard]] std::optional<absl::Status>
     FindSessionStartFailure(std::string_view session_id) const;
     [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id);
+    [[nodiscard]] isla::server::memory::Timestamp
+    ResolveSessionStartTime(std::string_view session_id) const;
+    [[nodiscard]] isla::server::memory::Timestamp
+    ResolveConversationMessageTime(std::string_view session_id, std::string_view turn_id,
+                                   isla::server::memory::MessageRole role) const;
     [[nodiscard]] absl::StatusOr<isla::server::memory::UserQueryMemoryResult>
     HandleAcceptedTurnMemory(const TurnAcceptedEvent& event);
     [[nodiscard]] absl::Status HandleSuccessfulReplyMemory(const PendingTurn& turn,
