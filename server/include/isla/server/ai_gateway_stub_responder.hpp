@@ -47,9 +47,6 @@ struct GatewayStubResponderConfig {
         std::string_view session_id, std::string_view turn_id,
         isla::server::memory::MessageRole role)>
         conversation_message_time_override;
-    std::function<void(std::string_view session_id, std::string_view turn_id,
-                       isla::server::memory::UserQueryMemoryResult& result)>
-        decorate_user_query_memory_result;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>
         on_user_query_memory_ready;
 };

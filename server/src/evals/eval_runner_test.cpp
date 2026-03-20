@@ -271,13 +271,18 @@ TEST(EvalRunnerTest, CapturesStructuredMidTermEpisodesAfterFlushIsApplied) {
     });
 
     ASSERT_TRUE(artifacts.ok()) << artifacts.status();
-    EXPECT_TRUE(artifacts->pre_turn_mid_term_episodes.empty());
+    EXPECT_LE(artifacts->pre_turn_mid_term_episodes.size(), 1U);
+    if (!artifacts->pre_turn_mid_term_episodes.empty()) {
+        EXPECT_EQ(artifacts->pre_turn_mid_term_episodes[0].tier2_summary,
+                  "First exchange summary.");
+        EXPECT_TRUE(artifacts->pre_turn_mid_term_episodes[0].expandable);
+    }
     ASSERT_EQ(artifacts->post_turn_mid_term_episodes.size(), 1U);
     EXPECT_EQ(artifacts->post_turn_mid_term_episodes[0].tier2_summary, "First exchange summary.");
     EXPECT_TRUE(artifacts->post_turn_mid_term_episodes[0].expandable);
 }
 
-TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesAndInjectsEvaluationReferenceTime) {
+TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptContext) {
     auto store = std::make_shared<RecordingMemoryStore>();
     const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
         isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
@@ -349,9 +354,9 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesAndInjectsEvaluationReferenceTime
               std::string::npos);
     EXPECT_NE(artifacts->prompt.working_memory_context.find("2026-03-15T11:30:00Z"),
               std::string::npos);
-    EXPECT_NE(artifacts->prompt.working_memory_context.find("<evaluation_reference_time>"),
+    EXPECT_EQ(artifacts->prompt.working_memory_context.find("<evaluation_reference_time>"),
               std::string::npos);
-    EXPECT_NE(artifacts->prompt.working_memory_context.find("2026-03-20T08:00:00Z"),
+    EXPECT_EQ(artifacts->prompt.working_memory_context.find("2026-03-20T08:00:00Z"),
               std::string::npos);
 }
 

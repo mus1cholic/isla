@@ -1191,9 +1191,6 @@ GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
                 event.session_id, event.turn_id, event.text,
                 ResolveConversationMessageTime(event.session_id, event.turn_id,
                                                isla::server::memory::MessageRole::User)));
-        if (result.ok() && config_.decorate_user_query_memory_result) {
-            config_.decorate_user_query_memory_result(event.session_id, event.turn_id, *result);
-        }
         if (result.ok() && config_.on_user_query_memory_ready) {
             config_.on_user_query_memory_ready(event.session_id, *result);
         }

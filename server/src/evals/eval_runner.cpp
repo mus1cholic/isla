@@ -13,7 +13,6 @@
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "isla/server/memory/memory_timestamp_utils.hpp"
 #include "isla/server/memory/memory_types.hpp"
 
 namespace isla::server::evals {
@@ -266,16 +265,6 @@ const EvalTurnInput* FindTurnById(const EvalCase& eval_case, std::string_view tu
     return nullptr;
 }
 
-void AppendEvaluationReferenceTime(isla::server::memory::UserQueryMemoryResult& result,
-                                   isla::server::memory::Timestamp evaluation_reference_time) {
-    std::string section;
-    section.append("<evaluation_reference_time>\n");
-    section.append(isla::server::memory::FormatTimestamp(evaluation_reference_time));
-    section.push_back('\n');
-    result.rendered_working_memory_context.append(section);
-    result.rendered_working_memory.append(section);
-}
-
 absl::Status WaitForSuccessfulSetupTurn(const RecordingLiveSession& session,
                                         std::string_view turn_id,
                                         std::chrono::milliseconds timeout) {
@@ -337,19 +326,6 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         }
         return std::nullopt;
     };
-    const auto existing_decorator = responder_config.decorate_user_query_memory_result;
-    responder_config.decorate_user_query_memory_result =
-        [&eval_case, existing_decorator](std::string_view session_id, std::string_view turn_id,
-                                         isla::server::memory::UserQueryMemoryResult& result) {
-            if (existing_decorator) {
-                existing_decorator(session_id, turn_id, result);
-            }
-            if (session_id != eval_case.session_id || turn_id != eval_case.evaluated_turn.turn_id ||
-                !eval_case.evaluation_reference_time.has_value()) {
-                return;
-            }
-            AppendEvaluationReferenceTime(result, *eval_case.evaluation_reference_time);
-        };
     responder_config.on_user_query_memory_ready =
         [&captured_prompt, &capture_next_prompt, &eval_case,
          user_query_hook](std::string_view session_id,
