@@ -673,6 +673,10 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
     return drained_count;
 }
 
+bool MemoryOrchestrator::HasPendingMidTermCompactions() const {
+    return !pending_mid_term_flushes_.empty();
+}
+
 void MemoryOrchestrator::PrepareConversationForAppend() {
     if (pending_mid_term_flushes_.empty()) {
         return;

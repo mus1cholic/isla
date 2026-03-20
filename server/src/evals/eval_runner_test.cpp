@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "absl/status/statusor.h"
@@ -282,6 +283,95 @@ TEST(EvalRunnerTest, CapturesStructuredMidTermEpisodesAfterFlushIsApplied) {
     EXPECT_TRUE(artifacts->post_turn_mid_term_episodes[0].expandable);
 }
 
+TEST(EvalRunnerTest, WaitsForDelayedMidTermFlushBeforeCapturingPostTurnSnapshot) {
+    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
+    auto decider_call_count = std::make_shared<int>(0);
+    auto client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [decider_prompt = *decider_prompt, compactor_prompt = *compactor_prompt,
+         decider_call_count](const OpenAiResponsesRequest& request,
+                             const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            if (request.system_prompt == decider_prompt) {
+                const int call_index = (*decider_call_count)++;
+                if (call_index == 0) {
+                    return EmitResponseText(R"json({
+                        "should_flush": true,
+                        "item_id": "i0",
+                        "split_at": null,
+                        "reasoning": "Completed first exchange."
+                    })json",
+                                            on_event, "resp_decider");
+                }
+                return EmitResponseText(R"json({
+                    "should_flush": false,
+                    "item_id": null,
+                    "split_at": null,
+                    "reasoning": "No additional completed episode."
+                })json",
+                                        on_event, "resp_decider");
+            }
+            if (request.system_prompt == compactor_prompt) {
+                std::this_thread::sleep_for(50ms);
+                return EmitResponseText(R"json({
+                    "tier1_detail": "First exchange detail.",
+                    "tier2_summary": "First exchange summary.",
+                    "tier3_ref": "First exchange ref.",
+                    "tier3_keywords": ["first", "exchange", "summary", "memory", "test"],
+                    "salience": 8
+                })json",
+                                        on_event, "resp_compactor");
+            }
+
+            return EmitResponseText(
+                std::string("stub reply: ") +
+                    isla::server::ai_gateway::test::ExtractLatestPromptLine(request.user_text),
+                on_event);
+        });
+
+    EvalRunner runner(EvalRunnerConfig{
+        .responder_config =
+            isla::server::ai_gateway::GatewayStubResponderConfig{
+                .response_delay = 0ms,
+                .async_emit_timeout = 250ms,
+                .openai_client = client,
+            },
+        .event_timeout = 250ms,
+    });
+
+    const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
+        .benchmark_name = "isla_custom_memory",
+        .case_id = "mid_term_snapshot_delayed_compactor",
+        .session_id = "eval_session_delayed_mid_term",
+        .setup_turns =
+            {
+                EvalTurnInput{
+                    .turn_id = "turn_1",
+                    .user_text = "hello",
+                },
+                EvalTurnInput{
+                    .turn_id = "turn_2",
+                    .user_text = "tell me something else first",
+                },
+            },
+        .evaluated_turn =
+            EvalTurnInput{
+                .turn_id = "turn_3",
+                .user_text = "can you summarize what we were talking about?",
+            },
+    });
+
+    ASSERT_TRUE(artifacts.ok()) << artifacts.status();
+    ASSERT_EQ(artifacts->post_turn_mid_term_episodes.size(), 1U);
+    EXPECT_EQ(artifacts->post_turn_mid_term_episodes[0].tier2_summary, "First exchange summary.");
+    EXPECT_TRUE(artifacts->post_turn_mid_term_episodes[0].expandable);
+}
+
 TEST(EvalRunnerTest, RejectsDuplicateTurnIdsInEvalCase) {
     auto client =
         MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test", absl::OkStatus());
@@ -316,6 +406,101 @@ TEST(EvalRunnerTest, RejectsDuplicateTurnIdsInEvalCase) {
     ASSERT_FALSE(artifacts.ok());
     EXPECT_EQ(artifacts.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_NE(std::string(artifacts.status().message()).find("must not reuse turn_id"),
+              std::string::npos);
+}
+
+TEST(EvalRunnerTest, BuildsEvalCaseFromBenchmarkTimelineInput) {
+    const absl::StatusOr<EvalCase> eval_case =
+        BuildEvalCaseFromBenchmarkTimeline(EvalBenchmarkTimelineCase{
+            .benchmark_name = "isla_custom_memory",
+            .case_id = "timeline_case",
+            .session_id = "eval_session_timeline",
+            .session_start_time = Ts("2026-03-14T09:59:00Z"),
+            .evaluation_reference_time = Ts("2026-03-20T08:00:00Z"),
+            .turns =
+                {
+                    EvalTurnInput{
+                        .turn_id = "turn_1",
+                        .user_text = "hello from setup",
+                        .user_create_time = Ts("2026-03-14T10:00:00Z"),
+                        .assistant_create_time = Ts("2026-03-14T10:00:05Z"),
+                    },
+                    EvalTurnInput{
+                        .turn_id = "turn_2",
+                        .user_text = "evaluate this turn",
+                        .user_create_time = Ts("2026-03-15T11:30:00Z"),
+                        .assistant_create_time = Ts("2026-03-15T11:30:07Z"),
+                    },
+                },
+            .evaluated_turn_id = "turn_2",
+        });
+
+    ASSERT_TRUE(eval_case.ok()) << eval_case.status();
+    EXPECT_EQ(eval_case->benchmark_name, "isla_custom_memory");
+    EXPECT_EQ(eval_case->case_id, "timeline_case");
+    EXPECT_EQ(eval_case->session_id, "eval_session_timeline");
+    EXPECT_EQ(eval_case->setup_turns.size(), 1U);
+    EXPECT_EQ(eval_case->setup_turns[0].turn_id, "turn_1");
+    EXPECT_EQ(eval_case->evaluated_turn.turn_id, "turn_2");
+    EXPECT_EQ(eval_case->evaluated_turn.user_text, "evaluate this turn");
+    EXPECT_EQ(eval_case->session_start_time, Ts("2026-03-14T09:59:00Z"));
+    EXPECT_EQ(eval_case->evaluation_reference_time, Ts("2026-03-20T08:00:00Z"));
+}
+
+TEST(EvalRunnerTest, RejectsBenchmarkTimelineWithTrailingTurnsAfterEvaluatedTurn) {
+    const absl::StatusOr<EvalCase> eval_case =
+        BuildEvalCaseFromBenchmarkTimeline(EvalBenchmarkTimelineCase{
+            .benchmark_name = "isla_custom_memory",
+            .case_id = "timeline_case_invalid",
+            .session_id = "eval_session_timeline_invalid",
+            .turns =
+                {
+                    EvalTurnInput{
+                        .turn_id = "turn_1",
+                        .user_text = "evaluate this turn first",
+                    },
+                    EvalTurnInput{
+                        .turn_id = "turn_2",
+                        .user_text = "this trailing turn is unsupported",
+                    },
+                },
+            .evaluated_turn_id = "turn_1",
+        });
+
+    ASSERT_FALSE(eval_case.ok());
+    EXPECT_EQ(eval_case.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(
+        std::string(eval_case.status().message()).find("must place evaluated_turn_id on the final"),
+        std::string::npos);
+}
+
+TEST(EvalRunnerTest, RejectsDuplicateTurnIdsInsideBenchmarkTimelineBeforeNormalization) {
+    const absl::StatusOr<EvalCase> eval_case =
+        BuildEvalCaseFromBenchmarkTimeline(EvalBenchmarkTimelineCase{
+            .benchmark_name = "isla_custom_memory",
+            .case_id = "timeline_case_duplicate_turns",
+            .session_id = "eval_session_timeline_duplicate_turns",
+            .turns =
+                {
+                    EvalTurnInput{
+                        .turn_id = "turn_1",
+                        .user_text = "setup turn",
+                    },
+                    EvalTurnInput{
+                        .turn_id = "turn_2",
+                        .user_text = "first evaluated turn copy",
+                    },
+                    EvalTurnInput{
+                        .turn_id = "turn_2",
+                        .user_text = "second evaluated turn copy",
+                    },
+                },
+            .evaluated_turn_id = "turn_2",
+        });
+
+    ASSERT_FALSE(eval_case.ok());
+    EXPECT_EQ(eval_case.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(eval_case.status().message()).find("must not reuse turn_id 'turn_2'"),
               std::string::npos);
 }
 
@@ -395,6 +580,54 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptCon
               std::string::npos);
     EXPECT_EQ(artifacts->prompt.working_memory_context.find("2026-03-20T08:00:00Z"),
               std::string::npos);
+
+    ASSERT_EQ(artifacts->benchmark_timeline.size(), 6U);
+    EXPECT_EQ(artifacts->benchmark_timeline[0].kind, EvalTimelineEventKind::kSessionStart);
+    EXPECT_EQ(artifacts->benchmark_timeline[0].timestamp, session_start_time);
+    EXPECT_FALSE(artifacts->benchmark_timeline[0].prompt_visible);
+    EXPECT_TRUE(artifacts->benchmark_timeline[0].runtime_observed);
+
+    EXPECT_EQ(artifacts->benchmark_timeline[1].kind, EvalTimelineEventKind::kConversationMessage);
+    EXPECT_EQ(artifacts->benchmark_timeline[1].turn_id, std::optional<std::string>("turn_1"));
+    EXPECT_EQ(artifacts->benchmark_timeline[1].role, std::optional<std::string>("user"));
+    EXPECT_EQ(artifacts->benchmark_timeline[1].timestamp, setup_user_time);
+    EXPECT_EQ(artifacts->benchmark_timeline[1].text,
+              std::optional<std::string>("hello from the past"));
+    EXPECT_TRUE(artifacts->benchmark_timeline[1].prompt_visible);
+    EXPECT_TRUE(artifacts->benchmark_timeline[1].runtime_observed);
+
+    EXPECT_EQ(artifacts->benchmark_timeline[2].kind, EvalTimelineEventKind::kConversationMessage);
+    EXPECT_EQ(artifacts->benchmark_timeline[2].turn_id, std::optional<std::string>("turn_1"));
+    EXPECT_EQ(artifacts->benchmark_timeline[2].role, std::optional<std::string>("assistant"));
+    EXPECT_EQ(artifacts->benchmark_timeline[2].timestamp, setup_assistant_time);
+    EXPECT_EQ(artifacts->benchmark_timeline[2].text,
+              std::optional<std::string>("stub reply: hello from the past"));
+    EXPECT_TRUE(artifacts->benchmark_timeline[2].prompt_visible);
+    EXPECT_TRUE(artifacts->benchmark_timeline[2].runtime_observed);
+
+    EXPECT_EQ(artifacts->benchmark_timeline[3].kind, EvalTimelineEventKind::kConversationMessage);
+    EXPECT_EQ(artifacts->benchmark_timeline[3].turn_id, std::optional<std::string>("turn_2"));
+    EXPECT_EQ(artifacts->benchmark_timeline[3].role, std::optional<std::string>("user"));
+    EXPECT_EQ(artifacts->benchmark_timeline[3].timestamp, evaluated_user_time);
+    EXPECT_EQ(artifacts->benchmark_timeline[3].text,
+              std::optional<std::string>("what time is this benchmark evaluated at?"));
+    EXPECT_TRUE(artifacts->benchmark_timeline[3].prompt_visible);
+    EXPECT_TRUE(artifacts->benchmark_timeline[3].runtime_observed);
+
+    EXPECT_EQ(artifacts->benchmark_timeline[4].kind, EvalTimelineEventKind::kConversationMessage);
+    EXPECT_EQ(artifacts->benchmark_timeline[4].turn_id, std::optional<std::string>("turn_2"));
+    EXPECT_EQ(artifacts->benchmark_timeline[4].role, std::optional<std::string>("assistant"));
+    EXPECT_EQ(artifacts->benchmark_timeline[4].timestamp, evaluated_assistant_time);
+    EXPECT_EQ(artifacts->benchmark_timeline[4].text,
+              std::optional<std::string>("stub reply: what time is this benchmark evaluated at?"));
+    EXPECT_TRUE(artifacts->benchmark_timeline[4].prompt_visible);
+    EXPECT_TRUE(artifacts->benchmark_timeline[4].runtime_observed);
+
+    EXPECT_EQ(artifacts->benchmark_timeline[5].kind,
+              EvalTimelineEventKind::kEvaluationReferenceTime);
+    EXPECT_EQ(artifacts->benchmark_timeline[5].timestamp, evaluation_reference_time);
+    EXPECT_FALSE(artifacts->benchmark_timeline[5].prompt_visible);
+    EXPECT_FALSE(artifacts->benchmark_timeline[5].runtime_observed);
 }
 
 } // namespace

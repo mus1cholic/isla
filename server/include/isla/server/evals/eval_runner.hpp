@@ -32,4 +32,10 @@ class EvalRunner final {
     EvalRunnerConfig config_;
 };
 
+// Normalizes one benchmark-owned conversation timeline into the app-boundary runner's current
+// case shape. The designated evaluated turn must currently be the final turn in the supplied
+// timeline because the runner captures artifacts around exactly one live turn.
+[[nodiscard]] absl::StatusOr<EvalCase>
+BuildEvalCaseFromBenchmarkTimeline(const EvalBenchmarkTimelineCase& timeline_case);
+
 } // namespace isla::server::evals
