@@ -55,13 +55,13 @@ TEST(ExpandMidTermToolTest, ExecuteRejectsMalformedJsonAsToolError) {
 TEST(ExpandMidTermToolTest, ExecuteRejectsUnexpectedExtraFieldsAsToolError) {
     const ExpandMidTermTool tool;
 
-    const absl::StatusOr<ToolResult> result = tool.Execute(
-        ToolExecutionContext{}, ToolCall{
-                                    .call_id = "call_extra",
-                                    .name = "expand_mid_term",
-                                    .arguments_json =
-                                        R"json({"episode_id":"ep_123","extra":"nope"})json",
-                                });
+    const absl::StatusOr<ToolResult> result =
+        tool.Execute(ToolExecutionContext{},
+                     ToolCall{
+                         .call_id = "call_extra",
+                         .name = "expand_mid_term",
+                         .arguments_json = R"json({"episode_id":"ep_123","extra":"nope"})json",
+                     });
 
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_TRUE(result->is_error);
@@ -72,13 +72,12 @@ TEST(ExpandMidTermToolTest, ExecuteRejectsUnexpectedExtraFieldsAsToolError) {
 TEST(ExpandMidTermToolTest, ExecuteRejectsMismatchedToolNameWithFrameworkError) {
     const ExpandMidTermTool tool;
 
-    const absl::StatusOr<ToolResult> result =
-        tool.Execute(ToolExecutionContext{}, ToolCall{
-                                                 .call_id = "call_wrong_name",
-                                                 .name = "other_tool",
-                                                 .arguments_json =
-                                                     R"json({"episode_id":"ep_123"})json",
-                                             });
+    const absl::StatusOr<ToolResult> result = tool.Execute(
+        ToolExecutionContext{}, ToolCall{
+                                    .call_id = "call_wrong_name",
+                                    .name = "other_tool",
+                                    .arguments_json = R"json({"episode_id":"ep_123"})json",
+                                });
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);

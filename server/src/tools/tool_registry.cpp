@@ -47,7 +47,7 @@ std::vector<ToolDefinition> ToolRegistry::ListDefinitions() const {
 }
 
 bool ToolRegistry::Contains(std::string_view name) const {
-    return indices_by_name_.contains(std::string(name));
+    return indices_by_name_.contains(name);
 }
 
 absl::StatusOr<ToolResult> ToolRegistry::Execute(const ToolExecutionContext& context,

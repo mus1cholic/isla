@@ -71,8 +71,9 @@ absl::StatusOr<ToolResult> ExpandMidTermTool::Execute(const ToolExecutionContext
             call, "expand_mid_term accepts only one argument: a non-empty string field "
                   "'episode_id'.");
     }
-    if (!arguments.contains("episode_id") || !arguments.at("episode_id").is_string() ||
-        arguments.at("episode_id").get<std::string>().empty()) {
+    if (const auto episode_id_it = arguments.find("episode_id");
+        episode_id_it == arguments.end() || !episode_id_it->is_string() ||
+        episode_id_it->get<std::string>().empty()) {
         return BuildErrorResult(
             call, "expand_mid_term requires a JSON object with a non-empty string field "
                   "'episode_id'.");

@@ -35,8 +35,8 @@ class ToolRegistry {
     //
     // The registry normalizes missing `call_id` and `tool_name` fields in returned ToolResult
     // values so tool implementations can focus on their own logic rather than bookkeeping.
-    [[nodiscard]] absl::StatusOr<ToolResult>
-    Execute(const ToolExecutionContext& context, const ToolCall& call) const;
+    [[nodiscard]] absl::StatusOr<ToolResult> Execute(const ToolExecutionContext& context,
+                                                     const ToolCall& call) const;
 
   private:
     ToolRegistry(std::vector<std::shared_ptr<const Tool>> tools,

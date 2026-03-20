@@ -25,8 +25,8 @@ class Tool {
     // tool-level failures that the model can recover from, such as bad arguments or missing
     // episode ids. Non-OK statuses are reserved for framework-level failures such as impossible
     // dispatch state or invariant violations.
-    [[nodiscard]] virtual absl::StatusOr<ToolResult>
-    Execute(const ToolExecutionContext& context, const ToolCall& call) const = 0;
+    [[nodiscard]] virtual absl::StatusOr<ToolResult> Execute(const ToolExecutionContext& context,
+                                                             const ToolCall& call) const = 0;
 };
 
 } // namespace isla::server::tools
