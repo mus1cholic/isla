@@ -66,6 +66,12 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) override;
     void OnSessionClosed(const SessionClosedEvent& event) override;
     void OnServerStopping(GatewaySessionRegistry& session_registry) override;
+    [[nodiscard]] absl::Status AppendSessionUserMessage(std::string_view session_id,
+                                                        std::string_view turn_id,
+                                                        std::string_view text);
+    [[nodiscard]] absl::Status AppendSessionAssistantMessage(std::string_view session_id,
+                                                             std::string_view turn_id,
+                                                             std::string_view text);
     [[nodiscard]] absl::StatusOr<std::string>
     RenderSessionMemoryPrompt(std::string_view session_id) const;
     [[nodiscard]] absl::StatusOr<isla::server::memory::WorkingMemoryState>

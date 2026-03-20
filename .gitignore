@@ -26,6 +26,10 @@ bazel-*
 .bazel-cache/
 compile_commands.json
 
+# Local eval outputs
+server/src/evals/out/
+server/src/evals/out_tmp/
+
 # Compiler/linker outputs (if ever generated outside build/)
 *.obj
 *.o

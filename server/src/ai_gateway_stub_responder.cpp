@@ -386,6 +386,50 @@ void GatewayStubResponder::OnServerStopping(GatewaySessionRegistry& session_regi
     }
 }
 
+absl::Status GatewayStubResponder::AppendSessionUserMessage(std::string_view session_id,
+                                                            std::string_view turn_id,
+                                                            std::string_view text) {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(session_id);
+    if (session_memory != nullptr) {
+        std::lock_guard<std::mutex> lock(session_memory->mutex);
+        const absl::StatusOr<isla::server::memory::UserQueryMemoryResult> result =
+            session_memory->orchestrator.HandleUserQuery(isla::server::memory::GatewayUserQuery(
+                std::string(session_id), std::string(turn_id), std::string(text),
+                ResolveConversationMessageTime(session_id, turn_id,
+                                               isla::server::memory::MessageRole::User)));
+        if (!result.ok()) {
+            return result.status();
+        }
+        return absl::OkStatus();
+    }
+
+    if (const std::optional<absl::Status> start_failure = FindSessionStartFailure(session_id);
+        start_failure.has_value()) {
+        return *start_failure;
+    }
+    return absl::FailedPreconditionError("missing memory orchestrator for started session");
+}
+
+absl::Status GatewayStubResponder::AppendSessionAssistantMessage(std::string_view session_id,
+                                                                 std::string_view turn_id,
+                                                                 std::string_view text) {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(session_id);
+    if (session_memory != nullptr) {
+        std::lock_guard<std::mutex> lock(session_memory->mutex);
+        return session_memory->orchestrator.HandleAssistantReply(
+            isla::server::memory::GatewayAssistantReply(
+                std::string(session_id), std::string(turn_id), std::string(text),
+                ResolveConversationMessageTime(session_id, turn_id,
+                                               isla::server::memory::MessageRole::Assistant)));
+    }
+
+    if (const std::optional<absl::Status> start_failure = FindSessionStartFailure(session_id);
+        start_failure.has_value()) {
+        return *start_failure;
+    }
+    return absl::FailedPreconditionError("missing memory orchestrator for started session");
+}
+
 void GatewayStubResponder::StopWorker() {
     {
         std::lock_guard<std::mutex> lock(mutex_);

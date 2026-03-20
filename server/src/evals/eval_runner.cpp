@@ -27,6 +27,7 @@ using isla::server::ai_gateway::GatewayStubResponder;
 using isla::server::ai_gateway::SessionStartedEvent;
 using isla::server::ai_gateway::TurnAcceptedEvent;
 using isla::server::memory::IsExpandableEpisode;
+using isla::server::memory::MessageRole;
 using isla::server::memory::WorkingMemoryState;
 using namespace std::chrono_literals;
 
@@ -156,11 +157,17 @@ class ResponderRegistryAttachment final {
     GatewaySessionRegistry registry_;
 };
 
-bool HasSucceeded(const std::vector<RecordingSessionEvent>& events, std::string_view turn_id) {
-    return std::any_of(events.begin(), events.end(), [turn_id](const RecordingSessionEvent& event) {
-        return event.turn_id == turn_id && event.op == "text.output";
-    });
-}
+struct ReplayMessage {
+    std::string turn_id;
+    MessageRole role = MessageRole::User;
+    std::string text;
+    std::optional<isla::server::memory::Timestamp> create_time;
+};
+
+struct ReplayPlan {
+    std::vector<ReplayMessage> history_messages;
+    std::string evaluated_turn_id;
+};
 
 std::optional<EvalFailure> ExtractFailure(const std::vector<RecordingSessionEvent>& events,
                                           std::string_view turn_id) {
@@ -184,6 +191,13 @@ std::optional<EvalFailure> ExtractFailure(const std::vector<RecordingSessionEven
     };
 }
 
+std::optional<std::string> EmptyStringAsNull(std::optional<std::string> value) {
+    if (!value.has_value() || value->empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 std::optional<std::string> ExtractFinalReply(const std::vector<RecordingSessionEvent>& events,
                                              std::string_view turn_id) {
     const auto it =
@@ -193,7 +207,7 @@ std::optional<std::string> ExtractFinalReply(const std::vector<RecordingSessionE
     if (it == events.rend()) {
         return std::nullopt;
     }
-    return it->payload;
+    return EmptyStringAsNull(it->payload);
 }
 
 std::vector<EvalEmittedEvent> FilterTurnEvents(const std::vector<RecordingSessionEvent>& events,
@@ -228,18 +242,10 @@ std::vector<EvalMidTermEpisodeArtifact> BuildMidTermArtifacts(const WorkingMemor
 }
 
 std::vector<EvalTimelineEventArtifact>
-BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case,
-                                const std::vector<RecordingSessionEvent>& events) {
-    absl::flat_hash_map<std::string, std::string> final_reply_by_turn;
-    for (const RecordingSessionEvent& event : events) {
-        if (event.op != "text.output") {
-            continue;
-        }
-        final_reply_by_turn.insert_or_assign(event.turn_id, event.payload);
-    }
-
+BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case, std::string_view evaluated_turn_id,
+                                const std::optional<std::string>& final_reply) {
     std::vector<EvalTimelineEventArtifact> timeline;
-    timeline.reserve((2U * (eval_case.setup_turns.size() + 1U)) +
+    timeline.reserve(eval_case.conversation.size() + 3U +
                      (eval_case.session_start_time.has_value() ? 1U : 0U) +
                      (eval_case.evaluation_reference_time.has_value() ? 1U : 0U));
 
@@ -250,44 +256,31 @@ BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case,
             .role = std::nullopt,
             .timestamp = eval_case.session_start_time,
             .text = std::nullopt,
-            .prompt_visible = false,
-            .runtime_observed = true,
         });
     }
 
-    auto append_turn_events = [&timeline, &final_reply_by_turn](const EvalTurnInput& turn) {
-        timeline.push_back(EvalTimelineEventArtifact{
-            .kind = EvalTimelineEventKind::kConversationMessage,
-            .turn_id = turn.turn_id,
-            .role = std::string("user"),
-            .timestamp = turn.user_create_time,
-            .text = turn.user_text,
-            .prompt_visible = true,
-            .runtime_observed = true,
-        });
-
-        std::optional<std::string> assistant_reply = std::nullopt;
-        const auto reply_it = final_reply_by_turn.find(turn.turn_id);
-        if (reply_it != final_reply_by_turn.end()) {
-            assistant_reply = reply_it->second;
-        }
-        if (assistant_reply.has_value() || turn.assistant_create_time.has_value()) {
+    auto append_message_event =
+        [&timeline](MessageRole role, std::string text,
+                    std::optional<isla::server::memory::Timestamp> timestamp,
+                    std::optional<std::string> turn_id) {
             timeline.push_back(EvalTimelineEventArtifact{
                 .kind = EvalTimelineEventKind::kConversationMessage,
-                .turn_id = turn.turn_id,
-                .role = std::string("assistant"),
-                .timestamp = turn.assistant_create_time,
-                .text = assistant_reply,
-                .prompt_visible = assistant_reply.has_value(),
-                .runtime_observed = assistant_reply.has_value(),
+                .turn_id = std::move(turn_id),
+                .role = std::string(role == MessageRole::User ? "user" : "assistant"),
+                .timestamp = timestamp,
+                .text = std::move(text),
             });
-        }
-    };
+        };
 
-    for (const EvalTurnInput& turn : eval_case.setup_turns) {
-        append_turn_events(turn);
+    for (const EvalConversationMessage& message : eval_case.conversation) {
+        append_message_event(message.role, message.text, message.create_time, std::nullopt);
     }
-    append_turn_events(eval_case.evaluated_turn);
+    append_message_event(MessageRole::User, eval_case.input.text, eval_case.input.create_time,
+                         std::string(evaluated_turn_id));
+    if (final_reply.has_value()) {
+        append_message_event(MessageRole::Assistant, *final_reply, std::nullopt,
+                             std::string(evaluated_turn_id));
+    }
 
     if (eval_case.evaluation_reference_time.has_value()) {
         timeline.push_back(EvalTimelineEventArtifact{
@@ -296,22 +289,63 @@ BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case,
             .role = std::nullopt,
             .timestamp = eval_case.evaluation_reference_time,
             .text = std::nullopt,
-            .prompt_visible = false,
-            .runtime_observed = false,
         });
     }
 
     return timeline;
 }
 
-absl::Status ValidateTurnInput(const EvalTurnInput& turn, std::string_view role) {
-    if (turn.turn_id.empty()) {
-        return invalid_argument(absl::StrCat(role, " turn must include a non-empty turn_id"));
-    }
-    if (turn.user_text.empty()) {
-        return invalid_argument(absl::StrCat(role, " turn must include non-empty user_text"));
+absl::Status ValidateConversationMessage(const EvalConversationMessage& message,
+                                         std::size_t index) {
+    if (message.text.empty()) {
+        return invalid_argument(
+            absl::StrCat("conversation message at index ", index, " must include non-empty text"));
     }
     return absl::OkStatus();
+}
+
+absl::Status ValidateInput(const EvalInput& input) {
+    if (input.text.empty()) {
+        return invalid_argument("eval case input must include non-empty text");
+    }
+    return absl::OkStatus();
+}
+
+std::string ReplayTimestampKey(std::string_view turn_id, MessageRole role) {
+    return absl::StrCat(turn_id, role == MessageRole::User ? "|user" : "|assistant");
+}
+
+absl::StatusOr<ReplayPlan> BuildReplayPlan(const EvalCase& eval_case) {
+    ReplayPlan plan{
+        .evaluated_turn_id = "evaluated_turn",
+    };
+
+    std::size_t next_history_turn = 1U;
+    std::optional<std::string> open_turn_id = std::nullopt;
+    for (const EvalConversationMessage& message : eval_case.conversation) {
+        if (message.role == MessageRole::User) {
+            open_turn_id = absl::StrCat("history_turn_", next_history_turn++);
+            plan.history_messages.push_back(ReplayMessage{
+                .turn_id = *open_turn_id,
+                .role = message.role,
+                .text = message.text,
+                .create_time = message.create_time,
+            });
+            continue;
+        }
+        if (!open_turn_id.has_value()) {
+            return invalid_argument(
+                "conversation assistant message must follow a prior user message");
+        }
+        plan.history_messages.push_back(ReplayMessage{
+            .turn_id = *open_turn_id,
+            .role = message.role,
+            .text = message.text,
+            .create_time = message.create_time,
+        });
+        open_turn_id.reset();
+    }
+    return plan;
 }
 
 absl::Status ValidateCase(const EvalCase& eval_case) {
@@ -324,96 +358,32 @@ absl::Status ValidateCase(const EvalCase& eval_case) {
     if (eval_case.session_id.empty()) {
         return invalid_argument("eval case must include session_id");
     }
-    for (const EvalTurnInput& turn : eval_case.setup_turns) {
-        if (absl::Status status = ValidateTurnInput(turn, "setup"); !status.ok()) {
+    for (std::size_t index = 0; index < eval_case.conversation.size(); ++index) {
+        if (absl::Status status = ValidateConversationMessage(eval_case.conversation[index], index);
+            !status.ok()) {
             return status;
         }
     }
-    if (absl::Status status = ValidateTurnInput(eval_case.evaluated_turn, "evaluated");
-        !status.ok()) {
+    if (absl::Status status = ValidateInput(eval_case.input); !status.ok()) {
         return status;
     }
-
-    std::vector<std::string_view> seen_turn_ids;
-    seen_turn_ids.reserve(eval_case.setup_turns.size() + 1U);
-    for (const EvalTurnInput& turn : eval_case.setup_turns) {
-        if (std::find(seen_turn_ids.begin(), seen_turn_ids.end(), turn.turn_id) !=
-            seen_turn_ids.end()) {
-            return invalid_argument(
-                absl::StrCat("eval case must not reuse turn_id '", turn.turn_id, "'"));
-        }
-        seen_turn_ids.push_back(turn.turn_id);
-    }
-    if (std::find(seen_turn_ids.begin(), seen_turn_ids.end(), eval_case.evaluated_turn.turn_id) !=
-        seen_turn_ids.end()) {
-        return invalid_argument(absl::StrCat("eval case must not reuse turn_id '",
-                                             eval_case.evaluated_turn.turn_id, "'"));
+    if (absl::StatusOr<ReplayPlan> plan = BuildReplayPlan(eval_case); !plan.ok()) {
+        return plan.status();
     }
     return absl::OkStatus();
 }
 
 absl::Status ValidateBenchmarkTimelineCase(const EvalBenchmarkTimelineCase& timeline_case) {
-    if (timeline_case.benchmark_name.empty()) {
-        return invalid_argument("benchmark timeline case must include benchmark_name");
-    }
-    if (timeline_case.case_id.empty()) {
-        return invalid_argument("benchmark timeline case must include case_id");
-    }
-    if (timeline_case.session_id.empty()) {
-        return invalid_argument("benchmark timeline case must include session_id");
-    }
-    if (timeline_case.turns.empty()) {
-        return invalid_argument("benchmark timeline case must include at least one turn");
-    }
-    if (timeline_case.evaluated_turn_id.empty()) {
-        return invalid_argument("benchmark timeline case must include evaluated_turn_id");
-    }
-
-    std::vector<std::string_view> seen_turn_ids;
-    seen_turn_ids.reserve(timeline_case.turns.size());
-    for (const EvalTurnInput& turn : timeline_case.turns) {
-        if (absl::Status status = ValidateTurnInput(turn, "benchmark timeline"); !status.ok()) {
-            return status;
-        }
-        if (std::find(seen_turn_ids.begin(), seen_turn_ids.end(), turn.turn_id) !=
-            seen_turn_ids.end()) {
-            return invalid_argument(absl::StrCat("benchmark timeline case must not reuse turn_id '",
-                                                 turn.turn_id, "'"));
-        }
-        seen_turn_ids.push_back(turn.turn_id);
-    }
-    return absl::OkStatus();
-}
-
-const EvalTurnInput* FindTurnById(const EvalCase& eval_case, std::string_view turn_id) {
-    for (const EvalTurnInput& turn : eval_case.setup_turns) {
-        if (turn.turn_id == turn_id) {
-            return &turn;
-        }
-    }
-    if (eval_case.evaluated_turn.turn_id == turn_id) {
-        return &eval_case.evaluated_turn;
-    }
-    return nullptr;
-}
-
-absl::Status WaitForSuccessfulSetupTurn(const RecordingLiveSession& session,
-                                        std::string_view turn_id,
-                                        std::chrono::milliseconds timeout) {
-    if (!session.WaitForTurnTerminal(turn_id, timeout)) {
-        return absl::DeadlineExceededError("timed out waiting for setup turn to terminate");
-    }
-    const std::vector<RecordingSessionEvent> events = session.events();
-    if (const std::optional<EvalFailure> failure = ExtractFailure(events, turn_id);
-        failure.has_value()) {
-        return absl::FailedPreconditionError("setup turn failed with public error code '" +
-                                             failure->code + "'");
-    }
-    if (!HasSucceeded(events, turn_id)) {
-        return absl::FailedPreconditionError(
-            "setup turn terminated without successful text output");
-    }
-    return absl::OkStatus();
+    return ValidateCase(EvalCase{
+        .benchmark_name = timeline_case.benchmark_name,
+        .case_id = timeline_case.case_id,
+        .session_id = timeline_case.session_id,
+        .session_start_time = timeline_case.session_start_time,
+        .evaluation_reference_time = timeline_case.evaluation_reference_time,
+        .conversation = timeline_case.conversation,
+        .input = timeline_case.input,
+        .expected_answer = timeline_case.expected_answer,
+    });
 }
 
 } // namespace
@@ -426,43 +396,34 @@ BuildEvalCaseFromBenchmarkTimeline(const EvalBenchmarkTimelineCase& timeline_cas
         return status;
     }
 
-    EvalCase eval_case{
+    return EvalCase{
         .benchmark_name = timeline_case.benchmark_name,
         .case_id = timeline_case.case_id,
         .session_id = timeline_case.session_id,
         .session_start_time = timeline_case.session_start_time,
         .evaluation_reference_time = timeline_case.evaluation_reference_time,
+        .conversation = timeline_case.conversation,
+        .input = timeline_case.input,
+        .expected_answer = timeline_case.expected_answer,
     };
-
-    bool found_evaluated_turn = false;
-    for (const EvalTurnInput& turn : timeline_case.turns) {
-        if (turn.turn_id == timeline_case.evaluated_turn_id) {
-            eval_case.evaluated_turn = turn;
-            found_evaluated_turn = true;
-            continue;
-        }
-        if (found_evaluated_turn) {
-            return invalid_argument(
-                "benchmark timeline case must place evaluated_turn_id on the final turn");
-        }
-        eval_case.setup_turns.push_back(turn);
-    }
-
-    if (!found_evaluated_turn) {
-        return invalid_argument(
-            absl::StrCat("benchmark timeline case did not include evaluated_turn_id '",
-                         timeline_case.evaluated_turn_id, "'"));
-    }
-    if (absl::Status status = ValidateCase(eval_case); !status.ok()) {
-        return status;
-    }
-    return eval_case;
 }
 
 absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) const {
     if (absl::Status status = ValidateCase(eval_case); !status.ok()) {
         return status;
     }
+    const absl::StatusOr<ReplayPlan> replay_plan = BuildReplayPlan(eval_case);
+    if (!replay_plan.ok()) {
+        return replay_plan.status();
+    }
+    absl::flat_hash_map<std::string, std::optional<isla::server::memory::Timestamp>> replay_times;
+    for (const ReplayMessage& message : replay_plan->history_messages) {
+        replay_times.insert_or_assign(ReplayTimestampKey(message.turn_id, message.role),
+                                      message.create_time);
+    }
+    replay_times.insert_or_assign(
+        ReplayTimestampKey(replay_plan->evaluated_turn_id, MessageRole::User),
+        eval_case.input.create_time);
 
     std::optional<EvalPromptArtifacts> captured_prompt;
     bool capture_next_prompt = false;
@@ -479,25 +440,17 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         return eval_case.session_start_time;
     };
     responder_config.conversation_message_time_override =
-        [&eval_case](std::string_view session_id, std::string_view turn_id,
-                     isla::server::memory::MessageRole role)
+        [&eval_case, &replay_times](std::string_view session_id, std::string_view turn_id,
+                                    isla::server::memory::MessageRole role)
         -> std::optional<isla::server::memory::Timestamp> {
         if (session_id != eval_case.session_id) {
             return std::nullopt;
         }
-        const EvalTurnInput* turn = FindTurnById(eval_case, turn_id);
-        if (turn == nullptr) {
-            LOG(WARNING) << "Eval runner observed unknown turn_id '" << turn_id << "' for session '"
-                         << session_id << "' while resolving conversation message time override";
+        const auto it = replay_times.find(ReplayTimestampKey(turn_id, role));
+        if (it == replay_times.end()) {
             return std::nullopt;
         }
-        switch (role) {
-        case isla::server::memory::MessageRole::User:
-            return turn->user_create_time;
-        case isla::server::memory::MessageRole::Assistant:
-            return turn->assistant_create_time;
-        }
-        return std::nullopt;
+        return it->second;
     };
     responder_config.on_user_query_memory_ready =
         [&captured_prompt, &capture_next_prompt, &eval_case,
@@ -522,23 +475,24 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     registry_scope.registry().RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{ .session_id = eval_case.session_id });
 
-    for (const EvalTurnInput& turn : eval_case.setup_turns) {
-        responder.OnTurnAccepted(TurnAcceptedEvent{
-            .session_id = eval_case.session_id,
-            .turn_id = turn.turn_id,
-            .text = turn.user_text,
-            .telemetry_context = isla::server::ai_gateway::MakeTurnTelemetryContext(
-                eval_case.session_id, turn.turn_id, config_.telemetry_sink),
-        });
-        if (absl::Status status =
-                WaitForSuccessfulSetupTurn(*session, turn.turn_id, config_.event_timeout);
+    for (const ReplayMessage& message : replay_plan->history_messages) {
+        if (message.role == MessageRole::User) {
+            if (absl::Status status = responder.AppendSessionUserMessage(
+                    eval_case.session_id, message.turn_id, message.text);
+                !status.ok()) {
+                return status;
+            }
+            continue;
+        }
+        if (absl::Status status = responder.AppendSessionAssistantMessage(
+                eval_case.session_id, message.turn_id, message.text);
             !status.ok()) {
             return status;
         }
     }
 
     const absl::StatusOr<WorkingMemoryState> pre_turn_state =
-        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id);
+        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id, config_.event_timeout);
     if (!pre_turn_state.ok()) {
         return pre_turn_state.status();
     }
@@ -546,12 +500,12 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     capture_next_prompt = true;
     responder.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = eval_case.session_id,
-        .turn_id = eval_case.evaluated_turn.turn_id,
-        .text = eval_case.evaluated_turn.user_text,
+        .turn_id = replay_plan->evaluated_turn_id,
+        .text = eval_case.input.text,
         .telemetry_context = isla::server::ai_gateway::MakeTurnTelemetryContext(
-            eval_case.session_id, eval_case.evaluated_turn.turn_id, config_.telemetry_sink),
+            eval_case.session_id, replay_plan->evaluated_turn_id, config_.telemetry_sink),
     });
-    if (!session->WaitForTurnTerminal(eval_case.evaluated_turn.turn_id, config_.event_timeout)) {
+    if (!session->WaitForTurnTerminal(replay_plan->evaluated_turn_id, config_.event_timeout)) {
         return absl::DeadlineExceededError("timed out waiting for evaluated turn to terminate");
     }
     if (!captured_prompt.has_value()) {
@@ -570,23 +524,23 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         .benchmark_name = eval_case.benchmark_name,
         .case_id = eval_case.case_id,
         .session_id = eval_case.session_id,
-        .evaluated_turn_id = eval_case.evaluated_turn.turn_id,
+        .evaluated_turn_id = replay_plan->evaluated_turn_id,
         .session_start_time = eval_case.session_start_time,
         .evaluation_reference_time = eval_case.evaluation_reference_time,
-        .setup_turns = eval_case.setup_turns,
-        .evaluated_turn = eval_case.evaluated_turn,
         .prompt = *captured_prompt,
-        .benchmark_timeline = BuildBenchmarkTimelineArtifacts(eval_case, events),
+        .benchmark_timeline = BuildBenchmarkTimelineArtifacts(
+            eval_case, replay_plan->evaluated_turn_id,
+            ExtractFinalReply(events, replay_plan->evaluated_turn_id)),
         .pre_turn_mid_term_episodes = BuildMidTermArtifacts(*pre_turn_state),
         .post_turn_mid_term_episodes = BuildMidTermArtifacts(*post_turn_state),
-        .emitted_events = FilterTurnEvents(events, eval_case.evaluated_turn.turn_id),
+        .emitted_events = FilterTurnEvents(events, replay_plan->evaluated_turn_id),
     };
 
     if (std::any_of(artifacts.emitted_events.begin(), artifacts.emitted_events.end(),
                     [](const EvalEmittedEvent& event) { return event.op == "turn.cancelled"; })) {
         artifacts.status = EvalTurnStatus::kCancelled;
     } else if (const std::optional<EvalFailure> failure =
-                   ExtractFailure(events, eval_case.evaluated_turn.turn_id);
+                   ExtractFailure(events, replay_plan->evaluated_turn_id);
                failure.has_value()) {
         artifacts.status = EvalTurnStatus::kFailed;
         artifacts.failure = failure;
@@ -594,7 +548,7 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         artifacts.status = EvalTurnStatus::kSucceeded;
     }
 
-    artifacts.final_reply = ExtractFinalReply(events, eval_case.evaluated_turn.turn_id);
+    artifacts.final_reply = ExtractFinalReply(events, replay_plan->evaluated_turn_id);
     return artifacts;
 }
 

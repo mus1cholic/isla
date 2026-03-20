@@ -1,7 +1,9 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
 exports_files([
+    "evals/eval_json.hpp",
     "embedding_client.hpp",
+    "evals/isla_custom_memory_benchmark.hpp",
     "evals/eval_runner.hpp",
     "evals/eval_types.hpp",
     "gemini_api_embedding_client.hpp",
@@ -30,6 +32,8 @@ cc_library(
         "ai_gateway_planner.hpp",
         "ai_gateway_step_registry.hpp",
         "embedding_client.hpp",
+        "evals/eval_json.hpp",
+        "evals/isla_custom_memory_benchmark.hpp",
         "evals/eval_runner.hpp",
         "evals/eval_types.hpp",
         "gemini_api_embedding_client.hpp",

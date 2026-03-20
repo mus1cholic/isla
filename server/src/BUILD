@@ -78,6 +78,32 @@ cc_library(
 )
 
 cc_library(
+    name = "eval_json",
+    srcs = ["evals/eval_json.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
+    name = "isla_custom_memory_benchmark",
+    srcs = ["evals/isla_custom_memory_benchmark.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:prompt_loader",
+        ":eval_json",
+        ":eval_runner",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
     name = "ai_gateway_string_utils",
     srcs = ["ai_gateway_string_utils.cpp"],
     hdrs = ["ai_gateway_string_utils.hpp"],
@@ -362,6 +388,17 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "isla_custom_memory_eval",
+    srcs = ["evals/isla_custom_memory_main.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":isla_custom_memory_benchmark",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
 cc_test(
     name = "ai_gateway_telemetry_test",
     srcs = ["ai_gateway_telemetry_test.cpp"],
@@ -556,6 +593,16 @@ cc_test(
         ":eval_runner",
         ":openai_responses_test_utils",
         "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "isla_custom_memory_benchmark_test",
+    srcs = ["evals/isla_custom_memory_benchmark_test.cpp"],
+    deps = [
+        ":isla_custom_memory_benchmark",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 
