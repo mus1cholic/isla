@@ -63,7 +63,7 @@ The current implementation also has explicit evaluation-relevant limitations:
 > - Phase 1 is partially implemented as an initial slice.
 > - Phase 2 is implemented for the evaluation pipeline.
 > - Phase 3 is implemented for the local benchmark slice.
-> - Phase 3.1 is planned as replay-fidelity follow-up work discovered during Phase 3 rollout.
+> - Phase 3.1 is implemented as replay-fidelity follow-up work discovered during Phase 3 rollout.
 > - Phase 3.2 is planned to switch benchmark execution from fake-provider main-turn replies to the
 >   real main LLM path.
 > - The current implemented Phase-1 slice now provides:
@@ -117,6 +117,13 @@ The current implementation also has explicit evaluation-relevant limitations:
 >     the real rendered prompt and working-memory context from the app-boundary runner
 >   - benchmark setup replay without synthetic runtime-generated setup replies
 >   - replayed assistant history only for multi-turn setup state, not for the live evaluated turn
+> - The current implemented Phase-3.1 slice now provides:
+>   - a responder-owned `GatewaySessionClock` seam shared by eval replay and future serving-path
+>     reference-time work instead of separate timestamp override callbacks
+>   - replayed-session-history artifacts as the canonical structured replay output for eval runs
+>   - eval-specific persistence identity through benchmark-derived `memory_user_id` values such as
+>     `eval_isla_custom_memory`
+>   - evaluation reference time carried explicitly as replayed session chronology in those artifacts
 > - Separate from evaluation infrastructure, the real product path still does not yet provide:
 >   - product-visible support for a notion of current/reference time inside the real prompt path
 >   - prompt decoration or timing rules specific to individual external benchmark formats
@@ -476,8 +483,8 @@ Add a minimal generic evaluation core that can execute Isla cases and capture re
 >   - per-turn user message time
 >   - per-turn assistant reply time
 >   - evaluation reference time
-> - The responder now resolves session and conversation timestamps through overrideable seams for
->   the eval path, while the default production path still falls back to wall-clock time.
+> - The responder now resolves session and conversation timestamps through a reusable session-clock
+>   seam for the eval path, while the default production path still falls back to wall-clock time.
 > - Mid-term stub timestamps now derive from conversation chronology instead of wall-clock time.
 > - Setup turns are replayed directly into responder-owned session memory instead of being forced
 >   through synthetic runtime-generated setup replies.
@@ -579,6 +586,27 @@ integration.
 - The framework can catch obvious memory regressions before external benchmark integration lands.
 
 ## Phase 3.1: Replay Fidelity Alignment
+
+> [!NOTE]
+> **Status (2026-03-20): Implemented.**
+> - Implemented artifacts:
+>   - `server/include/isla/server/ai_gateway_stub_responder.hpp`
+>   - `server/src/ai_gateway_stub_responder.cpp`
+>   - `server/include/isla/server/evals/eval_types.hpp`
+>   - `server/src/evals/eval_runner.cpp`
+>   - `server/src/evals/eval_runner_test.cpp`
+> - Implemented behavior:
+>   - the responder now consumes one replay/session clock object instead of separate timestamp
+>     override callbacks
+>   - eval artifacts now describe canonical replayed session history directly
+>   - eval persistence uses benchmark-derived `memory_user_id` values so replay traffic is easy to
+>     distinguish from product traffic
+>   - evaluation reference time is carried as replayed session chronology rather than only passive
+>     report metadata
+> - Remaining limitation:
+>   - the real serving prompt path still does not expose a product-visible notion of current or
+>     reference time, so replay reference time remains a structured artifact rather than prompt
+>     input
 
 ### Goal
 
@@ -855,6 +883,9 @@ The critical-path rule is:
 
 ## Changelog
 
+- 2026-03-20: completed Phase 3.1 by replacing responder-side timestamp override callbacks with a
+  shared session-clock seam, renaming eval replay artifacts around canonical replayed session
+  history, and assigning eval-specific benchmark-derived `memory_user_id` values to replay runs.
 - 2026-03-20: added Phase 3.2 to make the planned switch from deterministic fake-provider
   evaluated-turn execution to the real main LLM call path explicit before Phase 4 benchmark
   adapters.

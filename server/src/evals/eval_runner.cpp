@@ -1,6 +1,7 @@
 #include "isla/server/evals/eval_runner.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
@@ -169,6 +170,55 @@ struct ReplayPlan {
     std::string evaluated_turn_id;
 };
 
+class ReplaySessionClock final : public isla::server::ai_gateway::GatewaySessionClock {
+  public:
+    ReplaySessionClock(std::string session_id,
+                       std::optional<isla::server::memory::Timestamp> session_start_time,
+                       std::optional<isla::server::memory::Timestamp> evaluation_reference_time,
+                       absl::flat_hash_map<std::string,
+                                           std::optional<isla::server::memory::Timestamp>>
+                           replay_times)
+        : session_id_(std::move(session_id)), session_start_time_(session_start_time),
+          evaluation_reference_time_(evaluation_reference_time),
+          replay_times_(std::move(replay_times)) {}
+
+    [[nodiscard]] std::optional<isla::server::memory::Timestamp>
+    ResolveSessionStartTime(std::string_view session_id) const override {
+        if (session_id != session_id_) {
+            return std::nullopt;
+        }
+        return session_start_time_;
+    }
+
+    [[nodiscard]] std::optional<isla::server::memory::Timestamp>
+    ResolveConversationMessageTime(std::string_view session_id, std::string_view turn_id,
+                                   isla::server::memory::MessageRole role) const override {
+        if (session_id != session_id_) {
+            return std::nullopt;
+        }
+        const auto it = replay_times_.find(
+            absl::StrCat(turn_id, role == MessageRole::User ? "|user" : "|assistant"));
+        if (it == replay_times_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    [[nodiscard]] std::optional<isla::server::memory::Timestamp>
+    ResolveEvaluationReferenceTime(std::string_view session_id) const override {
+        if (session_id != session_id_) {
+            return std::nullopt;
+        }
+        return evaluation_reference_time_;
+    }
+
+  private:
+    std::string session_id_;
+    std::optional<isla::server::memory::Timestamp> session_start_time_;
+    std::optional<isla::server::memory::Timestamp> evaluation_reference_time_;
+    absl::flat_hash_map<std::string, std::optional<isla::server::memory::Timestamp>> replay_times_;
+};
+
 std::optional<EvalFailure> ExtractFailure(const std::vector<RecordingSessionEvent>& events,
                                           std::string_view turn_id) {
     const auto it =
@@ -241,17 +291,43 @@ std::vector<EvalMidTermEpisodeArtifact> BuildMidTermArtifacts(const WorkingMemor
     return artifacts;
 }
 
-std::vector<EvalTimelineEventArtifact>
-BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case, std::string_view evaluated_turn_id,
-                                const std::optional<std::string>& final_reply) {
-    std::vector<EvalTimelineEventArtifact> timeline;
-    timeline.reserve(eval_case.conversation.size() + 3U +
-                     (eval_case.session_start_time.has_value() ? 1U : 0U) +
-                     (eval_case.evaluation_reference_time.has_value() ? 1U : 0U));
+std::string BuildEvalMemoryUserId(std::string_view benchmark_name) {
+    std::string normalized = "eval";
+    normalized.reserve(5U + benchmark_name.size());
+    normalized.push_back('_');
+
+    bool previous_was_separator = true;
+    for (const unsigned char ch : benchmark_name) {
+        if (std::isalnum(ch) != 0) {
+            normalized.push_back(static_cast<char>(std::tolower(ch)));
+            previous_was_separator = false;
+            continue;
+        }
+        if (!previous_was_separator) {
+            normalized.push_back('_');
+            previous_was_separator = true;
+        }
+    }
+    while (!normalized.empty() && normalized.back() == '_') {
+        normalized.pop_back();
+    }
+    if (normalized == "eval") {
+        return "eval_session";
+    }
+    return normalized;
+}
+
+std::vector<EvalReplayEventArtifact>
+BuildReplayedSessionHistoryArtifacts(const EvalCase& eval_case, std::string_view evaluated_turn_id,
+                                     const std::optional<std::string>& final_reply) {
+    std::vector<EvalReplayEventArtifact> history;
+    history.reserve(eval_case.conversation.size() + 3U +
+                    (eval_case.session_start_time.has_value() ? 1U : 0U) +
+                    (eval_case.evaluation_reference_time.has_value() ? 1U : 0U));
 
     if (eval_case.session_start_time.has_value()) {
-        timeline.push_back(EvalTimelineEventArtifact{
-            .kind = EvalTimelineEventKind::kSessionStart,
+        history.push_back(EvalReplayEventArtifact{
+            .kind = EvalReplayEventKind::kSessionStart,
             .turn_id = std::nullopt,
             .role = std::nullopt,
             .timestamp = eval_case.session_start_time,
@@ -260,11 +336,11 @@ BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case, std::string_view eval
     }
 
     auto append_message_event =
-        [&timeline](MessageRole role, std::string text,
-                    std::optional<isla::server::memory::Timestamp> timestamp,
-                    std::optional<std::string> turn_id) {
-            timeline.push_back(EvalTimelineEventArtifact{
-                .kind = EvalTimelineEventKind::kConversationMessage,
+        [&history](MessageRole role, std::string text,
+                   std::optional<isla::server::memory::Timestamp> timestamp,
+                   std::optional<std::string> turn_id) {
+            history.push_back(EvalReplayEventArtifact{
+                .kind = EvalReplayEventKind::kConversationMessage,
                 .turn_id = std::move(turn_id),
                 .role = std::string(role == MessageRole::User ? "user" : "assistant"),
                 .timestamp = timestamp,
@@ -283,8 +359,8 @@ BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case, std::string_view eval
     }
 
     if (eval_case.evaluation_reference_time.has_value()) {
-        timeline.push_back(EvalTimelineEventArtifact{
-            .kind = EvalTimelineEventKind::kEvaluationReferenceTime,
+        history.push_back(EvalReplayEventArtifact{
+            .kind = EvalReplayEventKind::kEvaluationReferenceTime,
             .turn_id = std::nullopt,
             .role = std::nullopt,
             .timestamp = eval_case.evaluation_reference_time,
@@ -292,7 +368,7 @@ BuildBenchmarkTimelineArtifacts(const EvalCase& eval_case, std::string_view eval
         });
     }
 
-    return timeline;
+    return history;
 }
 
 absl::Status ValidateConversationMessage(const EvalConversationMessage& message,
@@ -433,28 +509,11 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
 
     isla::server::ai_gateway::GatewayStubResponderConfig responder_config =
         config_.responder_config;
+    responder_config.memory_user_id = BuildEvalMemoryUserId(eval_case.benchmark_name);
+    responder_config.session_clock = std::make_shared<const ReplaySessionClock>(
+        eval_case.session_id, eval_case.session_start_time, eval_case.evaluation_reference_time,
+        replay_times);
     const auto user_query_hook = responder_config.on_user_query_memory_ready;
-    responder_config.session_start_time_override =
-        [&eval_case](
-            std::string_view session_id) -> std::optional<isla::server::memory::Timestamp> {
-        if (session_id != eval_case.session_id) {
-            return std::nullopt;
-        }
-        return eval_case.session_start_time;
-    };
-    responder_config.conversation_message_time_override =
-        [&eval_case, &replay_times](std::string_view session_id, std::string_view turn_id,
-                                    isla::server::memory::MessageRole role)
-        -> std::optional<isla::server::memory::Timestamp> {
-        if (session_id != eval_case.session_id) {
-            return std::nullopt;
-        }
-        const auto it = replay_times.find(ReplayTimestampKey(turn_id, role));
-        if (it == replay_times.end()) {
-            return std::nullopt;
-        }
-        return it->second;
-    };
     responder_config.on_user_query_memory_ready =
         [&captured_prompt, &capture_next_prompt, &eval_case,
          user_query_hook](std::string_view session_id,
@@ -531,7 +590,7 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         .session_start_time = eval_case.session_start_time,
         .evaluation_reference_time = eval_case.evaluation_reference_time,
         .prompt = *captured_prompt,
-        .benchmark_timeline = BuildBenchmarkTimelineArtifacts(
+        .replayed_session_history = BuildReplayedSessionHistoryArtifacts(
             eval_case, replay_plan->evaluated_turn_id,
             ExtractFinalReply(events, replay_plan->evaluated_turn_id)),
         .pre_turn_mid_term_episodes = BuildMidTermArtifacts(*pre_turn_state),

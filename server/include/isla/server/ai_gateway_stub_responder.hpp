@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -26,6 +27,37 @@ namespace isla::server::ai_gateway {
 
 inline constexpr std::string_view kDefaultMidTermMemoryModel = kDefaultMidTermFlushDeciderModel;
 
+// Resolves session-scoped timestamps used by the responder's memory-facing replay path.
+//
+// Production calls may leave all methods unresolved and fall back to wall-clock time. Eval replay
+// can provide deterministic chronology through one shared session-clock object instead of patching
+// individual timestamp call sites.
+class GatewaySessionClock {
+  public:
+    virtual ~GatewaySessionClock() = default;
+
+    [[nodiscard]] virtual std::optional<isla::server::memory::Timestamp>
+    ResolveSessionStartTime(std::string_view session_id) const {
+        static_cast<void>(session_id);
+        return std::nullopt;
+    }
+
+    [[nodiscard]] virtual std::optional<isla::server::memory::Timestamp>
+    ResolveConversationMessageTime(std::string_view session_id, std::string_view turn_id,
+                                   isla::server::memory::MessageRole role) const {
+        static_cast<void>(session_id);
+        static_cast<void>(turn_id);
+        static_cast<void>(role);
+        return std::nullopt;
+    }
+
+    [[nodiscard]] virtual std::optional<isla::server::memory::Timestamp>
+    ResolveEvaluationReferenceTime(std::string_view session_id) const {
+        static_cast<void>(session_id);
+        return std::nullopt;
+    }
+};
+
 struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
@@ -41,12 +73,7 @@ struct GatewayStubResponderConfig {
     GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
     std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
     std::function<void(const ExecutionPlan&)> on_execution_plan;
-    std::function<std::optional<isla::server::memory::Timestamp>(std::string_view session_id)>
-        session_start_time_override;
-    std::function<std::optional<isla::server::memory::Timestamp>(
-        std::string_view session_id, std::string_view turn_id,
-        isla::server::memory::MessageRole role)>
-        conversation_message_time_override;
+    std::shared_ptr<const GatewaySessionClock> session_clock;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>
         on_user_query_memory_ready;
 };

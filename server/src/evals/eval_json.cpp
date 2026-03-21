@@ -28,13 +28,13 @@ std::string TurnStatusToString(EvalTurnStatus status) {
     return "unknown";
 }
 
-std::string TimelineEventKindToString(EvalTimelineEventKind kind) {
+std::string ReplayEventKindToString(EvalReplayEventKind kind) {
     switch (kind) {
-    case EvalTimelineEventKind::kSessionStart:
+    case EvalReplayEventKind::kSessionStart:
         return "session_start";
-    case EvalTimelineEventKind::kConversationMessage:
+    case EvalReplayEventKind::kConversationMessage:
         return "conversation_message";
-    case EvalTimelineEventKind::kEvaluationReferenceTime:
+    case EvalReplayEventKind::kEvaluationReferenceTime:
         return "evaluation_reference_time";
     }
     return "unknown";
@@ -50,15 +50,15 @@ std::string MessageRoleToString(isla::server::memory::MessageRole role) {
     return "unknown";
 }
 
-json TimelineEventToJson(const EvalTimelineEventArtifact& event) {
+json ReplayEventToJson(const EvalReplayEventArtifact& event) {
     json payload{
         { "turn_id", event.turn_id },
         { "role", event.role },
         { "timestamp", event.timestamp },
         { "text", event.text },
     };
-    if (event.kind != EvalTimelineEventKind::kConversationMessage) {
-        payload["kind"] = TimelineEventKindToString(event.kind);
+    if (event.kind != EvalReplayEventKind::kConversationMessage) {
+        payload["kind"] = ReplayEventKindToString(event.kind);
     }
     return payload;
 }
@@ -108,13 +108,13 @@ json EvalCaseToJson(const EvalCase& eval_case) {
 }
 
 json EvalArtifactsToJson(const EvalArtifacts& artifacts) {
-    json benchmark_timeline = json::array();
-    for (const EvalTimelineEventArtifact& event : artifacts.benchmark_timeline) {
-        benchmark_timeline.push_back(TimelineEventToJson(event));
+    json replayed_session_history = json::array();
+    for (const EvalReplayEventArtifact& event : artifacts.replayed_session_history) {
+        replayed_session_history.push_back(ReplayEventToJson(event));
     }
 
     json payload{
-        { "benchmark_timeline", std::move(benchmark_timeline) },
+        { "replayed_session_history", std::move(replayed_session_history) },
     };
 
     return payload;
