@@ -172,12 +172,11 @@ struct ReplayPlan {
 
 class ReplaySessionClock final : public isla::server::ai_gateway::GatewaySessionClock {
   public:
-    ReplaySessionClock(std::string session_id,
-                       std::optional<isla::server::memory::Timestamp> session_start_time,
-                       std::optional<isla::server::memory::Timestamp> evaluation_reference_time,
-                       absl::flat_hash_map<std::string,
-                                           std::optional<isla::server::memory::Timestamp>>
-                           replay_times)
+    ReplaySessionClock(
+        std::string session_id, std::optional<isla::server::memory::Timestamp> session_start_time,
+        std::optional<isla::server::memory::Timestamp> evaluation_reference_time,
+        absl::flat_hash_map<std::string, std::optional<isla::server::memory::Timestamp>>
+            replay_times)
         : session_id_(std::move(session_id)), session_start_time_(session_start_time),
           evaluation_reference_time_(evaluation_reference_time),
           replay_times_(std::move(replay_times)) {}
@@ -292,29 +291,29 @@ std::vector<EvalMidTermEpisodeArtifact> BuildMidTermArtifacts(const WorkingMemor
 }
 
 std::string BuildEvalMemoryUserId(std::string_view benchmark_name) {
-    std::string normalized = "eval";
-    normalized.reserve(5U + benchmark_name.size());
-    normalized.push_back('_');
+    std::string benchmark_suffix;
+    benchmark_suffix.reserve(benchmark_name.size());
 
     bool previous_was_separator = true;
     for (const unsigned char ch : benchmark_name) {
         if (std::isalnum(ch) != 0) {
-            normalized.push_back(static_cast<char>(std::tolower(ch)));
+            benchmark_suffix.push_back(static_cast<char>(std::tolower(ch)));
             previous_was_separator = false;
             continue;
         }
         if (!previous_was_separator) {
-            normalized.push_back('_');
+            benchmark_suffix.push_back('_');
             previous_was_separator = true;
         }
     }
-    while (!normalized.empty() && normalized.back() == '_') {
-        normalized.pop_back();
+    while (!benchmark_suffix.empty() && benchmark_suffix.back() == '_') {
+        benchmark_suffix.pop_back();
     }
-    if (normalized == "eval") {
+    if (benchmark_suffix.empty()) {
         return "eval_session";
     }
-    return normalized;
+
+    return absl::StrCat("eval_", benchmark_suffix);
 }
 
 std::vector<EvalReplayEventArtifact>
@@ -335,18 +334,17 @@ BuildReplayedSessionHistoryArtifacts(const EvalCase& eval_case, std::string_view
         });
     }
 
-    auto append_message_event =
-        [&history](MessageRole role, std::string text,
-                   std::optional<isla::server::memory::Timestamp> timestamp,
-                   std::optional<std::string> turn_id) {
-            history.push_back(EvalReplayEventArtifact{
-                .kind = EvalReplayEventKind::kConversationMessage,
-                .turn_id = std::move(turn_id),
-                .role = std::string(role == MessageRole::User ? "user" : "assistant"),
-                .timestamp = timestamp,
-                .text = std::move(text),
-            });
-        };
+    auto append_message_event = [&history](MessageRole role, std::string text,
+                                           std::optional<isla::server::memory::Timestamp> timestamp,
+                                           std::optional<std::string> turn_id) {
+        history.push_back(EvalReplayEventArtifact{
+            .kind = EvalReplayEventKind::kConversationMessage,
+            .turn_id = std::move(turn_id),
+            .role = std::string(role == MessageRole::User ? "user" : "assistant"),
+            .timestamp = timestamp,
+            .text = std::move(text),
+        });
+    };
 
     for (const EvalConversationMessage& message : eval_case.conversation) {
         append_message_event(message.role, message.text, message.create_time, std::nullopt);
@@ -367,6 +365,20 @@ BuildReplayedSessionHistoryArtifacts(const EvalCase& eval_case, std::string_view
             .text = std::nullopt,
         });
     }
+
+    std::stable_sort(history.begin(), history.end(),
+                     [](const EvalReplayEventArtifact& lhs, const EvalReplayEventArtifact& rhs) {
+                         if (lhs.timestamp.has_value() && rhs.timestamp.has_value()) {
+                             return *lhs.timestamp < *rhs.timestamp;
+                         }
+                         if (lhs.timestamp.has_value()) {
+                             return true;
+                         }
+                         if (rhs.timestamp.has_value()) {
+                             return false;
+                         }
+                         return false;
+                     });
 
     return history;
 }

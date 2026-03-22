@@ -612,8 +612,7 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptCon
     EXPECT_EQ(artifacts->replayed_session_history[2].kind,
               EvalReplayEventKind::kConversationMessage);
     EXPECT_EQ(artifacts->replayed_session_history[2].turn_id, std::nullopt);
-    EXPECT_EQ(artifacts->replayed_session_history[2].role,
-              std::optional<std::string>("assistant"));
+    EXPECT_EQ(artifacts->replayed_session_history[2].role, std::optional<std::string>("assistant"));
     EXPECT_EQ(artifacts->replayed_session_history[2].timestamp, history_assistant_time);
     EXPECT_EQ(artifacts->replayed_session_history[2].text,
               std::optional<std::string>("explicit benchmark setup reply"));
@@ -628,18 +627,89 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptCon
               std::optional<std::string>("what time is this benchmark evaluated at?"));
 
     EXPECT_EQ(artifacts->replayed_session_history[4].kind,
-              EvalReplayEventKind::kConversationMessage);
-    EXPECT_EQ(artifacts->replayed_session_history[4].turn_id,
-              std::optional<std::string>("evaluated_turn"));
-    EXPECT_EQ(artifacts->replayed_session_history[4].role,
-              std::optional<std::string>("assistant"));
-    EXPECT_EQ(artifacts->replayed_session_history[4].timestamp, std::nullopt);
-    EXPECT_EQ(artifacts->replayed_session_history[4].text,
-              std::optional<std::string>("stub reply: what time is this benchmark evaluated at?"));
+              EvalReplayEventKind::kEvaluationReferenceTime);
+    EXPECT_EQ(artifacts->replayed_session_history[4].timestamp, evaluation_reference_time);
 
     EXPECT_EQ(artifacts->replayed_session_history[5].kind,
+              EvalReplayEventKind::kConversationMessage);
+    EXPECT_EQ(artifacts->replayed_session_history[5].turn_id,
+              std::optional<std::string>("evaluated_turn"));
+    EXPECT_EQ(artifacts->replayed_session_history[5].role, std::optional<std::string>("assistant"));
+    EXPECT_EQ(artifacts->replayed_session_history[5].timestamp, std::nullopt);
+    EXPECT_EQ(artifacts->replayed_session_history[5].text,
+              std::optional<std::string>("stub reply: what time is this benchmark evaluated at?"));
+}
+
+TEST(EvalRunnerTest, OrdersEvaluationReferenceTimeBeforeLaterEvaluatedTurnInput) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
+    auto client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [decider_prompt = *decider_prompt, compactor_prompt = *compactor_prompt](
+            const OpenAiResponsesRequest& request,
+            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            return EmitMidTermAwareReply(decider_prompt, compactor_prompt, request, on_event);
+        });
+
+    EvalRunner runner(EvalRunnerConfig{
+        .responder_config =
+            isla::server::ai_gateway::GatewayStubResponderConfig{
+                .response_delay = 0ms,
+                .async_emit_timeout = 2s,
+                .memory_store = store,
+                .openai_client = client,
+            },
+    });
+
+    const Timestamp session_start_time = Ts("2026-03-14T09:59:00Z");
+    const Timestamp history_user_time = Ts("2026-03-14T10:00:00Z");
+    const Timestamp evaluated_user_time = Ts("2026-03-20T08:30:00Z");
+    const Timestamp evaluation_reference_time = Ts("2026-03-20T08:00:00Z");
+
+    const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
+        .benchmark_name = "isla_custom_memory",
+        .case_id = "benchmark_times_reference_before_input",
+        .session_id = "eval_session_4",
+        .session_start_time = session_start_time,
+        .evaluation_reference_time = evaluation_reference_time,
+        .conversation =
+            {
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "hello from setup",
+                    .create_time = history_user_time,
+                },
+            },
+        .input =
+            EvalInput{
+                .text = "what time is this benchmark evaluated at?",
+                .create_time = evaluated_user_time,
+            },
+    });
+
+    ASSERT_TRUE(artifacts.ok()) << artifacts.status();
+    ASSERT_EQ(artifacts->replayed_session_history.size(), 5U);
+    EXPECT_EQ(artifacts->replayed_session_history[0].kind, EvalReplayEventKind::kSessionStart);
+    EXPECT_EQ(artifacts->replayed_session_history[1].kind,
+              EvalReplayEventKind::kConversationMessage);
+    EXPECT_EQ(artifacts->replayed_session_history[1].timestamp, history_user_time);
+    EXPECT_EQ(artifacts->replayed_session_history[2].kind,
               EvalReplayEventKind::kEvaluationReferenceTime);
-    EXPECT_EQ(artifacts->replayed_session_history[5].timestamp, evaluation_reference_time);
+    EXPECT_EQ(artifacts->replayed_session_history[2].timestamp, evaluation_reference_time);
+    EXPECT_EQ(artifacts->replayed_session_history[3].kind,
+              EvalReplayEventKind::kConversationMessage);
+    EXPECT_EQ(artifacts->replayed_session_history[3].turn_id,
+              std::optional<std::string>("evaluated_turn"));
+    EXPECT_EQ(artifacts->replayed_session_history[3].timestamp, evaluated_user_time);
+    EXPECT_EQ(artifacts->replayed_session_history[4].kind,
+              EvalReplayEventKind::kConversationMessage);
+    EXPECT_EQ(artifacts->replayed_session_history[4].timestamp, std::nullopt);
 }
 
 } // namespace

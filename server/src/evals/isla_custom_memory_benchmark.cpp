@@ -549,13 +549,12 @@ bool ValidateArtifacts(const BenchmarkCaseDefinition& definition, const EvalArti
     }
 
     if (definition.require_evaluation_reference_event) {
-        const bool has_reference_time =
-            std::any_of(artifacts.replayed_session_history.begin(),
-                        artifacts.replayed_session_history.end(),
-                        [](const EvalReplayEventArtifact& event) {
-                            return event.kind == EvalReplayEventKind::kEvaluationReferenceTime &&
-                                   event.timestamp.has_value();
-                        });
+        const bool has_reference_time = std::any_of(
+            artifacts.replayed_session_history.begin(), artifacts.replayed_session_history.end(),
+            [](const EvalReplayEventArtifact& event) {
+                return event.kind == EvalReplayEventKind::kEvaluationReferenceTime &&
+                       event.timestamp.has_value();
+            });
         if (!has_reference_time) {
             return false;
         }
