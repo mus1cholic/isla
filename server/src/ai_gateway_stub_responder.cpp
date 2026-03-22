@@ -35,6 +35,35 @@ inline constexpr std::size_t kMaxRenderedWorkingMemoryContextBytes =
 inline constexpr std::size_t kMaxRenderedPromptBytes =
     kMaxRenderedSystemPromptBytes + kMaxRenderedWorkingMemoryContextBytes;
 
+GatewayAcceptedTurnResult FailedAcceptedTurnResult(std::string_view code,
+                                                   std::string_view message) {
+    return GatewayAcceptedTurnResult{
+        .state = GatewayAcceptedTurnTerminalState::kFailed,
+        .reply_text = std::nullopt,
+        .failure =
+            GatewayAcceptedTurnFailure{
+                .code = std::string(code),
+                .message = std::string(message),
+            },
+    };
+}
+
+GatewayAcceptedTurnResult CancelledAcceptedTurnResult() {
+    return GatewayAcceptedTurnResult{
+        .state = GatewayAcceptedTurnTerminalState::kCancelled,
+        .reply_text = std::nullopt,
+        .failure = std::nullopt,
+    };
+}
+
+GatewayAcceptedTurnResult SucceededAcceptedTurnResult(std::string reply_text) {
+    return GatewayAcceptedTurnResult{
+        .state = GatewayAcceptedTurnTerminalState::kSucceeded,
+        .reply_text = std::move(reply_text),
+        .failure = std::nullopt,
+    };
+}
+
 std::string ResolveMidTermFlushDeciderModel(const GatewayStubResponderConfig& config) {
     return config.llm_runtime_config.mid_term_flush_decider_model.empty()
                ? std::string(kDefaultMidTermFlushDeciderModel)
@@ -248,6 +277,41 @@ void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
     }
 }
 
+GatewayStubResponder::PendingTurn
+GatewayStubResponder::BuildPendingTurnShell(const TurnAcceptedEvent& event) const {
+    return PendingTurn{
+        .session_id = event.session_id,
+        .turn_id = event.turn_id,
+        .text = event.text,
+        .rendered_system_prompt = "",
+        .rendered_working_memory_context = "",
+        .telemetry_context = event.telemetry_context,
+        .ready_at = Clock::now(),
+        .cancel_requested = false,
+    };
+}
+
+absl::StatusOr<GatewayStubResponder::PendingTurn>
+GatewayStubResponder::PrepareAcceptedTurn(const TurnAcceptedEvent& event) {
+    ScopedTelemetryPhase memory_user_query_phase(
+        event.telemetry_context, telemetry::kPhaseMemoryUserQuery,
+        telemetry::kEventMemoryUserQueryStarted, telemetry::kEventMemoryUserQueryCompleted);
+    const absl::StatusOr<isla::server::memory::UserQueryMemoryResult> memory_result =
+        HandleAcceptedTurnMemory(event);
+    if (!memory_result.ok()) {
+        return memory_result.status();
+    }
+    VLOG(1) << "AI gateway stub prepared working memory session="
+            << SanitizeForLog(event.session_id) << " turn_id=" << SanitizeForLog(event.turn_id)
+            << " working_memory_bytes=" << memory_result->rendered_working_memory.size();
+    memory_user_query_phase.Finish();
+
+    PendingTurn turn = BuildPendingTurnShell(event);
+    turn.rendered_system_prompt = memory_result->rendered_system_prompt;
+    turn.rendered_working_memory_context = memory_result->rendered_working_memory_context;
+    return turn;
+}
+
 void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
     LOG(INFO) << "AI gateway stub accepted turn session=" << SanitizeForLog(event.session_id)
               << " turn_id=" << SanitizeForLog(event.turn_id);
@@ -259,47 +323,21 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
         stopping = stopping_;
     }
     if (stopping) {
-        AsyncFinishServerStoppingTurn(PendingTurn{
-            .session_id = event.session_id,
-            .turn_id = event.turn_id,
-            .text = event.text,
-            .rendered_system_prompt = "",
-            .rendered_working_memory_context = "",
-            .telemetry_context = event.telemetry_context,
-            .ready_at = Clock::now(),
-            .cancel_requested = false,
-        });
+        AsyncFinishServerStoppingTurn(BuildPendingTurnShell(event));
         return;
     }
 
-    ScopedTelemetryPhase memory_user_query_phase(
-        event.telemetry_context, telemetry::kPhaseMemoryUserQuery,
-        telemetry::kEventMemoryUserQueryStarted, telemetry::kEventMemoryUserQueryCompleted);
-    const absl::StatusOr<isla::server::memory::UserQueryMemoryResult> memory_result =
-        HandleAcceptedTurnMemory(event);
-    if (!memory_result.ok()) {
+    const absl::StatusOr<PendingTurn> prepared_turn = PrepareAcceptedTurn(event);
+    if (!prepared_turn.ok()) {
         LOG(ERROR) << "AI gateway stub failed to process turn memory session="
                    << SanitizeForLog(event.session_id)
                    << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='"
-                   << SanitizeForLog(memory_result.status().message()) << "'";
-        BestEffortTerminateAcceptedTurn(
-            PendingTurn{
-                .session_id = event.session_id,
-                .turn_id = event.turn_id,
-                .text = event.text,
-                .rendered_system_prompt = "",
-                .rendered_working_memory_context = "",
-                .telemetry_context = event.telemetry_context,
-                .ready_at = Clock::now(),
-                .cancel_requested = false,
-            },
-            "internal_error", "stub responder failed to update memory", "memory update failure");
+                   << SanitizeForLog(prepared_turn.status().message()) << "'";
+        BestEffortTerminateAcceptedTurn(BuildPendingTurnShell(event), "internal_error",
+                                        "stub responder failed to update memory",
+                                        "memory update failure");
         return;
     }
-    VLOG(1) << "AI gateway stub prepared working memory session="
-            << SanitizeForLog(event.session_id) << " turn_id=" << SanitizeForLog(event.turn_id)
-            << " working_memory_bytes=" << memory_result->rendered_working_memory.size();
-    memory_user_query_phase.Finish();
 
     Clock::time_point enqueued_at = Clock::time_point::min();
     std::shared_ptr<const TurnTelemetryContext> enqueued_telemetry_context =
@@ -310,19 +348,10 @@ void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
         VLOG(1) << "AI gateway stub queued turn session=" << event.session_id
                 << " turn_id=" << SanitizeForLog(event.turn_id)
                 << " delay_ms=" << config_.response_delay.count();
-        pending_turns_.insert_or_assign(
-            event.session_id,
-            PendingTurn{
-                .session_id = event.session_id,
-                .turn_id = event.turn_id,
-                .text = event.text,
-                .rendered_system_prompt = memory_result->rendered_system_prompt,
-                .rendered_working_memory_context = memory_result->rendered_working_memory_context,
-                .telemetry_context = event.telemetry_context,
-                .enqueued_at = enqueued_at,
-                .ready_at = Clock::now() + config_.response_delay,
-                .cancel_requested = false,
-            });
+        PendingTurn turn = *prepared_turn;
+        turn.enqueued_at = enqueued_at;
+        turn.ready_at = Clock::now() + config_.response_delay;
+        pending_turns_.insert_or_assign(event.session_id, std::move(turn));
     }
     RecordTelemetryEvent(enqueued_telemetry_context, telemetry::kEventTurnEnqueued, enqueued_at);
 
@@ -428,6 +457,68 @@ absl::Status GatewayStubResponder::AppendSessionAssistantMessage(std::string_vie
         return *start_failure;
     }
     return absl::FailedPreconditionError("missing memory orchestrator for started session");
+}
+
+absl::StatusOr<GatewayAcceptedTurnResult>
+GatewayStubResponder::RunAcceptedTurnToCompletion(const TurnAcceptedEvent& event) {
+    LOG(INFO) << "AI gateway stub directly executing accepted turn session="
+              << SanitizeForLog(event.session_id) << " turn_id=" << SanitizeForLog(event.turn_id);
+
+    bool stopping = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++accepted_turns_count_;
+        stopping = stopping_;
+    }
+    cv_.notify_all();
+    if (stopping) {
+        PendingTurn stopping_turn = BuildPendingTurnShell(event);
+        if (GatewaySessionRegistry* registry = session_registry(); registry != nullptr) {
+            FinishServerStoppingTurn(*registry, stopping_turn);
+        }
+        return FailedAcceptedTurnResult("server_stopping", "server stopping");
+    }
+
+    const absl::StatusOr<PendingTurn> prepared_turn = PrepareAcceptedTurn(event);
+    if (!prepared_turn.ok()) {
+        LOG(ERROR) << "AI gateway stub failed to process direct turn memory session="
+                   << SanitizeForLog(event.session_id)
+                   << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='"
+                   << SanitizeForLog(prepared_turn.status().message()) << "'";
+        BestEffortTerminateAcceptedTurn(BuildPendingTurnShell(event), "internal_error",
+                                        "stub responder failed to update memory",
+                                        "memory update failure");
+        return FailedAcceptedTurnResult("internal_error", "stub responder failed to update memory");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        in_progress_turns_.insert_or_assign(event.session_id, *prepared_turn);
+    }
+
+    std::optional<GatewayAcceptedTurnResult> result;
+    try {
+        result = ExecutePreparedTurnToTerminal(*prepared_turn);
+    } catch (const std::exception& error) {
+        LOG(ERROR) << "AI gateway stub direct turn processing threw session="
+                   << SanitizeForLog(event.session_id)
+                   << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='"
+                   << SanitizeForLog(error.what()) << "'";
+        FinishProcessingExceptionTurn(*prepared_turn, error.what());
+        result = FailedAcceptedTurnResult("internal_error", "stub responder processing failed");
+    } catch (...) {
+        LOG(ERROR) << "AI gateway stub direct turn processing threw session="
+                   << SanitizeForLog(event.session_id)
+                   << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='unknown exception'";
+        FinishProcessingExceptionTurn(*prepared_turn, "unknown exception");
+        result = FailedAcceptedTurnResult("internal_error", "stub responder processing failed");
+    }
+    ForgetInProgressTurn(event.session_id, event.turn_id);
+
+    if (!result.has_value()) {
+        return FailedAcceptedTurnResult("server_stopping", "server stopping");
+    }
+    return *result;
 }
 
 void GatewayStubResponder::StopWorker() {
@@ -769,22 +860,23 @@ void GatewayStubResponder::FinishProcessingExceptionTurn(const PendingTurn& turn
             << " detail='" << SanitizeForLog(detail) << "'";
 }
 
-void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
+std::optional<GatewayAcceptedTurnResult>
+GatewayStubResponder::ExecutePreparedTurnToTerminal(const PendingTurn& turn) {
     if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
         VLOG(1) << "AI gateway stub aborted successful turn during shutdown session="
                 << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id);
-        return;
+        return std::nullopt;
     }
     if (IsTrackedTurnCancelled(turn.session_id, turn.turn_id)) {
         FinishCancelledTurn(turn);
-        return;
+        return CancelledAcceptedTurnResult();
     }
 
     GatewaySessionRegistry* registry = session_registry();
     if (registry == nullptr) {
         LOG(WARNING) << "AI gateway stub missing session registry for session="
                      << SanitizeForLog(turn.session_id);
-        return;
+        return std::nullopt;
     }
 
     if (turn.text.size() > kMaxTextInputBytes) {
@@ -793,7 +885,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
                    << " text_bytes=" << turn.text.size();
         BestEffortTerminateAcceptedTurn(turn, "bad_request",
                                         "text.input text exceeds maximum length", "oversized turn");
-        return;
+        return FailedAcceptedTurnResult("bad_request", "text.input text exceeds maximum length");
     }
     if (turn.rendered_system_prompt.size() > kMaxRenderedSystemPromptBytes) {
         LOG(ERROR) << "AI gateway stub rejected oversized rendered system prompt session="
@@ -803,7 +895,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         BestEffortTerminateAcceptedTurn(turn, "bad_request",
                                         "rendered system prompt exceeds maximum length",
                                         "oversized rendered system prompt");
-        return;
+        return FailedAcceptedTurnResult("bad_request",
+                                        "rendered system prompt exceeds maximum length");
     }
     if (turn.rendered_working_memory_context.size() > kMaxRenderedWorkingMemoryContextBytes) {
         LOG(ERROR) << "AI gateway stub rejected oversized rendered working memory context session="
@@ -813,7 +906,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         BestEffortTerminateAcceptedTurn(turn, "bad_request",
                                         "rendered working memory context exceeds maximum length",
                                         "oversized rendered context");
-        return;
+        return FailedAcceptedTurnResult("bad_request",
+                                        "rendered working memory context exceeds maximum length");
     }
     if (turn.rendered_system_prompt.size() + turn.rendered_working_memory_context.size() >
         kMaxRenderedPromptBytes) {
@@ -825,7 +919,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         BestEffortTerminateAcceptedTurn(turn, "bad_request",
                                         "rendered prompt exceeds maximum combined length",
                                         "oversized rendered prompt");
-        return;
+        return FailedAcceptedTurnResult("bad_request",
+                                        "rendered prompt exceeds maximum combined length");
     }
 
     ScopedTelemetryPhase plan_create_phase(turn.telemetry_context, telemetry::kPhasePlanCreate,
@@ -839,7 +934,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
                    << " detail='" << SanitizeForLog(execution_plan.status().message()) << "'";
         BestEffortTerminateAcceptedTurn(turn, "internal_error",
                                         "stub responder failed to plan request", "planner failure");
-        return;
+        return FailedAcceptedTurnResult("internal_error", "stub responder failed to plan request");
     }
     if (config_.on_execution_plan) {
         try {
@@ -873,7 +968,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
                    << " retryable=" << (failure->retryable ? "true" : "false") << " detail='"
                    << SanitizeForLog(failure->message) << "'";
         BestEffortTerminateAcceptedTurn(turn, failure->code, failure->message, "executor failure");
-        return;
+        return FailedAcceptedTurnResult(failure->code, failure->message);
     }
     const auto& result = std::get<ExecutionResult>(executor_outcome);
     const auto* last_result = result.step_results.empty()
@@ -886,17 +981,18 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         BestEffortTerminateAcceptedTurn(turn, "internal_error",
                                         "stub responder received unexpected execution result",
                                         "executor result contract failure");
-        return;
+        return FailedAcceptedTurnResult("internal_error",
+                                        "stub responder received unexpected execution result");
     }
     const std::string& reply = last_result->output_text;
     if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
         VLOG(1) << "AI gateway stub aborted reply emission during shutdown session="
                 << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id);
-        return;
+        return std::nullopt;
     }
     if (IsTrackedTurnCancelled(turn.session_id, turn.turn_id)) {
         FinishCancelledTurn(turn);
-        return;
+        return CancelledAcceptedTurnResult();
     }
     const std::shared_ptr<GatewayLiveSession> reply_session =
         registry->FindSession(turn.session_id);
@@ -904,7 +1000,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         LOG(WARNING) << "AI gateway stub lost live session before text output session="
                      << SanitizeForLog(turn.session_id)
                      << " turn_id=" << SanitizeForLog(turn.turn_id);
-        return;
+        return std::nullopt;
     }
     VLOG(1) << "AI gateway stub emitting successful reply session="
             << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id);
@@ -924,7 +1020,8 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         BestEffortTerminateAcceptedTurn(turn, "internal_error",
                                         "stub responder failed to emit text output",
                                         "text output failure");
-        return;
+        return FailedAcceptedTurnResult("internal_error",
+                                        "stub responder failed to emit text output");
     }
 
     ScopedTelemetryPhase memory_assistant_reply_phase(
@@ -941,17 +1038,22 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         BestEffortTerminateAcceptedTurn(turn, "internal_error",
                                         "stub responder failed to update memory",
                                         "memory update failure");
-        return;
+        GatewayAcceptedTurnResult result =
+            FailedAcceptedTurnResult("internal_error", "stub responder failed to update memory");
+        result.reply_text = reply;
+        return result;
     }
 
     if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
         VLOG(1) << "AI gateway stub aborted completion during shutdown session="
                 << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id);
-        return;
+        return std::nullopt;
     }
     if (IsTrackedTurnCancelled(turn.session_id, turn.turn_id)) {
         FinishCancelledTurn(turn);
-        return;
+        GatewayAcceptedTurnResult result = CancelledAcceptedTurnResult();
+        result.reply_text = reply;
+        return result;
     }
     const std::shared_ptr<GatewayLiveSession> completion_session =
         registry->FindSession(turn.session_id);
@@ -959,7 +1061,7 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
         LOG(WARNING) << "AI gateway stub lost live session before completion session="
                      << SanitizeForLog(turn.session_id)
                      << " turn_id=" << SanitizeForLog(turn.turn_id);
-        return;
+        return std::nullopt;
     }
 
     ScopedTelemetryPhase completion_phase(
@@ -977,6 +1079,11 @@ void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
                      << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='"
                      << SanitizeForLog(status.message()) << "'";
     }
+    return SucceededAcceptedTurnResult(reply);
+}
+
+void GatewayStubResponder::FinishSuccessfulTurn(const PendingTurn& turn) {
+    static_cast<void>(ExecutePreparedTurnToTerminal(turn));
 }
 
 void GatewayStubResponder::FinishCancelledTurn(const PendingTurn& turn) {

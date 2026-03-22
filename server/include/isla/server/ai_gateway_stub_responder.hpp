@@ -78,6 +78,23 @@ struct GatewayStubResponderConfig {
         on_user_query_memory_ready;
 };
 
+enum class GatewayAcceptedTurnTerminalState {
+    kSucceeded,
+    kFailed,
+    kCancelled,
+};
+
+struct GatewayAcceptedTurnFailure {
+    std::string code;
+    std::string message;
+};
+
+struct GatewayAcceptedTurnResult {
+    GatewayAcceptedTurnTerminalState state = GatewayAcceptedTurnTerminalState::kFailed;
+    std::optional<std::string> reply_text;
+    std::optional<GatewayAcceptedTurnFailure> failure;
+};
+
 class GatewayStubResponder final : public GatewayApplicationEventSink {
   public:
     explicit GatewayStubResponder(GatewayStubResponderConfig config = {});
@@ -105,6 +122,8 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     SnapshotSessionWorkingMemoryState(
         std::string_view session_id,
         std::chrono::milliseconds settle_timeout = std::chrono::milliseconds(0)) const;
+    [[nodiscard]] absl::StatusOr<GatewayAcceptedTurnResult>
+    RunAcceptedTurnToCompletion(const TurnAcceptedEvent& event);
     [[nodiscard]] bool WaitForAcceptedTurns(std::size_t expected_count);
     [[nodiscard]] bool IsMidTermMemoryConfigured() const;
     [[nodiscard]] bool IsMidTermMemoryAvailable() const;
@@ -143,6 +162,10 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     [[nodiscard]] bool ShouldAbortTrackedTurn(std::string_view session_id,
                                               std::string_view turn_id) const;
     void ForgetInProgressTurn(std::string_view session_id, std::string_view turn_id);
+    [[nodiscard]] PendingTurn BuildPendingTurnShell(const TurnAcceptedEvent& event) const;
+    [[nodiscard]] absl::StatusOr<PendingTurn> PrepareAcceptedTurn(const TurnAcceptedEvent& event);
+    [[nodiscard]] std::optional<GatewayAcceptedTurnResult>
+    ExecutePreparedTurnToTerminal(const PendingTurn& turn);
     void AsyncFinishServerStoppingTurn(const PendingTurn& turn);
     void BestEffortTerminateAcceptedTurn(const PendingTurn& turn, std::string_view code,
                                          std::string_view message,

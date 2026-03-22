@@ -66,8 +66,8 @@ The current implementation also has explicit evaluation-relevant limitations:
 > - Phase 3.1 is implemented as replay-fidelity follow-up work discovered during Phase 3 rollout.
 > - Phase 3.2 is implemented to switch benchmark execution from fake-provider main-turn replies to
 >   the real main LLM path.
-> - Phase 3.3 is planned as backend-runtime seam work before later benchmark and autorater
->   implementation continues.
+> - Phase 3.3 is implemented to add a backend-owned direct turn-execution seam that serving and
+>   evaluation can share.
 > - The current implemented Phase-1 slice now provides:
 >   - a small benchmark-first eval core in:
 >     - `server/include/isla/server/evals/eval_types.hpp`
@@ -708,6 +708,24 @@ while preserving the existing replay and artifact-capture model.
 
 ## Phase 3.3: Backend Runtime Turn Seam
 
+> [!NOTE]
+> **Status (2026-03-22): Implemented.**
+> - Implemented artifacts:
+>   - `server/include/isla/server/ai_gateway_stub_responder.hpp`
+>   - `server/src/ai_gateway_stub_responder.cpp`
+>   - `server/include/isla/server/evals/eval_runner.hpp`
+>   - `server/src/evals/eval_runner.cpp`
+> - Implemented behavior:
+>   - `GatewayStubResponder` now exposes a direct accepted-turn execution seam that runs one turn
+>     to terminal outcome and returns a structured result.
+>   - the responder worker path and the eval runner now share the same terminal turn execution
+>     logic instead of maintaining separate control-flow models.
+>   - the eval runner still records emitted session events for artifacts, but it no longer waits on
+>     recorded terminal events to know whether a turn finished.
+>   - the eval runner's former `event_timeout` is now a `session_settle_timeout`, clarifying that
+>     the remaining timeout only bounds working-memory snapshot settling rather than live turn
+>     completion.
+
 ### Goal
 
 Introduce a backend-owned turn-execution seam that both serving and evaluation can share, so
@@ -744,6 +762,43 @@ event-emission side effects.
 - Later benchmark work no longer depends on short runner-level event timeouts to distinguish slow
   turns from broken orchestration.
 - The phased plan makes this seam a prerequisite for later benchmark and autorater expansion.
+
+## Phase 3.4: Deterministic Post-Turn Memory Settling
+
+### Goal
+
+Remove benchmark dependence on hard-coded post-turn memory settle timeouts by giving evals a
+backend-owned way to block until relevant mid-term memory work for the current turn has actually
+reached a settled state.
+
+### Scope
+
+- Replace timeout-based post-turn memory snapshot settling with an explicit completion or wait
+  model for pending mid-term compactions and related turn-scoped memory follow-up work.
+- Add a responder or memory-orchestrator seam that lets evals wait for session memory to become
+  observably settled without guessing a deadline.
+- Keep this work focused on correctness and replay fidelity rather than on throughput
+  optimization.
+- Preserve the ability to keep bounded waits or defensive fallbacks in production-serving paths
+  where indefinite blocking would be undesirable.
+
+### Design Notes
+
+- Phase 3.3 fixed turn completion ownership, but post-turn artifact capture still uses a
+  `session_settle_timeout` while snapshotting memory state.
+- That timeout is no longer waiting for the main LLM response; it is waiting for pending mid-term
+  memory work to finish draining before eval artifacts are captured.
+- This can still create avoidable flakiness or force overly conservative benchmark defaults if the
+  settle contract remains timeout-based.
+- The preferred long-term model is an explicit "memory settled" signal or waitable condition, not
+  a larger timeout constant.
+
+### Exit Criteria
+
+- Eval artifact capture no longer depends primarily on a hard-coded post-turn settle timeout.
+- The benchmark runner can await post-turn memory settling through an explicit backend-owned seam.
+- Timeout-based memory settling, if still present as a fallback, is clearly secondary rather than
+  the canonical eval control model.
 
 ## Phase 4: External Benchmark Adapters
 
@@ -931,12 +986,13 @@ Recommended implementation order:
 5. Phase 3.1
 6. Phase 3.2
 7. Phase 3.3
-8. Phase 4
-9. Phase 5
-10. Phase 5.5
-11. Phase 6
-12. Phase 7
-13. Optional Phase 8, only when eval throughput becomes a practical bottleneck
+8. Phase 3.4
+9. Phase 4
+10. Phase 5
+11. Phase 5.5
+12. Phase 6
+13. Phase 7
+14. Optional Phase 8, only when eval throughput becomes a practical bottleneck
 
 The critical-path rule is:
 
@@ -945,11 +1001,18 @@ The critical-path rule is:
   for a user-facing reference/current-time concept
 - do not continue deeper benchmark and autorater implementation past the current local benchmark
   slice until Phase 3.3 has established the backend-owned turn seam clearly enough
+- do not treat timeout-based post-turn memory settling as a stable long-term benchmark contract
+  once Phase 3.4 work begins
 - do not use autoraters as hard regression gates until Phase 5.5 has produced enough calibration
   confidence
 
 ## Changelog
 
+- 2026-03-22: added Phase 3.4 to make explicit post-turn memory settling a first-class follow-up,
+  so eval artifact capture can stop depending on a conservative hard-coded settle timeout.
+- 2026-03-22: completed Phase 3.3 by adding a responder-owned direct accepted-turn execution seam,
+  reusing that same terminal execution path from the serving worker loop and the eval runner, and
+  removing eval runner dependence on recorded terminal session events for turn completion.
 - 2026-03-21: added Phase 3.3 to make the backend-owned turn execution seam explicit before
   proceeding with later benchmark and autorater implementation, so evals can eventually block on
   true turn completion instead of waiting indirectly on responder-emitted terminal events.
