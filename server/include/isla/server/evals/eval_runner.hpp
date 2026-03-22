@@ -13,7 +13,9 @@ struct EvalRunnerConfig {
     isla::server::ai_gateway::GatewayStubResponderConfig responder_config;
     std::shared_ptr<const isla::server::ai_gateway::TelemetrySink> telemetry_sink =
         isla::server::ai_gateway::CreateNoOpTelemetrySink();
-    std::chrono::milliseconds event_timeout{ std::chrono::seconds(2) };
+    // Bounds working-memory snapshot settling only. Phase 3.3 moved live turn completion onto
+    // the responder's direct blocking turn seam, so this no longer governs model execution time.
+    std::chrono::milliseconds session_settle_timeout{ std::chrono::seconds(2) };
 };
 
 // App-boundary eval runner for benchmark cases.

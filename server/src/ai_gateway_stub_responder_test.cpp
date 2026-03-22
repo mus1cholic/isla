@@ -1302,6 +1302,57 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnEmitsStubTextAndCompletion) {
     EXPECT_EQ(events[1].turn_id, "turn_1");
 }
 
+TEST_F(GatewayStubResponderTest,
+       RunAcceptedTurnToCompletionReturnsSucceededAndEmitsTerminalEvents) {
+    const absl::StatusOr<GatewayAcceptedTurnResult> result =
+        responder_.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_direct_1",
+            .text = "hello",
+        });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kSucceeded);
+    ASSERT_TRUE(result->reply_text.has_value());
+    EXPECT_EQ(*result->reply_text, "stub echo: hello");
+    EXPECT_FALSE(result->failure.has_value());
+
+    const std::vector<EmittedEvent> events = session_->events();
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].op, "text.output");
+    EXPECT_EQ(events[0].turn_id, "turn_direct_1");
+    EXPECT_EQ(events[0].payload, "stub echo: hello");
+    EXPECT_EQ(events[1].op, "turn.completed");
+    EXPECT_EQ(events[1].turn_id, "turn_direct_1");
+}
+
+TEST_F(GatewayStubResponderTest, RunAcceptedTurnToCompletionUpdatesSessionMemoryPromptAndSnapshot) {
+    const absl::StatusOr<GatewayAcceptedTurnResult> result =
+        responder_.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_direct_memory",
+            .text = "hello",
+        });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kSucceeded);
+
+    const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+    EXPECT_NE(prompt->find("] hello"), std::string::npos);
+    EXPECT_NE(prompt->find("] stub echo: hello"), std::string::npos);
+
+    const absl::StatusOr<isla::server::memory::WorkingMemoryState> state =
+        responder_.SnapshotSessionWorkingMemoryState("srv_test");
+    ASSERT_TRUE(state.ok()) << state.status();
+    ASSERT_EQ(state->conversation.items.size(), 1U);
+    ASSERT_TRUE(state->conversation.items.front().ongoing_episode.has_value());
+    const auto& messages = state->conversation.items.front().ongoing_episode->messages;
+    ASSERT_EQ(messages.size(), 2U);
+    EXPECT_EQ(messages[0].content, "hello");
+    EXPECT_EQ(messages[1].content, "stub echo: hello");
+}
+
 TEST_F(GatewayStubResponderTest, SuccessfulTurnEmitsPhaseTwoTelemetrySlices) {
     auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
 
@@ -1451,6 +1502,190 @@ TEST(GatewayStubResponderStandaloneTest, MissingSessionMemoryStillEmitsFailureTe
     }
     ASSERT_EQ(finished.size(), 1U);
     EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeFailed);
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     DirectAcceptedTurnFailureReturnsFailedOutcomeAndEmitsTerminalEvents) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .memory_user_id = "gateway_user",
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    registry.RegisterSession(session);
+
+    const absl::StatusOr<GatewayAcceptedTurnResult> result =
+        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_direct_missing_memory",
+            .text = "hello",
+        });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kFailed);
+    ASSERT_TRUE(result->failure.has_value());
+    EXPECT_EQ(result->failure->code, "internal_error");
+    EXPECT_EQ(result->failure->message, "stub responder failed to update memory");
+    EXPECT_FALSE(result->reply_text.has_value());
+
+    const std::vector<EmittedEvent> emitted = session->events();
+    ASSERT_EQ(emitted.size(), 2U);
+    EXPECT_EQ(emitted[0].op, "error");
+    EXPECT_EQ(emitted[0].turn_id, "turn_direct_missing_memory");
+    EXPECT_EQ(emitted[0].payload, "internal_error:stub responder failed to update memory");
+    EXPECT_EQ(emitted[1].op, "turn.completed");
+    EXPECT_EQ(emitted[1].turn_id, "turn_direct_missing_memory");
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     DirectAcceptedTurnCancelWhileProviderBlockedReturnsCancelled) {
+    auto request_started = std::make_shared<std::promise<void>>();
+    std::shared_future<void> request_started_future = request_started->get_future().share();
+    auto allow_response = std::make_shared<std::promise<void>>();
+    std::shared_future<void> allow_response_future = allow_response->get_future().share();
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = test::MakeFakeOpenAiResponsesClient(
+            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+            [request_started, allow_response_future](const OpenAiResponsesRequest& request,
+                                                     const OpenAiResponsesEventCallback& on_event) {
+                if (IsMidTermMemoryRequest(request)) {
+                    return EmitMidTermAwareEchoResponse(request, on_event);
+                }
+                request_started->set_value();
+                allow_response_future.wait();
+                return EmitResponseText("stub echo: hello", on_event);
+            }),
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    auto turn_future = std::async(std::launch::async, [&] {
+        return responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_direct_cancel",
+            .text = "hello",
+        });
+    });
+
+    ASSERT_EQ(request_started_future.wait_for(2s), std::future_status::ready);
+    responder.OnTurnCancelRequested(TurnCancelRequestedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_direct_cancel",
+    });
+    allow_response->set_value();
+
+    const absl::StatusOr<GatewayAcceptedTurnResult> result = turn_future.get();
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kCancelled);
+    EXPECT_FALSE(result->reply_text.has_value());
+    EXPECT_FALSE(result->failure.has_value());
+
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].op, "turn.cancelled");
+    EXPECT_EQ(events[0].turn_id, "turn_direct_cancel");
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     DirectAcceptedTurnProviderFailureMatchesQueuedFailureShape) {
+    auto direct_client =
+        test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down"));
+    GatewayStubResponder direct_responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = direct_client,
+    });
+    ResponderRegistryAttachment direct_registry_scope(direct_responder);
+    GatewaySessionRegistry& direct_registry = direct_registry_scope.registry();
+    auto direct_session = std::make_shared<RecordingLiveSession>("srv_direct");
+    direct_registry.RegisterSession(direct_session);
+    direct_responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_direct" });
+
+    const absl::StatusOr<GatewayAcceptedTurnResult> direct_result =
+        direct_responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = "srv_direct",
+            .turn_id = "turn_failure",
+            .text = "hello",
+        });
+    ASSERT_TRUE(direct_result.ok()) << direct_result.status();
+    EXPECT_EQ(direct_result->state, GatewayAcceptedTurnTerminalState::kFailed);
+    ASSERT_TRUE(direct_result->failure.has_value());
+    EXPECT_EQ(direct_result->failure->code, "service_unavailable");
+    EXPECT_EQ(direct_result->failure->message, "upstream service unavailable");
+
+    auto queued_client =
+        test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down"));
+    GatewayStubResponder queued_responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = queued_client,
+    });
+    ResponderRegistryAttachment queued_registry_scope(queued_responder);
+    GatewaySessionRegistry& queued_registry = queued_registry_scope.registry();
+    auto queued_session = std::make_shared<RecordingLiveSession>("srv_queued");
+    queued_registry.RegisterSession(queued_session);
+    queued_responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_queued" });
+
+    queued_responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_queued",
+        .turn_id = "turn_failure",
+        .text = "hello",
+    });
+
+    ASSERT_TRUE(queued_session->WaitForEventCount(2U));
+    const std::vector<EmittedEvent> direct_events = direct_session->events();
+    const std::vector<EmittedEvent> queued_events = queued_session->events();
+    ASSERT_EQ(direct_events.size(), 2U);
+    ASSERT_EQ(queued_events.size(), 2U);
+    EXPECT_EQ(direct_events[0].op, queued_events[0].op);
+    EXPECT_EQ(direct_events[0].turn_id, "turn_failure");
+    EXPECT_EQ(direct_events[0].payload, queued_events[0].payload);
+    EXPECT_EQ(direct_events[1].op, queued_events[1].op);
+    EXPECT_EQ(direct_events[1].turn_id, "turn_failure");
+    EXPECT_EQ(direct_events[1].payload, queued_events[1].payload);
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     DirectAcceptedTurnAfterServerStoppingReturnsServerStoppingFailure) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    registry.NotifyServerStopping();
+
+    const absl::StatusOr<GatewayAcceptedTurnResult> result =
+        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_direct_stopping",
+            .text = "hello",
+        });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kFailed);
+    ASSERT_TRUE(result->failure.has_value());
+    EXPECT_EQ(result->failure->code, "server_stopping");
+    EXPECT_EQ(result->failure->message, "server stopping");
+    EXPECT_FALSE(result->reply_text.has_value());
+
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].op, "error");
+    EXPECT_EQ(events[0].turn_id, "turn_direct_stopping");
+    EXPECT_EQ(events[0].payload, "server_stopping:server stopping");
+    EXPECT_EQ(events[1].op, "turn.completed");
+    EXPECT_EQ(events[1].turn_id, "turn_direct_stopping");
 }
 
 TEST_F(GatewayStubResponderTest, AcceptedTurnUpdatesSessionMemoryPrompt) {

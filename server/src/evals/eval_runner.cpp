@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -102,38 +101,19 @@ class RecordingLiveSession final : public GatewayLiveSession {
         on_complete(absl::OkStatus());
     }
 
-    [[nodiscard]] bool WaitForTurnTerminal(std::string_view turn_id,
-                                           std::chrono::milliseconds timeout) const {
-        std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, timeout,
-                            [this, turn_id] { return HasTerminalEventLocked(turn_id); });
-    }
-
     [[nodiscard]] std::vector<RecordingSessionEvent> events() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return events_;
     }
 
   private:
-    [[nodiscard]] bool HasTerminalEventLocked(std::string_view turn_id) const {
-        return std::any_of(
-            events_.begin(), events_.end(), [turn_id](const RecordingSessionEvent& event) {
-                return event.turn_id == turn_id &&
-                       (event.op == "turn.completed" || event.op == "turn.cancelled");
-            });
-    }
-
     void RecordEvent(RecordingSessionEvent event) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            events_.push_back(std::move(event));
-        }
-        cv_.notify_all();
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back(std::move(event));
     }
 
     std::string session_id_;
     mutable std::mutex mutex_;
-    mutable std::condition_variable cv_;
     std::vector<RecordingSessionEvent> events_;
 };
 
@@ -217,47 +197,6 @@ class ReplaySessionClock final : public isla::server::ai_gateway::GatewaySession
     std::optional<isla::server::memory::Timestamp> evaluation_reference_time_;
     absl::flat_hash_map<std::string, std::optional<isla::server::memory::Timestamp>> replay_times_;
 };
-
-std::optional<EvalFailure> ExtractFailure(const std::vector<RecordingSessionEvent>& events,
-                                          std::string_view turn_id) {
-    const auto it =
-        std::find_if(events.begin(), events.end(), [turn_id](const RecordingSessionEvent& event) {
-            return event.turn_id == turn_id && event.op == "error";
-        });
-    if (it == events.end()) {
-        return std::nullopt;
-    }
-    const std::size_t delimiter = it->payload.find(':');
-    if (delimiter == std::string::npos) {
-        return EvalFailure{
-            .code = "unknown_error",
-            .message = it->payload,
-        };
-    }
-    return EvalFailure{
-        .code = it->payload.substr(0, delimiter),
-        .message = it->payload.substr(delimiter + 1U),
-    };
-}
-
-std::optional<std::string> EmptyStringAsNull(std::optional<std::string> value) {
-    if (!value.has_value() || value->empty()) {
-        return std::nullopt;
-    }
-    return value;
-}
-
-std::optional<std::string> ExtractFinalReply(const std::vector<RecordingSessionEvent>& events,
-                                             std::string_view turn_id) {
-    const auto it =
-        std::find_if(events.rbegin(), events.rend(), [turn_id](const RecordingSessionEvent& event) {
-            return event.turn_id == turn_id && event.op == "text.output";
-        });
-    if (it == events.rend()) {
-        return std::nullopt;
-    }
-    return EmptyStringAsNull(it->payload);
-}
 
 std::vector<EvalEmittedEvent> FilterTurnEvents(const std::vector<RecordingSessionEvent>& events,
                                                std::string_view turn_id) {
@@ -566,21 +505,23 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     }
 
     const absl::StatusOr<WorkingMemoryState> pre_turn_state =
-        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id, config_.event_timeout);
+        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id,
+                                                    config_.session_settle_timeout);
     if (!pre_turn_state.ok()) {
         return pre_turn_state.status();
     }
 
     capture_next_prompt = true;
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = eval_case.session_id,
-        .turn_id = replay_plan->evaluated_turn_id,
-        .text = eval_case.input.text,
-        .telemetry_context = isla::server::ai_gateway::MakeTurnTelemetryContext(
-            eval_case.session_id, replay_plan->evaluated_turn_id, config_.telemetry_sink),
-    });
-    if (!session->WaitForTurnTerminal(replay_plan->evaluated_turn_id, config_.event_timeout)) {
-        return absl::DeadlineExceededError("timed out waiting for evaluated turn to terminate");
+    const absl::StatusOr<isla::server::ai_gateway::GatewayAcceptedTurnResult> turn_result =
+        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = eval_case.session_id,
+            .turn_id = replay_plan->evaluated_turn_id,
+            .text = eval_case.input.text,
+            .telemetry_context = isla::server::ai_gateway::MakeTurnTelemetryContext(
+                eval_case.session_id, replay_plan->evaluated_turn_id, config_.telemetry_sink),
+        });
+    if (!turn_result.ok()) {
+        return turn_result.status();
     }
     if (!captured_prompt.has_value()) {
         return absl::FailedPreconditionError(
@@ -588,7 +529,8 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     }
 
     const absl::StatusOr<WorkingMemoryState> post_turn_state =
-        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id, config_.event_timeout);
+        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id,
+                                                    config_.session_settle_timeout);
     if (!post_turn_state.ok()) {
         return post_turn_state.status();
     }
@@ -603,26 +545,29 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         .evaluation_reference_time = eval_case.evaluation_reference_time,
         .prompt = *captured_prompt,
         .replayed_session_history = BuildReplayedSessionHistoryArtifacts(
-            eval_case, replay_plan->evaluated_turn_id,
-            ExtractFinalReply(events, replay_plan->evaluated_turn_id)),
+            eval_case, replay_plan->evaluated_turn_id, turn_result->reply_text),
         .pre_turn_mid_term_episodes = BuildMidTermArtifacts(*pre_turn_state),
         .post_turn_mid_term_episodes = BuildMidTermArtifacts(*post_turn_state),
         .emitted_events = FilterTurnEvents(events, replay_plan->evaluated_turn_id),
     };
 
-    if (std::any_of(artifacts.emitted_events.begin(), artifacts.emitted_events.end(),
-                    [](const EvalEmittedEvent& event) { return event.op == "turn.cancelled"; })) {
+    if (turn_result->state ==
+        isla::server::ai_gateway::GatewayAcceptedTurnTerminalState::kCancelled) {
         artifacts.status = EvalTurnStatus::kCancelled;
-    } else if (const std::optional<EvalFailure> failure =
-                   ExtractFailure(events, replay_plan->evaluated_turn_id);
-               failure.has_value()) {
+    } else if (turn_result->state ==
+               isla::server::ai_gateway::GatewayAcceptedTurnTerminalState::kFailed) {
         artifacts.status = EvalTurnStatus::kFailed;
-        artifacts.failure = failure;
+        if (turn_result->failure.has_value()) {
+            artifacts.failure = EvalFailure{
+                .code = turn_result->failure->code,
+                .message = turn_result->failure->message,
+            };
+        }
     } else {
         artifacts.status = EvalTurnStatus::kSucceeded;
     }
 
-    artifacts.final_reply = ExtractFinalReply(events, replay_plan->evaluated_turn_id);
+    artifacts.final_reply = turn_result->reply_text;
     return artifacts;
 }
 
