@@ -1201,9 +1201,9 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
 
 isla::server::memory::Timestamp
 GatewayStubResponder::ResolveSessionStartTime(std::string_view session_id) const {
-    if (config_.session_start_time_override) {
+    if (config_.session_clock != nullptr) {
         if (const std::optional<isla::server::memory::Timestamp> overridden =
-                config_.session_start_time_override(session_id);
+                config_.session_clock->ResolveSessionStartTime(session_id);
             overridden.has_value()) {
             return *overridden;
         }
@@ -1215,9 +1215,9 @@ isla::server::memory::Timestamp
 GatewayStubResponder::ResolveConversationMessageTime(std::string_view session_id,
                                                      std::string_view turn_id,
                                                      isla::server::memory::MessageRole role) const {
-    if (config_.conversation_message_time_override) {
+    if (config_.session_clock != nullptr) {
         if (const std::optional<isla::server::memory::Timestamp> overridden =
-                config_.conversation_message_time_override(session_id, turn_id, role);
+                config_.session_clock->ResolveConversationMessageTime(session_id, turn_id, role);
             overridden.has_value()) {
             return *overridden;
         }

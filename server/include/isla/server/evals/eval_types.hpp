@@ -81,14 +81,14 @@ enum class EvalTurnStatus {
     kCancelled,
 };
 
-enum class EvalTimelineEventKind {
+enum class EvalReplayEventKind {
     kSessionStart,
     kConversationMessage,
     kEvaluationReferenceTime,
 };
 
-struct EvalTimelineEventArtifact {
-    EvalTimelineEventKind kind = EvalTimelineEventKind::kConversationMessage;
+struct EvalReplayEventArtifact {
+    EvalReplayEventKind kind = EvalReplayEventKind::kConversationMessage;
     std::optional<std::string> turn_id;
     std::optional<std::string> role;
     std::optional<isla::server::memory::Timestamp> timestamp;
@@ -103,7 +103,7 @@ struct EvalArtifacts {
     std::optional<isla::server::memory::Timestamp> session_start_time;
     std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
     EvalPromptArtifacts prompt;
-    std::vector<EvalTimelineEventArtifact> benchmark_timeline;
+    std::vector<EvalReplayEventArtifact> replayed_session_history;
     std::vector<EvalMidTermEpisodeArtifact> pre_turn_mid_term_episodes;
     std::vector<EvalMidTermEpisodeArtifact> post_turn_mid_term_episodes;
     std::vector<EvalEmittedEvent> emitted_events;
