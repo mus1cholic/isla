@@ -549,9 +549,6 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
     }
 
     auto live_openai_client = CreateOpenAiResponsesClient(config.openai_config);
-    if (live_openai_client == nullptr) {
-        return failed_precondition("failed to create benchmark live OpenAI client");
-    }
     if (const absl::Status validate_status = live_openai_client->Validate();
         !validate_status.ok()) {
         return validate_status;
