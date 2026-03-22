@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -1037,13 +1038,27 @@ TEST(GatewayStubResponderStandaloneTest, AwaitSessionMemorySettledBlocksUntilCom
     ASSERT_TRUE(turn_result.ok()) << turn_result.status();
     EXPECT_EQ(turn_result->state, GatewayAcceptedTurnTerminalState::kSucceeded);
 
-    // The compactor is running asynchronously — wait for it to start, then release it.
+    // The compactor is running asynchronously — wait for it to start.
     ASSERT_EQ(compactor_entered_future.wait_for(2s), std::future_status::ready);
-    release_promise.set_value();
 
-    // AwaitSessionMemorySettled should block until the compaction completes and drains.
-    const absl::Status settled = responder.AwaitSessionMemorySettled("srv_test");
-    ASSERT_TRUE(settled.ok()) << settled;
+    // Start AwaitSessionMemorySettled on another thread while the compactor is still blocked.
+    std::atomic<bool> settled_finished{ false };
+    absl::Status settled_result;
+    std::thread settle_thread([&] {
+        settled_result = responder.AwaitSessionMemorySettled("srv_test");
+        settled_finished.store(true);
+    });
+
+    // Give the settle thread time to enter the blocking wait, then verify it hasn't returned.
+    std::this_thread::sleep_for(50ms);
+    EXPECT_FALSE(settled_finished.load());
+
+    // Release the compactor — the settle thread should now unblock.
+    release_promise.set_value();
+    settle_thread.join();
+
+    ASSERT_TRUE(settled_finished.load());
+    ASSERT_TRUE(settled_result.ok()) << settled_result;
 
     const absl::StatusOr<isla::server::memory::WorkingMemoryState> state =
         responder.SnapshotSessionWorkingMemoryState("srv_test");

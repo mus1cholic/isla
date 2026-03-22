@@ -4,6 +4,7 @@
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <mutex>
@@ -396,13 +397,25 @@ TEST_F(MemoryOrchestratorTest, AwaitAndDrainBlocksUntilPendingCompactionComplete
     ASSERT_TRUE(compactor->WaitForRequestCount(1U));
     EXPECT_TRUE(handler->HasPendingMidTermCompactions());
 
-    // Release the compactor so the future completes, then await+drain should return immediately.
-    release_promise.set_value();
+    // Start AwaitAndDrain on another thread while the compactor is still blocked.
+    std::atomic<bool> await_finished{ false };
+    absl::StatusOr<std::size_t> drained_result;
+    std::thread await_thread([&] {
+        drained_result = handler->AwaitAndDrainAllPendingMidTermCompactions();
+        await_finished.store(true);
+    });
 
-    const absl::StatusOr<std::size_t> drained =
-        handler->AwaitAndDrainAllPendingMidTermCompactions();
-    ASSERT_TRUE(drained.ok()) << drained.status();
-    EXPECT_EQ(*drained, 1U);
+    // Give the await thread time to enter the blocking wait, then verify it hasn't returned.
+    std::this_thread::sleep_for(50ms);
+    EXPECT_FALSE(await_finished.load());
+
+    // Release the compactor — the await thread should now unblock and drain.
+    release_promise.set_value();
+    await_thread.join();
+
+    ASSERT_TRUE(await_finished.load());
+    ASSERT_TRUE(drained_result.ok()) << drained_result.status();
+    EXPECT_EQ(*drained_result, 1U);
     EXPECT_FALSE(handler->HasPendingMidTermCompactions());
 
     const WorkingMemoryState& state = handler->memory().snapshot();

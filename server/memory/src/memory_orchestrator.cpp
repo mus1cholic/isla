@@ -674,13 +674,21 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
 }
 
 absl::StatusOr<std::size_t> MemoryOrchestrator::AwaitAndDrainAllPendingMidTermCompactions() {
+    static constexpr auto kMaxWait = std::chrono::seconds(30);
+
     if (pending_mid_term_flushes_.empty()) {
         return 0U;
     }
     VLOG(1) << "MemoryOrchestrator awaiting all pending mid-term compactions session_id="
             << SanitizeForLog(session_id_) << " pending_count=" << pending_mid_term_flushes_.size();
     for (auto& pending : pending_mid_term_flushes_) {
-        pending.future.wait();
+        if (pending.future.wait_for(kMaxWait) != std::future_status::ready) {
+            LOG(ERROR) << "MemoryOrchestrator timed out awaiting pending mid-term compaction"
+                       << " session_id=" << SanitizeForLog(session_id_)
+                       << " deadline_seconds=" << kMaxWait.count();
+            return absl::DeadlineExceededError(
+                "timed out awaiting pending mid-term compaction to complete");
+        }
     }
     return DrainCompletedMidTermCompactions();
 }
