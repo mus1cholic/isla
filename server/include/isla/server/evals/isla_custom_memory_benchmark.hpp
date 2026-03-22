@@ -36,6 +36,7 @@ struct IslaCustomMemoryBenchmarkRunConfig {
     std::optional<std::string> case_id_filter;
     isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;
     isla::server::ai_gateway::OpenAiResponsesClientConfig openai_config;
+    std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> live_openai_client;
     std::shared_ptr<const isla::server::ai_gateway::TelemetrySink> telemetry_sink =
         isla::server::ai_gateway::CreateNoOpTelemetrySink();
 };

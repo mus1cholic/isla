@@ -1,6 +1,7 @@
 #include "isla/server/evals/isla_custom_memory_benchmark.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstddef>
 #include <filesystem>
@@ -100,7 +101,8 @@ class BenchmarkCaseOpenAiResponsesClient final : public OpenAiResponsesClient {
                    const OpenAiResponsesEventCallback& on_event) const override {
         if (request.system_prompt == decider_prompt_) {
             const bool should_flush =
-                definition_.flush_first_exchange && ((*decider_call_count_)++ == 0);
+                definition_.flush_first_exchange &&
+                (decider_call_count_.fetch_add(1, std::memory_order_relaxed) == 0);
             return EmitTextResponse(should_flush ? R"json({
                     "should_flush": true,
                     "item_id": "i0",
@@ -139,7 +141,7 @@ class BenchmarkCaseOpenAiResponsesClient final : public OpenAiResponsesClient {
     std::string decider_prompt_;
     std::string compactor_prompt_;
     std::shared_ptr<const OpenAiResponsesClient> live_client_;
-    std::shared_ptr<int> decider_call_count_ = std::make_shared<int>(0);
+    mutable std::atomic<int> decider_call_count_{ 0 };
 };
 
 absl::Status EmitTextResponse(std::string text, const OpenAiResponsesEventCallback& on_event,
@@ -548,7 +550,10 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         return compactor_prompt.status();
     }
 
-    auto live_openai_client = CreateOpenAiResponsesClient(config.openai_config);
+    auto live_openai_client = config.live_openai_client;
+    if (live_openai_client == nullptr) {
+        live_openai_client = CreateOpenAiResponsesClient(config.openai_config);
+    }
     if (const absl::Status validate_status = live_openai_client->Validate();
         !validate_status.ok()) {
         return validate_status;
