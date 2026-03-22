@@ -587,14 +587,14 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
             .responder_config =
                 isla::server::ai_gateway::GatewayStubResponderConfig{
                     .response_delay = 0ms,
-                    .async_emit_timeout = 2s,
+                    .async_emit_timeout = 10s,
                     .llm_runtime_config = config.llm_runtime_config,
                     .openai_config = config.openai_config,
                     .openai_client = CreateCaseClient(definition, *decider_prompt,
                                                       *compactor_prompt, live_openai_client),
                 },
             .telemetry_sink = config.telemetry_sink,
-            .event_timeout = 2s,
+            .event_timeout = 10s,
         });
 
         IslaCustomMemoryCaseReport case_report{
