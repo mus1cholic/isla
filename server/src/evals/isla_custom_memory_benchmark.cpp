@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include <nlohmann/json.hpp>
@@ -27,6 +28,7 @@
 namespace isla::server::evals {
 namespace {
 
+using isla::server::ai_gateway::CreateOpenAiResponsesClient;
 using isla::server::ai_gateway::OpenAiResponsesClient;
 using isla::server::ai_gateway::OpenAiResponsesCompletedEvent;
 using isla::server::ai_gateway::OpenAiResponsesEventCallback;
@@ -54,17 +56,8 @@ isla::server::memory::Timestamp Ts(std::string_view text) {
 }
 
 struct BenchmarkCaseDefinition {
-    enum class Scenario {
-        kDirectFactRecall,
-        kRecencyContradiction,
-        kMidTermVisibility,
-        kExpandableExactDetail,
-        kRelativeTimestampRecall,
-    };
-
     std::string suite_id;
     EvalCase eval_case;
-    Scenario scenario = Scenario::kDirectFactRecall;
     std::vector<std::string> required_prompt_substrings;
     std::vector<std::string> required_mid_term_summaries;
     bool require_expandable_episode = false;
@@ -75,25 +68,78 @@ struct BenchmarkCaseDefinition {
     int compacted_salience = 5;
 };
 
-class StaticFakeOpenAiResponsesClient final : public OpenAiResponsesClient {
-  public:
-    using Handler = std::function<absl::Status(const OpenAiResponsesRequest&,
-                                               const OpenAiResponsesEventCallback&)>;
+absl::Status EmitTextResponse(std::string text, const OpenAiResponsesEventCallback& on_event,
+                              std::string_view response_id);
 
-    explicit StaticFakeOpenAiResponsesClient(Handler handler) : handler_(std::move(handler)) {}
+class BenchmarkCaseOpenAiResponsesClient final : public OpenAiResponsesClient {
+  public:
+    BenchmarkCaseOpenAiResponsesClient(BenchmarkCaseDefinition definition,
+                                       std::string decider_prompt, std::string compactor_prompt,
+                                       std::shared_ptr<const OpenAiResponsesClient> live_client)
+        : definition_(std::move(definition)), decider_prompt_(std::move(decider_prompt)),
+          compactor_prompt_(std::move(compactor_prompt)), live_client_(std::move(live_client)) {}
 
     [[nodiscard]] absl::Status Validate() const override {
-        return absl::OkStatus();
+        if (live_client_ == nullptr) {
+            return failed_precondition(
+                "benchmark live OpenAI client must be configured for evaluated turns");
+        }
+        return live_client_->Validate();
+    }
+
+    [[nodiscard]] absl::Status WarmUp() const override {
+        if (live_client_ == nullptr) {
+            return failed_precondition(
+                "benchmark live OpenAI client must be configured for evaluated turns");
+        }
+        return live_client_->WarmUp();
     }
 
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
-        return handler_(request, on_event);
+        if (request.system_prompt == decider_prompt_) {
+            const bool should_flush =
+                definition_.flush_first_exchange && ((*decider_call_count_)++ == 0);
+            return EmitTextResponse(should_flush ? R"json({
+                    "should_flush": true,
+                    "item_id": "i0",
+                    "split_at": null,
+                    "reasoning": "Flush the first completed exchange for local benchmark coverage."
+                })json"
+                                                 : R"json({
+                    "should_flush": false,
+                    "item_id": null,
+                    "split_at": null,
+                    "reasoning": "No additional flush needed for this benchmark case."
+                })json",
+                                    on_event,
+                                    should_flush ? "resp_decider_flush" : "resp_decider_no_flush");
+        }
+
+        if (request.system_prompt == compactor_prompt_) {
+            return EmitTextResponse(
+                json{
+                    { "tier1_detail", definition_.compacted_tier1_detail },
+                    { "tier2_summary", definition_.compacted_tier2_summary },
+                    { "tier3_ref", definition_.compacted_tier2_summary },
+                    { "tier3_keywords",
+                      json::array({ "isla", "memory", "benchmark", "mid-term", "phase3" }) },
+                    { "salience", definition_.compacted_salience },
+                }
+                    .dump(),
+                on_event, "resp_compactor");
+        }
+
+        return live_client_->StreamResponse(request, on_event);
     }
 
   private:
-    Handler handler_;
+    BenchmarkCaseDefinition definition_;
+    std::string decider_prompt_;
+    std::string compactor_prompt_;
+    std::shared_ptr<const OpenAiResponsesClient> live_client_;
+    std::shared_ptr<int> decider_call_count_ = std::make_shared<int>(0);
 };
 
 absl::Status EmitTextResponse(std::string text, const OpenAiResponsesEventCallback& on_event,
@@ -104,19 +150,6 @@ absl::Status EmitTextResponse(std::string text, const OpenAiResponsesEventCallba
         return delta_status;
     }
     return on_event(OpenAiResponsesCompletedEvent{ .response_id = std::string(response_id) });
-}
-
-absl::Status EmitCompletedWithOutputItems(std::vector<OpenAiResponsesOutputItem> output_items,
-                                          const OpenAiResponsesEventCallback& on_event,
-                                          std::string_view response_id) {
-    return on_event(OpenAiResponsesCompletedEvent{
-        .response_id = std::string(response_id),
-        .output_items = std::move(output_items),
-    });
-}
-
-std::string FirstEpisodeIdForCase(const BenchmarkCaseDefinition& definition) {
-    return "ep_" + definition.eval_case.session_id + "_1";
 }
 
 std::string ToLowerAscii(std::string text) {
@@ -177,135 +210,13 @@ std::string DisplayPath(const std::filesystem::path& path) {
     return path_text;
 }
 
-absl::Status HandleDirectFactRecallCase(const BenchmarkCaseDefinition& definition,
-                                        const OpenAiResponsesRequest& request,
-                                        const OpenAiResponsesEventCallback& on_event) {
-    static_cast<void>(definition);
-    static_cast<void>(request);
-    return EmitTextResponse("", on_event, "resp_direct_fact_eval");
-}
-
-absl::Status HandleRecencyContradictionCase(const BenchmarkCaseDefinition& definition,
-                                            const OpenAiResponsesRequest& request,
-                                            const OpenAiResponsesEventCallback& on_event) {
-    static_cast<void>(definition);
-    static_cast<void>(request);
-    return EmitTextResponse("", on_event, "resp_recency_eval");
-}
-
-absl::Status HandleMidTermVisibilityCase(const BenchmarkCaseDefinition& definition,
-                                         const OpenAiResponsesRequest& request,
-                                         const OpenAiResponsesEventCallback& on_event) {
-    static_cast<void>(definition);
-    static_cast<void>(request);
-    return EmitTextResponse("", on_event, "resp_mid_term_eval");
-}
-
-absl::Status HandleExpandableExactDetailCase(const BenchmarkCaseDefinition& definition,
-                                             const OpenAiResponsesRequest& request,
-                                             const OpenAiResponsesEventCallback& on_event) {
-    if (!request.input_items.empty()) {
-        return EmitTextResponse("", on_event, "resp_expand_eval");
-    }
-
-    return EmitCompletedWithOutputItems(
-        {
-            OpenAiResponsesOutputItem{
-                .type = "function_call",
-                .raw_json =
-                    json{
-                        { "type", "function_call" },
-                        { "call_id", "call_expand_1" },
-                        { "name", "expand_mid_term" },
-                        { "arguments",
-                          json{
-                              { "episode_id", FirstEpisodeIdForCase(definition) },
-                          }
-                              .dump() },
-                    }
-                        .dump(),
-                .call_id = std::string("call_expand_1"),
-                .name = std::string("expand_mid_term"),
-                .arguments_json =
-                    json{
-                        { "episode_id", FirstEpisodeIdForCase(definition) },
-                    }
-                        .dump(),
-            },
-        },
-        on_event, "resp_expand_call");
-}
-
-absl::Status HandleRelativeTimestampRecallCase(const BenchmarkCaseDefinition& definition,
-                                               const OpenAiResponsesRequest& request,
-                                               const OpenAiResponsesEventCallback& on_event) {
-    static_cast<void>(definition);
-    static_cast<void>(request);
-    return EmitTextResponse("", on_event, "resp_time_eval");
-}
-
-absl::Status HandleMainCaseRequest(const BenchmarkCaseDefinition& definition,
-                                   const OpenAiResponsesRequest& request,
-                                   const OpenAiResponsesEventCallback& on_event) {
-    switch (definition.scenario) {
-    case BenchmarkCaseDefinition::Scenario::kDirectFactRecall:
-        return HandleDirectFactRecallCase(definition, request, on_event);
-    case BenchmarkCaseDefinition::Scenario::kRecencyContradiction:
-        return HandleRecencyContradictionCase(definition, request, on_event);
-    case BenchmarkCaseDefinition::Scenario::kMidTermVisibility:
-        return HandleMidTermVisibilityCase(definition, request, on_event);
-    case BenchmarkCaseDefinition::Scenario::kExpandableExactDetail:
-        return HandleExpandableExactDetailCase(definition, request, on_event);
-    case BenchmarkCaseDefinition::Scenario::kRelativeTimestampRecall:
-        return HandleRelativeTimestampRecallCase(definition, request, on_event);
-    }
-    return failed_precondition("benchmark fake provider received an unknown scenario");
-}
-
 std::shared_ptr<const OpenAiResponsesClient>
-CreateCaseClient(const BenchmarkCaseDefinition& definition, std::string decider_prompt,
-                 std::string compactor_prompt) {
-    auto decider_call_count = std::make_shared<int>(0);
-    return std::make_shared<const StaticFakeOpenAiResponsesClient>(
-        [definition, decider_prompt = std::move(decider_prompt),
-         compactor_prompt = std::move(compactor_prompt),
-         decider_call_count](const OpenAiResponsesRequest& request,
-                             const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            if (request.system_prompt == decider_prompt) {
-                const bool should_flush =
-                    definition.flush_first_exchange && ((*decider_call_count)++ == 0);
-                return EmitTextResponse(
-                    should_flush ? R"json({
-                        "should_flush": true,
-                        "item_id": "i0",
-                        "split_at": null,
-                        "reasoning": "Flush the first completed exchange for local benchmark coverage."
-                    })json"
-                                 : R"json({
-                        "should_flush": false,
-                        "item_id": null,
-                        "split_at": null,
-                        "reasoning": "No additional flush needed for this benchmark case."
-                    })json",
-                    on_event, should_flush ? "resp_decider_flush" : "resp_decider_no_flush");
-            }
-
-            if (request.system_prompt == compactor_prompt) {
-                return EmitTextResponse(
-                    json{
-                        { "tier1_detail", definition.compacted_tier1_detail },
-                        { "tier2_summary", definition.compacted_tier2_summary },
-                        { "tier3_ref", definition.compacted_tier2_summary },
-                        { "tier3_keywords",
-                          json::array({ "isla", "memory", "benchmark", "mid-term", "phase3" }) },
-                        { "salience", definition.compacted_salience },
-                    }
-                        .dump(),
-                    on_event, "resp_compactor");
-            }
-
-            return HandleMainCaseRequest(definition, request, on_event);
-        });
+CreateCaseClient(BenchmarkCaseDefinition definition, std::string decider_prompt,
+                 std::string compactor_prompt,
+                 std::shared_ptr<const OpenAiResponsesClient> live_client) {
+    return std::make_shared<const BenchmarkCaseOpenAiResponsesClient>(
+        std::move(definition), std::move(decider_prompt), std::move(compactor_prompt),
+        std::move(live_client));
 }
 
 std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
@@ -330,7 +241,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("genmaicha"),
                 },
-            .scenario = BenchmarkCaseDefinition::Scenario::kDirectFactRecall,
             .required_prompt_substrings = { "favorite tea is genmaicha" },
         },
         BenchmarkCaseDefinition{
@@ -353,7 +263,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("Rust"),
                 },
-            .scenario = BenchmarkCaseDefinition::Scenario::kDirectFactRecall,
             .required_prompt_substrings = { "favorite language is Rust" },
         },
         BenchmarkCaseDefinition{
@@ -383,7 +292,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("Neovim"),
                 },
-            .scenario = BenchmarkCaseDefinition::Scenario::kRecencyContradiction,
             .required_prompt_substrings = { "My preferred editor is Vim.",
                                             "Actually, I switched to Neovim last week." },
         },
@@ -422,7 +330,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("Atlas renderer"),
                 },
-            .scenario = BenchmarkCaseDefinition::Scenario::kMidTermVisibility,
             .required_mid_term_summaries = {
                 "Debugged the Atlas renderer and fixed the culling mode.",
             },
@@ -461,7 +368,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                     .expected_answer =
                         std::string("bazel test //server/src:eval_runner_test"),
                 },
-            .scenario = BenchmarkCaseDefinition::Scenario::kExpandableExactDetail,
             .required_mid_term_summaries = { "Fixed the failing suite with a bazel test command." },
             .require_expandable_episode = true,
             .flush_first_exchange = true,
@@ -498,7 +404,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("2026-03-14T10:00:00Z"),
                 },
-            .scenario = BenchmarkCaseDefinition::Scenario::kRelativeTimestampRecall,
             .required_prompt_substrings = { "2026-03-14T10:00:00Z", "2026-03-18T09:00:00Z" },
             .require_evaluation_reference_event = true,
         },
@@ -643,6 +548,19 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         return compactor_prompt.status();
     }
 
+    auto live_openai_client = CreateOpenAiResponsesClient(config.openai_config);
+    if (live_openai_client == nullptr) {
+        return failed_precondition("failed to create benchmark live OpenAI client");
+    }
+    if (const absl::Status validate_status = live_openai_client->Validate();
+        !validate_status.ok()) {
+        return validate_status;
+    }
+    if (const absl::Status warmup_status = live_openai_client->WarmUp(); !warmup_status.ok()) {
+        LOG(WARNING) << "isla_custom_memory benchmark OpenAI warmup failed detail='"
+                     << warmup_status.message() << "'";
+    }
+
     if (config.output_directory.empty()) {
         config.output_directory = std::filesystem::current_path() / "server" / "src" / "evals" /
                                   "out" / std::string(kBenchmarkName);
@@ -670,8 +588,10 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
                 isla::server::ai_gateway::GatewayStubResponderConfig{
                     .response_delay = 0ms,
                     .async_emit_timeout = 2s,
-                    .openai_client =
-                        CreateCaseClient(definition, *decider_prompt, *compactor_prompt),
+                    .llm_runtime_config = config.llm_runtime_config,
+                    .openai_config = config.openai_config,
+                    .openai_client = CreateCaseClient(definition, *decider_prompt,
+                                                      *compactor_prompt, live_openai_client),
                 },
             .telemetry_sink = config.telemetry_sink,
             .event_timeout = 2s,

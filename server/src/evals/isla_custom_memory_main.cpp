@@ -4,12 +4,19 @@
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
+
+#include "absl/log/initialize.h"
+#include "absl/status/statusor.h"
+#include "ai_gateway_startup_config.hpp"
 
 namespace {
 
 void PrintUsage() {
-    std::cout << "Usage: isla_custom_memory_eval [--output_dir=PATH] [--case_id=CASE_ID]\n";
+    std::cout << "Usage: isla_custom_memory_eval [--output_dir=PATH] [--case_id=CASE_ID] "
+                 "[gateway startup flags...]\n";
 }
 
 std::optional<std::string_view> ParseFlagValue(std::string_view arg, std::string_view prefix) {
@@ -22,7 +29,12 @@ std::optional<std::string_view> ParseFlagValue(std::string_view arg, std::string
 } // namespace
 
 int main(int argc, char** argv) {
+    absl::InitializeLog();
+
     isla::server::evals::IslaCustomMemoryBenchmarkRunConfig config;
+    std::vector<char*> gateway_argv;
+    gateway_argv.reserve(static_cast<std::size_t>(argc));
+    gateway_argv.push_back(argv[0]);
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         if (arg == "--help" || arg == "-h") {
@@ -39,11 +51,20 @@ int main(int argc, char** argv) {
             config.case_id_filter = std::string(*case_id);
             continue;
         }
+        gateway_argv.push_back(argv[i]);
+    }
 
-        std::cerr << "Unknown argument: " << arg << "\n";
-        PrintUsage();
+    const isla::server::ai_gateway::StartupEnvLookup env_lookup =
+        isla::server::ai_gateway::DefaultStartupEnvLookup();
+    const absl::StatusOr<isla::server::ai_gateway::ParsedStartupConfig> startup_config =
+        isla::server::ai_gateway::ParseGatewayStartupConfig(static_cast<int>(gateway_argv.size()),
+                                                            gateway_argv.data(), env_lookup);
+    if (!startup_config.ok()) {
+        std::cerr << "Startup config failed: " << startup_config.status() << "\n";
         return EXIT_FAILURE;
     }
+    config.llm_runtime_config = startup_config->llm_runtime_config;
+    config.openai_config = startup_config->openai_config;
 
     const absl::StatusOr<isla::server::evals::IslaCustomMemoryBenchmarkReport> report =
         isla::server::evals::RunIslaCustomMemoryBenchmark(std::move(config));

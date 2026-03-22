@@ -97,8 +97,10 @@ cc_library(
         "//server/memory/src:prompt_loader",
         ":eval_json",
         ":eval_runner",
+        ":openai_responses_client",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/log:log",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
@@ -391,9 +393,12 @@ cc_binary(
 cc_binary(
     name = "isla_custom_memory_eval",
     srcs = ["evals/isla_custom_memory_main.cpp"],
+    tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
+        ":ai_gateway_startup_config",
         ":isla_custom_memory_benchmark",
+        "@abseil-cpp//absl/log:initialize",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
     ],
