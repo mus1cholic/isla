@@ -1,6 +1,6 @@
 # AI Gateway Evaluation Phased Plan
 
-Last updated: 2026-03-20
+Last updated: 2026-03-21
 
 ## Purpose
 
@@ -64,8 +64,10 @@ The current implementation also has explicit evaluation-relevant limitations:
 > - Phase 2 is implemented for the evaluation pipeline.
 > - Phase 3 is implemented for the local benchmark slice.
 > - Phase 3.1 is implemented as replay-fidelity follow-up work discovered during Phase 3 rollout.
-> - Phase 3.2 is planned to switch benchmark execution from fake-provider main-turn replies to the
->   real main LLM path.
+> - Phase 3.2 is implemented to switch benchmark execution from fake-provider main-turn replies to
+>   the real main LLM path.
+> - Phase 3.3 is planned as backend-runtime seam work before later benchmark and autorater
+>   implementation continues.
 > - The current implemented Phase-1 slice now provides:
 >   - a small benchmark-first eval core in:
 >     - `server/include/isla/server/evals/eval_types.hpp`
@@ -124,6 +126,12 @@ The current implementation also has explicit evaluation-relevant limitations:
 >   - eval-specific persistence identity through benchmark-derived `memory_user_id` values such as
 >     `eval_isla_custom_memory`
 >   - evaluation reference time carried explicitly as replayed session chronology in those artifacts
+> - The current implemented Phase-3.2 slice now provides:
+>   - real OpenAI Responses execution for the evaluated benchmark turn
+>   - shared gateway startup-config parsing for the standalone benchmark binary so it can reuse the
+>     serving path's OpenAI and model configuration
+>   - live-only benchmark execution for the evaluated turn, with benchmark-owned stubbing retained
+>     only for mid-term decider/compactor responses that still stabilize artifact expectations
 > - Separate from evaluation infrastructure, the real product path still does not yet provide:
 >   - product-visible support for a notion of current/reference time inside the real prompt path
 >   - prompt decoration or timing rules specific to individual external benchmark formats
@@ -644,6 +652,25 @@ possible, while still preserving deterministic control over chronology and input
 
 ## Phase 3.2: Real Main-Turn LLM Execution
 
+> [!NOTE]
+> **Status (2026-03-21): Implemented.**
+> - Implemented artifacts:
+>   - `server/include/isla/server/evals/isla_custom_memory_benchmark.hpp`
+>   - `server/src/evals/isla_custom_memory_benchmark.cpp`
+>   - `server/src/evals/isla_custom_memory_main.cpp`
+>   - `server/src/evals/isla_custom_memory_benchmark_test.cpp`
+> - Implemented behavior:
+>   - the evaluated benchmark turn now runs through the real OpenAI Responses main LLM path
+>   - the standalone benchmark binary reuses the shared gateway startup-config parsing and OpenAI
+>     environment/flag handling
+>   - benchmark setup replay still enters through session memory rather than synthetic setup
+>     replies
+>   - benchmark-local stubbing now remains only around mid-term decider/compactor behavior
+> - Remaining limitation:
+>   - the local benchmark no longer preserves a deterministic fake main-turn mode; non-live
+>     infrastructure-only regression work should use lower-level unit tests rather than the
+>     benchmark surface
+
 ### Goal
 
 Replace deterministic fake-provider handling of the evaluated turn with the real main LLM call path
@@ -661,11 +688,10 @@ while preserving the existing replay and artifact-capture model.
   - structured pre/post mid-term snapshots
   - emitted events
   - final reply and normalized failures
-- Add the configuration needed to run the local benchmark either:
-  - against the real main LLM path, or
-  - against the deterministic fake-provider seam for fast infrastructure debugging
-- Document any remaining cases that still require deterministic stubbing, such as compactor or
-  decider isolation during focused debugging.
+- Reuse the shared serving-path OpenAI startup/config parsing for the standalone benchmark entry
+  point instead of adding a separate benchmark-only provider configuration path.
+- Document any remaining cases that still require benchmark-local stubbing, such as compactor or
+  decider isolation while the local benchmark still depends on exact prompt-visible memory shapes.
 
 ### Design Notes
 
@@ -673,13 +699,51 @@ while preserving the existing replay and artifact-capture model.
 - The important boundary is that the main user-facing turn should use the real provider path; setup
   replay and benchmark chronology control should remain benchmark-owned.
 - This phase SHOULD make it obvious which parts of a run are true serving-path behavior and which
-  parts are still intentionally stubbed for reproducibility or infrastructure isolation.
+  parts are still intentionally stubbed for benchmark-shape stability.
 
 ### Exit Criteria
 
 - The local benchmark can run the evaluated turn through the real main LLM call path.
-- The benchmark still supports a deterministic debug mode for infrastructure-only regression work.
 - Artifact output remains stable enough to support later autoraters and external benchmark adapters.
+
+## Phase 3.3: Backend Runtime Turn Seam
+
+### Goal
+
+Introduce a backend-owned turn-execution seam that both serving and evaluation can share, so
+benchmark runs can await completed turns directly instead of inferring completion indirectly from
+event-emission side effects.
+
+### Scope
+
+- Define a backend-owned runnable turn API that executes one replayed turn through the real backend
+  pipeline and returns only when the turn reaches a terminal outcome.
+- Keep the canonical benchmark execution path aligned with real backend wiring rather than relying
+  on benchmark-only orchestration logic layered over the responder event sink.
+- Preserve `gateway_app_boundary` realism where it is still useful, but stop treating callback
+  terminalization and short event waits as the long-term benchmark control model.
+- Keep transport/WebSocket execution as a separate higher-cost path rather than making a live
+  server process the default benchmark requirement.
+- Clarify which artifact capture responsibilities belong to the backend-owned turn seam versus the
+  surrounding benchmark runner.
+
+### Design Notes
+
+- This sub-phase is about control-flow and ownership fidelity, not about adding new benchmarks.
+- The problem to solve is that `OnTurnAccepted(...)` is an event-ingress seam: it queues work and
+  returns before the turn is finished, which forces evals to wait indirectly on emitted events.
+- A backend-owned turn seam SHOULD allow evals to block on true turn completion without inventing a
+  benchmark-only execution stack.
+- The serving path and the benchmark path SHOULD share as much startup, config, and execution
+  wiring as practical once this seam exists.
+
+### Exit Criteria
+
+- A backend-owned turn execution seam is documented and implemented clearly enough that benchmark
+  runs can await terminal turn outcomes directly.
+- Later benchmark work no longer depends on short runner-level event timeouts to distinguish slow
+  turns from broken orchestration.
+- The phased plan makes this seam a prerequisite for later benchmark and autorater expansion.
 
 ## Phase 4: External Benchmark Adapters
 
@@ -866,23 +930,33 @@ Recommended implementation order:
 4. Phase 3
 5. Phase 3.1
 6. Phase 3.2
-7. Phase 4
-8. Phase 5
-9. Phase 5.5
-10. Phase 6
-11. Phase 7
-12. Optional Phase 8, only when eval throughput becomes a practical bottleneck
+7. Phase 3.3
+8. Phase 4
+9. Phase 5
+10. Phase 5.5
+11. Phase 6
+12. Phase 7
+13. Optional Phase 8, only when eval throughput becomes a practical bottleneck
 
 The critical-path rule is:
 
 - do not treat external memory benchmark numbers as authoritative until Phase 2 is complete
 - do not block Phase 2 completion on future benchmark adapters or on separate serving-path support
   for a user-facing reference/current-time concept
+- do not continue deeper benchmark and autorater implementation past the current local benchmark
+  slice until Phase 3.3 has established the backend-owned turn seam clearly enough
 - do not use autoraters as hard regression gates until Phase 5.5 has produced enough calibration
   confidence
 
 ## Changelog
 
+- 2026-03-21: added Phase 3.3 to make the backend-owned turn execution seam explicit before
+  proceeding with later benchmark and autorater implementation, so evals can eventually block on
+  true turn completion instead of waiting indirectly on responder-emitted terminal events.
+- 2026-03-21: completed Phase 3.2 by routing `isla_custom_memory` evaluated turns through the real
+  OpenAI Responses path, reusing the shared gateway startup-config parser in the benchmark binary,
+  and retiring the benchmark's fake main-turn fallback while retaining benchmark-local
+  decider/compactor stubbing.
 - 2026-03-20: completed Phase 3.1 by replacing responder-side timestamp override callbacks with a
   shared session-clock seam, renaming eval replay artifacts around canonical replayed session
   history, and assigning eval-specific benchmark-derived `memory_user_id` values to replay runs.
