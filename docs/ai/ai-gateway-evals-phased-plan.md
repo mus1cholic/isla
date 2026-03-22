@@ -66,7 +66,7 @@ The current implementation also has explicit evaluation-relevant limitations:
 > - Phase 3.1 is implemented as replay-fidelity follow-up work discovered during Phase 3 rollout.
 > - Phase 3.2 is implemented to switch benchmark execution from fake-provider main-turn replies to
 >   the real main LLM path.
-> - Phase 3.2.5 is planned as backend-runtime seam work before later benchmark and autorater
+> - Phase 3.3 is planned as backend-runtime seam work before later benchmark and autorater
 >   implementation continues.
 > - The current implemented Phase-1 slice now provides:
 >   - a small benchmark-first eval core in:
@@ -706,7 +706,7 @@ while preserving the existing replay and artifact-capture model.
 - The local benchmark can run the evaluated turn through the real main LLM call path.
 - Artifact output remains stable enough to support later autoraters and external benchmark adapters.
 
-## Phase 3.2.5: Backend Runtime Turn Seam
+## Phase 3.3: Backend Runtime Turn Seam
 
 ### Goal
 
@@ -930,7 +930,7 @@ Recommended implementation order:
 4. Phase 3
 5. Phase 3.1
 6. Phase 3.2
-7. Phase 3.2.5
+7. Phase 3.3
 8. Phase 4
 9. Phase 5
 10. Phase 5.5
@@ -944,13 +944,13 @@ The critical-path rule is:
 - do not block Phase 2 completion on future benchmark adapters or on separate serving-path support
   for a user-facing reference/current-time concept
 - do not continue deeper benchmark and autorater implementation past the current local benchmark
-  slice until Phase 3.2.5 has established the backend-owned turn seam clearly enough
+  slice until Phase 3.3 has established the backend-owned turn seam clearly enough
 - do not use autoraters as hard regression gates until Phase 5.5 has produced enough calibration
   confidence
 
 ## Changelog
 
-- 2026-03-21: added Phase 3.2.5 to make the backend-owned turn execution seam explicit before
+- 2026-03-21: added Phase 3.3 to make the backend-owned turn execution seam explicit before
   proceeding with later benchmark and autorater implementation, so evals can eventually block on
   true turn completion instead of waiting indirectly on responder-emitted terminal events.
 - 2026-03-21: completed Phase 3.2 by routing `isla_custom_memory` evaluated turns through the real

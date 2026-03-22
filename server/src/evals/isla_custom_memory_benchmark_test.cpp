@@ -52,6 +52,10 @@ class FakeLiveOpenAiResponsesClient final : public OpenAiResponsesClient {
         return absl::OkStatus();
     }
 
+    [[nodiscard]] absl::Status WarmUp() const override {
+        return absl::OkStatus();
+    }
+
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
@@ -72,6 +76,10 @@ struct RecordedOpenAiRequest {
 class RecordingFakeLiveOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
     [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status WarmUp() const override {
         return absl::OkStatus();
     }
 
