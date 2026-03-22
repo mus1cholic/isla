@@ -1414,38 +1414,31 @@ GatewayStubResponder::RenderSessionMemoryPrompt(std::string_view session_id) con
 }
 
 absl::StatusOr<isla::server::memory::WorkingMemoryState>
-GatewayStubResponder::SnapshotSessionWorkingMemoryState(
-    std::string_view session_id, std::chrono::milliseconds settle_timeout) const {
+GatewayStubResponder::SnapshotSessionWorkingMemoryState(std::string_view session_id) const {
     const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(session_id);
     if (session_memory == nullptr) {
         return absl::NotFoundError("memory orchestrator not found for session");
     }
     std::lock_guard<std::mutex> lock(session_memory->mutex);
-    if (settle_timeout > std::chrono::milliseconds(0)) {
-        const Clock::time_point deadline = Clock::now() + settle_timeout;
-        while (session_memory->orchestrator.HasPendingMidTermCompactions()) {
-            const absl::StatusOr<std::size_t> drained =
-                session_memory->orchestrator.DrainCompletedMidTermCompactions();
-            if (!drained.ok()) {
-                return drained.status();
-            }
-            if (!session_memory->orchestrator.HasPendingMidTermCompactions()) {
-                break;
-            }
-            if (Clock::now() >= deadline) {
-                LOG(WARNING)
-                    << "AI gateway stub timed out waiting for pending mid-term compactions before "
-                       "snapshot session="
-                    << SanitizeForLog(session_id) << " pending_mid_term_count="
-                    << (session_memory->orchestrator.HasPendingMidTermCompactions() ? 1 : 0);
-                break;
-            }
-            std::this_thread::sleep_for(std::min(
-                std::chrono::milliseconds(5),
-                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now())));
-        }
-    }
     return session_memory->orchestrator.memory().snapshot();
+}
+
+absl::Status GatewayStubResponder::AwaitSessionMemorySettled(std::string_view session_id) {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(session_id);
+    if (session_memory == nullptr) {
+        return absl::NotFoundError("memory orchestrator not found for session");
+    }
+    std::lock_guard<std::mutex> lock(session_memory->mutex);
+    const absl::StatusOr<std::size_t> drained =
+        session_memory->orchestrator.AwaitAndDrainAllPendingMidTermCompactions();
+    if (!drained.ok()) {
+        return drained.status();
+    }
+    if (*drained > 0U) {
+        VLOG(1) << "AI gateway stub memory settled session=" << SanitizeForLog(session_id)
+                << " drained_count=" << *drained;
+    }
+    return absl::OkStatus();
 }
 
 bool GatewayStubResponder::WaitForAcceptedTurns(std::size_t expected_count) {

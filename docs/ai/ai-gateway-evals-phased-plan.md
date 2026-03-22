@@ -1,6 +1,6 @@
 # AI Gateway Evaluation Phased Plan
 
-Last updated: 2026-03-21
+Last updated: 2026-03-22
 
 ## Purpose
 
@@ -68,6 +68,8 @@ The current implementation also has explicit evaluation-relevant limitations:
 >   the real main LLM path.
 > - Phase 3.3 is implemented to add a backend-owned direct turn-execution seam that serving and
 >   evaluation can share.
+> - Phase 3.4 is implemented to replace timeout-based post-turn memory settling with explicit
+>   blocking awaits through a backend-owned memory-settled seam.
 > - The current implemented Phase-1 slice now provides:
 >   - a small benchmark-first eval core in:
 >     - `server/include/isla/server/evals/eval_types.hpp`
@@ -765,6 +767,26 @@ event-emission side effects.
 
 ## Phase 3.4: Deterministic Post-Turn Memory Settling
 
+> [!NOTE]
+> **Status (2026-03-22): Implemented.**
+> - Implemented artifacts:
+>   - `server/memory/include/isla/server/memory/memory_orchestrator.hpp`
+>   - `server/memory/src/memory_orchestrator.cpp`
+>   - `server/include/isla/server/ai_gateway_stub_responder.hpp`
+>   - `server/src/ai_gateway_stub_responder.cpp`
+>   - `server/include/isla/server/evals/eval_runner.hpp`
+>   - `server/src/evals/eval_runner.cpp`
+> - Implemented behavior:
+>   - `MemoryOrchestrator` now exposes `AwaitAndDrainAllPendingMidTermCompactions()` which blocks
+>     on all pending mid-term futures before draining, replacing timeout-based polling.
+>   - `GatewayStubResponder` now exposes `AwaitSessionMemorySettled()` which blocks until all
+>     pending mid-term memory work for the session has completed and been applied.
+>   - `SnapshotSessionWorkingMemoryState()` no longer accepts a settle timeout parameter and is
+>     now a pure snapshot operation.
+>   - `EvalRunnerConfig::session_settle_timeout` has been removed; the eval runner now calls
+>     `AwaitSessionMemorySettled()` before each memory snapshot instead.
+>   - the `isla_custom_memory` benchmark no longer specifies a settle timeout.
+
 ### Goal
 
 Remove benchmark dependence on hard-coded post-turn memory settle timeouts by giving evals a
@@ -1008,6 +1030,11 @@ The critical-path rule is:
 
 ## Changelog
 
+- 2026-03-22: completed Phase 3.4 by replacing the timeout-based post-turn memory settling loop
+  with explicit blocking awaits through `AwaitAndDrainAllPendingMidTermCompactions` on the memory
+  orchestrator and `AwaitSessionMemorySettled` on the responder, removing `session_settle_timeout`
+  from the eval runner config, and simplifying `SnapshotSessionWorkingMemoryState` to a pure
+  snapshot without timeout parameters.
 - 2026-03-22: added Phase 3.4 to make explicit post-turn memory settling a first-class follow-up,
   so eval artifact capture can stop depending on a conservative hard-coded settle timeout.
 - 2026-03-22: completed Phase 3.3 by adding a responder-owned direct accepted-turn execution seam,

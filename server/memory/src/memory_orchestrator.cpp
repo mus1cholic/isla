@@ -673,6 +673,18 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
     return drained_count;
 }
 
+absl::StatusOr<std::size_t> MemoryOrchestrator::AwaitAndDrainAllPendingMidTermCompactions() {
+    if (pending_mid_term_flushes_.empty()) {
+        return 0U;
+    }
+    VLOG(1) << "MemoryOrchestrator awaiting all pending mid-term compactions session_id="
+            << SanitizeForLog(session_id_) << " pending_count=" << pending_mid_term_flushes_.size();
+    for (auto& pending : pending_mid_term_flushes_) {
+        pending.future.wait();
+    }
+    return DrainCompletedMidTermCompactions();
+}
+
 bool MemoryOrchestrator::HasPendingMidTermCompactions() const {
     return !pending_mid_term_flushes_.empty();
 }

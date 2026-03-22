@@ -596,7 +596,6 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
                                                       *compactor_prompt, live_openai_client),
                 },
             .telemetry_sink = config.telemetry_sink,
-            .session_settle_timeout = 10s,
         });
 
         IslaCustomMemoryCaseReport case_report{

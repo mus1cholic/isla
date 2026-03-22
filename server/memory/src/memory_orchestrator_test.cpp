@@ -357,6 +357,80 @@ TEST_F(MemoryOrchestratorTest, DrainCompletedMidTermCompactionsReturnsZeroWhenNo
     EXPECT_EQ(*drained, 0U);
 }
 
+TEST_F(MemoryOrchestratorTest, AwaitAndDrainReturnsZeroWhenNothingPending) {
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandler();
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    const absl::StatusOr<std::size_t> drained =
+        handler->AwaitAndDrainAllPendingMidTermCompactions();
+
+    ASSERT_TRUE(drained.ok()) << drained.status();
+    EXPECT_EQ(*drained, 0U);
+}
+
+TEST_F(MemoryOrchestratorTest, AwaitAndDrainBlocksUntilPendingCompactionCompletes) {
+    std::promise<void> release_promise;
+    auto release_signal = release_promise.get_future().share();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(
+        CompactedMidTermEpisode{
+            .tier1_detail = std::string("full detail"),
+            .tier2_summary = "summary",
+            .tier3_ref = "stub ref",
+            .tier3_keywords = { "memory" },
+            .salience = kExpandableEpisodeSalienceThreshold,
+            .embedding = {},
+        },
+        release_signal);
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+    EXPECT_TRUE(handler->HasPendingMidTermCompactions());
+
+    // Release the compactor so the future completes, then await+drain should return immediately.
+    release_promise.set_value();
+
+    const absl::StatusOr<std::size_t> drained =
+        handler->AwaitAndDrainAllPendingMidTermCompactions();
+    ASSERT_TRUE(drained.ok()) << drained.status();
+    EXPECT_EQ(*drained, 1U);
+    EXPECT_FALSE(handler->HasPendingMidTermCompactions());
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_EQ(state.mid_term_episodes.size(), 1U);
+}
+
+TEST_F(MemoryOrchestratorTest, AwaitAndDrainPropagatesCompactorFailure) {
+    auto compactor =
+        std::make_shared<RecordingMidTermCompactor>(absl::InternalError("compaction failed"));
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
+
+    const absl::StatusOr<std::size_t> drained =
+        handler->AwaitAndDrainAllPendingMidTermCompactions();
+    ASSERT_FALSE(drained.ok());
+    EXPECT_EQ(drained.status().code(), absl::StatusCode::kInternal);
+}
+
 TEST_F(MemoryOrchestratorTest, ConversationStaysOnSingleEpisodeWhenNoCompactorConfigured) {
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandler();
     ASSERT_TRUE(handler.ok()) << handler.status();

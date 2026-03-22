@@ -98,6 +98,11 @@ class MemoryOrchestrator {
     // valid, and returns how many flushes were committed during this pass.
     [[nodiscard]] absl::StatusOr<std::size_t> DrainCompletedMidTermCompactions();
 
+    // Blocks until all pending async mid-term tasks have completed, then drains them. Returns how
+    // many flushes were committed. Unlike DrainCompletedMidTermCompactions, this does not poll;
+    // it waits for every outstanding future to finish before processing results.
+    [[nodiscard]] absl::StatusOr<std::size_t> AwaitAndDrainAllPendingMidTermCompactions();
+
     // Returns whether any async mid-term analysis or compaction work is still pending.
     [[nodiscard]] bool HasPendingMidTermCompactions() const;
 

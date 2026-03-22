@@ -979,6 +979,91 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_NE(prompt->find("First exchange ref."), std::string::npos);
 }
 
+TEST(GatewayStubResponderStandaloneTest, AwaitSessionMemorySettledBlocksUntilCompactionDrains) {
+    std::promise<void> release_promise;
+    auto release_signal = release_promise.get_future().share();
+    auto compactor_entered = std::make_shared<std::promise<void>>();
+    std::future<void> compactor_entered_future = compactor_entered->get_future();
+    auto compactor_entered_once = std::make_shared<std::once_flag>();
+
+    auto client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [release_signal, compactor_entered,
+         compactor_entered_once](const OpenAiResponsesRequest& request,
+                                 const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            if (request.system_prompt == MidTermFlushDeciderPromptText()) {
+                return EmitResponseText(R"json({
+                    "should_flush": true,
+                    "item_id": "i0",
+                    "split_at": null,
+                    "reasoning": "Completed first exchange."
+                })json",
+                                        on_event, "resp_decider");
+            }
+            if (request.system_prompt == MidTermCompactorPromptText()) {
+                std::call_once(*compactor_entered_once,
+                               [compactor_entered] { compactor_entered->set_value(); });
+                release_signal.wait();
+                return EmitResponseText(R"json({
+                    "tier1_detail": "Settled detail.",
+                    "tier2_summary": "Settled summary.",
+                    "tier3_ref": "Settled ref.",
+                    "tier3_keywords": ["settled", "memory", "test", "await", "drain"],
+                    "salience": 7
+                })json",
+                                        on_event, "resp_compactor");
+            }
+            const std::string reply =
+                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
+            return EmitResponseText(reply, on_event);
+        });
+
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .openai_client = client,
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    registry_scope.registry().RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    const absl::StatusOr<GatewayAcceptedTurnResult> turn_result =
+        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_settle",
+            .text = "hello",
+        });
+    ASSERT_TRUE(turn_result.ok()) << turn_result.status();
+    EXPECT_EQ(turn_result->state, GatewayAcceptedTurnTerminalState::kSucceeded);
+
+    // The compactor is running asynchronously — wait for it to start, then release it.
+    ASSERT_EQ(compactor_entered_future.wait_for(2s), std::future_status::ready);
+    release_promise.set_value();
+
+    // AwaitSessionMemorySettled should block until the compaction completes and drains.
+    const absl::Status settled = responder.AwaitSessionMemorySettled("srv_test");
+    ASSERT_TRUE(settled.ok()) << settled;
+
+    const absl::StatusOr<isla::server::memory::WorkingMemoryState> state =
+        responder.SnapshotSessionWorkingMemoryState("srv_test");
+    ASSERT_TRUE(state.ok()) << state.status();
+    EXPECT_EQ(state->mid_term_episodes.size(), 1U);
+    EXPECT_EQ(state->mid_term_episodes.front().tier2_summary, "Settled summary.");
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     AwaitSessionMemorySettledReturnsNotFoundForUnknownSession) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+
+    const absl::Status settled = responder.AwaitSessionMemorySettled("unknown_session");
+    EXPECT_EQ(settled.code(), absl::StatusCode::kNotFound);
+}
+
 TEST(GatewayStubResponderStandaloneTest, ExpandMidTermToolLoopUsesSessionMemoryDetail) {
     const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
         isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);

@@ -348,7 +348,6 @@ TEST(EvalRunnerTest, WaitsForDelayedMidTermFlushBeforeCapturingPostTurnSnapshot)
                 .async_emit_timeout = 250ms,
                 .openai_client = client,
             },
-        .session_settle_timeout = 250ms,
     });
 
     const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{

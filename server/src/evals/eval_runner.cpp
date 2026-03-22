@@ -504,9 +504,12 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
         }
     }
 
+    if (absl::Status settle = responder.AwaitSessionMemorySettled(eval_case.session_id);
+        !settle.ok()) {
+        return settle;
+    }
     const absl::StatusOr<WorkingMemoryState> pre_turn_state =
-        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id,
-                                                    config_.session_settle_timeout);
+        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id);
     if (!pre_turn_state.ok()) {
         return pre_turn_state.status();
     }
@@ -528,9 +531,12 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
             "eval runner did not capture rendered prompt artifacts for evaluated turn");
     }
 
+    if (absl::Status settle = responder.AwaitSessionMemorySettled(eval_case.session_id);
+        !settle.ok()) {
+        return settle;
+    }
     const absl::StatusOr<WorkingMemoryState> post_turn_state =
-        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id,
-                                                    config_.session_settle_timeout);
+        responder.SnapshotSessionWorkingMemoryState(eval_case.session_id);
     if (!post_turn_state.ok()) {
         return post_turn_state.status();
     }
