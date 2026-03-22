@@ -470,6 +470,7 @@ GatewayStubResponder::RunAcceptedTurnToCompletion(const TurnAcceptedEvent& event
         ++accepted_turns_count_;
         stopping = stopping_;
     }
+    cv_.notify_all();
     if (stopping) {
         PendingTurn stopping_turn = BuildPendingTurnShell(event);
         if (GatewaySessionRegistry* registry = session_registry(); registry != nullptr) {
@@ -1037,7 +1038,10 @@ GatewayStubResponder::ExecutePreparedTurnToTerminal(const PendingTurn& turn) {
         BestEffortTerminateAcceptedTurn(turn, "internal_error",
                                         "stub responder failed to update memory",
                                         "memory update failure");
-        return FailedAcceptedTurnResult("internal_error", "stub responder failed to update memory");
+        GatewayAcceptedTurnResult result =
+            FailedAcceptedTurnResult("internal_error", "stub responder failed to update memory");
+        result.reply_text = reply;
+        return result;
     }
 
     if (ShouldAbortTrackedTurn(turn.session_id, turn.turn_id)) {
@@ -1047,7 +1051,9 @@ GatewayStubResponder::ExecutePreparedTurnToTerminal(const PendingTurn& turn) {
     }
     if (IsTrackedTurnCancelled(turn.session_id, turn.turn_id)) {
         FinishCancelledTurn(turn);
-        return CancelledAcceptedTurnResult();
+        GatewayAcceptedTurnResult result = CancelledAcceptedTurnResult();
+        result.reply_text = reply;
+        return result;
     }
     const std::shared_ptr<GatewayLiveSession> completion_session =
         registry->FindSession(turn.session_id);

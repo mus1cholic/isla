@@ -257,18 +257,26 @@ class RecordingLiveSession final : public GatewayLiveSession {
             }
         }
         if (status.ok()) {
-            RecordEvent({ .op = "text.output", .turn_id = std::move(turn_id), .payload = text });
+            EmittedEvent event{
+                .op = "text.output",
+                .turn_id = std::move(turn_id),
+                .payload = std::move(text),
+            };
+            RecordEvent(event);
+            InvokeHook(event);
         }
         on_complete(std::move(status));
     }
 
     void AsyncEmitAudioOutput(std::string turn_id, std::string mime_type, std::string audio_base64,
                               GatewayEmitCallback on_complete) override {
-        RecordEvent({
+        EmittedEvent event{
             .op = "audio.output",
             .turn_id = std::move(turn_id),
             .payload = mime_type + ":" + audio_base64,
-        });
+        };
+        RecordEvent(event);
+        InvokeHook(event);
         on_complete(absl::OkStatus());
     }
 
@@ -309,11 +317,13 @@ class RecordingLiveSession final : public GatewayLiveSession {
             }
         }
         if (status.ok()) {
-            RecordEvent({
+            EmittedEvent event{
                 .op = "error",
                 .turn_id = turn_id.value_or(""),
                 .payload = code + ":" + message,
-            });
+            };
+            RecordEvent(event);
+            InvokeHook(event);
         }
         if (!delay_completion) {
             on_complete(std::move(status));
@@ -1538,6 +1548,56 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_EQ(emitted[0].payload, "internal_error:stub responder failed to update memory");
     EXPECT_EQ(emitted[1].op, "turn.completed");
     EXPECT_EQ(emitted[1].turn_id, "turn_direct_missing_memory");
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     DirectAcceptedTurnPreservesReplyWhenAssistantMemoryWritebackFails) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    session->SetEventHook([&responder](const EmittedEvent& event) {
+        if (event.op == "text.output" && event.turn_id == "turn_direct_post_emit_memory_failure") {
+            responder.OnSessionClosed(SessionClosedEvent{
+                .session_id = "srv_test",
+                .session_started = true,
+                .inflight_turn_id = std::nullopt,
+                .reason = SessionCloseReason::ProtocolEnded,
+                .detail = "session ended",
+            });
+        }
+    });
+
+    const absl::StatusOr<GatewayAcceptedTurnResult> result =
+        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
+            .session_id = "srv_test",
+            .turn_id = "turn_direct_post_emit_memory_failure",
+            .text = "hello",
+        });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kFailed);
+    ASSERT_TRUE(result->failure.has_value());
+    EXPECT_EQ(result->failure->code, "internal_error");
+    EXPECT_EQ(result->failure->message, "stub responder failed to update memory");
+    ASSERT_TRUE(result->reply_text.has_value());
+    EXPECT_EQ(*result->reply_text, "stub echo: hello");
+
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 3U);
+    EXPECT_EQ(events[0].op, "text.output");
+    EXPECT_EQ(events[0].turn_id, "turn_direct_post_emit_memory_failure");
+    EXPECT_EQ(events[0].payload, "stub echo: hello");
+    EXPECT_EQ(events[1].op, "error");
+    EXPECT_EQ(events[1].turn_id, "turn_direct_post_emit_memory_failure");
+    EXPECT_EQ(events[1].payload, "internal_error:stub responder failed to update memory");
+    EXPECT_EQ(events[2].op, "turn.completed");
+    EXPECT_EQ(events[2].turn_id, "turn_direct_post_emit_memory_failure");
 }
 
 TEST(GatewayStubResponderStandaloneTest,
