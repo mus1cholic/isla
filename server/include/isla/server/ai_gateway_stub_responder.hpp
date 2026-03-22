@@ -119,9 +119,11 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     [[nodiscard]] absl::StatusOr<std::string>
     RenderSessionMemoryPrompt(std::string_view session_id) const;
     [[nodiscard]] absl::StatusOr<isla::server::memory::WorkingMemoryState>
-    SnapshotSessionWorkingMemoryState(
-        std::string_view session_id,
-        std::chrono::milliseconds settle_timeout = std::chrono::milliseconds(0)) const;
+    SnapshotSessionWorkingMemoryState(std::string_view session_id) const;
+    // Blocks until all pending mid-term memory work for the session has completed and been applied.
+    // Callers that need a settled memory snapshot should call this before
+    // SnapshotSessionWorkingMemoryState.
+    [[nodiscard]] absl::Status AwaitSessionMemorySettled(std::string_view session_id);
     [[nodiscard]] absl::StatusOr<GatewayAcceptedTurnResult>
     RunAcceptedTurnToCompletion(const TurnAcceptedEvent& event);
     [[nodiscard]] bool WaitForAcceptedTurns(std::size_t expected_count);
