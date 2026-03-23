@@ -280,6 +280,38 @@ class ScopedOutputDirectory {
     std::filesystem::path path_;
 };
 
+// Creates a FakeOpenAiResponsesClient with a StreamHandler that returns valid JSON for mid-term
+// flush decider and compactor requests (identified by distinctive prompt substrings), and the
+// configured user_reply for all other (user-facing) requests.
+std::shared_ptr<FakeOpenAiResponsesClient> MakeMidTermAwareFakeClient(std::string user_reply) {
+    return MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), /*full_text=*/"", /*response_id=*/"resp_test",
+        /*validate_status=*/absl::OkStatus(),
+        /*stream_handler=*/
+        [reply = std::move(user_reply)](
+            const isla::server::ai_gateway::OpenAiResponsesRequest& request,
+            const isla::server::ai_gateway::OpenAiResponsesEventCallback& on_event)
+            -> absl::Status {
+            std::string text;
+            if (request.system_prompt.find("should_flush") != std::string::npos) {
+                text =
+                    R"({"should_flush":false,"item_id":null,"split_at":null,"reasoning":"test"})";
+            } else if (request.system_prompt.find("tier2_summary") != std::string::npos) {
+                text =
+                    R"({"tier1_detail":"d","tier2_summary":"s","tier3_ref":"r","tier3_keywords":["k"],"salience":5})";
+            } else {
+                text = reply;
+            }
+            if (const absl::Status s = on_event(
+                    isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent{ .text_delta = text });
+                !s.ok()) {
+                return s;
+            }
+            return on_event(isla::server::ai_gateway::OpenAiResponsesCompletedEvent{
+                .response_id = "resp_fake" });
+        });
+}
+
 MemoryBenchmarkSuite MakeSingleCaseSuite(std::string case_id = "test_q1",
                                          std::string expected_answer = "blue",
                                          nlohmann::json metadata = nullptr) {
@@ -317,12 +349,10 @@ MemoryBenchmarkSuite MakeSingleCaseSuite(std::string case_id = "test_q1",
 
 TEST(RunMemoryBenchmarkTest, SingleCasePassesAndWritesArtifacts) {
     ScopedOutputDirectory output_directory;
-    auto fake_client =
-        MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"The answer is blue.");
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = fake_client;
+    config.openai_client = MakeMidTermAwareFakeClient("The answer is blue.");
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
@@ -350,8 +380,6 @@ TEST(RunMemoryBenchmarkTest, SingleCasePassesAndWritesArtifacts) {
 
 TEST(RunMemoryBenchmarkTest, MultipleCasesTracksPassedAndFailed) {
     ScopedOutputDirectory output_directory;
-    auto passing_client =
-        MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"some answer");
 
     // Build a suite with two cases.
     MemoryBenchmarkSuite suite;
@@ -381,7 +409,7 @@ TEST(RunMemoryBenchmarkTest, MultipleCasesTracksPassedAndFailed) {
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = passing_client;
+    config.openai_client = MakeMidTermAwareFakeClient("some answer");
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);
@@ -403,14 +431,13 @@ TEST(RunMemoryBenchmarkTest, MultipleCasesTracksPassedAndFailed) {
 
 TEST(RunMemoryBenchmarkTest, MetadataPreservedThroughRunLoop) {
     ScopedOutputDirectory output_directory;
-    auto fake_client = MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"answer text");
 
     const json metadata = json{ { "question_type", "temporal-reasoning" }, { "difficulty", 3 } };
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite("meta_q1", "expected", metadata);
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = fake_client;
+    config.openai_client = MakeMidTermAwareFakeClient("answer text");
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);
@@ -441,12 +468,12 @@ TEST(RunMemoryBenchmarkTest, ValidateFailureReturnsError) {
 
 TEST(RunMemoryBenchmarkTest, EmptyReplyMarkedAsFailed) {
     ScopedOutputDirectory output_directory;
-    // Client returns an empty string as the full_text, which means final_reply will be empty.
-    auto empty_client = MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"");
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = empty_client;
+    // Empty user reply — mid-term requests still get valid JSON, but the user-facing turn
+    // produces an empty final_reply.
+    config.openai_client = MakeMidTermAwareFakeClient("");
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
@@ -463,12 +490,10 @@ TEST(RunMemoryBenchmarkTest, EmptyReplyMarkedAsFailed) {
 
 TEST(RunMemoryBenchmarkTest, ArtifactFileContainsCaseAndExpectedAnswer) {
     ScopedOutputDirectory output_directory;
-    auto fake_client =
-        MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"The color is blue.");
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = fake_client;
+    config.openai_client = MakeMidTermAwareFakeClient("The color is blue.");
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
