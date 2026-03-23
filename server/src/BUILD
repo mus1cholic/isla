@@ -106,6 +106,23 @@ cc_library(
 )
 
 cc_library(
+    name = "memory_benchmark_runner",
+    srcs = ["evals/memory_benchmark_runner.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":eval_json",
+        ":eval_runner",
+        ":openai_responses_client",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
     name = "ai_gateway_string_utils",
     srcs = ["ai_gateway_string_utils.cpp"],
     hdrs = ["ai_gateway_string_utils.hpp"],
@@ -401,6 +418,17 @@ cc_binary(
         "@abseil-cpp//absl/log:initialize",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "memory_benchmark_runner_test",
+    srcs = ["evals/memory_benchmark_runner_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":memory_benchmark_runner",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 
