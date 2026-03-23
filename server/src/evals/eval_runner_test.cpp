@@ -381,9 +381,21 @@ TEST(EvalRunnerTest, WaitsForDelayedMidTermFlushBeforeCapturingPostTurnSnapshot)
     EXPECT_TRUE(artifacts->post_turn_mid_term_episodes[0].expandable);
 }
 
-TEST(EvalRunnerTest, RejectsConversationAssistantMessageWithoutPriorUser) {
-    auto client =
-        MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test", absl::OkStatus());
+TEST(EvalRunnerTest, ReplaysConversationAssistantMessageWithoutPriorUser) {
+    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
+    auto client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [decider_prompt = *decider_prompt, compactor_prompt = *compactor_prompt](
+            const OpenAiResponsesRequest& request,
+            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            return EmitMidTermAwareReply(decider_prompt, compactor_prompt, request, on_event);
+        });
 
     EvalRunner runner(EvalRunnerConfig{
         .responder_config =
@@ -402,7 +414,15 @@ TEST(EvalRunnerTest, RejectsConversationAssistantMessageWithoutPriorUser) {
             {
                 EvalConversationMessage{
                     .role = MessageRole::Assistant,
-                    .text = "this transcript starts incorrectly",
+                    .text = "this transcript starts with assistant context",
+                },
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "follow-up user question",
+                },
+                EvalConversationMessage{
+                    .role = MessageRole::Assistant,
+                    .text = "follow-up assistant reply",
                 },
             },
         .input =
@@ -411,19 +431,87 @@ TEST(EvalRunnerTest, RejectsConversationAssistantMessageWithoutPriorUser) {
             },
     });
 
-    ASSERT_FALSE(artifacts.ok());
-    EXPECT_EQ(artifacts.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(artifacts.status().message()).find("eval case replay validation failed"),
+    ASSERT_TRUE(artifacts.ok()) << artifacts.status();
+    EXPECT_EQ(artifacts->status, EvalTurnStatus::kSucceeded);
+    EXPECT_NE(artifacts->prompt.working_memory_context.find(
+                  "this transcript starts with assistant context"),
               std::string::npos);
-    EXPECT_NE(std::string(artifacts.status().message()).find("conversation message at index 0"),
+    EXPECT_NE(artifacts->prompt.working_memory_context.find("follow-up user question"),
               std::string::npos);
-    EXPECT_NE(std::string(artifacts.status().message()).find("must follow a prior user message"),
+    EXPECT_NE(artifacts->prompt.working_memory_context.find("follow-up assistant reply"),
               std::string::npos);
 }
 
-TEST(EvalRunnerTest, RejectsEvalCaseWithEmptyInput) {
-    auto client =
-        MakeFakeOpenAiResponsesClient(absl::OkStatus(), "", "resp_test", absl::OkStatus());
+TEST(EvalRunnerTest, ReplaysEvalCaseWithEmptyHistoryMessages) {
+    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
+    auto client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [decider_prompt = *decider_prompt, compactor_prompt = *compactor_prompt](
+            const OpenAiResponsesRequest& request,
+            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            return EmitMidTermAwareReply(decider_prompt, compactor_prompt, request, on_event);
+        });
+
+    EvalRunner runner(EvalRunnerConfig{
+        .responder_config =
+            isla::server::ai_gateway::GatewayStubResponderConfig{
+                .response_delay = 0ms,
+                .async_emit_timeout = 2s,
+                .openai_client = client,
+            },
+    });
+
+    const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
+        .benchmark_name = "isla_custom_memory",
+        .case_id = "empty_history_messages",
+        .session_id = "eval_session_empty_history_messages",
+        .conversation =
+            {
+                EvalConversationMessage{
+                    .role = MessageRole::User,
+                    .text = "",
+                },
+                EvalConversationMessage{
+                    .role = MessageRole::Assistant,
+                    .text = "",
+                },
+            },
+        .input =
+            EvalInput{
+                .text = "what did i just say?",
+            },
+    });
+
+    ASSERT_TRUE(artifacts.ok()) << artifacts.status();
+    EXPECT_EQ(artifacts->status, EvalTurnStatus::kSucceeded);
+    ASSERT_EQ(artifacts->replayed_session_history.size(), 4U);
+    EXPECT_EQ(artifacts->replayed_session_history[0].role, std::optional<std::string>("user"));
+    EXPECT_EQ(artifacts->replayed_session_history[0].text, std::optional<std::string>(""));
+    EXPECT_EQ(artifacts->replayed_session_history[1].role, std::optional<std::string>("assistant"));
+    EXPECT_EQ(artifacts->replayed_session_history[1].text, std::optional<std::string>(""));
+}
+
+TEST(EvalRunnerTest, ReplaysEvalCaseWithEmptyInput) {
+    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
+        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
+    auto client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [decider_prompt = *decider_prompt, compactor_prompt = *compactor_prompt](
+            const OpenAiResponsesRequest& request,
+            const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            return EmitMidTermAwareReply(decider_prompt, compactor_prompt, request, on_event);
+        });
 
     EvalRunner runner(EvalRunnerConfig{
         .responder_config =
@@ -444,10 +532,11 @@ TEST(EvalRunnerTest, RejectsEvalCaseWithEmptyInput) {
             },
     });
 
-    ASSERT_FALSE(artifacts.ok());
-    EXPECT_EQ(artifacts.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(artifacts.status().message()).find("must include non-empty text"),
-              std::string::npos);
+    ASSERT_TRUE(artifacts.ok()) << artifacts.status();
+    EXPECT_EQ(artifacts->status, EvalTurnStatus::kSucceeded);
+    ASSERT_EQ(artifacts->replayed_session_history.size(), 2U);
+    EXPECT_EQ(artifacts->replayed_session_history[0].role, std::optional<std::string>("user"));
+    EXPECT_EQ(artifacts->replayed_session_history[0].text, std::optional<std::string>(""));
 }
 
 TEST(EvalRunnerTest, BuildsEvalCaseFromBenchmarkTimelineInput) {
@@ -493,7 +582,7 @@ TEST(EvalRunnerTest, BuildsEvalCaseFromBenchmarkTimelineInput) {
     EXPECT_EQ(*eval_case->expected_answer, "expected answer");
 }
 
-TEST(EvalRunnerTest, RejectsBenchmarkTimelineAssistantMessageWithoutPriorUser) {
+TEST(EvalRunnerTest, BuildsBenchmarkTimelineWithAssistantMessageWithoutPriorUser) {
     const absl::StatusOr<EvalCase> eval_case =
         BuildEvalCaseFromBenchmarkTimeline(EvalBenchmarkTimelineCase{
             .benchmark_name = "isla_custom_memory",
@@ -503,7 +592,7 @@ TEST(EvalRunnerTest, RejectsBenchmarkTimelineAssistantMessageWithoutPriorUser) {
                 {
                     EvalConversationMessage{
                         .role = MessageRole::Assistant,
-                        .text = "this should be rejected",
+                        .text = "assistant context",
                     },
                 },
             .input =
@@ -512,10 +601,10 @@ TEST(EvalRunnerTest, RejectsBenchmarkTimelineAssistantMessageWithoutPriorUser) {
                 },
         });
 
-    ASSERT_FALSE(eval_case.ok());
-    EXPECT_EQ(eval_case.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(eval_case.status().message()).find("must follow a prior user message"),
-              std::string::npos);
+    ASSERT_TRUE(eval_case.ok()) << eval_case.status();
+    ASSERT_EQ(eval_case->conversation.size(), 1U);
+    EXPECT_EQ(eval_case->conversation[0].role, MessageRole::Assistant);
+    EXPECT_EQ(eval_case->conversation[0].text, "assistant context");
 }
 
 TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptContext) {

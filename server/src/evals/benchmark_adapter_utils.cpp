@@ -1,5 +1,6 @@
 #include "isla/server/evals/benchmark_adapter_utils.hpp"
 
+#include <cctype>
 #include <exception>
 #include <fstream>
 
@@ -33,6 +34,30 @@ bool IsDateOnlyText(std::string_view text) {
         }
     }
     return true;
+}
+
+bool IsLongMemEvalTimestampText(std::string_view text) {
+    if (text.size() != 22U) {
+        return false;
+    }
+
+    const auto is_digit = [text](std::size_t index) {
+        return std::isdigit(static_cast<unsigned char>(text[index])) != 0;
+    };
+    const auto is_alpha = [text](std::size_t index) {
+        return std::isalpha(static_cast<unsigned char>(text[index])) != 0;
+    };
+
+    return
+        // YYYY/MM/DD
+        is_digit(0) && is_digit(1) && is_digit(2) && is_digit(3) && text[4] == '/' && is_digit(5) &&
+        is_digit(6) && text[7] == '/' && is_digit(8) && is_digit(9) &&
+        //  (Dow)
+        text[10] == ' ' && text[11] == '(' && is_alpha(12) && is_alpha(13) && is_alpha(14) &&
+        text[15] == ')' &&
+        //  HH:MM
+        text[16] == ' ' && is_digit(17) && is_digit(18) && text[19] == ':' && is_digit(20) &&
+        is_digit(21);
 }
 
 } // namespace
@@ -142,8 +167,16 @@ absl::StatusOr<std::string> NormalizeStringOrIntegerValue(const nlohmann::json& 
 absl::StatusOr<isla::server::memory::Timestamp>
 ParseBenchmarkTimestamp(std::string_view text, std::string_view field_description) {
     try {
-        const std::string normalized =
-            IsDateOnlyText(text) ? absl::StrCat(text, "T00:00:00Z") : std::string(text);
+        std::string normalized;
+        if (IsDateOnlyText(text)) {
+            normalized = absl::StrCat(text, "T00:00:00Z");
+        } else if (IsLongMemEvalTimestampText(text)) {
+            normalized =
+                absl::StrCat(text.substr(0, 4), "-", text.substr(5, 2), "-", text.substr(8, 2), "T",
+                             text.substr(17, 2), ":", text.substr(20, 2), ":00Z");
+        } else {
+            normalized = std::string(text);
+        }
         return isla::server::memory::ParseTimestamp(normalized);
     } catch (const std::exception& error) {
         return invalid_argument(

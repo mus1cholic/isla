@@ -60,6 +60,9 @@ struct MemoryBenchmarkRunConfig {
     isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;
     isla::server::ai_gateway::OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client;
+    std::optional<std::size_t> max_rendered_system_prompt_bytes;
+    std::optional<std::size_t> max_rendered_working_memory_context_bytes;
+    std::optional<std::size_t> max_rendered_prompt_bytes;
     std::shared_ptr<const isla::server::ai_gateway::TelemetrySink> telemetry_sink =
         isla::server::ai_gateway::CreateNoOpTelemetrySink();
 };
