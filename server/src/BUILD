@@ -765,7 +765,12 @@ cc_test(
 
 cc_test(
     name = "ai_gateway_stub_responder_test",
-    srcs = ["ai_gateway_stub_responder_test.cpp"],
+    srcs = [
+        "ai_gateway_stub_responder_concurrency_test.cpp",
+        "ai_gateway_stub_responder_mid_term_memory_test.cpp",
+        "ai_gateway_stub_responder_test.cpp",
+        "ai_gateway_stub_responder_test_support.hpp",
+    ],
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_server",
