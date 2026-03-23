@@ -89,6 +89,31 @@ cc_library(
 )
 
 cc_library(
+    name = "benchmark_adapter_utils",
+    srcs = ["evals/benchmark_adapter_utils.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
+    name = "benchmark_cli_utils",
+    srcs = ["evals/benchmark_cli_utils.cpp"],
+    hdrs = ["evals/benchmark_cli_utils.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":ai_gateway_startup_config",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "isla_custom_memory_benchmark",
     srcs = ["evals/isla_custom_memory_benchmark.cpp"],
     visibility = ["//visibility:public"],
@@ -414,6 +439,7 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":ai_gateway_startup_config",
+        ":benchmark_cli_utils",
         ":isla_custom_memory_benchmark",
         "@abseil-cpp//absl/log:initialize",
         "@abseil-cpp//absl/status",
@@ -432,6 +458,30 @@ cc_test(
         "@abseil-cpp//absl/status:statusor",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "benchmark_adapter_utils_test",
+    srcs = ["evals/benchmark_adapter_utils_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":benchmark_adapter_utils",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "benchmark_cli_utils_test",
+    srcs = ["evals/benchmark_cli_utils_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":benchmark_cli_utils",
+        "@abseil-cpp//absl/status:statusor",
+        "@googletest//:gtest_main",
     ],
 )
 

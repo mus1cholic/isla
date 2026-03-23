@@ -10,20 +10,13 @@
 
 #include "absl/log/initialize.h"
 #include "absl/status/statusor.h"
-#include "ai_gateway_startup_config.hpp"
+#include "evals/benchmark_cli_utils.hpp"
 
 namespace {
 
 void PrintUsage() {
     std::cout << "Usage: isla_custom_memory_eval [--output_dir=PATH] [--case_id=CASE_ID] "
                  "[gateway startup flags...]\n";
-}
-
-std::optional<std::string_view> ParseFlagValue(std::string_view arg, std::string_view prefix) {
-    if (!arg.starts_with(prefix)) {
-        return std::nullopt;
-    }
-    return arg.substr(prefix.size());
 }
 
 } // namespace
@@ -41,12 +34,14 @@ int main(int argc, char** argv) {
             PrintUsage();
             return EXIT_SUCCESS;
         }
-        if (const std::optional<std::string_view> output_dir = ParseFlagValue(arg, "--output_dir=");
+        if (const std::optional<std::string_view> output_dir =
+                isla::server::evals::ParseFlagValue(arg, "--output_dir=");
             output_dir.has_value()) {
             config.output_directory = std::filesystem::path(*output_dir);
             continue;
         }
-        if (const std::optional<std::string_view> case_id = ParseFlagValue(arg, "--case_id=");
+        if (const std::optional<std::string_view> case_id =
+                isla::server::evals::ParseFlagValue(arg, "--case_id=");
             case_id.has_value()) {
             config.case_id_filter = std::string(*case_id);
             continue;
@@ -54,11 +49,8 @@ int main(int argc, char** argv) {
         gateway_argv.push_back(argv[i]);
     }
 
-    const isla::server::ai_gateway::StartupEnvLookup env_lookup =
-        isla::server::ai_gateway::DefaultStartupEnvLookup();
     const absl::StatusOr<isla::server::ai_gateway::ParsedStartupConfig> startup_config =
-        isla::server::ai_gateway::ParseGatewayStartupConfig(static_cast<int>(gateway_argv.size()),
-                                                            gateway_argv.data(), env_lookup);
+        isla::server::evals::ParseBenchmarkStartupConfig(gateway_argv);
     if (!startup_config.ok()) {
         std::cerr << "Startup config failed: " << startup_config.status() << "\n";
         return EXIT_FAILURE;
