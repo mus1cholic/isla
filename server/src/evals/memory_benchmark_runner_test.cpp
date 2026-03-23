@@ -1,15 +1,28 @@
 #include "isla/server/evals/memory_benchmark_runner.hpp"
 
+#include <chrono>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "gtest/gtest.h"
 #include <nlohmann/json.hpp>
+
+#include "openai_responses_test_utils.hpp"
 
 namespace isla::server::evals {
 namespace {
 
+using isla::server::ai_gateway::test::FakeOpenAiResponsesClient;
+using isla::server::ai_gateway::test::MakeFakeOpenAiResponsesClient;
+using isla::server::memory::MessageRole;
 using nlohmann::json;
 using nlohmann::ordered_json;
 
@@ -136,6 +149,50 @@ TEST(BuildMemoryBenchmarkReportJsonTest, MultipleCasesPreserved) {
 }
 
 // ---------------------------------------------------------------------------
+// SanitizeCaseIdForFilename tests
+// ---------------------------------------------------------------------------
+
+TEST(SanitizeCaseIdForFilenameTest, AlphanumericPassedThrough) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("simple123"), "simple123");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, HyphensPreserved) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("my-case-id"), "my-case-id");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, SlashesReplacedWithUnderscore) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("path/to/case"), "path_to_case");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, PathTraversalNeutralized) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("../../etc/passwd"), "etc_passwd");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, BackslashesReplaced) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("path\\to\\case"), "path_to_case");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, ConsecutiveSpecialCharsCollapsed) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("a///b"), "a_b");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, SpacesAndSpecialCharsReplaced) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("hello world!@#"), "hello_world");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, EmptyInputReturnsUnnamed) {
+    EXPECT_EQ(SanitizeCaseIdForFilename(""), "unnamed");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, AllSpecialCharsReturnsUnnamed) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("///..."), "unnamed");
+}
+
+TEST(SanitizeCaseIdForFilenameTest, LeadingTrailingSpecialCharsStripped) {
+    EXPECT_EQ(SanitizeCaseIdForFilename("/case/"), "case");
+}
+
+// ---------------------------------------------------------------------------
 // RunMemoryBenchmark validation tests
 // ---------------------------------------------------------------------------
 
@@ -154,6 +211,285 @@ TEST(RunMemoryBenchmarkTest, EmptyCasesReturnsError) {
         MemoryBenchmarkRunConfig{}, MemoryBenchmarkSuite{ .benchmark_name = "test" });
     EXPECT_FALSE(result.ok());
     EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
+}
+
+TEST(RunMemoryBenchmarkTest, EmptyCaseIdReturnsError) {
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "test_bench";
+
+    EvalCase eval_case;
+    eval_case.case_id = "";
+    eval_case.session_id = "session_1";
+
+    MemoryBenchmarkCase benchmark_case;
+    benchmark_case.eval_case = std::move(eval_case);
+    suite.cases.push_back(std::move(benchmark_case));
+
+    const absl::StatusOr<MemoryBenchmarkReport> result =
+        RunMemoryBenchmark(MemoryBenchmarkRunConfig{}, suite);
+    EXPECT_FALSE(result.ok());
+    EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
+    EXPECT_NE(std::string(result.status().message()).find("case 0"), std::string::npos);
+    EXPECT_NE(std::string(result.status().message()).find("case_id"), std::string::npos);
+}
+
+TEST(RunMemoryBenchmarkTest, EmptySessionIdReturnsError) {
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "test_bench";
+
+    EvalCase eval_case;
+    eval_case.case_id = "q1";
+    eval_case.session_id = "";
+
+    MemoryBenchmarkCase benchmark_case;
+    benchmark_case.eval_case = std::move(eval_case);
+    suite.cases.push_back(std::move(benchmark_case));
+
+    const absl::StatusOr<MemoryBenchmarkReport> result =
+        RunMemoryBenchmark(MemoryBenchmarkRunConfig{}, suite);
+    EXPECT_FALSE(result.ok());
+    EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
+    EXPECT_NE(std::string(result.status().message()).find("q1"), std::string::npos);
+    EXPECT_NE(std::string(result.status().message()).find("session_id"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Integration test helpers
+// ---------------------------------------------------------------------------
+
+class ScopedOutputDirectory {
+  public:
+    ScopedOutputDirectory()
+        : path_(std::filesystem::temp_directory_path() /
+                ("memory_benchmark_runner_test_" +
+                 std::to_string(std::chrono::system_clock::now().time_since_epoch().count()))) {}
+
+    ~ScopedOutputDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path_, error);
+    }
+
+    ScopedOutputDirectory(const ScopedOutputDirectory&) = delete;
+    ScopedOutputDirectory& operator=(const ScopedOutputDirectory&) = delete;
+
+    [[nodiscard]] const std::filesystem::path& path() const {
+        return path_;
+    }
+
+  private:
+    std::filesystem::path path_;
+};
+
+MemoryBenchmarkSuite MakeSingleCaseSuite(std::string case_id = "test_q1",
+                                         std::string expected_answer = "blue",
+                                         nlohmann::json metadata = nullptr) {
+    EvalCase eval_case;
+    // benchmark_name intentionally left empty — the runner auto-populates it from
+    // suite.benchmark_name.
+    eval_case.case_id = case_id;
+    eval_case.session_id = "session_1";
+    eval_case.conversation = {
+        EvalConversationMessage{
+            .role = MessageRole::User,
+            .text = "My favorite color is blue.",
+        },
+        EvalConversationMessage{
+            .role = MessageRole::Assistant,
+            .text = "Got it, your favorite color is blue!",
+        },
+    };
+    eval_case.input = EvalInput{ .text = "What is my favorite color?" };
+    eval_case.expected_answer = expected_answer;
+
+    MemoryBenchmarkCase benchmark_case;
+    benchmark_case.eval_case = std::move(eval_case);
+    benchmark_case.metadata = std::move(metadata);
+
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "test_bench";
+    suite.cases.push_back(std::move(benchmark_case));
+    return suite;
+}
+
+// ---------------------------------------------------------------------------
+// RunMemoryBenchmark integration tests
+// ---------------------------------------------------------------------------
+
+TEST(RunMemoryBenchmarkTest, SingleCasePassesAndWritesArtifacts) {
+    ScopedOutputDirectory output_directory;
+    auto fake_client =
+        MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"The answer is blue.");
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.openai_client = fake_client;
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+
+    EXPECT_EQ(report->benchmark_name, "test_bench");
+    EXPECT_EQ(report->total_cases, 1U);
+    EXPECT_EQ(report->passed_cases, 1U);
+    EXPECT_EQ(report->failed_cases, 0U);
+    ASSERT_EQ(report->cases.size(), 1U);
+
+    const MemoryBenchmarkCaseReport& case_report = report->cases.front();
+    EXPECT_EQ(case_report.case_id, "test_q1");
+    EXPECT_TRUE(case_report.passed);
+    EXPECT_TRUE(case_report.final_reply.has_value());
+    EXPECT_EQ(case_report.expected_answer, "blue");
+    EXPECT_TRUE(case_report.artifact_path.has_value());
+
+    // Verify artifact and report files exist on disk.
+    EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "report.json"));
+    EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "artifacts" / "test_q1.json"));
+}
+
+TEST(RunMemoryBenchmarkTest, MultipleCasesTracksPassedAndFailed) {
+    ScopedOutputDirectory output_directory;
+    auto passing_client =
+        MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"some answer");
+
+    // Build a suite with two cases.
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "multi_bench";
+
+    for (const std::string& case_id : { "case_a", "case_b" }) {
+        EvalCase eval_case;
+        eval_case.case_id = case_id;
+        eval_case.session_id = "session_1";
+        eval_case.conversation = {
+            EvalConversationMessage{
+                .role = MessageRole::User,
+                .text = "Hello",
+            },
+            EvalConversationMessage{
+                .role = MessageRole::Assistant,
+                .text = "Hi there!",
+            },
+        };
+        eval_case.input = EvalInput{ .text = "Tell me something." };
+        eval_case.expected_answer = "something";
+
+        MemoryBenchmarkCase benchmark_case;
+        benchmark_case.eval_case = std::move(eval_case);
+        suite.cases.push_back(std::move(benchmark_case));
+    }
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.openai_client = passing_client;
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+
+    EXPECT_EQ(report->benchmark_name, "multi_bench");
+    EXPECT_EQ(report->total_cases, 2U);
+    EXPECT_EQ(report->passed_cases, 2U);
+    EXPECT_EQ(report->failed_cases, 0U);
+    ASSERT_EQ(report->cases.size(), 2U);
+    EXPECT_EQ(report->cases[0].case_id, "case_a");
+    EXPECT_EQ(report->cases[1].case_id, "case_b");
+
+    // Both artifact files should exist.
+    EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "artifacts" / "case_a.json"));
+    EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "artifacts" / "case_b.json"));
+    EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "report.json"));
+}
+
+TEST(RunMemoryBenchmarkTest, MetadataPreservedThroughRunLoop) {
+    ScopedOutputDirectory output_directory;
+    auto fake_client = MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"answer text");
+
+    const json metadata = json{ { "question_type", "temporal-reasoning" }, { "difficulty", 3 } };
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite("meta_q1", "expected", metadata);
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.openai_client = fake_client;
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+
+    ASSERT_EQ(report->cases.size(), 1U);
+    const MemoryBenchmarkCaseReport& case_report = report->cases.front();
+    EXPECT_FALSE(case_report.metadata.is_null());
+    EXPECT_EQ(case_report.metadata["question_type"], "temporal-reasoning");
+    EXPECT_EQ(case_report.metadata["difficulty"], 3);
+}
+
+TEST(RunMemoryBenchmarkTest, ValidateFailureReturnsError) {
+    auto failing_client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), /*full_text=*/"", /*response_id=*/"resp_test",
+        /*validate_status=*/absl::InternalError("connection refused"));
+
+    MemoryBenchmarkRunConfig config;
+    config.openai_client = failing_client;
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    EXPECT_FALSE(report.ok());
+    EXPECT_TRUE(absl::IsInternal(report.status()));
+}
+
+TEST(RunMemoryBenchmarkTest, EmptyReplyMarkedAsFailed) {
+    ScopedOutputDirectory output_directory;
+    // Client returns an empty string as the full_text, which means final_reply will be empty.
+    auto empty_client = MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"");
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.openai_client = empty_client;
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+
+    EXPECT_EQ(report->total_cases, 1U);
+    EXPECT_EQ(report->passed_cases, 0U);
+    EXPECT_EQ(report->failed_cases, 1U);
+    ASSERT_EQ(report->cases.size(), 1U);
+    EXPECT_FALSE(report->cases.front().passed);
+}
+
+TEST(RunMemoryBenchmarkTest, ArtifactFileContainsCaseAndExpectedAnswer) {
+    ScopedOutputDirectory output_directory;
+    auto fake_client =
+        MakeFakeOpenAiResponsesClient(absl::OkStatus(), /*full_text=*/"The color is blue.");
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.openai_client = fake_client;
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+
+    // Read and parse the artifact file.
+    const std::filesystem::path artifact_path =
+        output_directory.path() / "artifacts" / "test_q1.json";
+    ASSERT_TRUE(std::filesystem::exists(artifact_path));
+
+    std::ifstream artifact_file(artifact_path);
+    ASSERT_TRUE(artifact_file.is_open());
+    const json artifact = json::parse(artifact_file);
+
+    EXPECT_TRUE(artifact.contains("case"));
+    EXPECT_EQ(artifact["case"]["case_id"], "test_q1");
+    EXPECT_EQ(artifact["expected_answer"], "blue");
+    EXPECT_TRUE(artifact.contains("artifacts"));
+    EXPECT_TRUE(artifact.contains("final_reply"));
 }
 
 } // namespace

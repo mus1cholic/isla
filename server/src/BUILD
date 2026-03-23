@@ -427,6 +427,9 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":memory_benchmark_runner",
+        ":openai_responses_test_utils",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],

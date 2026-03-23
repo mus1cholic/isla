@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "absl/status/statusor.h"
@@ -73,5 +74,11 @@ RunMemoryBenchmark(MemoryBenchmarkRunConfig config, const MemoryBenchmarkSuite& 
 // Builds the aggregate report JSON. Exposed for unit testing the serialization independently.
 [[nodiscard]] nlohmann::ordered_json
 BuildMemoryBenchmarkReportJson(const MemoryBenchmarkReport& report);
+
+// Converts a case_id into a safe filename stem. Non-alphanumeric characters (except hyphens) are
+// replaced with underscores, consecutive underscores are collapsed, and leading/trailing
+// underscores are stripped. Returns "unnamed" for empty or all-special-character inputs. Exposed
+// for unit testing.
+[[nodiscard]] std::string SanitizeCaseIdForFilename(std::string_view case_id);
 
 } // namespace isla::server::evals

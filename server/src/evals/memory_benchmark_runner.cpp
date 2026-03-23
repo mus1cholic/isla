@@ -101,6 +101,28 @@ ordered_json BuildCaseArtifactJson(const MemoryBenchmarkCase& benchmark_case) {
 
 } // namespace
 
+std::string SanitizeCaseIdForFilename(std::string_view case_id) {
+    std::string result;
+    result.reserve(case_id.size());
+    for (const char ch : case_id) {
+        if (std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '-') {
+            result += ch;
+        } else {
+            // Collapse consecutive underscores.
+            if (result.empty() || result.back() != '_') {
+                result += '_';
+            }
+        }
+    }
+    // Strip leading/trailing underscores.
+    const std::size_t start = result.find_first_not_of('_');
+    if (start == std::string::npos) {
+        return "unnamed";
+    }
+    const std::size_t end = result.find_last_not_of('_');
+    return result.substr(start, end - start + 1U);
+}
+
 ordered_json BuildMemoryBenchmarkReportJson(const MemoryBenchmarkReport& report) {
     ordered_json cases = ordered_json::array();
     for (const MemoryBenchmarkCaseReport& case_report : report.cases) {
@@ -133,6 +155,19 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
     }
     if (suite.cases.empty()) {
         return absl::InvalidArgumentError("benchmark suite must include at least one case");
+    }
+
+    // Validate required per-case fields early so adapters get clear, case-indexed errors.
+    for (std::size_t i = 0; i < suite.cases.size(); ++i) {
+        const EvalCase& eval_case = suite.cases[i].eval_case;
+        if (eval_case.case_id.empty()) {
+            return absl::InvalidArgumentError(
+                absl::StrCat("case ", i, ": case_id must not be empty"));
+        }
+        if (eval_case.session_id.empty()) {
+            return absl::InvalidArgumentError(absl::StrCat("case ", i, " (", eval_case.case_id,
+                                                           "): session_id must not be empty"));
+        }
     }
 
     // Set up OpenAI client.
@@ -174,9 +209,14 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
     for (std::size_t case_idx = 0; case_idx < suite.cases.size(); ++case_idx) {
         const MemoryBenchmarkCase& benchmark_case = suite.cases[case_idx];
 
+        // Ensure benchmark_name is populated from the suite so adapters don't need to set it
+        // redundantly on every case.
+        EvalCase eval_case = benchmark_case.eval_case;
+        eval_case.benchmark_name = suite.benchmark_name;
+
         LOG(INFO) << suite.benchmark_name << " running case " << (case_idx + 1) << "/"
-                  << suite.cases.size() << " id=" << benchmark_case.eval_case.case_id
-                  << " conversation_turns=" << benchmark_case.eval_case.conversation.size();
+                  << suite.cases.size() << " id=" << eval_case.case_id
+                  << " conversation_turns=" << eval_case.conversation.size();
 
         EvalRunner runner(EvalRunnerConfig{
             .responder_config =
@@ -191,14 +231,14 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
         });
 
         MemoryBenchmarkCaseReport case_report{
-            .case_id = benchmark_case.eval_case.case_id,
-            .expected_answer = benchmark_case.eval_case.expected_answer,
+            .case_id = eval_case.case_id,
+            .expected_answer = eval_case.expected_answer,
             .metadata = benchmark_case.metadata,
         };
 
-        const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(benchmark_case.eval_case);
+        const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(eval_case);
         if (!artifacts.ok()) {
-            LOG(WARNING) << suite.benchmark_name << " case " << benchmark_case.eval_case.case_id
+            LOG(WARNING) << suite.benchmark_name << " case " << eval_case.case_id
                          << " failed: " << artifacts.status().message();
             report.failed_cases += 1U;
             report.cases.push_back(std::move(case_report));
@@ -214,19 +254,20 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
         case_report.passed = (artifacts->status == EvalTurnStatus::kSucceeded) &&
                              case_report.final_reply.has_value();
 
-        // Write per-case artifact file.
+        // Write per-case artifact file. Sanitize case_id to prevent path traversal or
+        // invalid filenames; the original case_id is preserved in the JSON content.
         const std::filesystem::path artifact_path =
-            artifacts_directory / (benchmark_case.eval_case.case_id + ".json");
+            artifacts_directory / (SanitizeCaseIdForFilename(eval_case.case_id) + ".json");
         ordered_json case_artifact = ordered_json::object();
         case_artifact["case"] = BuildCaseArtifactJson(benchmark_case);
         case_artifact["artifacts"] = EvalArtifactsToJson(*artifacts);
         case_artifact["final_reply"] = case_report.final_reply;
-        case_artifact["expected_answer"] = benchmark_case.eval_case.expected_answer;
+        case_artifact["expected_answer"] = eval_case.expected_answer;
 
         if (const absl::Status write_status = WriteJsonFile(artifact_path, case_artifact);
             !write_status.ok()) {
             LOG(WARNING) << suite.benchmark_name << " failed to write artifact for case "
-                         << benchmark_case.eval_case.case_id << ": " << write_status.message();
+                         << eval_case.case_id << ": " << write_status.message();
             case_report.passed = false;
         } else {
             case_report.artifact_path = DisplayPath(artifact_path);
