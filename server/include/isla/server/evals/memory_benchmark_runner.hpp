@@ -68,7 +68,7 @@ struct MemoryBenchmarkRunConfig {
 // directory. A case "passes" when the evaluated turn completes successfully with a non-empty reply;
 // actual answer evaluation against expected_answer is deferred to Phase 5 (autoraters).
 [[nodiscard]] absl::StatusOr<MemoryBenchmarkReport>
-RunMemoryBenchmark(MemoryBenchmarkRunConfig config, MemoryBenchmarkSuite suite);
+RunMemoryBenchmark(MemoryBenchmarkRunConfig config, const MemoryBenchmarkSuite& suite);
 
 // Builds the aggregate report JSON. Exposed for unit testing the serialization independently.
 [[nodiscard]] nlohmann::ordered_json

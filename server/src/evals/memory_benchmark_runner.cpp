@@ -126,8 +126,8 @@ ordered_json BuildMemoryBenchmarkReportJson(const MemoryBenchmarkReport& report)
     return payload;
 }
 
-absl::StatusOr<MemoryBenchmarkReport>
-RunMemoryBenchmark(MemoryBenchmarkRunConfig config, MemoryBenchmarkSuite suite) {
+absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfig config,
+                                                         const MemoryBenchmarkSuite& suite) {
     if (suite.benchmark_name.empty()) {
         return absl::InvalidArgumentError("benchmark_name must not be empty");
     }
@@ -140,8 +140,7 @@ RunMemoryBenchmark(MemoryBenchmarkRunConfig config, MemoryBenchmarkSuite suite) 
     if (openai_client == nullptr) {
         openai_client = CreateOpenAiResponsesClient(config.openai_config);
     }
-    if (const absl::Status validate_status = openai_client->Validate();
-        !validate_status.ok()) {
+    if (const absl::Status validate_status = openai_client->Validate(); !validate_status.ok()) {
         return validate_status;
     }
     if (const absl::Status warmup_status = openai_client->WarmUp(); !warmup_status.ok()) {

@@ -144,15 +144,14 @@ TEST(RunMemoryBenchmarkTest, EmptyBenchmarkNameReturnsError) {
     suite.benchmark_name = "";
     suite.cases.push_back(MemoryBenchmarkCase{});
     const absl::StatusOr<MemoryBenchmarkReport> result =
-        RunMemoryBenchmark(MemoryBenchmarkRunConfig{}, std::move(suite));
+        RunMemoryBenchmark(MemoryBenchmarkRunConfig{}, suite);
     EXPECT_FALSE(result.ok());
     EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
 }
 
 TEST(RunMemoryBenchmarkTest, EmptyCasesReturnsError) {
     const absl::StatusOr<MemoryBenchmarkReport> result = RunMemoryBenchmark(
-        MemoryBenchmarkRunConfig{},
-        MemoryBenchmarkSuite{ .benchmark_name = "test" });
+        MemoryBenchmarkRunConfig{}, MemoryBenchmarkSuite{ .benchmark_name = "test" });
     EXPECT_FALSE(result.ok());
     EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
 }
