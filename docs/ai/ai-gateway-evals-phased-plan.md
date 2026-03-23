@@ -854,7 +854,7 @@ benchmark requires only a normalization adapter and a thin CLI entry point.
 - Report and artifact serialization are covered by unit tests.
 - Adding a new external benchmark requires only an adapter that returns `MemoryBenchmarkSuite`.
 
-## Phase 4.1: LongMemEval Adapter
+## Phase 5: LongMemEval Adapter
 
 ### Goal
 
@@ -888,7 +888,7 @@ it through the generic memory benchmark runner.
 - Adapter parsing and normalization are covered by unit tests.
 - Known fidelity gaps, if any, are written down instead of silently ignored.
 
-## Phase 4.2 (Optional): LoCoMo Adapter
+## Phase 5.1 (Optional): LoCoMo Adapter
 
 ### Goal
 
@@ -905,14 +905,14 @@ through the generic memory benchmark runner.
 ### Design Notes
 
 - LoCoMo's exact schema and any structural quirks should be investigated during implementation.
-- The adapter follows the same pattern established by the LongMemEval adapter in Phase 4.1.
+- The adapter follows the same pattern established by the LongMemEval adapter in Phase 5.
 
 ### Exit Criteria
 
 - LoCoMo cases can be executed through the Isla eval runner via `RunMemoryBenchmark`.
 - Known fidelity gaps, if any, are written down instead of silently ignored.
 
-## Phase 5: Multiple Autoraters For Memory + Final Answer
+## Phase 6: Multiple Autoraters For Memory + Final Answer
 
 ### Goal
 
@@ -950,7 +950,7 @@ dimensions.
 - One benchmark run can produce more than one rater result.
 - Memory and final answer can be inspected separately for the same case.
 
-## Phase 5.5: Judge Calibration + Failure Analysis Workflow
+## Phase 6.5: Judge Calibration + Failure Analysis Workflow
 
 ### Goal
 
@@ -973,7 +973,7 @@ Make autorater output trustworthy enough to drive iteration instead of becoming 
 - The repository has a repeatable judge sanity-check workflow.
 - Developers can inspect why a case failed without manually reconstructing the entire turn.
 
-## Phase 6: Reporting + Regression Gates
+## Phase 7: Reporting + Regression Gates
 
 ### Goal
 
@@ -1001,7 +1001,7 @@ Turn eval runs into useful regression signals for daily development and model/ru
 - Eval runs can be used to compare two changes meaningfully.
 - The repository has at least one practical regression gate tied to benchmark output.
 
-## Phase 7: Holistic And Future Evaluation Surfaces
+## Phase 8: Holistic And Future Evaluation Surfaces
 
 ### Goal
 
@@ -1022,7 +1022,7 @@ surfaces are mature.
 - The framework can evaluate more than the current v1 text-only responder path without rewriting
   the core evaluation architecture.
 
-## Optional Phase 8: Parallel Evaluation Execution
+## Optional Phase 9: Parallel Evaluation Execution
 
 ### Goal
 
@@ -1073,13 +1073,13 @@ Recommended implementation order:
 7. Phase 3.3
 8. Phase 3.4
 9. Phase 4
-10. Phase 4.1
-11. Optional Phase 4.2, only when LoCoMo coverage is needed
-12. Phase 5
-13. Phase 5.5
-14. Phase 6
-15. Phase 7
-16. Optional Phase 8, only when eval throughput becomes a practical bottleneck
+10. Phase 5
+11. Optional Phase 5.1, only when LoCoMo coverage is needed
+12. Phase 6
+13. Phase 6.5
+14. Phase 7
+15. Phase 8
+16. Optional Phase 9, only when eval throughput becomes a practical bottleneck
 
 The critical-path rule is:
 
@@ -1090,7 +1090,7 @@ The critical-path rule is:
   slice until Phase 3.3 has established the backend-owned turn seam clearly enough
 - do not treat timeout-based post-turn memory settling as a stable long-term benchmark contract
   once Phase 3.4 work begins
-- do not use autoraters as hard regression gates until Phase 5.5 has produced enough calibration
+- do not use autoraters as hard regression gates until Phase 6.5 has produced enough calibration
   confidence
 
 ## Changelog
@@ -1098,7 +1098,7 @@ The critical-path rule is:
 - 2026-03-23: completed Phase 4 by extracting a generic `MemoryBenchmarkRunner` with
   `MemoryBenchmarkCase`, `MemoryBenchmarkSuite`, and `RunMemoryBenchmark` that owns the shared run
   loop, artifact writing, and report generation. Split the previous Phase 4 into Phase 4
-  (infrastructure), Phase 4.1 (LongMemEval adapter), and Phase 4.2 (optional LoCoMo adapter) so
+  (infrastructure), Phase 5 (LongMemEval adapter), and Phase 5.1 (optional LoCoMo adapter) so
   that adding a new external benchmark requires only a normalization adapter and a thin CLI entry
   point.
 - 2026-03-22: completed Phase 3.4 by replacing the timeout-based post-turn memory settling loop

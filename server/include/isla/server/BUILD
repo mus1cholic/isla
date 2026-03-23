@@ -1,6 +1,7 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
 exports_files([
+    "evals/benchmark_adapter_utils.hpp",
     "evals/eval_json.hpp",
     "embedding_client.hpp",
     "evals/isla_custom_memory_benchmark.hpp",
@@ -33,6 +34,7 @@ cc_library(
         "ai_gateway_planner.hpp",
         "ai_gateway_step_registry.hpp",
         "embedding_client.hpp",
+        "evals/benchmark_adapter_utils.hpp",
         "evals/eval_json.hpp",
         "evals/isla_custom_memory_benchmark.hpp",
         "evals/memory_benchmark_runner.hpp",
