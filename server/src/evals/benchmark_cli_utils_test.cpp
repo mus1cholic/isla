@@ -53,5 +53,20 @@ TEST(BenchmarkCliUtilsTest, ParseBenchmarkStartupConfigAcceptsCliApiKey) {
     EXPECT_EQ(parsed->openai_config.api_key, "cli_key");
 }
 
+TEST(BenchmarkCliUtilsTest, ParseBenchmarkStartupConfigDoesNotMutateCallerArgvPointers) {
+    std::vector<char*> argv{ kArg0.data(), kApiKey.data(), kMainLlmModel.data() };
+    const std::vector<char*> original_argv = argv;
+
+    const absl::StatusOr<isla::server::ai_gateway::ParsedStartupConfig> parsed =
+        ParseBenchmarkStartupConfig(
+            argv, [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    ASSERT_EQ(argv.size(), original_argv.size());
+    for (std::size_t index = 0; index < argv.size(); ++index) {
+        EXPECT_EQ(argv[index], original_argv[index]);
+    }
+}
+
 } // namespace
 } // namespace isla::server::evals

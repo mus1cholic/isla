@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -64,7 +65,9 @@ void ApplyDeterministicSampling(std::vector<CaseType>* cases, double sample_rate
     std::mt19937 random_engine(random_seed);
     std::bernoulli_distribution include_case(sample_rate);
     std::vector<CaseType> sampled_cases;
-    sampled_cases.reserve(cases->size());
+    const double estimated_sampled_count =
+        std::ceil(static_cast<double>(cases->size()) * sample_rate);
+    sampled_cases.reserve(static_cast<std::size_t>(estimated_sampled_count));
     for (CaseType& benchmark_case : *cases) {
         if (include_case(random_engine)) {
             sampled_cases.push_back(std::move(benchmark_case));
