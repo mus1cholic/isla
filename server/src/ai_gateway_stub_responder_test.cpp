@@ -1,524 +1,23 @@
-#include "isla/server/ai_gateway_stub_responder.hpp"
+#include "ai_gateway_stub_responder_test_support.hpp"
 
-#include <algorithm>
 #include <array>
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
-#include <functional>
-#include <future>
-#include <memory>
-#include <mutex>
-#include <stdexcept>
-#include <string>
-#include <thread>
-#include <type_traits>
-#include <utility>
-#include <variant>
-#include <vector>
-
-#include <gmock/gmock.h>
-#include <gtest/gtest.h>
-
-#include "absl/status/status.h"
-#include "ai_gateway_test_mocks.hpp"
-#include "isla/server/ai_gateway_server.hpp"
-#include "isla/server/memory/memory_store.hpp"
-#include "isla/server/memory/prompt_loader.hpp"
-#include "openai_responses_test_utils.hpp"
-#include "server/memory/src/memory_store_mock.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
 
-using namespace std::chrono_literals;
-using ::testing::_;
-using ::testing::NiceMock;
-using ::testing::Return;
+using namespace test_support;
 
-absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& request,
-                                          const OpenAiResponsesEventCallback& on_event,
-                                          std::string_view prefix);
-
-struct EmittedEvent {
-    std::string op;
-    std::string turn_id;
-    std::string payload;
-};
-
-struct TelemetryEventRecord {
+struct PromptBudgetCase {
     std::string name;
+    std::function<void(GatewayStubResponderConfig&)> configure;
+    std::string expected_second_turn_op;
+    std::string expected_second_turn_payload;
+    bool expected_payload_is_prefix = false;
 };
 
-struct TelemetryPhaseRecord {
-    std::string name;
-    TurnTelemetryContext::Clock::time_point started_at;
-    TurnTelemetryContext::Clock::time_point completed_at;
-};
-
-struct TurnFinishedRecord {
-    std::string outcome;
-};
-
-std::shared_ptr<test::FakeOpenAiResponsesClient>
-MakeEchoOpenAiResponsesClient(std::string prefix = "stub echo: ") {
-    return test::MakeFakeOpenAiResponsesClient(
-        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [prefix = std::move(prefix)](const OpenAiResponsesRequest& request,
-                                     const OpenAiResponsesEventCallback& on_event) {
-            return EmitMidTermAwareEchoResponse(request, on_event, prefix);
-        });
-}
-
-absl::Status EmitResponseText(std::string_view text, const OpenAiResponsesEventCallback& on_event,
-                              std::string_view response_id = "resp_test") {
-    const absl::Status delta_status =
-        on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = std::string(text) });
-    if (!delta_status.ok()) {
-        return delta_status;
-    }
-    return on_event(OpenAiResponsesCompletedEvent{
-        .response_id = std::string(response_id),
-    });
-}
-
-const std::string& MidTermFlushDeciderPromptText() {
-    static const std::string prompt = [] {
-        const absl::StatusOr<std::string> loaded = isla::server::memory::LoadPrompt(
-            isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
-        if (!loaded.ok()) {
-            throw std::runtime_error("failed to load mid-term flush decider prompt");
-        }
-        return *loaded;
-    }();
-    return prompt;
-}
-
-const std::string& MidTermCompactorPromptText() {
-    static const std::string prompt = [] {
-        const absl::StatusOr<std::string> loaded = isla::server::memory::LoadPrompt(
-            isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
-        if (!loaded.ok()) {
-            throw std::runtime_error("failed to load mid-term compactor prompt");
-        }
-        return *loaded;
-    }();
-    return prompt;
-}
-
-bool IsMidTermMemoryRequest(const OpenAiResponsesRequest& request) {
-    return request.system_prompt == MidTermFlushDeciderPromptText() ||
-           request.system_prompt == MidTermCompactorPromptText();
-}
-
-absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& request,
-                                          const OpenAiResponsesEventCallback& on_event,
-                                          std::string_view prefix = "stub echo: ") {
-    if (request.system_prompt == MidTermFlushDeciderPromptText()) {
-        return EmitResponseText(R"json({
-            "should_flush": false,
-            "item_id": null,
-            "split_at": null,
-            "reasoning": "No completed episode boundary."
-        })json",
-                                on_event, "resp_decider");
-    }
-    if (request.system_prompt == MidTermCompactorPromptText()) {
-        return EmitResponseText(R"json({
-            "tier1_detail": "Fallback detail.",
-            "tier2_summary": "Fallback summary.",
-            "tier3_ref": "Fallback ref.",
-            "tier3_keywords": ["fallback", "summary", "memory", "test", "compactor"],
-            "salience": 5
-        })json",
-                                on_event, "resp_compactor");
-    }
-
-    const std::string text = std::string(prefix) + test::ExtractLatestPromptLine(request.user_text);
-    const std::size_t midpoint = text.size() / 2U;
-    const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
-        .text_delta = text.substr(0, midpoint),
-    });
-    if (!first_status.ok()) {
-        return first_status;
-    }
-    const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
-        .text_delta = text.substr(midpoint),
-    });
-    if (!second_status.ok()) {
-        return second_status;
-    }
-    return on_event(OpenAiResponsesCompletedEvent{
-        .response_id = "resp_test",
-    });
-}
-
-bool ContainsTelemetryName(const std::vector<TelemetryEventRecord>& events, std::string_view name) {
-    return std::find_if(events.begin(), events.end(), [name](const TelemetryEventRecord& event) {
-               return event.name == name;
-           }) != events.end();
-}
-
-bool ContainsTelemetryName(const std::vector<TelemetryPhaseRecord>& phases, std::string_view name) {
-    return std::find_if(phases.begin(), phases.end(), [name](const TelemetryPhaseRecord& phase) {
-               return phase.name == name;
-           }) != phases.end();
-}
-
-class RecordingTelemetrySink final : public NiceMock<test::MockTelemetrySink> {
-  public:
-    RecordingTelemetrySink() {
-        ON_CALL(*this, OnEvent(_, _, _))
-            .WillByDefault([this](const TurnTelemetryContext& context, std::string_view event_name,
-                                  TurnTelemetryContext::Clock::time_point at) {
-                static_cast<void>(context);
-                static_cast<void>(at);
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    events_.push_back(TelemetryEventRecord{ .name = std::string(event_name) });
-                }
-                cv_.notify_all();
-            });
-        ON_CALL(*this, OnPhase(_, _, _, _))
-            .WillByDefault([this](const TurnTelemetryContext& context, std::string_view phase_name,
-                                  TurnTelemetryContext::Clock::time_point started_at,
-                                  TurnTelemetryContext::Clock::time_point completed_at) {
-                static_cast<void>(context);
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    phases_.push_back(TelemetryPhaseRecord{
-                        .name = std::string(phase_name),
-                        .started_at = started_at,
-                        .completed_at = completed_at,
-                    });
-                }
-                cv_.notify_all();
-            });
-        ON_CALL(*this, OnTurnFinished(_, _, _))
-            .WillByDefault([this](const TurnTelemetryContext& context, std::string_view outcome,
-                                  TurnTelemetryContext::Clock::time_point finished_at) {
-                static_cast<void>(context);
-                static_cast<void>(finished_at);
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    finished_.push_back(TurnFinishedRecord{ .outcome = std::string(outcome) });
-                }
-                cv_.notify_all();
-            });
-    }
-
-    bool WaitForFinishedCount(std::size_t expected_count) const {
-        std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, 2s, [&] { return finished_.size() >= expected_count; });
-    }
-
-    [[nodiscard]] std::vector<TelemetryEventRecord> events() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return events_;
-    }
-
-    [[nodiscard]] std::vector<TelemetryPhaseRecord> phases() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return phases_;
-    }
-
-    [[nodiscard]] std::vector<TurnFinishedRecord> finished() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return finished_;
-    }
-
-  private:
-    mutable std::mutex mutex_;
-    mutable std::condition_variable cv_;
-    mutable std::vector<TelemetryEventRecord> events_;
-    mutable std::vector<TelemetryPhaseRecord> phases_;
-    mutable std::vector<TurnFinishedRecord> finished_;
-};
-
-class RecordingLiveSession final : public GatewayLiveSession {
-  public:
-    explicit RecordingLiveSession(std::string session_id) : session_id_(std::move(session_id)) {}
-
-    [[nodiscard]] const std::string& session_id() const override {
-        return session_id_;
-    }
-
-    [[nodiscard]] bool is_closed() const override {
-        return closed_;
-    }
-
-    void AsyncEmitTextOutput(std::string turn_id, std::string text,
-                             GatewayEmitCallback on_complete) override {
-        absl::Status status = absl::OkStatus();
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (fail_next_text_output_) {
-                fail_next_text_output_ = false;
-                status = absl::UnavailableError("text output failed");
-            }
-        }
-        if (status.ok()) {
-            EmittedEvent event{
-                .op = "text.output",
-                .turn_id = std::move(turn_id),
-                .payload = std::move(text),
-            };
-            RecordEvent(event);
-            InvokeHook(event);
-        }
-        on_complete(std::move(status));
-    }
-
-    void AsyncEmitAudioOutput(std::string turn_id, std::string mime_type, std::string audio_base64,
-                              GatewayEmitCallback on_complete) override {
-        EmittedEvent event{
-            .op = "audio.output",
-            .turn_id = std::move(turn_id),
-            .payload = mime_type + ":" + audio_base64,
-        };
-        RecordEvent(event);
-        InvokeHook(event);
-        on_complete(absl::OkStatus());
-    }
-
-    void AsyncEmitTurnCompleted(std::string turn_id, GatewayEmitCallback on_complete) override {
-        EmittedEvent event{
-            .op = "turn.completed",
-            .turn_id = std::move(turn_id),
-            .payload = "",
-        };
-        RecordEvent(event);
-        InvokeHook(event);
-        on_complete(absl::OkStatus());
-    }
-
-    void AsyncEmitTurnCancelled(std::string turn_id, GatewayEmitCallback on_complete) override {
-        RecordEvent({
-            .op = "turn.cancelled",
-            .turn_id = std::move(turn_id),
-            .payload = "",
-        });
-        on_complete(absl::OkStatus());
-    }
-
-    void AsyncEmitError(std::optional<std::string> turn_id, std::string code, std::string message,
-                        GatewayEmitCallback on_complete) override {
-        absl::Status status = absl::OkStatus();
-        bool delay_completion = false;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (fail_next_error_output_) {
-                fail_next_error_output_ = false;
-                status = absl::UnavailableError("error output failed");
-            }
-            delay_completion = delay_next_error_completion_;
-            if (delay_completion) {
-                delay_next_error_completion_ = false;
-                pending_error_completion_ = std::move(on_complete);
-            }
-        }
-        if (status.ok()) {
-            EmittedEvent event{
-                .op = "error",
-                .turn_id = turn_id.value_or(""),
-                .payload = code + ":" + message,
-            };
-            RecordEvent(event);
-            InvokeHook(event);
-        }
-        if (!delay_completion) {
-            on_complete(std::move(status));
-        }
-    }
-
-    bool WaitForEventCount(std::size_t count) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, 2s, [&] { return events_.size() >= count; });
-    }
-
-    [[nodiscard]] std::vector<EmittedEvent> events() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return events_;
-    }
-
-    void FailNextTextOutput() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        fail_next_text_output_ = true;
-    }
-
-    void FailNextErrorOutput() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        fail_next_error_output_ = true;
-    }
-
-    void MarkClosed() {
-        closed_ = true;
-    }
-
-    void SetEventHook(std::function<void(const EmittedEvent&)> hook) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        event_hook_ = std::move(hook);
-    }
-
-    void DelayNextErrorCompletion() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        delay_next_error_completion_ = true;
-    }
-
-    void ReleasePendingErrorCompletion(absl::Status status = absl::OkStatus()) {
-        GatewayEmitCallback callback;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            callback = std::move(pending_error_completion_);
-        }
-        if (callback) {
-            callback(std::move(status));
-        }
-    }
-
-  private:
-    void RecordEvent(EmittedEvent event) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            events_.push_back(std::move(event));
-        }
-        cv_.notify_all();
-    }
-
-    void InvokeHook(const EmittedEvent& event) {
-        std::function<void(const EmittedEvent&)> hook;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            hook = event_hook_;
-        }
-        if (hook) {
-            hook(event);
-        }
-    }
-
-    std::string session_id_;
-    mutable std::mutex mutex_;
-    std::condition_variable cv_;
-    std::vector<EmittedEvent> events_;
-    std::function<void(const EmittedEvent&)> event_hook_;
-    GatewayEmitCallback pending_error_completion_;
-    bool delay_next_error_completion_ = false;
-    bool fail_next_text_output_ = false;
-    bool fail_next_error_output_ = false;
-    bool closed_ = false;
-};
-
-class ResponderRegistryAttachment {
-  public:
-    explicit ResponderRegistryAttachment(GatewayStubResponder& responder)
-        : responder_(responder), registry_(&responder_) {
-        responder_.AttachSessionRegistry(&registry_);
-    }
-
-    ~ResponderRegistryAttachment() {
-        registry_.NotifyServerStopping();
-        responder_.AttachSessionRegistry(nullptr);
-    }
-
-    ResponderRegistryAttachment(const ResponderRegistryAttachment&) = delete;
-    ResponderRegistryAttachment& operator=(const ResponderRegistryAttachment&) = delete;
-
-    [[nodiscard]] GatewaySessionRegistry& registry() {
-        return registry_;
-    }
-
-  private:
-    GatewayStubResponder& responder_;
-    GatewaySessionRegistry registry_;
-};
-
-class GatewayStubResponderTest : public ::testing::Test {
-  protected:
-    GatewayStubResponderTest()
-        : responder_(GatewayStubResponderConfig{
-              .response_delay = 20ms,
-              .openai_client = MakeEchoOpenAiResponsesClient(),
-          }),
-          session_(std::make_shared<RecordingLiveSession>("srv_test")) {
-        registry_attachment_ = std::make_unique<ResponderRegistryAttachment>(responder_);
-        registry_attachment_->registry().RegisterSession(session_);
-    }
-
-    void SetUp() override {
-        responder_.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-    }
-
-    GatewayStubResponder responder_;
-    std::unique_ptr<ResponderRegistryAttachment> registry_attachment_;
-    std::shared_ptr<RecordingLiveSession> session_;
-};
-
-class RecordingGatewayMemoryStore final
-    : public NiceMock<isla::server::memory::test::MockMemoryStore> {
-  public:
-    RecordingGatewayMemoryStore() {
-        ON_CALL(*this, WarmUp()).WillByDefault(Return(absl::OkStatus()));
-        ON_CALL(*this, UpsertSession(_))
-            .WillByDefault([this](const isla::server::memory::MemorySessionRecord& record) {
-                ++upsert_session_attempts;
-                if (next_upsert_session_status_index < upsert_session_statuses.size()) {
-                    const absl::Status status =
-                        upsert_session_statuses[next_upsert_session_status_index++];
-                    if (!status.ok()) {
-                        return status;
-                    }
-                }
-                session_records.push_back(record);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, AppendConversationMessage(_))
-            .WillByDefault([this](const isla::server::memory::ConversationMessageWrite& write) {
-                message_writes.push_back(write);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, ReplaceConversationItemWithEpisodeStub(_))
-            .WillByDefault([](const isla::server::memory::EpisodeStubWrite& write) {
-                static_cast<void>(write);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, SplitConversationItemWithEpisodeStub(_))
-            .WillByDefault([](const isla::server::memory::SplitEpisodeStubWrite& write) {
-                static_cast<void>(write);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, UpsertMidTermEpisode(_))
-            .WillByDefault([](const isla::server::memory::MidTermEpisodeWrite& write) {
-                static_cast<void>(write);
-                return absl::OkStatus();
-            });
-        ON_CALL(*this, ListMidTermEpisodes(_))
-            .WillByDefault([](std::string_view session_id)
-                               -> absl::StatusOr<std::vector<isla::server::memory::Episode>> {
-                static_cast<void>(session_id);
-                return std::vector<isla::server::memory::Episode>{};
-            });
-        ON_CALL(*this, GetMidTermEpisode(_, _))
-            .WillByDefault([](std::string_view session_id, std::string_view episode_id)
-                               -> absl::StatusOr<std::optional<isla::server::memory::Episode>> {
-                static_cast<void>(session_id);
-                static_cast<void>(episode_id);
-                return std::nullopt;
-            });
-        ON_CALL(*this, LoadSnapshot(_))
-            .WillByDefault(
-                [](std::string_view session_id)
-                    -> absl::StatusOr<std::optional<isla::server::memory::MemoryStoreSnapshot>> {
-                    static_cast<void>(session_id);
-                    return std::nullopt;
-                });
-    }
-
-    std::vector<isla::server::memory::MemorySessionRecord> session_records;
-    std::vector<isla::server::memory::ConversationMessageWrite> message_writes;
-    std::vector<absl::Status> upsert_session_statuses;
-    std::size_t next_upsert_session_status_index = 0;
-    std::size_t upsert_session_attempts = 0;
-};
+class GatewayStubResponderPromptBudgetTest
+    : public GatewayStubResponderStandaloneFixture,
+      public ::testing::WithParamInterface<PromptBudgetCase> {};
 
 TEST_F(GatewayStubResponderTest, SessionStartCreatesMemoryPromptBeforeAnyTurn) {
     const absl::StatusOr<std::string> prompt = responder_.RenderSessionMemoryPrompt("srv_test");
@@ -527,127 +26,79 @@ TEST_F(GatewayStubResponderTest, SessionStartCreatesMemoryPromptBeforeAnyTurn) {
     EXPECT_NE(prompt->find("- (empty)"), std::string::npos);
 }
 
-TEST(GatewayStubResponderStandaloneTest, SessionStartPersistsSessionBeforeFirstTurn) {
+TEST_F(GatewayStubResponderStandaloneFixture, SessionStartPersistsSessionBeforeFirstTurn) {
     auto store = std::make_shared<RecordingGatewayMemoryStore>();
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .memory_user_id = "gateway_user",
-        .memory_store = store,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
+    InitializeResponder(MakeStoreEchoConfig(store));
 
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    StartSession();
     ASSERT_EQ(store->session_records.size(), 1U);
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
+    AcceptTurn("turn_1", "hello");
 
-    ASSERT_TRUE(session->WaitForEventCount(2U));
+    ASSERT_TRUE(session().WaitForEventCount(2U));
     EXPECT_EQ(store->session_records.size(), 1U);
     ASSERT_EQ(store->message_writes.size(), 2U);
     EXPECT_EQ(store->message_writes[0].content, "hello");
     EXPECT_EQ(store->message_writes[1].content, "stub echo: hello");
 }
 
-TEST(GatewayStubResponderStandaloneTest, SessionStartRetriesTransientPersistenceFailures) {
+TEST_F(GatewayStubResponderStandaloneFixture, SessionStartRetriesTransientPersistenceFailures) {
     auto store = std::make_shared<RecordingGatewayMemoryStore>();
     store->upsert_session_statuses = {
         absl::UnavailableError("supabase unavailable"),
         absl::DeadlineExceededError("supabase timeout"),
     };
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .session_start_persistence_max_attempts = 3,
-        .session_start_persistence_retry_delay = 0ms,
-        .memory_user_id = "gateway_user",
-        .memory_store = store,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
+    GatewayStubResponderConfig config = MakeStoreEchoConfig(store);
+    config.session_start_persistence_max_attempts = 3;
+    config.session_start_persistence_retry_delay = 0ms;
+    InitializeResponder(std::move(config));
 
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    StartSession();
 
     EXPECT_EQ(store->upsert_session_attempts, 3U);
     ASSERT_EQ(store->session_records.size(), 1U);
-    EXPECT_TRUE(session->events().empty());
+    EXPECT_TRUE(session().events().empty());
 }
 
-TEST(GatewayStubResponderStandaloneTest, SessionStartDoesNotRetryNonRetryableFailures) {
+TEST_F(GatewayStubResponderStandaloneFixture, SessionStartDoesNotRetryNonRetryableFailures) {
     auto store = std::make_shared<RecordingGatewayMemoryStore>();
     store->upsert_session_statuses = {
         absl::PermissionDeniedError("supabase denied"),
         absl::UnavailableError("should not be consumed"),
     };
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .session_start_persistence_max_attempts = 3,
-        .session_start_persistence_retry_delay = 0ms,
-        .memory_user_id = "gateway_user",
-        .memory_store = store,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
+    GatewayStubResponderConfig config = MakeStoreEchoConfig(store);
+    config.session_start_persistence_max_attempts = 3;
+    config.session_start_persistence_retry_delay = 0ms;
+    InitializeResponder(std::move(config));
 
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    StartSession();
 
-    ASSERT_TRUE(session->WaitForEventCount(1U));
+    const std::vector<EmittedEvent> events = WaitForEvents(1U);
     EXPECT_EQ(store->upsert_session_attempts, 1U);
     ASSERT_TRUE(store->session_records.empty());
-
-    const std::vector<EmittedEvent> events = session->events();
     ASSERT_EQ(events.size(), 1U);
     EXPECT_EQ(events[0].op, "error");
     EXPECT_EQ(events[0].turn_id, "");
     EXPECT_EQ(events[0].payload, "internal_error:failed to initialize session memory");
 }
 
-TEST(GatewayStubResponderStandaloneTest, DuplicateSessionStartDoesNotPoisonHealthySession) {
+TEST_F(GatewayStubResponderStandaloneFixture, DuplicateSessionStartDoesNotPoisonHealthySession) {
     auto store = std::make_shared<RecordingGatewayMemoryStore>();
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .memory_user_id = "gateway_user",
-        .memory_store = store,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
+    InitializeResponder(MakeStoreEchoConfig(store));
 
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    StartSession();
+    StartSession();
 
-    ASSERT_TRUE(session->WaitForEventCount(1U));
-    const std::vector<EmittedEvent> startup_events = session->events();
-    ASSERT_EQ(startup_events.size(), 1U);
-    EXPECT_EQ(startup_events[0].op, "error");
-    EXPECT_EQ(startup_events[0].payload, "internal_error:failed to initialize session memory");
+    {
+        const std::vector<EmittedEvent> startup_events = WaitForEvents(1U);
+        ASSERT_EQ(startup_events.size(), 1U);
+        EXPECT_EQ(startup_events[0].op, "error");
+        EXPECT_EQ(startup_events[0].payload, "internal_error:failed to initialize session memory");
+    }
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
+    AcceptTurn("turn_1", "hello");
 
-    ASSERT_TRUE(session->WaitForEventCount(3U));
-    const std::vector<EmittedEvent> events = session->events();
+    const std::vector<EmittedEvent> events = WaitForEvents(3U);
     ASSERT_EQ(events.size(), 3U);
     EXPECT_EQ(events[1].op, "text.output");
     EXPECT_EQ(events[1].turn_id, "turn_1");
@@ -656,42 +107,27 @@ TEST(GatewayStubResponderStandaloneTest, DuplicateSessionStartDoesNotPoisonHealt
     EXPECT_EQ(events[2].turn_id, "turn_1");
 }
 
-TEST(GatewayStubResponderStandaloneTest,
-     SessionStartExhaustedRetriesEmitsErrorAndDoesNotRetryOnFirstTurn) {
+TEST_F(GatewayStubResponderStandaloneFixture,
+       SessionStartExhaustedRetriesEmitsErrorAndDoesNotRetryOnFirstTurn) {
     auto store = std::make_shared<RecordingGatewayMemoryStore>();
     store->upsert_session_statuses = {
         absl::UnavailableError("supabase unavailable"),
         absl::UnavailableError("supabase still unavailable"),
         absl::UnavailableError("supabase unavailable again"),
     };
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .session_start_persistence_max_attempts = 3,
-        .session_start_persistence_retry_delay = 0ms,
-        .memory_user_id = "gateway_user",
-        .memory_store = store,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
+    GatewayStubResponderConfig config = MakeStoreEchoConfig(store);
+    config.session_start_persistence_max_attempts = 3;
+    config.session_start_persistence_retry_delay = 0ms;
+    InitializeResponder(std::move(config));
 
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    ASSERT_TRUE(session->WaitForEventCount(1U));
+    StartSession();
+    ASSERT_TRUE(session().WaitForEventCount(1U));
     EXPECT_EQ(store->upsert_session_attempts, 3U);
     ASSERT_EQ(store->session_records.size(), 0U);
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
+    AcceptTurn("turn_1", "hello");
 
-    ASSERT_TRUE(session->WaitForEventCount(3U));
-    const std::vector<EmittedEvent> events = session->events();
+    const std::vector<EmittedEvent> events = WaitForEvents(3U);
     ASSERT_EQ(events.size(), 3U);
     EXPECT_EQ(events[0].op, "error");
     EXPECT_EQ(events[0].turn_id, "");
@@ -817,573 +253,6 @@ TEST_F(GatewayStubResponderTest,
     ASSERT_NE(current_turn_pos, std::string::npos);
     EXPECT_EQ(second_request_context.find("] how are you?", current_turn_pos + 1U),
               std::string::npos);
-}
-
-TEST(GatewayStubResponderStandaloneTest,
-     MidTermMemoryWiringEventuallyFlushesCompletedTurnIntoLaterPrompt) {
-    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
-    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
-    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
-    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
-
-    auto recorded_requests = std::make_shared<std::vector<test::OpenAiResponsesRequestSnapshot>>();
-    auto requests_mutex = std::make_shared<std::mutex>();
-    auto compactor_finished = std::make_shared<std::promise<void>>();
-    std::future<void> compactor_finished_future = compactor_finished->get_future();
-    auto compactor_finished_once = std::make_shared<std::once_flag>();
-    auto decider_call_count = std::make_shared<int>(0);
-    auto client = test::MakeFakeOpenAiResponsesClient(
-        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [recorded_requests, requests_mutex, decider_prompt = *decider_prompt,
-         compactor_prompt = *compactor_prompt, compactor_finished, compactor_finished_once,
-         decider_call_count](const OpenAiResponsesRequest& request,
-                             const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            {
-                std::lock_guard<std::mutex> lock(*requests_mutex);
-                recorded_requests->push_back(test::TakeRequestSnapshot(request));
-            }
-            if (request.system_prompt == decider_prompt) {
-                const int call_index = (*decider_call_count)++;
-                if (call_index == 0) {
-                    return EmitResponseText(R"json({
-                        "should_flush": true,
-                        "item_id": "i0",
-                        "split_at": null,
-                        "reasoning": "Completed first exchange."
-                    })json",
-                                            on_event, "resp_decider");
-                }
-                return EmitResponseText(R"json({
-                    "should_flush": false,
-                    "item_id": null,
-                    "split_at": null,
-                    "reasoning": "No additional completed episode."
-                })json",
-                                        on_event, "resp_decider");
-            }
-            if (request.system_prompt == compactor_prompt) {
-                const absl::Status status = EmitResponseText(R"json({
-                    "tier1_detail": "First exchange detail.",
-                    "tier2_summary": "First exchange summary.",
-                    "tier3_ref": "First exchange ref.",
-                    "tier3_keywords": ["first", "exchange", "summary", "memory", "test"],
-                    "salience": 8
-                })json",
-                                                             on_event, "resp_compactor");
-                if (status.ok()) {
-                    std::call_once(*compactor_finished_once,
-                                   [compactor_finished] { compactor_finished->set_value(); });
-                }
-                return status;
-            }
-
-            const std::string reply =
-                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
-            return EmitResponseText(reply, on_event);
-        });
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .openai_client = client,
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-    ASSERT_EQ(compactor_finished_future.wait_for(2s), std::future_status::ready);
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_2",
-        .text = "follow up",
-    });
-    ASSERT_TRUE(session->WaitForEventCount(4U));
-
-    auto prompt_contains_mid_term_summary = [&]() -> bool {
-        const absl::StatusOr<std::string> prompt = responder.RenderSessionMemoryPrompt("srv_test");
-        if (!prompt.ok()) {
-            return false;
-        }
-        return prompt->find("First exchange summary.") != std::string::npos &&
-               prompt->find("First exchange ref.") != std::string::npos;
-    };
-
-    std::size_t expected_event_count = 4U;
-    int turn_number = 3;
-    while (turn_number <= 8 && !prompt_contains_mid_term_summary()) {
-        responder.OnTurnAccepted(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_" + std::to_string(turn_number),
-            .text = turn_number == 3 ? "third turn" : "later turn " + std::to_string(turn_number),
-        });
-        expected_event_count += 2U;
-        ASSERT_TRUE(session->WaitForEventCount(expected_event_count));
-        ++turn_number;
-    }
-    ASSERT_TRUE(prompt_contains_mid_term_summary());
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_visibility_probe",
-        .text = "visibility probe",
-    });
-    expected_event_count += 2U;
-    ASSERT_TRUE(session->WaitForEventCount(expected_event_count));
-
-    std::vector<test::OpenAiResponsesRequestSnapshot> requests;
-    {
-        std::lock_guard<std::mutex> lock(*requests_mutex);
-        requests = *recorded_requests;
-    }
-
-    const auto decider_request =
-        std::find_if(requests.begin(), requests.end(), [&decider_prompt](const auto& request) {
-            return request.system_prompt == *decider_prompt;
-        });
-    ASSERT_NE(decider_request, requests.end());
-    EXPECT_EQ(decider_request->model, kDefaultMidTermMemoryModel);
-
-    const auto compactor_request =
-        std::find_if(requests.begin(), requests.end(), [&compactor_prompt](const auto& request) {
-            return request.system_prompt == *compactor_prompt;
-        });
-    ASSERT_NE(compactor_request, requests.end());
-    EXPECT_EQ(compactor_request->model, kDefaultMidTermMemoryModel);
-
-    const auto later_reply_request =
-        std::find_if(requests.begin(), requests.end(),
-                     [&decider_prompt, &compactor_prompt](const auto& request) {
-                         return request.system_prompt != *decider_prompt &&
-                                request.system_prompt != *compactor_prompt &&
-                                request.user_text.find("ep_srv_test_1") != std::string::npos;
-                     });
-    ASSERT_NE(later_reply_request, requests.end());
-    EXPECT_NE(later_reply_request->user_text.find("<mid_term_episodes>"), std::string::npos);
-    EXPECT_EQ(later_reply_request->user_text.find("<mid_term_episodes>\n- (none)"),
-              std::string::npos);
-    EXPECT_NE(later_reply_request->user_text.find("ep_srv_test_1"), std::string::npos);
-
-    const absl::StatusOr<std::string> prompt = responder.RenderSessionMemoryPrompt("srv_test");
-    ASSERT_TRUE(prompt.ok()) << prompt.status();
-    EXPECT_NE(prompt->find("First exchange summary."), std::string::npos);
-    EXPECT_NE(prompt->find("First exchange ref."), std::string::npos);
-}
-
-TEST(GatewayStubResponderStandaloneTest, AwaitSessionMemorySettledBlocksUntilCompactionDrains) {
-    std::promise<void> release_promise;
-    auto release_signal = release_promise.get_future().share();
-    auto compactor_entered = std::make_shared<std::promise<void>>();
-    std::future<void> compactor_entered_future = compactor_entered->get_future();
-    auto compactor_entered_once = std::make_shared<std::once_flag>();
-
-    auto client = test::MakeFakeOpenAiResponsesClient(
-        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [release_signal, compactor_entered,
-         compactor_entered_once](const OpenAiResponsesRequest& request,
-                                 const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            if (request.system_prompt == MidTermFlushDeciderPromptText()) {
-                return EmitResponseText(R"json({
-                    "should_flush": true,
-                    "item_id": "i0",
-                    "split_at": null,
-                    "reasoning": "Completed first exchange."
-                })json",
-                                        on_event, "resp_decider");
-            }
-            if (request.system_prompt == MidTermCompactorPromptText()) {
-                std::call_once(*compactor_entered_once,
-                               [compactor_entered] { compactor_entered->set_value(); });
-                release_signal.wait();
-                return EmitResponseText(R"json({
-                    "tier1_detail": "Settled detail.",
-                    "tier2_summary": "Settled summary.",
-                    "tier3_ref": "Settled ref.",
-                    "tier3_keywords": ["settled", "memory", "test", "await", "drain"],
-                    "salience": 7
-                })json",
-                                        on_event, "resp_compactor");
-            }
-            const std::string reply =
-                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
-            return EmitResponseText(reply, on_event);
-        });
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .openai_client = client,
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry_scope.registry().RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    const absl::StatusOr<GatewayAcceptedTurnResult> turn_result =
-        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_settle",
-            .text = "hello",
-        });
-    ASSERT_TRUE(turn_result.ok()) << turn_result.status();
-    EXPECT_EQ(turn_result->state, GatewayAcceptedTurnTerminalState::kSucceeded);
-
-    // The compactor is running asynchronously — wait for it to start.
-    ASSERT_EQ(compactor_entered_future.wait_for(2s), std::future_status::ready);
-
-    // Start AwaitSessionMemorySettled on another thread while the compactor is still blocked.
-    std::atomic<bool> settled_finished{ false };
-    absl::Status settled_result;
-    std::thread settle_thread([&] {
-        settled_result = responder.AwaitSessionMemorySettled("srv_test");
-        settled_finished.store(true);
-    });
-
-    // Give the settle thread time to enter the blocking wait, then verify it hasn't returned.
-    std::this_thread::sleep_for(50ms);
-    EXPECT_FALSE(settled_finished.load());
-
-    // Release the compactor — the settle thread should now unblock.
-    release_promise.set_value();
-    settle_thread.join();
-
-    ASSERT_TRUE(settled_finished.load());
-    ASSERT_TRUE(settled_result.ok()) << settled_result;
-
-    const absl::StatusOr<isla::server::memory::WorkingMemoryState> state =
-        responder.SnapshotSessionWorkingMemoryState("srv_test");
-    ASSERT_TRUE(state.ok()) << state.status();
-    EXPECT_EQ(state->mid_term_episodes.size(), 1U);
-    EXPECT_EQ(state->mid_term_episodes.front().tier2_summary, "Settled summary.");
-}
-
-TEST(GatewayStubResponderStandaloneTest,
-     AwaitSessionMemorySettledReturnsNotFoundForUnknownSession) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-
-    const absl::Status settled = responder.AwaitSessionMemorySettled("unknown_session");
-    EXPECT_EQ(settled.code(), absl::StatusCode::kNotFound);
-}
-
-TEST(GatewayStubResponderStandaloneTest, ExpandMidTermToolLoopUsesSessionMemoryDetail) {
-    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
-    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
-    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
-    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
-
-    auto recorded_requests = std::make_shared<std::vector<test::OpenAiResponsesRequestSnapshot>>();
-    auto requests_mutex = std::make_shared<std::mutex>();
-    auto compactor_finished = std::make_shared<std::promise<void>>();
-    std::future<void> compactor_finished_future = compactor_finished->get_future();
-    auto compactor_finished_once = std::make_shared<std::once_flag>();
-    auto decider_call_count = std::make_shared<int>(0);
-    auto tool_probe_round = std::make_shared<int>(0);
-    auto client = test::MakeFakeOpenAiResponsesClient(
-        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [recorded_requests, requests_mutex, decider_prompt = *decider_prompt,
-         compactor_prompt = *compactor_prompt, compactor_finished, compactor_finished_once,
-         decider_call_count,
-         tool_probe_round](const OpenAiResponsesRequest& request,
-                           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            {
-                std::lock_guard<std::mutex> lock(*requests_mutex);
-                recorded_requests->push_back(test::TakeRequestSnapshot(request));
-            }
-            if (request.system_prompt == decider_prompt) {
-                const int call_index = (*decider_call_count)++;
-                if (call_index == 0) {
-                    return EmitResponseText(R"json({
-                        "should_flush": true,
-                        "item_id": "i0",
-                        "split_at": null,
-                        "reasoning": "Completed first exchange."
-                    })json",
-                                            on_event, "resp_decider");
-                }
-                return EmitResponseText(R"json({
-                    "should_flush": false,
-                    "item_id": null,
-                    "split_at": null,
-                    "reasoning": "No additional completed episode."
-                })json",
-                                        on_event, "resp_decider");
-            }
-            if (request.system_prompt == compactor_prompt) {
-                const absl::Status status = EmitResponseText(R"json({
-                    "tier1_detail": "First exchange detail.",
-                    "tier2_summary": "First exchange summary.",
-                    "tier3_ref": "First exchange ref.",
-                    "tier3_keywords": ["first", "exchange", "summary", "memory", "test"],
-                    "salience": 8
-                })json",
-                                                             on_event, "resp_compactor");
-                if (status.ok()) {
-                    std::call_once(*compactor_finished_once,
-                                   [compactor_finished] { compactor_finished->set_value(); });
-                }
-                return status;
-            }
-
-            if (test::ExtractLatestPromptLine(request.user_text) == "need exact detail" &&
-                request.input_items.empty()) {
-                EXPECT_EQ(request.function_tools.size(), 1U);
-                EXPECT_EQ(request.function_tools[0].name, "expand_mid_term");
-                ++(*tool_probe_round);
-                return on_event(OpenAiResponsesCompletedEvent{
-                    .response_id = "resp_tool_call",
-                    .output_items =
-                        {
-                            OpenAiResponsesOutputItem{
-                                .type = "function_call",
-                                .raw_json = R"json({"type":"function_call","call_id":"call_expand_1","name":"expand_mid_term","arguments":"{\"episode_id\":\"ep_srv_test_1\"}"})json",
-                                .call_id = std::string("call_expand_1"),
-                                .name = std::string("expand_mid_term"),
-                                .arguments_json =
-                                    std::string(R"json({"episode_id":"ep_srv_test_1"})json"),
-                            },
-                        },
-                });
-            }
-
-            if (request.user_text.empty() && request.input_items.size() == 2U &&
-                std::holds_alternative<OpenAiResponsesFunctionCallOutputInputItem>(
-                    request.input_items[1])) {
-                const auto& tool_output =
-                    std::get<OpenAiResponsesFunctionCallOutputInputItem>(request.input_items[1]);
-                EXPECT_EQ(tool_output.call_id, "call_expand_1");
-                EXPECT_EQ(tool_output.output, "First exchange detail.");
-                ++(*tool_probe_round);
-                return EmitResponseText("tool answer: First exchange detail.", on_event,
-                                        "resp_tool_final");
-            }
-
-            const std::string reply =
-                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
-            return EmitResponseText(reply, on_event);
-        });
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .openai_client = client,
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-    ASSERT_EQ(compactor_finished_future.wait_for(2s), std::future_status::ready);
-
-    auto prompt_contains_mid_term_summary = [&]() -> bool {
-        const absl::StatusOr<std::string> prompt = responder.RenderSessionMemoryPrompt("srv_test");
-        if (!prompt.ok()) {
-            return false;
-        }
-        return prompt->find("First exchange summary.") != std::string::npos &&
-               prompt->find("First exchange ref.") != std::string::npos;
-    };
-
-    std::size_t expected_event_count = 2U;
-    int turn_number = 2;
-    while (turn_number <= 8 && !prompt_contains_mid_term_summary()) {
-        responder.OnTurnAccepted(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_" + std::to_string(turn_number),
-            .text = turn_number == 2 ? "follow up" : "later turn " + std::to_string(turn_number),
-        });
-        expected_event_count += 2U;
-        ASSERT_TRUE(session->WaitForEventCount(expected_event_count));
-        ++turn_number;
-    }
-    ASSERT_TRUE(prompt_contains_mid_term_summary());
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_expand_probe",
-        .text = "need exact detail",
-    });
-    expected_event_count += 2U;
-    ASSERT_TRUE(session->WaitForEventCount(expected_event_count));
-
-    const std::vector<EmittedEvent> events = session->events();
-    ASSERT_GE(events.size(), 2U);
-    EXPECT_EQ(events[events.size() - 2U].op, "text.output");
-    EXPECT_EQ(events[events.size() - 2U].payload, "tool answer: First exchange detail.");
-    EXPECT_EQ(events.back().op, "turn.completed");
-    EXPECT_EQ(events.back().turn_id, "turn_expand_probe");
-
-    EXPECT_EQ(*tool_probe_round, 2);
-
-    std::vector<test::OpenAiResponsesRequestSnapshot> requests;
-    {
-        std::lock_guard<std::mutex> lock(*requests_mutex);
-        requests = *recorded_requests;
-    }
-    const auto replay_request =
-        std::find_if(requests.begin(), requests.end(), [](const auto& request) {
-            return request.user_text.empty() && request.input_items.size() == 2U &&
-                   std::holds_alternative<OpenAiResponsesFunctionCallOutputInputItem>(
-                       request.input_items[1]);
-        });
-    ASSERT_NE(replay_request, requests.end());
-    ASSERT_TRUE(
-        std::holds_alternative<OpenAiResponsesRawInputItem>(replay_request->input_items[0]));
-    const auto& tool_output =
-        std::get<OpenAiResponsesFunctionCallOutputInputItem>(replay_request->input_items[1]);
-    EXPECT_EQ(tool_output.call_id, "call_expand_1");
-    EXPECT_EQ(tool_output.output, "First exchange detail.");
-}
-
-TEST(GatewayStubResponderStandaloneTest, MidTermMemoryUsesConfiguredModelOverrides) {
-    const absl::StatusOr<std::string> decider_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermFlushDeciderSystemPrompt);
-    const absl::StatusOr<std::string> compactor_prompt = isla::server::memory::LoadPrompt(
-        isla::server::memory::PromptAsset::kMidTermCompactorSystemPrompt);
-    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
-    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
-
-    auto recorded_requests = std::make_shared<std::vector<test::OpenAiResponsesRequestSnapshot>>();
-    auto requests_mutex = std::make_shared<std::mutex>();
-    auto compactor_finished = std::make_shared<std::promise<void>>();
-    std::future<void> compactor_finished_future = compactor_finished->get_future();
-    auto compactor_finished_once = std::make_shared<std::once_flag>();
-    auto decider_call_count = std::make_shared<int>(0);
-    auto client = test::MakeFakeOpenAiResponsesClient(
-        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-        [recorded_requests, requests_mutex, decider_prompt = *decider_prompt,
-         compactor_prompt = *compactor_prompt, compactor_finished, compactor_finished_once,
-         decider_call_count](const OpenAiResponsesRequest& request,
-                             const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-            {
-                std::lock_guard<std::mutex> lock(*requests_mutex);
-                recorded_requests->push_back(test::TakeRequestSnapshot(request));
-            }
-            if (request.system_prompt == decider_prompt) {
-                const int call_index = (*decider_call_count)++;
-                if (call_index == 0) {
-                    return EmitResponseText(R"json({
-                        "should_flush": true,
-                        "item_id": "i0",
-                        "split_at": null,
-                        "reasoning": "Completed first exchange."
-                    })json",
-                                            on_event, "resp_decider");
-                }
-                return EmitResponseText(R"json({
-                    "should_flush": false,
-                    "item_id": null,
-                    "split_at": null,
-                    "reasoning": "No additional completed episode."
-                })json",
-                                        on_event, "resp_decider");
-            }
-            if (request.system_prompt == compactor_prompt) {
-                const absl::Status status = EmitResponseText(R"json({
-                    "tier1_detail": "First exchange detail.",
-                    "tier2_summary": "First exchange summary.",
-                    "tier3_ref": "First exchange ref.",
-                    "tier3_keywords": ["first", "exchange", "summary", "memory", "test"],
-                    "salience": 8
-                })json",
-                                                             on_event, "resp_compactor");
-                if (status.ok()) {
-                    std::call_once(*compactor_finished_once,
-                                   [compactor_finished] { compactor_finished->set_value(); });
-                }
-                return status;
-            }
-            const std::string reply =
-                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
-            return EmitResponseText(reply, on_event);
-        });
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .llm_runtime_config =
-            GatewayLlmRuntimeConfig{
-                .main_model = std::string(kDefaultMainLlmModel),
-                .mid_term_flush_decider_model = "gpt-4.1-mini",
-                .mid_term_compactor_model = "gpt-4.1-nano",
-            },
-        .openai_client = client,
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-    ASSERT_EQ(compactor_finished_future.wait_for(2s), std::future_status::ready);
-
-    std::vector<test::OpenAiResponsesRequestSnapshot> requests;
-    {
-        std::lock_guard<std::mutex> lock(*requests_mutex);
-        requests = *recorded_requests;
-    }
-
-    const auto decider_request =
-        std::find_if(requests.begin(), requests.end(), [&decider_prompt](const auto& request) {
-            return request.system_prompt == *decider_prompt;
-        });
-    ASSERT_NE(decider_request, requests.end());
-    EXPECT_EQ(decider_request->model, "gpt-4.1-mini");
-
-    const auto compactor_request =
-        std::find_if(requests.begin(), requests.end(), [&compactor_prompt](const auto& request) {
-            return request.system_prompt == *compactor_prompt;
-        });
-    ASSERT_NE(compactor_request, requests.end());
-    EXPECT_EQ(compactor_request->model, "gpt-4.1-nano");
-}
-
-TEST(GatewayStubResponderStandaloneTest,
-     MidTermMemoryNotConfiguredStillAllowsSessionMemoryStartup) {
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-    });
-    EXPECT_FALSE(responder.IsMidTermMemoryConfigured());
-    EXPECT_FALSE(responder.IsMidTermMemoryAvailable());
-    EXPECT_TRUE(responder.MidTermMemoryInitializationStatus().ok());
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-    ASSERT_TRUE(responder.RenderSessionMemoryPrompt("srv_test").ok());
-    EXPECT_TRUE(session->events().empty());
 }
 
 TEST_F(GatewayStubResponderTest, SessionStartUsesBundledSystemPromptByDefault) {
@@ -1518,29 +387,18 @@ TEST_F(GatewayStubResponderTest, SuccessfulTurnEmitsPhaseTwoTelemetrySlices) {
     EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeSucceeded);
 }
 
-TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecutorBoundary) {
+TEST_F(GatewayStubResponderStandaloneFixture, AcceptedTurnFlowsThroughPlannerAndExecutorBoundary) {
     std::optional<ExecutionPlan> execution_plan;
 
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .memory_user_id = "gateway_user",
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-        .on_execution_plan = [&](const ExecutionPlan& plan) { execution_plan = plan; },
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    GatewayStubResponderConfig config = MakeEchoConfig();
+    config.memory_user_id = "gateway_user";
+    config.on_execution_plan = [&](const ExecutionPlan& plan) { execution_plan = plan; };
+    InitializeResponder(std::move(config));
+    StartSession();
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
+    AcceptTurn("turn_1", "hello");
 
-    ASSERT_TRUE(session->WaitForEventCount(2U));
+    ASSERT_TRUE(session().WaitForEventCount(2U));
     ASSERT_TRUE(execution_plan.has_value());
     ASSERT_EQ(execution_plan->steps.size(), 1U);
     ASSERT_TRUE(std::holds_alternative<OpenAiLlmStep>(execution_plan->steps.front()));
@@ -1549,38 +407,32 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnFlowsThroughPlannerAndExecu
     EXPECT_EQ(openai_step.model, "gpt-5.3-chat-latest");
     EXPECT_EQ(openai_step.reasoning_effort, OpenAiReasoningEffort::kMedium);
 
-    const std::vector<EmittedEvent> events = session->events();
+    const std::vector<EmittedEvent> events = session().events();
     ASSERT_EQ(events.size(), 2U);
     EXPECT_EQ(events[0].op, "text.output");
     EXPECT_EQ(events[0].payload, "stub echo: hello");
     EXPECT_EQ(events[1].op, "turn.completed");
 }
 
-TEST(GatewayStubResponderStandaloneTest, MissingSessionMemoryStillEmitsFailureTelemetry) {
+TEST_F(GatewayStubResponderStandaloneFixture, MissingSessionMemoryStillEmitsFailureTelemetry) {
     auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .memory_user_id = "gateway_user",
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
+    GatewayStubResponderConfig config = MakeEchoConfig();
+    config.memory_user_id = "gateway_user";
+    InitializeResponder(std::move(config));
+
+    responder().OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = session_id(),
         .turn_id = "turn_missing_memory",
         .text = "hello",
         .telemetry_context =
             MakeTurnTelemetryContext("srv_test", "turn_missing_memory", telemetry_sink),
     });
 
-    ASSERT_TRUE(session->WaitForEventCount(2U));
+    ASSERT_TRUE(session().WaitForEventCount(2U));
     ASSERT_TRUE(telemetry_sink->WaitForFinishedCount(1U));
 
-    const std::vector<EmittedEvent> emitted = session->events();
+    const std::vector<EmittedEvent> emitted = session().events();
     ASSERT_EQ(emitted.size(), 2U);
     EXPECT_EQ(emitted[0].op, "error");
     EXPECT_EQ(emitted[0].turn_id, "turn_missing_memory");
@@ -1614,25 +466,14 @@ TEST(GatewayStubResponderStandaloneTest, MissingSessionMemoryStillEmitsFailureTe
     EXPECT_EQ(finished.front().outcome, telemetry::kOutcomeFailed);
 }
 
-TEST(GatewayStubResponderStandaloneTest,
-     DirectAcceptedTurnFailureReturnsFailedOutcomeAndEmitsTerminalEvents) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .async_emit_timeout = 2s,
-        .memory_user_id = "gateway_user",
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
+TEST_F(GatewayStubResponderStandaloneFixture,
+       DirectAcceptedTurnFailureReturnsFailedOutcomeAndEmitsTerminalEvents) {
+    GatewayStubResponderConfig config = MakeEchoConfig();
+    config.memory_user_id = "gateway_user";
+    InitializeResponder(std::move(config));
 
     const absl::StatusOr<GatewayAcceptedTurnResult> result =
-        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_direct_missing_memory",
-            .text = "hello",
-        });
+        RunAcceptedTurnToCompletion("turn_direct_missing_memory", "hello");
 
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kFailed);
@@ -1641,7 +482,7 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_EQ(result->failure->message, "stub responder failed to update memory");
     EXPECT_FALSE(result->reply_text.has_value());
 
-    const std::vector<EmittedEvent> emitted = session->events();
+    const std::vector<EmittedEvent> emitted = session().events();
     ASSERT_EQ(emitted.size(), 2U);
     EXPECT_EQ(emitted[0].op, "error");
     EXPECT_EQ(emitted[0].turn_id, "turn_direct_missing_memory");
@@ -1650,21 +491,14 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_EQ(emitted[1].turn_id, "turn_direct_missing_memory");
 }
 
-TEST(GatewayStubResponderStandaloneTest,
-     DirectAcceptedTurnPreservesReplyWhenAssistantMemoryWritebackFails) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-    session->SetEventHook([&responder](const EmittedEvent& event) {
+TEST_F(GatewayStubResponderStandaloneFixture,
+       DirectAcceptedTurnPreservesReplyWhenAssistantMemoryWritebackFails) {
+    InitializeResponder(MakeEchoConfig());
+    StartSession();
+    session().SetEventHook([this](const EmittedEvent& event) {
         if (event.op == "text.output" && event.turn_id == "turn_direct_post_emit_memory_failure") {
-            responder.OnSessionClosed(SessionClosedEvent{
-                .session_id = "srv_test",
+            responder().OnSessionClosed(SessionClosedEvent{
+                .session_id = session_id(),
                 .session_started = true,
                 .inflight_turn_id = std::nullopt,
                 .reason = SessionCloseReason::ProtocolEnded,
@@ -1674,11 +508,7 @@ TEST(GatewayStubResponderStandaloneTest,
     });
 
     const absl::StatusOr<GatewayAcceptedTurnResult> result =
-        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_direct_post_emit_memory_failure",
-            .text = "hello",
-        });
+        RunAcceptedTurnToCompletion("turn_direct_post_emit_memory_failure", "hello");
 
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kFailed);
@@ -1688,7 +518,7 @@ TEST(GatewayStubResponderStandaloneTest,
     ASSERT_TRUE(result->reply_text.has_value());
     EXPECT_EQ(*result->reply_text, "stub echo: hello");
 
-    const std::vector<EmittedEvent> events = session->events();
+    const std::vector<EmittedEvent> events = session().events();
     ASSERT_EQ(events.size(), 3U);
     EXPECT_EQ(events[0].op, "text.output");
     EXPECT_EQ(events[0].turn_id, "turn_direct_post_emit_memory_failure");
@@ -1700,137 +530,15 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_EQ(events[2].turn_id, "turn_direct_post_emit_memory_failure");
 }
 
-TEST(GatewayStubResponderStandaloneTest,
-     DirectAcceptedTurnCancelWhileProviderBlockedReturnsCancelled) {
-    auto request_started = std::make_shared<std::promise<void>>();
-    std::shared_future<void> request_started_future = request_started->get_future().share();
-    auto allow_response = std::make_shared<std::promise<void>>();
-    std::shared_future<void> allow_response_future = allow_response->get_future().share();
+TEST_F(GatewayStubResponderStandaloneFixture,
+       DirectAcceptedTurnAfterServerStoppingReturnsServerStoppingFailure) {
+    InitializeResponder(MakeEchoConfig());
+    StartSession();
 
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = test::MakeFakeOpenAiResponsesClient(
-            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-            [request_started, allow_response_future](const OpenAiResponsesRequest& request,
-                                                     const OpenAiResponsesEventCallback& on_event) {
-                if (IsMidTermMemoryRequest(request)) {
-                    return EmitMidTermAwareEchoResponse(request, on_event);
-                }
-                request_started->set_value();
-                allow_response_future.wait();
-                return EmitResponseText("stub echo: hello", on_event);
-            }),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    auto turn_future = std::async(std::launch::async, [&] {
-        return responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_direct_cancel",
-            .text = "hello",
-        });
-    });
-
-    ASSERT_EQ(request_started_future.wait_for(2s), std::future_status::ready);
-    responder.OnTurnCancelRequested(TurnCancelRequestedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_direct_cancel",
-    });
-    allow_response->set_value();
-
-    const absl::StatusOr<GatewayAcceptedTurnResult> result = turn_future.get();
-    ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kCancelled);
-    EXPECT_FALSE(result->reply_text.has_value());
-    EXPECT_FALSE(result->failure.has_value());
-
-    const std::vector<EmittedEvent> events = session->events();
-    ASSERT_EQ(events.size(), 1U);
-    EXPECT_EQ(events[0].op, "turn.cancelled");
-    EXPECT_EQ(events[0].turn_id, "turn_direct_cancel");
-}
-
-TEST(GatewayStubResponderStandaloneTest,
-     DirectAcceptedTurnProviderFailureMatchesQueuedFailureShape) {
-    auto direct_client =
-        test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down"));
-    GatewayStubResponder direct_responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = direct_client,
-    });
-    ResponderRegistryAttachment direct_registry_scope(direct_responder);
-    GatewaySessionRegistry& direct_registry = direct_registry_scope.registry();
-    auto direct_session = std::make_shared<RecordingLiveSession>("srv_direct");
-    direct_registry.RegisterSession(direct_session);
-    direct_responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_direct" });
-
-    const absl::StatusOr<GatewayAcceptedTurnResult> direct_result =
-        direct_responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
-            .session_id = "srv_direct",
-            .turn_id = "turn_failure",
-            .text = "hello",
-        });
-    ASSERT_TRUE(direct_result.ok()) << direct_result.status();
-    EXPECT_EQ(direct_result->state, GatewayAcceptedTurnTerminalState::kFailed);
-    ASSERT_TRUE(direct_result->failure.has_value());
-    EXPECT_EQ(direct_result->failure->code, "service_unavailable");
-    EXPECT_EQ(direct_result->failure->message, "upstream service unavailable");
-
-    auto queued_client =
-        test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down"));
-    GatewayStubResponder queued_responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = queued_client,
-    });
-    ResponderRegistryAttachment queued_registry_scope(queued_responder);
-    GatewaySessionRegistry& queued_registry = queued_registry_scope.registry();
-    auto queued_session = std::make_shared<RecordingLiveSession>("srv_queued");
-    queued_registry.RegisterSession(queued_session);
-    queued_responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_queued" });
-
-    queued_responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_queued",
-        .turn_id = "turn_failure",
-        .text = "hello",
-    });
-
-    ASSERT_TRUE(queued_session->WaitForEventCount(2U));
-    const std::vector<EmittedEvent> direct_events = direct_session->events();
-    const std::vector<EmittedEvent> queued_events = queued_session->events();
-    ASSERT_EQ(direct_events.size(), 2U);
-    ASSERT_EQ(queued_events.size(), 2U);
-    EXPECT_EQ(direct_events[0].op, queued_events[0].op);
-    EXPECT_EQ(direct_events[0].turn_id, "turn_failure");
-    EXPECT_EQ(direct_events[0].payload, queued_events[0].payload);
-    EXPECT_EQ(direct_events[1].op, queued_events[1].op);
-    EXPECT_EQ(direct_events[1].turn_id, "turn_failure");
-    EXPECT_EQ(direct_events[1].payload, queued_events[1].payload);
-}
-
-TEST(GatewayStubResponderStandaloneTest,
-     DirectAcceptedTurnAfterServerStoppingReturnsServerStoppingFailure) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    registry.NotifyServerStopping();
+    registry_attachment_->registry().NotifyServerStopping();
 
     const absl::StatusOr<GatewayAcceptedTurnResult> result =
-        responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_direct_stopping",
-            .text = "hello",
-        });
+        RunAcceptedTurnToCompletion("turn_direct_stopping", "hello");
 
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_EQ(result->state, GatewayAcceptedTurnTerminalState::kFailed);
@@ -1839,7 +547,7 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_EQ(result->failure->message, "server stopping");
     EXPECT_FALSE(result->reply_text.has_value());
 
-    const std::vector<EmittedEvent> events = session->events();
+    const std::vector<EmittedEvent> events = session().events();
     ASSERT_EQ(events.size(), 2U);
     EXPECT_EQ(events[0].op, "error");
     EXPECT_EQ(events[0].turn_id, "turn_direct_stopping");
@@ -1978,62 +686,6 @@ TEST_F(GatewayStubResponderTest, SessionClosedBeforeReplyDropsPendingTurn) {
 
     std::this_thread::sleep_for(60ms);
     EXPECT_TRUE(session_->events().empty());
-}
-
-TEST(GatewayStubResponderStandaloneTest, SessionClosedDuringExecutionDropsLaterEmits) {
-    auto builder_started = std::make_shared<std::promise<void>>();
-    std::future<void> started_future = builder_started->get_future();
-    auto allow_finish = std::make_shared<std::promise<void>>();
-    std::shared_future<void> allow_finish_future = allow_finish->get_future().share();
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = test::MakeFakeOpenAiResponsesClient(
-            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-            [builder_started,
-             allow_finish_future](const OpenAiResponsesRequest& request,
-                                  const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (IsMidTermMemoryRequest(request)) {
-                    return EmitMidTermAwareEchoResponse(request, on_event);
-                }
-                builder_started->set_value();
-                allow_finish_future.wait();
-                const std::string text = std::string("stub echo: ") + request.user_text;
-                const absl::Status delta_status =
-                    on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
-                if (!delta_status.ok()) {
-                    return delta_status;
-                }
-                return on_event(OpenAiResponsesCompletedEvent{
-                    .response_id = "resp_test",
-                });
-            }),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
-
-    ASSERT_EQ(started_future.wait_for(2s), std::future_status::ready);
-    session->MarkClosed();
-    registry.OnSessionClosed(SessionClosedEvent{
-        .session_id = "srv_test",
-        .session_started = true,
-        .inflight_turn_id = std::string("turn_1"),
-        .reason = SessionCloseReason::TransportClosed,
-        .detail = "client closed",
-    });
-    allow_finish->set_value();
-
-    std::this_thread::sleep_for(60ms);
-    EXPECT_TRUE(session->events().empty());
 }
 
 TEST_F(GatewayStubResponderTest, EmitFailureDoesNotBlockLaterTurns) {
@@ -2177,189 +829,109 @@ TEST_F(GatewayStubResponderTest, OversizedTurnStillCompletesWhenErrorEmitFails) 
     EXPECT_EQ(events[0].turn_id, "turn_1");
 }
 
-TEST_F(GatewayStubResponderTest, OversizedRenderedWorkingMemoryContextIsTerminalizedWithoutReply) {
-    const std::string large_turn_text(24U * 1024U, 'x');
+TEST_P(GatewayStubResponderPromptBudgetTest, SecondLargeTurnRespectsConfiguredPromptBudget) {
+    GatewayStubResponderConfig config = MakeEchoConfig();
+    GetParam().configure(config);
+    InitializeResponder(std::move(config));
+    StartSession();
 
-    responder_.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = large_turn_text,
-    });
+    const std::string large_turn_text = MakeLargeTurnText();
+    AcceptTurn("turn_1", large_turn_text);
+    ASSERT_TRUE(session().WaitForEventCount(2U));
 
-    ASSERT_TRUE(session_->WaitForEventCount(2U));
+    AcceptTurn("turn_2", large_turn_text);
 
-    responder_.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_2",
-        .text = large_turn_text,
-    });
-
-    ASSERT_TRUE(session_->WaitForEventCount(4U));
-    const std::vector<EmittedEvent> events = session_->events();
+    const std::vector<EmittedEvent> events = WaitForEvents(4U);
     ASSERT_EQ(events.size(), 4U);
-    EXPECT_EQ(events[2].op, "error");
+    EXPECT_EQ(events[2].op, GetParam().expected_second_turn_op);
     EXPECT_EQ(events[2].turn_id, "turn_2");
-    EXPECT_EQ(events[2].payload,
-              "bad_request:rendered working memory context exceeds maximum length");
+    if (GetParam().expected_payload_is_prefix) {
+        EXPECT_THAT(events[2].payload,
+                    ::testing::StartsWith(GetParam().expected_second_turn_payload));
+    } else {
+        EXPECT_EQ(events[2].payload, GetParam().expected_second_turn_payload);
+    }
     EXPECT_EQ(events[3].op, "turn.completed");
     EXPECT_EQ(events[3].turn_id, "turn_2");
 }
 
-TEST(GatewayStubResponderStandaloneTest,
-     RaisedRenderedWorkingMemoryContextBudgetAllowsLargeContext) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-        .max_rendered_working_memory_context_bytes = 512U * 1024U,
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+INSTANTIATE_TEST_SUITE_P(
+    PromptBudgetMatrix, GatewayStubResponderPromptBudgetTest,
+    ::testing::Values(
+        PromptBudgetCase{
+            .name = "DefaultWorkingMemoryBudgetRejectsLargeContext",
+            .configure = [](GatewayStubResponderConfig&) {},
+            .expected_second_turn_op = "error",
+            .expected_second_turn_payload =
+                "bad_request:rendered working memory context exceeds maximum length",
+        },
+        PromptBudgetCase{
+            .name = "RaisedWorkingMemoryBudgetAllowsLargeContext",
+            .configure =
+                [](GatewayStubResponderConfig& config) {
+                    config.max_rendered_working_memory_context_bytes = 512U * 1024U;
+                },
+            .expected_second_turn_op = "text.output",
+            .expected_second_turn_payload = "stub echo: ",
+            .expected_payload_is_prefix = true,
+        },
+        PromptBudgetCase{
+            .name = "SmallerCombinedPromptBudgetRejectsOtherwiseAllowedContext",
+            .configure =
+                [](GatewayStubResponderConfig& config) {
+                    config.max_rendered_system_prompt_bytes = 512U * 1024U;
+                    config.max_rendered_working_memory_context_bytes = 512U * 1024U;
+                    config.max_rendered_prompt_bytes = 70U * 1024U;
+                },
+            .expected_second_turn_op = "error",
+            .expected_second_turn_payload =
+                "bad_request:rendered prompt exceeds maximum combined length",
+        },
+        PromptBudgetCase{
+            .name = "LargerCombinedPromptBudgetDoesNotClampComponentBudgets",
+            .configure =
+                [](GatewayStubResponderConfig& config) {
+                    config.max_rendered_system_prompt_bytes = 512U * 1024U;
+                    config.max_rendered_working_memory_context_bytes = 512U * 1024U;
+                    config.max_rendered_prompt_bytes = 2U * 1024U * 1024U;
+                },
+            .expected_second_turn_op = "text.output",
+            .expected_second_turn_payload = "stub echo: ",
+            .expected_payload_is_prefix = true,
+        }),
+    [](const ::testing::TestParamInfo<PromptBudgetCase>& info) { return info.param.name; });
 
-    const std::string large_turn_text(24U * 1024U, 'x');
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = large_turn_text,
-    });
-    ASSERT_TRUE(session->WaitForEventCount(2U));
+TEST_F(GatewayStubResponderStandaloneFixture,
+       ReplyBuilderExceptionTerminatesTurnAndWorkerContinues) {
+    GatewayStubResponderConfig config = MakeEchoConfig();
+    config.openai_client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            if (IsMidTermMemoryRequest(request)) {
+                return EmitMidTermAwareEchoResponse(request, on_event);
+            }
+            const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
+            if (latest_text == "explode") {
+                throw std::runtime_error("synthetic reply builder failure");
+            }
+            const std::string text = std::string("stub echo: ") + latest_text;
+            const absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        });
+    InitializeResponder(std::move(config));
+    StartSession();
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_2",
-        .text = large_turn_text,
-    });
+    AcceptTurn("turn_1", "explode");
 
-    ASSERT_TRUE(session->WaitForEventCount(4U));
-    const std::vector<EmittedEvent> events = session->events();
-    ASSERT_EQ(events.size(), 4U);
-    EXPECT_EQ(events[2].op, "text.output");
-    EXPECT_EQ(events[2].turn_id, "turn_2");
-    EXPECT_THAT(events[2].payload, ::testing::StartsWith("stub echo: "));
-    EXPECT_EQ(events[3].op, "turn.completed");
-    EXPECT_EQ(events[3].turn_id, "turn_2");
-}
-
-TEST(GatewayStubResponderStandaloneTest,
-     SmallerCombinedRenderedPromptBudgetRejectsOtherwiseAllowedContext) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-        .max_rendered_system_prompt_bytes = 512U * 1024U,
-        .max_rendered_working_memory_context_bytes = 512U * 1024U,
-        .max_rendered_prompt_bytes = 70U * 1024U,
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    const std::string large_turn_text(24U * 1024U, 'x');
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = large_turn_text,
-    });
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_2",
-        .text = large_turn_text,
-    });
-
-    ASSERT_TRUE(session->WaitForEventCount(4U));
-    const std::vector<EmittedEvent> events = session->events();
-    ASSERT_EQ(events.size(), 4U);
-    EXPECT_EQ(events[2].op, "error");
-    EXPECT_EQ(events[2].turn_id, "turn_2");
-    EXPECT_EQ(events[2].payload, "bad_request:rendered prompt exceeds maximum combined length");
-    EXPECT_EQ(events[3].op, "turn.completed");
-    EXPECT_EQ(events[3].turn_id, "turn_2");
-}
-
-TEST(GatewayStubResponderStandaloneTest,
-     LargerCombinedRenderedPromptBudgetDoesNotClampComponentBudgets) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-        .max_rendered_system_prompt_bytes = 512U * 1024U,
-        .max_rendered_working_memory_context_bytes = 512U * 1024U,
-        .max_rendered_prompt_bytes = 2U * 1024U * 1024U,
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    const std::string large_turn_text(24U * 1024U, 'x');
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = large_turn_text,
-    });
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_2",
-        .text = large_turn_text,
-    });
-
-    ASSERT_TRUE(session->WaitForEventCount(4U));
-    const std::vector<EmittedEvent> events = session->events();
-    ASSERT_EQ(events.size(), 4U);
-    EXPECT_EQ(events[2].op, "text.output");
-    EXPECT_EQ(events[2].turn_id, "turn_2");
-    EXPECT_THAT(events[2].payload, ::testing::StartsWith("stub echo: "));
-    EXPECT_EQ(events[3].op, "turn.completed");
-    EXPECT_EQ(events[3].turn_id, "turn_2");
-}
-
-TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndWorkerContinues) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = test::MakeFakeOpenAiResponsesClient(
-            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-            [](const OpenAiResponsesRequest& request,
-               const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (IsMidTermMemoryRequest(request)) {
-                    return EmitMidTermAwareEchoResponse(request, on_event);
-                }
-                const std::string latest_text = test::ExtractLatestPromptLine(request.user_text);
-                if (latest_text == "explode") {
-                    throw std::runtime_error("synthetic reply builder failure");
-                }
-                const std::string text = std::string("stub echo: ") + latest_text;
-                const absl::Status delta_status =
-                    on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
-                if (!delta_status.ok()) {
-                    return delta_status;
-                }
-                return on_event(OpenAiResponsesCompletedEvent{
-                    .response_id = "resp_test",
-                });
-            }),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "explode",
-    });
-
-    ASSERT_TRUE(session->WaitForEventCount(2U));
     {
-        const std::vector<EmittedEvent> events = session->events();
+        const std::vector<EmittedEvent> events = WaitForEvents(2U);
         ASSERT_EQ(events.size(), 2U);
         EXPECT_EQ(events[0].op, "error");
         EXPECT_EQ(events[0].turn_id, "turn_1");
@@ -2368,14 +940,9 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
         EXPECT_EQ(events[1].turn_id, "turn_1");
     }
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_2",
-        .text = "ok",
-    });
+    AcceptTurn("turn_2", "ok");
 
-    ASSERT_TRUE(session->WaitForEventCount(4U));
-    const std::vector<EmittedEvent> events = session->events();
+    const std::vector<EmittedEvent> events = WaitForEvents(4U);
     ASSERT_EQ(events.size(), 4U);
     EXPECT_EQ(events[2].op, "text.output");
     EXPECT_EQ(events[2].turn_id, "turn_2");
@@ -2384,26 +951,16 @@ TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndW
     EXPECT_EQ(events[3].turn_id, "turn_2");
 }
 
-TEST(GatewayStubResponderStandaloneTest, OpenAiProviderFailureEmitsMappedErrorAndCompletion) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client =
-            test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down")),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+TEST_F(GatewayStubResponderStandaloneFixture, OpenAiProviderFailureEmitsMappedErrorAndCompletion) {
+    GatewayStubResponderConfig config = MakeEchoConfig();
+    config.openai_client =
+        test::MakeFakeOpenAiResponsesClient(absl::UnavailableError("provider down"));
+    InitializeResponder(std::move(config));
+    StartSession();
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
+    AcceptTurn("turn_1", "hello");
 
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-    const std::vector<EmittedEvent> events = session->events();
+    const std::vector<EmittedEvent> events = WaitForEvents(2U);
     ASSERT_EQ(events.size(), 2U);
     EXPECT_EQ(events[0].op, "error");
     EXPECT_EQ(events[0].turn_id, "turn_1");
@@ -2412,24 +969,12 @@ TEST(GatewayStubResponderStandaloneTest, OpenAiProviderFailureEmitsMappedErrorAn
     EXPECT_EQ(events[1].turn_id, "turn_1");
 }
 
-TEST(GatewayStubResponderStandaloneTest, AcceptedTurnWithoutSessionStartFailsClosed) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
+TEST_F(GatewayStubResponderStandaloneFixture, AcceptedTurnWithoutSessionStartFailsClosed) {
+    InitializeResponder(MakeEchoConfig());
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
+    AcceptTurn("turn_1", "hello");
 
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-    const std::vector<EmittedEvent> events = session->events();
+    const std::vector<EmittedEvent> events = WaitForEvents(2U);
     ASSERT_EQ(events.size(), 2U);
     EXPECT_EQ(events[0].op, "error");
     EXPECT_EQ(events[0].turn_id, "turn_1");
@@ -2438,277 +983,23 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnWithoutSessionStartFailsClo
     EXPECT_EQ(events[1].turn_id, "turn_1");
 }
 
-TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCancelled) {
-    auto builder_started = std::make_shared<std::promise<void>>();
-    std::future<void> started_future = builder_started->get_future();
-    auto allow_finish = std::make_shared<std::promise<void>>();
-    std::shared_future<void> allow_finish_future = allow_finish->get_future().share();
+TEST_F(GatewayStubResponderStandaloneFixture, SessionCloseAfterSessionStartRemovesEmptyMemory) {
+    InitializeResponder(MakeEchoConfig());
+    StartSession();
 
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = test::MakeFakeOpenAiResponsesClient(
-            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-            [builder_started,
-             allow_finish_future](const OpenAiResponsesRequest& request,
-                                  const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (IsMidTermMemoryRequest(request)) {
-                    return EmitMidTermAwareEchoResponse(request, on_event);
-                }
-                builder_started->set_value();
-                allow_finish_future.wait();
-                const std::string text = std::string("stub echo: ") + request.user_text;
-                absl::Status delta_status =
-                    on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
-                if (!delta_status.ok()) {
-                    return delta_status;
-                }
-                return on_event(OpenAiResponsesCompletedEvent{
-                    .response_id = "resp_test",
-                });
-            }),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+    ASSERT_TRUE(responder().RenderSessionMemoryPrompt(session_id()).ok());
 
-    responder.OnTurnAccepted(TurnAcceptedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-        .text = "hello",
-    });
-
-    ASSERT_EQ(started_future.wait_for(2s), std::future_status::ready);
-    responder.OnTurnCancelRequested(TurnCancelRequestedEvent{
-        .session_id = "srv_test",
-        .turn_id = "turn_1",
-    });
-    allow_finish->set_value();
-
-    ASSERT_TRUE(session->WaitForEventCount(1U));
-    const std::vector<EmittedEvent> events = session->events();
-    ASSERT_EQ(events.size(), 1U);
-    EXPECT_EQ(events[0].op, "turn.cancelled");
-    EXPECT_EQ(events[0].turn_id, "turn_1");
-}
-
-TEST(GatewayStubResponderStandaloneTest, SessionCloseAfterSessionStartRemovesEmptyMemory) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    ASSERT_TRUE(responder.RenderSessionMemoryPrompt("srv_test").ok());
-
-    responder.OnSessionClosed(SessionClosedEvent{
-        .session_id = "srv_test",
+    responder().OnSessionClosed(SessionClosedEvent{
+        .session_id = session_id(),
         .session_started = true,
         .inflight_turn_id = std::nullopt,
         .reason = SessionCloseReason::ProtocolEnded,
         .detail = "session ended",
     });
 
-    const absl::StatusOr<std::string> prompt = responder.RenderSessionMemoryPrompt("srv_test");
+    const absl::StatusOr<std::string> prompt = responder().RenderSessionMemoryPrompt(session_id());
     EXPECT_FALSE(prompt.ok());
     EXPECT_EQ(prompt.status().code(), absl::StatusCode::kNotFound);
-}
-
-TEST(GatewayStubResponderStandaloneTest, AcceptedTurnDuringShutdownDoesNotBlockOnDelayedEmit) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    responder.OnServerStopping(registry);
-    session->DelayNextErrorCompletion();
-
-    auto accepted_future = std::async(std::launch::async, [&] {
-        responder.OnTurnAccepted(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_1",
-            .text = "hello",
-        });
-    });
-
-    EXPECT_EQ(accepted_future.wait_for(100ms), std::future_status::ready);
-    ASSERT_TRUE(session->WaitForEventCount(1U));
-    {
-        const std::vector<EmittedEvent> events = session->events();
-        ASSERT_EQ(events.size(), 1U);
-        EXPECT_EQ(events[0].op, "error");
-        EXPECT_EQ(events[0].turn_id, "turn_1");
-        EXPECT_EQ(events[0].payload, "server_stopping:server stopping");
-    }
-
-    session->ReleasePendingErrorCompletion();
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-    const std::vector<EmittedEvent> events = session->events();
-    ASSERT_EQ(events.size(), 2U);
-    EXPECT_EQ(events[1].op, "turn.completed");
-    EXPECT_EQ(events[1].turn_id, "turn_1");
-}
-
-TEST(GatewayStubResponderStandaloneTest,
-     DifferentSessionRenderDoesNotBlockWhileOtherSessionMemoryIsLocked) {
-    auto user_query_started = std::make_shared<std::promise<void>>();
-    std::future<void> user_query_started_future = user_query_started->get_future();
-    auto allow_user_query_finish = std::make_shared<std::promise<void>>();
-    std::shared_future<void> allow_user_query_finish_future =
-        allow_user_query_finish->get_future().share();
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-        .on_user_query_memory_ready =
-            [user_query_started, allow_user_query_finish_future](
-                std::string_view session_id,
-                const isla::server::memory::UserQueryMemoryResult& user_query_memory_result) {
-                static_cast<void>(user_query_memory_result);
-                if (session_id != "srv_one") {
-                    return;
-                }
-                user_query_started->set_value();
-                allow_user_query_finish_future.wait();
-            },
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session_one = std::make_shared<RecordingLiveSession>("srv_one");
-    auto session_two = std::make_shared<RecordingLiveSession>("srv_two");
-    registry.RegisterSession(session_one);
-    registry.RegisterSession(session_two);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_one" });
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_two" });
-
-    auto accepted_future = std::async(std::launch::async, [&] {
-        responder.OnTurnAccepted(TurnAcceptedEvent{
-            .session_id = "srv_one",
-            .turn_id = "turn_1",
-            .text = "hello from one",
-        });
-    });
-
-    ASSERT_EQ(user_query_started_future.wait_for(2s), std::future_status::ready);
-
-    auto render_future = std::async(std::launch::async,
-                                    [&] { return responder.RenderSessionMemoryPrompt("srv_two"); });
-    ASSERT_EQ(render_future.wait_for(100ms), std::future_status::ready);
-    const absl::StatusOr<std::string> prompt = render_future.get();
-    ASSERT_TRUE(prompt.ok()) << prompt.status();
-    EXPECT_NE(prompt->find("- (empty)"), std::string::npos);
-
-    allow_user_query_finish->set_value();
-    ASSERT_EQ(accepted_future.wait_for(2s), std::future_status::ready);
-    ASSERT_TRUE(session_one->WaitForEventCount(2U));
-}
-
-TEST(GatewayStubResponderStandaloneTest, SameSessionRenderWaitsForOngoingMemoryMutation) {
-    auto user_query_started = std::make_shared<std::promise<void>>();
-    std::future<void> user_query_started_future = user_query_started->get_future();
-    auto allow_user_query_finish = std::make_shared<std::promise<void>>();
-    std::shared_future<void> allow_user_query_finish_future =
-        allow_user_query_finish->get_future().share();
-
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-        .on_user_query_memory_ready =
-            [user_query_started, allow_user_query_finish_future](
-                std::string_view session_id,
-                const isla::server::memory::UserQueryMemoryResult& user_query_memory_result) {
-                static_cast<void>(user_query_memory_result);
-                if (session_id != "srv_test") {
-                    return;
-                }
-                user_query_started->set_value();
-                allow_user_query_finish_future.wait();
-            },
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session = std::make_shared<RecordingLiveSession>("srv_test");
-    registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
-
-    auto accepted_future = std::async(std::launch::async, [&] {
-        responder.OnTurnAccepted(TurnAcceptedEvent{
-            .session_id = "srv_test",
-            .turn_id = "turn_1",
-            .text = "hello",
-        });
-    });
-
-    ASSERT_EQ(user_query_started_future.wait_for(2s), std::future_status::ready);
-
-    auto render_future = std::async(
-        std::launch::async, [&] { return responder.RenderSessionMemoryPrompt("srv_test"); });
-    EXPECT_NE(render_future.wait_for(100ms), std::future_status::ready);
-
-    allow_user_query_finish->set_value();
-    ASSERT_EQ(accepted_future.wait_for(2s), std::future_status::ready);
-    ASSERT_EQ(render_future.wait_for(2s), std::future_status::ready);
-    ASSERT_TRUE(session->WaitForEventCount(2U));
-    const absl::StatusOr<std::string> prompt = render_future.get();
-    ASSERT_TRUE(prompt.ok()) << prompt.status();
-    EXPECT_NE(prompt->find("- [user | "), std::string::npos);
-    EXPECT_NE(prompt->find("] hello"), std::string::npos);
-}
-
-TEST(GatewayStubResponderStandaloneTest, ConcurrentMultiSessionTurnsKeepMemoryIsolated) {
-    GatewayStubResponder responder(GatewayStubResponderConfig{
-        .response_delay = 0ms,
-        .openai_client = MakeEchoOpenAiResponsesClient(),
-    });
-    ResponderRegistryAttachment registry_scope(responder);
-    GatewaySessionRegistry& registry = registry_scope.registry();
-    auto session_one = std::make_shared<RecordingLiveSession>("srv_one");
-    auto session_two = std::make_shared<RecordingLiveSession>("srv_two");
-    registry.RegisterSession(session_one);
-    registry.RegisterSession(session_two);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_one" });
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_two" });
-
-    auto first_turn = std::async(std::launch::async, [&] {
-        responder.OnTurnAccepted(TurnAcceptedEvent{
-            .session_id = "srv_one",
-            .turn_id = "turn_1",
-            .text = "alpha",
-        });
-    });
-    auto second_turn = std::async(std::launch::async, [&] {
-        responder.OnTurnAccepted(TurnAcceptedEvent{
-            .session_id = "srv_two",
-            .turn_id = "turn_2",
-            .text = "beta",
-        });
-    });
-
-    ASSERT_EQ(first_turn.wait_for(2s), std::future_status::ready);
-    ASSERT_EQ(second_turn.wait_for(2s), std::future_status::ready);
-    ASSERT_TRUE(session_one->WaitForEventCount(2U));
-    ASSERT_TRUE(session_two->WaitForEventCount(2U));
-
-    const absl::StatusOr<std::string> prompt_one = responder.RenderSessionMemoryPrompt("srv_one");
-    const absl::StatusOr<std::string> prompt_two = responder.RenderSessionMemoryPrompt("srv_two");
-    ASSERT_TRUE(prompt_one.ok()) << prompt_one.status();
-    ASSERT_TRUE(prompt_two.ok()) << prompt_two.status();
-    EXPECT_NE(prompt_one->find("alpha"), std::string::npos);
-    EXPECT_NE(prompt_one->find("stub echo: alpha"), std::string::npos);
-    EXPECT_EQ(prompt_one->find("beta"), std::string::npos);
-    EXPECT_NE(prompt_two->find("beta"), std::string::npos);
-    EXPECT_NE(prompt_two->find("stub echo: beta"), std::string::npos);
-    EXPECT_EQ(prompt_two->find("alpha"), std::string::npos);
 }
 
 } // namespace
