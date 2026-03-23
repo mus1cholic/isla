@@ -92,7 +92,8 @@ class OneShotHttpServer {
                 constexpr std::string_view kContentLengthHeader = "Content-Length: ";
                 const std::size_t content_length_pos = headers.find(kContentLengthHeader);
                 if (content_length_pos != std::string::npos) {
-                    const std::size_t value_begin = content_length_pos + kContentLengthHeader.size();
+                    const std::size_t value_begin =
+                        content_length_pos + kContentLengthHeader.size();
                     const std::size_t value_end = headers.find("\r\n", value_begin);
                     content_length = static_cast<std::size_t>(std::stoull(
                         std::string(headers.substr(value_begin, value_end - value_begin))));

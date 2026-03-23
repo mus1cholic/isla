@@ -57,6 +57,17 @@ absl::StatusOr<ParsedHttpUrl> ParseOllamaBaseUrl(std::string_view base_url) {
     return ParseHttpUrl(base_url, "ollama base_url");
 }
 
+absl::StatusOr<ParsedHttpUrl>
+ValidateOllamaLlmClientConfigForCreation(const OllamaLlmClientConfig& config) {
+    if (!config.enabled) {
+        return invalid_argument("ollama llm client is disabled");
+    }
+    if (config.request_timeout <= std::chrono::milliseconds::zero()) {
+        return invalid_argument("ollama request_timeout must be positive");
+    }
+    return ParseOllamaBaseUrl(config.base_url);
+}
+
 absl::StatusOr<bool> ResolveThinkFlag(LlmReasoningEffort effort) {
     switch (effort) {
     case LlmReasoningEffort::kNone:
@@ -71,8 +82,7 @@ absl::StatusOr<bool> ResolveThinkFlag(LlmReasoningEffort effort) {
     return invalid_argument("ollama llm client reasoning_effort is invalid");
 }
 
-std::vector<std::pair<std::string, std::string>>
-BuildHeaders(const OllamaLlmClientConfig& config) {
+std::vector<std::pair<std::string, std::string>> BuildHeaders(const OllamaLlmClientConfig& config) {
     std::vector<std::pair<std::string, std::string>> headers;
     if (config.api_key.has_value() && !config.api_key->empty()) {
         headers.emplace_back("Authorization", "Bearer " + *config.api_key);
@@ -147,11 +157,10 @@ class OllamaLlmClient final : public LlmClient {
     OllamaLlmClient(OllamaLlmClientConfig config, ParsedHttpUrl parsed_base_url)
         : config_(std::move(config)), parsed_base_url_(std::move(parsed_base_url)),
           http_client_(std::make_shared<PersistentHttpClient>(
-              parsed_base_url_,
-              HttpClientConfig{
-                  .request_timeout = config_.request_timeout,
-                  .user_agent = config_.user_agent,
-              })) {}
+              parsed_base_url_, HttpClientConfig{
+                                    .request_timeout = config_.request_timeout,
+                                    .user_agent = config_.user_agent,
+                                })) {}
 
     [[nodiscard]] absl::Status Validate() const override {
         return ValidateOllamaLlmClientConfig(config_);
@@ -208,7 +217,8 @@ class OllamaLlmClient final : public LlmClient {
             return MapHttpFailure(response->status_code, ExtractErrorMessage(*response));
         }
 
-        const absl::StatusOr<ParsedOllamaChatResponse> parsed_response = ParseChatResponse(*response);
+        const absl::StatusOr<ParsedOllamaChatResponse> parsed_response =
+            ParseChatResponse(*response);
         if (!parsed_response.ok()) {
             return parsed_response.status();
         }
@@ -235,25 +245,13 @@ class OllamaLlmClient final : public LlmClient {
 } // namespace
 
 absl::Status ValidateOllamaLlmClientConfig(const OllamaLlmClientConfig& config) {
-    if (!config.enabled) {
-        return invalid_argument("ollama llm client is disabled");
-    }
-    if (config.request_timeout <= std::chrono::milliseconds::zero()) {
-        return invalid_argument("ollama request_timeout must be positive");
-    }
-    const absl::StatusOr<ParsedHttpUrl> parsed_base_url = ParseOllamaBaseUrl(config.base_url);
-    if (!parsed_base_url.ok()) {
-        return parsed_base_url.status();
-    }
-    return absl::OkStatus();
+    return ValidateOllamaLlmClientConfigForCreation(config).status();
 }
 
 absl::StatusOr<std::shared_ptr<const LlmClient>>
 CreateOllamaLlmClient(OllamaLlmClientConfig config) {
-    if (const absl::Status status = ValidateOllamaLlmClientConfig(config); !status.ok()) {
-        return status;
-    }
-    const absl::StatusOr<ParsedHttpUrl> parsed_base_url = ParseOllamaBaseUrl(config.base_url);
+    const absl::StatusOr<ParsedHttpUrl> parsed_base_url =
+        ValidateOllamaLlmClientConfigForCreation(config);
     if (!parsed_base_url.ok()) {
         return parsed_base_url.status();
     }

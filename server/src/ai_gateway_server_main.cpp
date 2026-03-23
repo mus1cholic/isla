@@ -254,8 +254,8 @@ int main(int argc, char** argv) {
                      ResolveMidTermEmbeddingModel(startup_config->llm_runtime_config));
     LOG(INFO) << "AI gateway generic llm provider="
               << (startup_config->ollama_config.enabled ? "ollama"
-                  : (llm_client != nullptr)        ? "openai"
-                                                   : "disabled");
+                  : (llm_client != nullptr)             ? "openai"
+                                                        : "disabled");
     if (mid_term_memory_configured && !mid_term_memory_available) {
         LOG(WARNING) << "AI gateway mid-term memory degraded to working-memory-only detail='"
                      << isla::server::ai_gateway::SanitizeForLog(mid_term_memory_status.message())
@@ -265,15 +265,15 @@ int main(int argc, char** argv) {
         LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
                   << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.host)
                   << ":" << startup_config->openai_config.port << " scheme="
-                  << isla::server::ai_gateway::SanitizeForLog(
-                         startup_config->openai_config.scheme)
+                  << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.scheme)
                   << " timeout_ms=" << startup_config->openai_config.request_timeout.count();
     } else {
         LOG(INFO) << "AI gateway OpenAI Responses upstream disabled";
     }
     if (startup_config->ollama_config.enabled) {
         LOG(INFO) << "AI gateway using Ollama llm base_url="
-                  << isla::server::ai_gateway::SanitizeForLog(startup_config->ollama_config.base_url)
+                  << isla::server::ai_gateway::SanitizeForLog(
+                         startup_config->ollama_config.base_url)
                   << " timeout_ms=" << startup_config->ollama_config.request_timeout.count();
     } else {
         LOG(INFO) << "AI gateway Ollama llm disabled";

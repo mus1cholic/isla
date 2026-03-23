@@ -126,39 +126,40 @@ absl::StatusOr<bool> TryParseIntFlag(std::string_view argument, std::string_view
 
 void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
                             const StartupEnvLookup& env_lookup) {
+    bool saw_provider_setting = false;
     if (const std::optional<std::string> api_key = env_lookup("OPENAI_API_KEY");
         api_key.has_value()) {
         config->api_key = *api_key;
-        config->enabled = true;
+        saw_provider_setting = true;
     }
     if (const std::optional<std::string> scheme = env_lookup("OPENAI_SCHEME"); scheme.has_value()) {
         config->scheme = *scheme;
-        config->enabled = true;
+        saw_provider_setting = true;
     }
     if (const std::optional<std::string> host = env_lookup("OPENAI_HOST"); host.has_value()) {
         config->host = *host;
-        config->enabled = true;
+        saw_provider_setting = true;
     }
     if (const std::optional<std::string> target = env_lookup("OPENAI_TARGET"); target.has_value()) {
         config->target = *target;
-        config->enabled = true;
+        saw_provider_setting = true;
     }
     if (const std::optional<std::string> organization = env_lookup("OPENAI_ORGANIZATION");
         organization.has_value()) {
         config->organization = *organization;
-        config->enabled = true;
+        saw_provider_setting = true;
     }
     if (const std::optional<std::string> project = env_lookup("OPENAI_PROJECT_ID");
         project.has_value()) {
         config->project = *project;
-        config->enabled = true;
+        saw_provider_setting = true;
     } else if (const std::optional<std::string> legacy_project = env_lookup("OPENAI_PROJECT");
                legacy_project.has_value()) {
         config->project = *legacy_project;
-        config->enabled = true;
+        saw_provider_setting = true;
     }
     if (const std::optional<std::string> port = env_lookup("OPENAI_PORT"); port.has_value()) {
-        config->enabled = true;
+        saw_provider_setting = true;
         const absl::StatusOr<int> parsed_port = ParseIntArgument(*port, "OPENAI_PORT");
         if (!parsed_port.ok()) {
             LOG(WARNING) << "AI gateway ignored invalid OPENAI_PORT value='"
@@ -173,7 +174,7 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
     }
     if (const std::optional<std::string> timeout_ms = env_lookup("OPENAI_TIMEOUT_MS");
         timeout_ms.has_value()) {
-        config->enabled = true;
+        saw_provider_setting = true;
         const absl::StatusOr<int> parsed_timeout =
             ParseIntArgument(*timeout_ms, "OPENAI_TIMEOUT_MS");
         if (!parsed_timeout.ok()) {
@@ -187,23 +188,27 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
             config->request_timeout = std::chrono::milliseconds(*parsed_timeout);
         }
     }
+    if (saw_provider_setting) {
+        config->enabled = true;
+    }
 }
 
 void ApplyOllamaEnvDefaults(isla::server::OllamaLlmClientConfig* config,
                             const StartupEnvLookup& env_lookup) {
+    bool saw_provider_setting = false;
     if (const std::optional<std::string> base_url = env_lookup("OLLAMA_BASE_URL");
         base_url.has_value()) {
         config->base_url = *base_url;
-        config->enabled = true;
+        saw_provider_setting = true;
     }
     if (const std::optional<std::string> api_key = env_lookup("OLLAMA_API_KEY");
         api_key.has_value()) {
         config->api_key = *api_key;
-        config->enabled = true;
+        saw_provider_setting = true;
     }
     if (const std::optional<std::string> timeout_ms = env_lookup("OLLAMA_TIMEOUT_MS");
         timeout_ms.has_value()) {
-        config->enabled = true;
+        saw_provider_setting = true;
         const absl::StatusOr<int> parsed_timeout =
             ParseIntArgument(*timeout_ms, "OLLAMA_TIMEOUT_MS");
         if (!parsed_timeout.ok()) {
@@ -216,6 +221,9 @@ void ApplyOllamaEnvDefaults(isla::server::OllamaLlmClientConfig* config,
         } else {
             config->request_timeout = std::chrono::milliseconds(*parsed_timeout);
         }
+    }
+    if (saw_provider_setting) {
+        config->enabled = true;
     }
 }
 
@@ -547,6 +555,8 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     ApplyGeminiApiEmbeddingEnvDefaults(&parsed.gemini_api_embedding_config, env_lookup);
     ApplyTelemetryEnvDefaults(&parsed, env_lookup);
     ApplyLlmRuntimeEnvDefaults(&parsed, env_lookup);
+    const auto mark_openai_configured = [&parsed]() { parsed.openai_config.enabled = true; };
+    const auto mark_ollama_configured = [&parsed]() { parsed.ollama_config.enabled = true; };
 
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -593,17 +603,17 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         }
         if (argument.starts_with("--openai-api-key=")) {
             parsed.openai_config.api_key = argument.substr(17);
-            parsed.openai_config.enabled = true;
+            mark_openai_configured();
             continue;
         }
         if (argument.starts_with("--openai-scheme=")) {
             parsed.openai_config.scheme = argument.substr(16);
-            parsed.openai_config.enabled = true;
+            mark_openai_configured();
             continue;
         }
         if (argument.starts_with("--openai-host=")) {
             parsed.openai_config.host = argument.substr(14);
-            parsed.openai_config.enabled = true;
+            mark_openai_configured();
             continue;
         }
         if (const absl::StatusOr<bool> handled =
@@ -614,32 +624,32 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                                             "openai-port must be between 0 and 65535");
                                     }
                                     parsed.openai_config.port = static_cast<std::uint16_t>(port);
-                                    parsed.openai_config.enabled = true;
                                     return absl::OkStatus();
                                 });
             !handled.ok()) {
             return handled.status();
         } else if (*handled) {
+            mark_openai_configured();
             continue;
         }
         if (argument.starts_with("--openai-target=")) {
             parsed.openai_config.target = argument.substr(16);
-            parsed.openai_config.enabled = true;
+            mark_openai_configured();
             continue;
         }
         if (argument.starts_with("--openai-organization=")) {
             parsed.openai_config.organization = argument.substr(22);
-            parsed.openai_config.enabled = true;
+            mark_openai_configured();
             continue;
         }
         if (argument.starts_with("--openai-project=")) {
             parsed.openai_config.project = argument.substr(17);
-            parsed.openai_config.enabled = true;
+            mark_openai_configured();
             continue;
         }
         if (argument.starts_with("--openai-project-id=")) {
             parsed.openai_config.project = argument.substr(20);
-            parsed.openai_config.enabled = true;
+            mark_openai_configured();
             continue;
         }
         if (const absl::StatusOr<bool> handled =
@@ -651,24 +661,24 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                                     }
                                     parsed.openai_config.request_timeout =
                                         std::chrono::milliseconds(timeout_ms);
-                                    parsed.openai_config.enabled = true;
                                     return absl::OkStatus();
                                 });
             !handled.ok()) {
             return handled.status();
         } else if (*handled) {
+            mark_openai_configured();
             continue;
         }
         constexpr std::string_view kOllamaBaseUrlPrefix = "--ollama-base-url=";
         if (argument.starts_with(kOllamaBaseUrlPrefix)) {
             parsed.ollama_config.base_url = argument.substr(kOllamaBaseUrlPrefix.size());
-            parsed.ollama_config.enabled = true;
+            mark_ollama_configured();
             continue;
         }
         constexpr std::string_view kOllamaApiKeyPrefix = "--ollama-api-key=";
         if (argument.starts_with(kOllamaApiKeyPrefix)) {
             parsed.ollama_config.api_key = argument.substr(kOllamaApiKeyPrefix.size());
-            parsed.ollama_config.enabled = true;
+            mark_ollama_configured();
             continue;
         }
         if (const absl::StatusOr<bool> handled =
@@ -680,12 +690,12 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                                     }
                                     parsed.ollama_config.request_timeout =
                                         std::chrono::milliseconds(timeout_ms);
-                                    parsed.ollama_config.enabled = true;
                                     return absl::OkStatus();
                                 });
             !handled.ok()) {
             return handled.status();
         } else if (*handled) {
+            mark_ollama_configured();
             continue;
         }
         constexpr std::string_view kMainLlmModelPrefix = "--main-llm-model=";
@@ -834,8 +844,8 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         }
     }
     if (parsed.ollama_config.enabled) {
-        const absl::Status ollama_status = isla::server::ValidateOllamaLlmClientConfig(
-            parsed.ollama_config);
+        const absl::Status ollama_status =
+            isla::server::ValidateOllamaLlmClientConfig(parsed.ollama_config);
         if (!ollama_status.ok()) {
             return ollama_status;
         }
