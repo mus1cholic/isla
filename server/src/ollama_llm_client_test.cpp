@@ -28,6 +28,16 @@ using tcp = asio::ip::tcp;
 using nlohmann::json;
 using namespace std::chrono_literals;
 
+void ReportTestServerThreadException(std::string_view server_name) {
+    try {
+        throw;
+    } catch (const std::exception& error) {
+        ADD_FAILURE() << server_name << " worker thread threw exception: " << error.what();
+    } catch (...) {
+        ADD_FAILURE() << server_name << " worker thread threw a non-std exception";
+    }
+}
+
 class OneShotHttpServer {
   public:
     explicit OneShotHttpServer(std::string response)
@@ -47,9 +57,11 @@ class OneShotHttpServer {
     [[nodiscard]] bool WaitForRequest() const {
         const auto deadline = std::chrono::steady_clock::now() + 2s;
         while (std::chrono::steady_clock::now() < deadline) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (request_text_.has_value()) {
-                return true;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (request_text_.has_value()) {
+                    return true;
+                }
             }
             std::this_thread::sleep_for(10ms);
         }
@@ -118,6 +130,7 @@ class OneShotHttpServer {
             socket.shutdown(tcp::socket::shutdown_both, error);
             socket.close(error);
         } catch (...) {
+            ReportTestServerThreadException("OneShotHttpServer");
         }
     }
 

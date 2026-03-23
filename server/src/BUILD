@@ -205,6 +205,7 @@ cc_library(
         ":http_json_client",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+        "@boost.beast//:boost.beast",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )

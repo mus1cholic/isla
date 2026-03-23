@@ -529,7 +529,7 @@ TEST(AiGatewayStartupConfigTest, UsesLegacyProjectEnvWhenPreferredProjectIdEnvMi
     EXPECT_EQ(*parsed->openai_config.project, "proj_legacy_123");
 }
 
-TEST(AiGatewayStartupConfigTest, RejectsMissingApiKeyAfterEnvAndCliResolution) {
+TEST(AiGatewayStartupConfigTest, RejectsMissingLlmProviderConfiguration) {
     std::array<char*, 1> argv = { kArg0.data() };
 
     const absl::StatusOr<ParsedStartupConfig> parsed =
