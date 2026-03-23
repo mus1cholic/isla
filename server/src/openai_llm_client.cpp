@@ -97,12 +97,10 @@ DeserializeContinuationToken(std::string_view token) {
             if (raw_json_it == entry.end() || !raw_json_it->is_string()) {
                 return invalid_argument("llm tool continuation raw entries must include raw_json");
             }
-            items.push_back(OpenAiResponsesRawInputItem{
+            items.emplace_back(OpenAiResponsesRawInputItem{
                 .raw_json = raw_json_it->get<std::string>(),
             });
-            continue;
-        }
-        if (type == "message") {
+        } else if (type == "message") {
             const auto role_it = entry.find("role");
             const auto content_it = entry.find("content");
             if (role_it == entry.end() || !role_it->is_string() || content_it == entry.end() ||
@@ -110,13 +108,11 @@ DeserializeContinuationToken(std::string_view token) {
                 return invalid_argument(
                     "llm tool continuation message entries must include role and content");
             }
-            items.push_back(OpenAiResponsesMessageInputItem{
+            items.emplace_back(OpenAiResponsesMessageInputItem{
                 .role = role_it->get<std::string>(),
                 .content = content_it->get<std::string>(),
             });
-            continue;
-        }
-        if (type == "function_call_output") {
+        } else if (type == "function_call_output") {
             const auto call_id_it = entry.find("call_id");
             const auto output_it = entry.find("output");
             if (call_id_it == entry.end() || !call_id_it->is_string() || output_it == entry.end() ||
@@ -124,13 +120,13 @@ DeserializeContinuationToken(std::string_view token) {
                 return invalid_argument("llm tool continuation function_call_output entries must "
                                         "include call_id and output");
             }
-            items.push_back(OpenAiResponsesFunctionCallOutputInputItem{
+            items.emplace_back(OpenAiResponsesFunctionCallOutputInputItem{
                 .call_id = call_id_it->get<std::string>(),
                 .output = output_it->get<std::string>(),
             });
-            continue;
+        } else {
+            return invalid_argument("llm tool continuation_token entry type is unsupported");
         }
-        return invalid_argument("llm tool continuation_token entry type is unsupported");
     }
     return items;
 }
@@ -245,7 +241,7 @@ class OpenAiLlmClient final : public LlmClient {
 
         std::string output_text;
         std::optional<OpenAiResponsesCompletedEvent> completed_event;
-        const absl::Status stream_status = responses_client_->StreamResponse(
+        absl::Status stream_status = responses_client_->StreamResponse(
             OpenAiResponsesRequest{
                 .model = request.model,
                 .system_prompt = request.system_prompt,
