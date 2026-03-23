@@ -28,12 +28,20 @@ namespace isla::server::ai_gateway {
 namespace {
 
 using namespace std::chrono_literals;
-inline constexpr std::size_t kMaxRenderedSystemPromptBytes =
-    static_cast<const std::size_t>(64U * 1024U);
-inline constexpr std::size_t kMaxRenderedWorkingMemoryContextBytes =
-    static_cast<const std::size_t>(64U * 1024U);
-inline constexpr std::size_t kMaxRenderedPromptBytes =
-    kMaxRenderedSystemPromptBytes + kMaxRenderedWorkingMemoryContextBytes;
+
+std::size_t ResolveMaxRenderedSystemPromptBytes(const GatewayStubResponderConfig& config) {
+    return config.max_rendered_system_prompt_bytes;
+}
+
+std::size_t ResolveMaxRenderedWorkingMemoryContextBytes(const GatewayStubResponderConfig& config) {
+    return config.max_rendered_working_memory_context_bytes;
+}
+
+std::size_t ResolveMaxRenderedPromptBytes(const GatewayStubResponderConfig& config) {
+    return config.max_rendered_prompt_bytes.value_or(
+        ResolveMaxRenderedSystemPromptBytes(config) +
+        ResolveMaxRenderedWorkingMemoryContextBytes(config));
+}
 
 GatewayAcceptedTurnResult FailedAcceptedTurnResult(std::string_view code,
                                                    std::string_view message) {
@@ -887,22 +895,28 @@ GatewayStubResponder::ExecutePreparedTurnToTerminal(const PendingTurn& turn) {
                                         "text.input text exceeds maximum length", "oversized turn");
         return FailedAcceptedTurnResult("bad_request", "text.input text exceeds maximum length");
     }
-    if (turn.rendered_system_prompt.size() > kMaxRenderedSystemPromptBytes) {
+    const std::size_t max_rendered_system_prompt_bytes =
+        ResolveMaxRenderedSystemPromptBytes(config_);
+    const std::size_t max_rendered_working_memory_context_bytes =
+        ResolveMaxRenderedWorkingMemoryContextBytes(config_);
+    const std::size_t max_rendered_prompt_bytes = ResolveMaxRenderedPromptBytes(config_);
+
+    if (turn.rendered_system_prompt.size() > max_rendered_system_prompt_bytes) {
         LOG(ERROR) << "AI gateway stub rejected oversized rendered system prompt session="
                    << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
                    << " system_prompt_bytes=" << turn.rendered_system_prompt.size()
-                   << " budget_bytes=" << kMaxRenderedSystemPromptBytes;
+                   << " budget_bytes=" << max_rendered_system_prompt_bytes;
         BestEffortTerminateAcceptedTurn(turn, "bad_request",
                                         "rendered system prompt exceeds maximum length",
                                         "oversized rendered system prompt");
         return FailedAcceptedTurnResult("bad_request",
                                         "rendered system prompt exceeds maximum length");
     }
-    if (turn.rendered_working_memory_context.size() > kMaxRenderedWorkingMemoryContextBytes) {
+    if (turn.rendered_working_memory_context.size() > max_rendered_working_memory_context_bytes) {
         LOG(ERROR) << "AI gateway stub rejected oversized rendered working memory context session="
                    << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
                    << " context_bytes=" << turn.rendered_working_memory_context.size()
-                   << " budget_bytes=" << kMaxRenderedWorkingMemoryContextBytes;
+                   << " budget_bytes=" << max_rendered_working_memory_context_bytes;
         BestEffortTerminateAcceptedTurn(turn, "bad_request",
                                         "rendered working memory context exceeds maximum length",
                                         "oversized rendered context");
@@ -910,12 +924,12 @@ GatewayStubResponder::ExecutePreparedTurnToTerminal(const PendingTurn& turn) {
                                         "rendered working memory context exceeds maximum length");
     }
     if (turn.rendered_system_prompt.size() + turn.rendered_working_memory_context.size() >
-        kMaxRenderedPromptBytes) {
+        max_rendered_prompt_bytes) {
         LOG(ERROR) << "AI gateway stub rejected oversized rendered prompt session="
                    << SanitizeForLog(turn.session_id) << " turn_id=" << SanitizeForLog(turn.turn_id)
                    << " system_prompt_bytes=" << turn.rendered_system_prompt.size()
                    << " context_bytes=" << turn.rendered_working_memory_context.size()
-                   << " budget_bytes=" << kMaxRenderedPromptBytes;
+                   << " budget_bytes=" << max_rendered_prompt_bytes;
         BestEffortTerminateAcceptedTurn(turn, "bad_request",
                                         "rendered prompt exceeds maximum combined length",
                                         "oversized rendered prompt");

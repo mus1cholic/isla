@@ -218,15 +218,25 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
                   << suite.cases.size() << " id=" << eval_case.case_id
                   << " conversation_turns=" << eval_case.conversation.size();
 
+        isla::server::ai_gateway::GatewayStubResponderConfig responder_config{
+            .response_delay = 0ms,
+            .async_emit_timeout = 30s,
+            .llm_runtime_config = config.llm_runtime_config,
+            .openai_config = config.openai_config,
+            .openai_client = openai_client,
+        };
+        if (config.max_rendered_system_prompt_bytes.has_value()) {
+            responder_config.max_rendered_system_prompt_bytes =
+                *config.max_rendered_system_prompt_bytes;
+        }
+        if (config.max_rendered_working_memory_context_bytes.has_value()) {
+            responder_config.max_rendered_working_memory_context_bytes =
+                *config.max_rendered_working_memory_context_bytes;
+        }
+        responder_config.max_rendered_prompt_bytes = config.max_rendered_prompt_bytes;
+
         EvalRunner runner(EvalRunnerConfig{
-            .responder_config =
-                isla::server::ai_gateway::GatewayStubResponderConfig{
-                    .response_delay = 0ms,
-                    .async_emit_timeout = 30s,
-                    .llm_runtime_config = config.llm_runtime_config,
-                    .openai_config = config.openai_config,
-                    .openai_client = openai_client,
-                },
+            .responder_config = std::move(responder_config),
             .telemetry_sink = config.telemetry_sink,
         });
 

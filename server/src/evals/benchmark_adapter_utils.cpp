@@ -1,5 +1,6 @@
 #include "isla/server/evals/benchmark_adapter_utils.hpp"
 
+#include <cctype>
 #include <exception>
 #include <fstream>
 
@@ -33,6 +34,27 @@ bool IsDateOnlyText(std::string_view text) {
         }
     }
     return true;
+}
+
+bool IsLongMemEvalTimestampText(std::string_view text) {
+    if (text.size() != 22U) {
+        return false;
+    }
+    return std::isdigit(static_cast<unsigned char>(text[0])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(text[1])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(text[2])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(text[3])) != 0 && text[4] == '/' &&
+           std::isdigit(static_cast<unsigned char>(text[5])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(text[6])) != 0 && text[7] == '/' &&
+           std::isdigit(static_cast<unsigned char>(text[8])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(text[9])) != 0 && text[10] == ' ' &&
+           text[11] == '(' && std::isalpha(static_cast<unsigned char>(text[12])) != 0 &&
+           std::isalpha(static_cast<unsigned char>(text[13])) != 0 &&
+           std::isalpha(static_cast<unsigned char>(text[14])) != 0 && text[15] == ')' &&
+           text[16] == ' ' && std::isdigit(static_cast<unsigned char>(text[17])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(text[18])) != 0 && text[19] == ':' &&
+           std::isdigit(static_cast<unsigned char>(text[20])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(text[21])) != 0;
 }
 
 } // namespace
@@ -142,8 +164,16 @@ absl::StatusOr<std::string> NormalizeStringOrIntegerValue(const nlohmann::json& 
 absl::StatusOr<isla::server::memory::Timestamp>
 ParseBenchmarkTimestamp(std::string_view text, std::string_view field_description) {
     try {
-        const std::string normalized =
-            IsDateOnlyText(text) ? absl::StrCat(text, "T00:00:00Z") : std::string(text);
+        std::string normalized;
+        if (IsDateOnlyText(text)) {
+            normalized = absl::StrCat(text, "T00:00:00Z");
+        } else if (IsLongMemEvalTimestampText(text)) {
+            normalized =
+                absl::StrCat(text.substr(0, 4), "-", text.substr(5, 2), "-", text.substr(8, 2), "T",
+                             text.substr(17, 2), ":", text.substr(20, 2), ":00Z");
+        } else {
+            normalized = std::string(text);
+        }
         return isla::server::memory::ParseTimestamp(normalized);
     } catch (const std::exception& error) {
         return invalid_argument(
