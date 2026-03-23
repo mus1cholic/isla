@@ -12,6 +12,8 @@
 #include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/gemini_api_embedding_client.hpp"
 #include "isla/server/memory/supabase_memory_store.hpp"
+#include "isla/server/ollama_llm_client.hpp"
+#include "isla/server/openai_llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace {
@@ -84,6 +86,7 @@ int main(int argc, char** argv) {
     // Create the OpenAI client eagerly so we can warm up its transport
     // connection before any client session arrives.
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client;
+    std::shared_ptr<const isla::server::LlmClient> llm_client;
     std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
     if (startup_config->openai_config.enabled) {
         openai_client =
@@ -102,6 +105,45 @@ int main(int argc, char** argv) {
                          << isla::server::ai_gateway::SanitizeForLog(openai_warmup_status.message())
                          << "'";
         }
+    }
+    if (startup_config->ollama_config.enabled) {
+        absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> created_ollama_client =
+            isla::server::CreateOllamaLlmClient(startup_config->ollama_config);
+        if (!created_ollama_client.ok()) {
+            LOG(ERROR) << "AI gateway failed to create Ollama llm client detail='"
+                       << isla::server::ai_gateway::SanitizeForLog(
+                              created_ollama_client.status().message())
+                       << "'";
+            return 1;
+        }
+        llm_client = std::move(*created_ollama_client);
+        const auto ollama_warmup_start = std::chrono::steady_clock::now();
+        const absl::Status ollama_warmup_status = llm_client->WarmUp();
+        const auto ollama_warmup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now() - ollama_warmup_start)
+                                          .count();
+        if (ollama_warmup_status.ok()) {
+            LOG(INFO) << "AI gateway Ollama connection warmup succeeded duration_ms="
+                      << ollama_warmup_ms;
+        } else {
+            LOG(WARNING) << "AI gateway Ollama connection warmup failed duration_ms="
+                         << ollama_warmup_ms << " detail='"
+                         << isla::server::ai_gateway::SanitizeForLog(ollama_warmup_status.message())
+                         << "'";
+        }
+    }
+    if (llm_client == nullptr && openai_client != nullptr) {
+        absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> created_openai_llm_client =
+            isla::server::CreateOpenAiLlmClient(openai_client);
+        if (!created_openai_llm_client.ok()) {
+            LOG(ERROR) << "AI gateway failed to adapt OpenAI responses client to llm client "
+                          "detail='"
+                       << isla::server::ai_gateway::SanitizeForLog(
+                              created_openai_llm_client.status().message())
+                       << "'";
+            return 1;
+        }
+        llm_client = std::move(*created_openai_llm_client);
     }
 
     if (startup_config->gemini_api_embedding_config.enabled) {
@@ -160,6 +202,7 @@ int main(int argc, char** argv) {
         isla::server::ai_gateway::GatewayStubResponderConfig{
             .memory_store = *memory_store,
             .llm_runtime_config = startup_config->llm_runtime_config,
+            .llm_client = llm_client,
             .openai_config = startup_config->openai_config,
             .openai_client = openai_client,
             .gemini_api_embedding_config = startup_config->gemini_api_embedding_config,
@@ -209,16 +252,32 @@ int main(int argc, char** argv) {
               << " mid_term_embedding="
               << isla::server::ai_gateway::SanitizeForLog(
                      ResolveMidTermEmbeddingModel(startup_config->llm_runtime_config));
+    LOG(INFO) << "AI gateway generic llm provider="
+              << (startup_config->ollama_config.enabled ? "ollama"
+                  : (llm_client != nullptr)             ? "openai"
+                                                        : "disabled");
     if (mid_term_memory_configured && !mid_term_memory_available) {
         LOG(WARNING) << "AI gateway mid-term memory degraded to working-memory-only detail='"
                      << isla::server::ai_gateway::SanitizeForLog(mid_term_memory_status.message())
                      << "'";
     }
-    LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
-              << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.host) << ":"
-              << startup_config->openai_config.port << " scheme="
-              << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.scheme)
-              << " timeout_ms=" << startup_config->openai_config.request_timeout.count();
+    if (startup_config->openai_config.enabled) {
+        LOG(INFO) << "AI gateway using OpenAI Responses upstream host="
+                  << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.host)
+                  << ":" << startup_config->openai_config.port << " scheme="
+                  << isla::server::ai_gateway::SanitizeForLog(startup_config->openai_config.scheme)
+                  << " timeout_ms=" << startup_config->openai_config.request_timeout.count();
+    } else {
+        LOG(INFO) << "AI gateway OpenAI Responses upstream disabled";
+    }
+    if (startup_config->ollama_config.enabled) {
+        LOG(INFO) << "AI gateway using Ollama llm base_url="
+                  << isla::server::ai_gateway::SanitizeForLog(
+                         startup_config->ollama_config.base_url)
+                  << " timeout_ms=" << startup_config->ollama_config.request_timeout.count();
+    } else {
+        LOG(INFO) << "AI gateway Ollama llm disabled";
+    }
     if (startup_config->supabase_config.enabled) {
         LOG(INFO) << "AI gateway using Supabase memory store url="
                   << isla::server::ai_gateway::SanitizeForLog(startup_config->supabase_config.url)

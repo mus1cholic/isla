@@ -14,6 +14,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/gemini_api_embedding_client.hpp"
 #include "isla/server/memory/supabase_memory_store.hpp"
+#include "isla/server/ollama_llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
@@ -22,6 +23,7 @@ struct ParsedStartupConfig {
     GatewayServerConfig server_config;
     GatewayLlmRuntimeConfig llm_runtime_config;
     OpenAiResponsesClientConfig openai_config;
+    isla::server::OllamaLlmClientConfig ollama_config;
     GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
     isla::server::memory::SupabaseMemoryStoreConfig supabase_config;
     bool telemetry_logging_enabled = false;
