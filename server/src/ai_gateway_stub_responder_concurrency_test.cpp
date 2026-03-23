@@ -8,6 +8,31 @@ namespace {
 
 using namespace test_support;
 
+std::shared_ptr<test::FakeOpenAiResponsesClient>
+MakeBlockingRequestUserTextEchoClient(const std::shared_ptr<std::promise<void>>& builder_started,
+                                      std::shared_future<void> allow_finish_future) {
+    return test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [builder_started,
+         allow_finish_future](const OpenAiResponsesRequest& request,
+                              const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            if (IsMidTermMemoryRequest(request)) {
+                return EmitMidTermAwareEchoResponse(request, on_event);
+            }
+            builder_started->set_value();
+            allow_finish_future.wait();
+            const std::string text = std::string("stub echo: ") + request.user_text;
+            const absl::Status delta_status =
+                on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_test",
+            });
+        });
+}
+
 TEST(GatewayStubResponderStandaloneTest,
      DirectAcceptedTurnCancelWhileProviderBlockedReturnsCancelled) {
     auto request_started = std::make_shared<std::promise<void>>();
@@ -70,26 +95,8 @@ TEST(GatewayStubResponderStandaloneTest, SessionClosedDuringExecutionDropsLaterE
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .openai_client = test::MakeFakeOpenAiResponsesClient(
-            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-            [builder_started,
-             allow_finish_future](const OpenAiResponsesRequest& request,
-                                  const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (IsMidTermMemoryRequest(request)) {
-                    return EmitMidTermAwareEchoResponse(request, on_event);
-                }
-                builder_started->set_value();
-                allow_finish_future.wait();
-                const std::string text = std::string("stub echo: ") + request.user_text;
-                const absl::Status delta_status =
-                    on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
-                if (!delta_status.ok()) {
-                    return delta_status;
-                }
-                return on_event(OpenAiResponsesCompletedEvent{
-                    .response_id = "resp_test",
-                });
-            }),
+        .openai_client =
+            MakeBlockingRequestUserTextEchoClient(builder_started, allow_finish_future),
     });
     ResponderRegistryAttachment registry_scope(responder);
     GatewaySessionRegistry& registry = registry_scope.registry();
@@ -126,26 +133,8 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
 
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
-        .openai_client = test::MakeFakeOpenAiResponsesClient(
-            absl::OkStatus(), "", "resp_test", absl::OkStatus(),
-            [builder_started,
-             allow_finish_future](const OpenAiResponsesRequest& request,
-                                  const OpenAiResponsesEventCallback& on_event) -> absl::Status {
-                if (IsMidTermMemoryRequest(request)) {
-                    return EmitMidTermAwareEchoResponse(request, on_event);
-                }
-                builder_started->set_value();
-                allow_finish_future.wait();
-                const std::string text = std::string("stub echo: ") + request.user_text;
-                absl::Status delta_status =
-                    on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
-                if (!delta_status.ok()) {
-                    return delta_status;
-                }
-                return on_event(OpenAiResponsesCompletedEvent{
-                    .response_id = "resp_test",
-                });
-            }),
+        .openai_client =
+            MakeBlockingRequestUserTextEchoClient(builder_started, allow_finish_future),
     });
     ResponderRegistryAttachment registry_scope(responder);
     GatewaySessionRegistry& registry = registry_scope.registry();
