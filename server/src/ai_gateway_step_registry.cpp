@@ -2,7 +2,6 @@
 
 #include <optional>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -38,12 +37,31 @@ absl::Status resource_exhausted(std::string_view message) {
     return absl::ResourceExhaustedError(message);
 }
 
-std::vector<OpenAiResponsesFunctionTool>
-BuildProviderFunctionTools(const isla::server::tools::ToolRegistry& tool_registry) {
-    std::vector<OpenAiResponsesFunctionTool> function_tools;
+absl::StatusOr<isla::server::LlmReasoningEffort>
+ToLlmReasoningEffort(OpenAiReasoningEffort effort) {
+    switch (effort) {
+    case OpenAiReasoningEffort::kNone:
+        return isla::server::LlmReasoningEffort::kNone;
+    case OpenAiReasoningEffort::kMinimal:
+        return isla::server::LlmReasoningEffort::kMinimal;
+    case OpenAiReasoningEffort::kLow:
+        return isla::server::LlmReasoningEffort::kLow;
+    case OpenAiReasoningEffort::kMedium:
+        return isla::server::LlmReasoningEffort::kMedium;
+    case OpenAiReasoningEffort::kHigh:
+        return isla::server::LlmReasoningEffort::kHigh;
+    case OpenAiReasoningEffort::kXHigh:
+        return isla::server::LlmReasoningEffort::kXHigh;
+    }
+    return invalid_argument("openai llm step reasoning_effort is invalid");
+}
+
+std::vector<isla::server::LlmFunctionTool>
+BuildFunctionTools(const isla::server::tools::ToolRegistry& tool_registry) {
+    std::vector<isla::server::LlmFunctionTool> function_tools;
     for (const isla::server::tools::ToolDefinition& tool_definition :
          tool_registry.ListDefinitions()) {
-        function_tools.push_back(OpenAiResponsesFunctionTool{
+        function_tools.push_back(isla::server::LlmFunctionTool{
             .name = tool_definition.name,
             .description = tool_definition.description,
             .parameters_json_schema = tool_definition.input_json_schema,
@@ -51,43 +69,6 @@ BuildProviderFunctionTools(const isla::server::tools::ToolRegistry& tool_registr
         });
     }
     return function_tools;
-}
-
-struct OpenAiToolLoopResponse {
-    std::string output_text;
-    std::vector<OpenAiResponsesOutputItem> output_items;
-};
-
-absl::StatusOr<OpenAiToolLoopResponse>
-RunOpenAiResponsesRequest(const OpenAiResponsesClient& client,
-                          const OpenAiResponsesRequest& request) {
-    std::string output_text;
-    std::optional<OpenAiResponsesCompletedEvent> completed_event;
-    const absl::Status stream_status = client.StreamResponse(
-        request,
-        [&output_text, &completed_event](const OpenAiResponsesEvent& event) -> absl::Status {
-            return std::visit(
-                [&output_text, &completed_event](const auto& concrete_event) -> absl::Status {
-                    using Event = std::decay_t<decltype(concrete_event)>;
-                    if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
-                        output_text.append(concrete_event.text_delta);
-                    } else if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
-                        completed_event = concrete_event;
-                    }
-                    return absl::OkStatus();
-                },
-                event);
-        });
-    if (!stream_status.ok()) {
-        return stream_status;
-    }
-    if (!completed_event.has_value()) {
-        return failed_precondition("openai responses tool loop completed without a terminal event");
-    }
-    return OpenAiToolLoopResponse{
-        .output_text = std::move(output_text),
-        .output_items = std::move(completed_event->output_items),
-    };
 }
 
 } // namespace
@@ -126,70 +107,69 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
             << " step_name='" << SanitizeForLog(step.step_name) << "' model='"
             << SanitizeForLog(effective_model) << "'";
     ScopedTelemetryPhase step_phase(runtime_input.telemetry_context, telemetry::kPhaseExecutorStep);
-    if (config_.tool_registry != nullptr && config_.openai_client != nullptr &&
+    if (config_.tool_registry != nullptr && config_.llm_client != nullptr &&
+        config_.llm_client->SupportsToolCalling() &&
         runtime_input.tool_execution_context.has_value()) {
         if (runtime_input.user_text.empty()) {
             return invalid_argument("openai llms input must include user_text");
         }
-        absl::Status client_status = config_.openai_client->Validate();
+        absl::Status client_status = config_.llm_client->Validate();
         if (!client_status.ok()) {
             return client_status;
         }
         const std::string_view effective_system_prompt =
             runtime_input.system_prompt.empty() ? std::string_view(step.system_prompt)
                                                 : std::string_view(runtime_input.system_prompt);
-        std::vector<OpenAiResponsesInputItem> replay_input_items;
-        const std::vector<OpenAiResponsesFunctionTool> function_tools =
-            BuildProviderFunctionTools(*config_.tool_registry);
+        const absl::StatusOr<isla::server::LlmReasoningEffort> llm_reasoning_effort =
+            ToLlmReasoningEffort(step.reasoning_effort);
+        if (!llm_reasoning_effort.ok()) {
+            return llm_reasoning_effort.status();
+        }
+        std::string continuation_token;
+        std::vector<isla::server::LlmFunctionCallOutput> tool_outputs;
+        const std::vector<isla::server::LlmFunctionTool> function_tools =
+            BuildFunctionTools(*config_.tool_registry);
         bool include_initial_user_text = true;
         for (std::size_t round = 0; round < kMaxToolRounds; ++round) {
-            const absl::StatusOr<OpenAiToolLoopResponse> response = RunOpenAiResponsesRequest(
-                *config_.openai_client,
-                OpenAiResponsesRequest{
+            const absl::StatusOr<isla::server::LlmToolCallResponse> response =
+                config_.llm_client->RunToolCallRound(isla::server::LlmToolCallRequest{
                     .model = effective_model,
                     .system_prompt = std::string(effective_system_prompt),
                     .user_text =
                         include_initial_user_text ? runtime_input.user_text : std::string(),
-                    .input_items = std::span<const OpenAiResponsesInputItem>(replay_input_items),
-                    .function_tools = std::span<const OpenAiResponsesFunctionTool>(function_tools),
-                    .parallel_tool_calls = false,
-                    .reasoning_effort = step.reasoning_effort,
+                    .function_tools =
+                        std::span<const isla::server::LlmFunctionTool>(function_tools),
+                    .tool_outputs =
+                        std::span<const isla::server::LlmFunctionCallOutput>(tool_outputs),
+                    .continuation_token = continuation_token,
+                    .reasoning_effort = *llm_reasoning_effort,
                     .telemetry_context = runtime_input.telemetry_context,
                 });
             if (!response.ok()) {
                 return response.status();
             }
             include_initial_user_text = false;
+            continuation_token = response->continuation_token;
 
             std::vector<isla::server::tools::ToolCall> tool_calls;
-            tool_calls.reserve(response->output_items.size());
-            for (const OpenAiResponsesOutputItem& output_item : response->output_items) {
-                replay_input_items.push_back(OpenAiResponsesRawInputItem{
-                    .raw_json = output_item.raw_json,
-                });
-                if (output_item.type != "function_call") {
-                    continue;
-                }
-                if (!output_item.call_id.has_value() || !output_item.name.has_value() ||
-                    !output_item.arguments_json.has_value()) {
-                    return failed_precondition(
-                        "openai responses function_call item must include call_id, name, and "
-                        "arguments");
-                }
+            tool_calls.reserve(response->tool_calls.size());
+            for (const isla::server::LlmFunctionCall& function_call : response->tool_calls) {
                 tool_calls.push_back(isla::server::tools::ToolCall{
-                    .call_id = *output_item.call_id,
-                    .name = *output_item.name,
-                    .arguments_json = *output_item.arguments_json,
+                    .call_id = function_call.call_id,
+                    .name = function_call.name,
+                    .arguments_json = function_call.arguments_json,
                 });
             }
             if (tool_calls.empty()) {
                 return ExecutionStepResult(LlmCallResult{
                     .step_name = step.step_name,
                     .model = effective_model,
-                    .output_text = response->output_text,
+                    .output_text = std::move(response->output_text),
                 });
             }
 
+            tool_outputs.clear();
+            tool_outputs.reserve(tool_calls.size());
             for (const isla::server::tools::ToolCall& tool_call : tool_calls) {
                 const absl::StatusOr<isla::server::tools::ToolResult> tool_result =
                     config_.tool_registry->Execute(*runtime_input.tool_execution_context,
@@ -197,13 +177,13 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
                 if (!tool_result.ok()) {
                     return tool_result.status();
                 }
-                replay_input_items.push_back(OpenAiResponsesFunctionCallOutputInputItem{
+                tool_outputs.push_back(isla::server::LlmFunctionCallOutput{
                     .call_id = tool_result->call_id,
                     .output = tool_result->output_text,
                 });
             }
         }
-        return resource_exhausted("openai tool loop exceeded maximum rounds");
+        return resource_exhausted("llm tool loop exceeded maximum rounds");
     }
     OpenAiLLMs openai_llms(step.step_name, step.system_prompt, effective_model, config_.llm_client,
                            step.reasoning_effort);
