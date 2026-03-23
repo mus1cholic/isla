@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/openai_reasoning_effort.hpp"
 #include "isla/server/openai_responses_client.hpp"
 #include <nlohmann/json.hpp>
@@ -31,8 +32,14 @@ using isla::server::ai_gateway::OpenAiResponsesRequest;
 using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
 using nlohmann::json;
 
+template <typename> inline constexpr bool kAlwaysFalse = false;
+
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
+}
+
+absl::Status resource_exhausted(std::string_view message) {
+    return absl::ResourceExhaustedError(std::string(message));
 }
 
 absl::StatusOr<OpenAiReasoningEffort> ToOpenAiReasoningEffort(LlmReasoningEffort effort) {
@@ -148,12 +155,16 @@ std::string SerializeContinuationToken(std::span<const OpenAiResponsesInputItem>
                         { "role", concrete_item.role },
                         { "content", concrete_item.content },
                     });
-                } else {
+                } else if constexpr (std::is_same_v<Item,
+                                                    OpenAiResponsesFunctionCallOutputInputItem>) {
                     serialized.push_back({
                         { "type", "function_call_output" },
                         { "call_id", concrete_item.call_id },
                         { "output", concrete_item.output },
                     });
+                } else {
+                    static_assert(kAlwaysFalse<Item>, "SerializeContinuationToken must handle all "
+                                                      "OpenAiResponsesInputItem alternatives");
                 }
             },
             item);
@@ -257,6 +268,14 @@ class OpenAiLlmClient final : public LlmClient {
                     [&output_text, &completed_event](const auto& concrete_event) -> absl::Status {
                         using Event = std::decay_t<decltype(concrete_event)>;
                         if constexpr (std::is_same_v<Event, OpenAiResponsesTextDeltaEvent>) {
+                            if (concrete_event.text_delta.empty()) {
+                                return absl::OkStatus();
+                            }
+                            if (output_text.size() + concrete_event.text_delta.size() >
+                                ai_gateway::kMaxTextOutputBytes) {
+                                return resource_exhausted(
+                                    "openai tool call round output exceeds maximum length");
+                            }
                             output_text.append(concrete_event.text_delta);
                         } else if constexpr (std::is_same_v<Event, OpenAiResponsesCompletedEvent>) {
                             completed_event = concrete_event;

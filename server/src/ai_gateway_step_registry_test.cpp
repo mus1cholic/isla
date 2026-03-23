@@ -388,5 +388,44 @@ TEST(GatewayStepRegistryTest, ExecutesProviderNeutralToolLoopWhenLlmClientSuppor
     EXPECT_EQ(reader->last_episode_id, "ep_123");
 }
 
+TEST(GatewayStepRegistryTest, RejectsMissingRuntimeUserTextInProviderNeutralToolLoop) {
+    auto tool_registry = isla::server::tools::ToolRegistry::Create(
+        { std::make_shared<const isla::server::tools::ExpandMidTermTool>() });
+    ASSERT_TRUE(tool_registry.ok()) << tool_registry.status();
+    auto reader = std::make_shared<StaticToolSessionReader>();
+    auto client = std::make_shared<isla::server::test::MockLlmClient>();
+
+    EXPECT_CALL(*client, SupportsToolCalling()).WillOnce(Return(true));
+    EXPECT_CALL(*client, Validate()).Times(0);
+    EXPECT_CALL(*client, RunToolCallRound(_)).Times(0);
+
+    GatewayStepRegistry registry(GatewayStepRegistryConfig{
+        .llm_client = client,
+        .tool_registry = std::make_shared<const isla::server::tools::ToolRegistry>(*tool_registry),
+    });
+
+    const absl::StatusOr<ExecutionStepResult> result =
+        registry.ExecuteStep(0,
+                             ExecutionStep(OpenAiLlmStep{
+                                 .step_name = "main",
+                                 .system_prompt = "system",
+                                 .model = "qwen3:4b",
+                             }),
+                             ExecutionRuntimeInput{
+                                 .system_prompt = "runtime system",
+                                 .user_text = "",
+                                 .tool_execution_context =
+                                     isla::server::tools::ToolExecutionContext{
+                                         .session_id = "srv_test",
+                                         .telemetry_context = nullptr,
+                                         .session_reader = reader,
+                                     },
+                             });
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(result.status().message(), "llm tool loop input must include user_text");
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway

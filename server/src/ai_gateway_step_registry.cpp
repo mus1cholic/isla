@@ -9,6 +9,7 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/openai_llm_client.hpp"
 #include "isla/server/openai_llms.hpp"
+#include "isla/server/openai_reasoning_effort_utils.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::ai_gateway {
@@ -39,19 +40,10 @@ absl::Status resource_exhausted(std::string_view message) {
 
 absl::StatusOr<isla::server::LlmReasoningEffort>
 ToLlmReasoningEffort(OpenAiReasoningEffort effort) {
-    switch (effort) {
-    case OpenAiReasoningEffort::kNone:
-        return isla::server::LlmReasoningEffort::kNone;
-    case OpenAiReasoningEffort::kMinimal:
-        return isla::server::LlmReasoningEffort::kMinimal;
-    case OpenAiReasoningEffort::kLow:
-        return isla::server::LlmReasoningEffort::kLow;
-    case OpenAiReasoningEffort::kMedium:
-        return isla::server::LlmReasoningEffort::kMedium;
-    case OpenAiReasoningEffort::kHigh:
-        return isla::server::LlmReasoningEffort::kHigh;
-    case OpenAiReasoningEffort::kXHigh:
-        return isla::server::LlmReasoningEffort::kXHigh;
+    if (const std::optional<isla::server::LlmReasoningEffort> mapped =
+            TryOpenAiReasoningEffortToLlmReasoningEffort(effort);
+        mapped.has_value()) {
+        return *mapped;
     }
     return invalid_argument("openai llm step reasoning_effort is invalid");
 }
@@ -111,7 +103,7 @@ GatewayStepRegistry::ExecuteStep(std::size_t step_index, const OpenAiLlmStep& st
         config_.llm_client->SupportsToolCalling() &&
         runtime_input.tool_execution_context.has_value()) {
         if (runtime_input.user_text.empty()) {
-            return invalid_argument("openai llms input must include user_text");
+            return invalid_argument("llm tool loop input must include user_text");
         }
         absl::Status client_status = config_.llm_client->Validate();
         if (!client_status.ok()) {
