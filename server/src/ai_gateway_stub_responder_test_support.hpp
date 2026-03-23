@@ -1,23 +1,20 @@
+#pragma once
+
 #ifndef ISLA_SERVER_SRC_AI_GATEWAY_STUB_RESPONDER_TEST_SUPPORT_HPP_
 #define ISLA_SERVER_SRC_AI_GATEWAY_STUB_RESPONDER_TEST_SUPPORT_HPP_
 
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
 #include <algorithm>
-#include <array>
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
-#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -78,7 +75,7 @@ MakeEchoOpenAiResponsesClient(std::string prefix = "stub echo: ") {
 inline absl::Status EmitResponseText(std::string_view text,
                                      const OpenAiResponsesEventCallback& on_event,
                                      std::string_view response_id = "resp_test") {
-    const absl::Status delta_status =
+    absl::Status delta_status =
         on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = std::string(text) });
     if (!delta_status.ok()) {
         return delta_status;
@@ -142,13 +139,13 @@ inline absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& r
 
     const std::string text = std::string(prefix) + test::ExtractLatestPromptLine(request.user_text);
     const std::size_t midpoint = text.size() / 2U;
-    const absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
+    absl::Status first_status = on_event(OpenAiResponsesTextDeltaEvent{
         .text_delta = text.substr(0, midpoint),
     });
     if (!first_status.ok()) {
         return first_status;
     }
-    const absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
+    absl::Status second_status = on_event(OpenAiResponsesTextDeltaEvent{
         .text_delta = text.substr(midpoint),
     });
     if (!second_status.ok()) {
@@ -252,7 +249,7 @@ class RecordingLiveSession final : public GatewayLiveSession {
     }
 
     [[nodiscard]] bool is_closed() const override {
-        return closed_;
+        return closed_.load();
     }
 
     void AsyncEmitTextOutput(std::string turn_id, std::string text,
@@ -360,7 +357,7 @@ class RecordingLiveSession final : public GatewayLiveSession {
     }
 
     void MarkClosed() {
-        closed_ = true;
+        closed_.store(true);
     }
 
     void SetEventHook(std::function<void(const EmittedEvent&)> hook) {
@@ -413,7 +410,7 @@ class RecordingLiveSession final : public GatewayLiveSession {
     bool delay_next_error_completion_ = false;
     bool fail_next_text_output_ = false;
     bool fail_next_error_output_ = false;
-    bool closed_ = false;
+    std::atomic<bool> closed_{ false };
 };
 
 class ResponderRegistryAttachment {

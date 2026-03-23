@@ -18,7 +18,7 @@ std::shared_ptr<test::FakeOpenAiResponsesClient> MakeRecordingMidTermMemoryClien
     const std::shared_ptr<std::promise<void>>& compactor_finished,
     const std::shared_ptr<std::once_flag>& compactor_finished_once,
     ExtraMidTermRequestHandler extra_request_handler = {}) {
-    auto decider_call_count = std::make_shared<int>(0);
+    auto decider_call_count = std::make_shared<std::atomic<int>>(0);
     return test::MakeFakeOpenAiResponsesClient(
         absl::OkStatus(), "", "resp_test", absl::OkStatus(),
         [recorded_requests, requests_mutex, compactor_finished, compactor_finished_once,
@@ -30,7 +30,7 @@ std::shared_ptr<test::FakeOpenAiResponsesClient> MakeRecordingMidTermMemoryClien
                 recorded_requests->push_back(test::TakeRequestSnapshot(request));
             }
             if (request.system_prompt == MidTermFlushDeciderPromptText()) {
-                const int call_index = (*decider_call_count)++;
+                const int call_index = decider_call_count->fetch_add(1);
                 if (call_index == 0) {
                     return EmitResponseText(R"json({
                         "should_flush": true,
