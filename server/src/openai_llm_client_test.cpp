@@ -215,8 +215,9 @@ TEST(OpenAiLlmClientTest, RunToolCallRoundReplaysContinuationTokenAcrossRounds) 
     int round = 0;
     auto responses_client = MakeFakeOpenAiResponsesClient(
         absl::OkStatus(), "", "ignored", absl::OkStatus(),
-        [&round](const OpenAiResponsesRequest& request,
-                 const ai_gateway::OpenAiResponsesEventCallback& on_event) -> absl::Status {
+        [&round, &kReasoningRawJson, &kFunctionCallRawJson](
+            const OpenAiResponsesRequest& request,
+            const ai_gateway::OpenAiResponsesEventCallback& on_event) -> absl::Status {
             if (round == 0) {
                 ++round;
                 EXPECT_TRUE(request.input_items.empty());
@@ -326,6 +327,42 @@ TEST(OpenAiLlmClientTest, RunToolCallRoundRejectsOversizedAggregatedOutput) {
             static_cast<void>(request);
             return on_event(OpenAiResponsesTextDeltaEvent{
                 .text_delta = std::string(ai_gateway::kMaxTextOutputBytes + 1U, 'x'),
+            });
+        });
+    ASSERT_TRUE(responses_client != nullptr);
+    const absl::StatusOr<std::shared_ptr<const LlmClient>> client =
+        CreateOpenAiLlmClient(responses_client);
+    ASSERT_TRUE(client.ok()) << client.status();
+
+    const absl::StatusOr<LlmToolCallResponse> response =
+        (*client)->RunToolCallRound(LlmToolCallRequest{
+            .model = "gpt-5.4-mini",
+            .system_prompt = "system",
+            .user_text = "user",
+        });
+
+    ASSERT_FALSE(response.ok());
+    EXPECT_EQ(response.status().code(), absl::StatusCode::kResourceExhausted);
+}
+
+TEST(OpenAiLlmClientTest, RunToolCallRoundRejectsOversizedContinuationToken) {
+    auto responses_client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "ignored", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const ai_gateway::OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            static_cast<void>(request);
+            return on_event(OpenAiResponsesCompletedEvent{
+                .response_id = "resp_tool_round",
+                .output_items =
+                    {
+                        OpenAiResponsesOutputItem{
+                            .type = "function_call",
+                            .raw_json = std::string(256U * 1024U, 'x'),
+                            .call_id = "call_1",
+                            .name = "lookup_weather",
+                            .arguments_json = R"({"city":"San Francisco"})",
+                        },
+                    },
             });
         });
     ASSERT_TRUE(responses_client != nullptr);

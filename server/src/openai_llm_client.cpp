@@ -33,6 +33,7 @@ using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
 using nlohmann::json;
 
 template <typename> inline constexpr bool kAlwaysFalse = false;
+constexpr std::size_t kMaxToolContinuationBytes = 128U * 1024U;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
@@ -232,6 +233,9 @@ class OpenAiLlmClient final : public LlmClient {
         if (!reasoning_effort.ok()) {
             return reasoning_effort.status();
         }
+        if (request.continuation_token.size() > kMaxToolContinuationBytes) {
+            return resource_exhausted("openai tool call continuation_token exceeds maximum length");
+        }
         const absl::StatusOr<std::vector<OpenAiResponsesFunctionTool>> function_tools =
             ToOpenAiFunctionTools(request.function_tools);
         if (!function_tools.ok()) {
@@ -313,11 +317,16 @@ class OpenAiLlmClient final : public LlmClient {
             });
         }
 
+        const std::string continuation_token = SerializeContinuationToken(
+            std::span<const OpenAiResponsesInputItem>(*replay_input_items));
+        if (continuation_token.size() > kMaxToolContinuationBytes) {
+            return resource_exhausted("openai tool call continuation_token exceeds maximum length");
+        }
+
         return LlmToolCallResponse{
             .output_text = std::move(output_text),
             .tool_calls = std::move(tool_calls),
-            .continuation_token = SerializeContinuationToken(
-                std::span<const OpenAiResponsesInputItem>(*replay_input_items)),
+            .continuation_token = continuation_token,
             .response_id = completed_event->response_id,
         };
     }

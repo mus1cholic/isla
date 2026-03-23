@@ -60,6 +60,10 @@ struct LlmToolCallRequest {
     std::string model;
     std::string system_prompt;
     std::string user_text;
+    // Non-owning views of the tool schema and tool outputs for this round.
+    // The backing storage must remain alive for the duration of
+    // RunToolCallRound(...), and implementations must not retain these spans or
+    // pointers/references into them after the call returns.
     std::span<const LlmFunctionTool> function_tools;
     std::span<const LlmFunctionCallOutput> tool_outputs;
     // Opaque provider-owned state returned from the previous round. Callers must
@@ -100,8 +104,10 @@ class LlmClient {
     [[nodiscard]] virtual absl::Status StreamResponse(const LlmRequest& request,
                                                       const LlmEventCallback& on_event) const = 0;
 
-    // Executes one round of a tool-calling exchange. Implementations that do
-    // not support tool calling may return FailedPreconditionError.
+    // Executes one round of a tool-calling exchange. Implementations must treat
+    // any spans inside `request` as call-scoped borrows only and must not retain
+    // them after returning. Implementations that do not support tool calling may
+    // return FailedPreconditionError.
     [[nodiscard]] virtual absl::StatusOr<LlmToolCallResponse>
     RunToolCallRound(const LlmToolCallRequest& request) const {
         static_cast<void>(request);
