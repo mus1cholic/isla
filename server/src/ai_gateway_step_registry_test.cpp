@@ -315,5 +315,117 @@ TEST(GatewayStepRegistryTest, ExecutesToolLoopWhenToolContextIsPresent) {
     EXPECT_EQ(*request_count, 2);
 }
 
+TEST(GatewayStepRegistryTest, ExecutesProviderNeutralToolLoopWhenLlmClientSupportsIt) {
+    auto tool_registry = isla::server::tools::ToolRegistry::Create(
+        { std::make_shared<const isla::server::tools::ExpandMidTermTool>() });
+    ASSERT_TRUE(tool_registry.ok()) << tool_registry.status();
+    auto reader = std::make_shared<StaticToolSessionReader>();
+    auto client = std::make_shared<isla::server::test::MockLlmClient>();
+
+    EXPECT_CALL(*client, SupportsToolCalling()).WillRepeatedly(Return(true));
+    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
+    EXPECT_CALL(*client, RunToolCallRound(_))
+        .WillOnce([](const isla::server::LlmToolCallRequest& request)
+                      -> absl::StatusOr<isla::server::LlmToolCallResponse> {
+            EXPECT_EQ(request.user_text, "hello");
+            EXPECT_TRUE(request.continuation_token.empty());
+            EXPECT_TRUE(request.tool_outputs.empty());
+            EXPECT_EQ(request.function_tools.size(), 1U);
+            EXPECT_EQ(request.function_tools[0].name, "expand_mid_term");
+            return isla::server::LlmToolCallResponse{
+                .output_text = "",
+                .tool_calls =
+                    {
+                        isla::server::LlmFunctionCall{
+                            .call_id = "call_1",
+                            .name = "expand_mid_term",
+                            .arguments_json = R"json({"episode_id":"ep_123"})json",
+                        },
+                    },
+                .continuation_token = "state_round_1",
+                .response_id = "resp_round_1",
+            };
+        })
+        .WillOnce([](const isla::server::LlmToolCallRequest& request)
+                      -> absl::StatusOr<isla::server::LlmToolCallResponse> {
+            EXPECT_TRUE(request.user_text.empty());
+            EXPECT_EQ(request.continuation_token, "state_round_1");
+            EXPECT_EQ(request.tool_outputs.size(), 1U);
+            EXPECT_EQ(request.tool_outputs[0].call_id, "call_1");
+            EXPECT_EQ(request.tool_outputs[0].output, "expanded tier1 detail");
+            return isla::server::LlmToolCallResponse{
+                .output_text = "tool-backed response",
+                .tool_calls = {},
+                .continuation_token = "state_round_2",
+                .response_id = "resp_round_2",
+            };
+        });
+    GatewayStepRegistry registry(GatewayStepRegistryConfig{
+        .llm_client = client,
+        .tool_registry = std::make_shared<const isla::server::tools::ToolRegistry>(*tool_registry),
+    });
+
+    const absl::StatusOr<ExecutionStepResult> result =
+        registry.ExecuteStep(0,
+                             ExecutionStep(OpenAiLlmStep{
+                                 .step_name = "main",
+                                 .system_prompt = "system",
+                                 .model = "qwen3:4b",
+                             }),
+                             ExecutionRuntimeInput{
+                                 .system_prompt = "runtime system",
+                                 .user_text = "hello",
+                                 .tool_execution_context =
+                                     isla::server::tools::ToolExecutionContext{
+                                         .session_id = "srv_test",
+                                         .telemetry_context = nullptr,
+                                         .session_reader = reader,
+                                     },
+                             });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(std::get<LlmCallResult>(*result).output_text, "tool-backed response");
+    EXPECT_EQ(reader->last_episode_id, "ep_123");
+}
+
+TEST(GatewayStepRegistryTest, RejectsMissingRuntimeUserTextInProviderNeutralToolLoop) {
+    auto tool_registry = isla::server::tools::ToolRegistry::Create(
+        { std::make_shared<const isla::server::tools::ExpandMidTermTool>() });
+    ASSERT_TRUE(tool_registry.ok()) << tool_registry.status();
+    auto reader = std::make_shared<StaticToolSessionReader>();
+    auto client = std::make_shared<isla::server::test::MockLlmClient>();
+
+    EXPECT_CALL(*client, SupportsToolCalling()).WillOnce(Return(true));
+    EXPECT_CALL(*client, Validate()).Times(0);
+    EXPECT_CALL(*client, RunToolCallRound(_)).Times(0);
+
+    GatewayStepRegistry registry(GatewayStepRegistryConfig{
+        .llm_client = client,
+        .tool_registry = std::make_shared<const isla::server::tools::ToolRegistry>(*tool_registry),
+    });
+
+    const absl::StatusOr<ExecutionStepResult> result =
+        registry.ExecuteStep(0,
+                             ExecutionStep(OpenAiLlmStep{
+                                 .step_name = "main",
+                                 .system_prompt = "system",
+                                 .model = "qwen3:4b",
+                             }),
+                             ExecutionRuntimeInput{
+                                 .system_prompt = "runtime system",
+                                 .user_text = "",
+                                 .tool_execution_context =
+                                     isla::server::tools::ToolExecutionContext{
+                                         .session_id = "srv_test",
+                                         .telemetry_context = nullptr,
+                                         .session_reader = reader,
+                                     },
+                             });
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(result.status().message(), "llm tool loop input must include user_text");
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway

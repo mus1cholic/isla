@@ -193,6 +193,7 @@ cc_library(
         ":openai_responses_client",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 

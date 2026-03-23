@@ -29,8 +29,11 @@ class MockLlmClient : public LlmClient {
   public:
     MOCK_METHOD(absl::Status, Validate, (), (const, override));
     MOCK_METHOD(absl::Status, WarmUp, (), (const, override));
+    MOCK_METHOD(bool, SupportsToolCalling, (), (const, override));
     MOCK_METHOD(absl::Status, StreamResponse,
                 (const LlmRequest& request, const LlmEventCallback& on_event), (const, override));
+    MOCK_METHOD(absl::StatusOr<LlmToolCallResponse>, RunToolCallRound,
+                (const LlmToolCallRequest& request), (const, override));
 };
 
 } // namespace isla::server::test

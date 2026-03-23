@@ -13,6 +13,7 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/llm_client.hpp"
+#include "isla/server/openai_reasoning_effort_utils.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -35,19 +36,10 @@ absl::Status invalid_reasoning_effort() {
 
 absl::StatusOr<isla::server::LlmReasoningEffort>
 ToLlmReasoningEffort(OpenAiReasoningEffort effort) {
-    switch (effort) {
-    case OpenAiReasoningEffort::kNone:
-        return isla::server::LlmReasoningEffort::kNone;
-    case OpenAiReasoningEffort::kMinimal:
-        return isla::server::LlmReasoningEffort::kMinimal;
-    case OpenAiReasoningEffort::kLow:
-        return isla::server::LlmReasoningEffort::kLow;
-    case OpenAiReasoningEffort::kMedium:
-        return isla::server::LlmReasoningEffort::kMedium;
-    case OpenAiReasoningEffort::kHigh:
-        return isla::server::LlmReasoningEffort::kHigh;
-    case OpenAiReasoningEffort::kXHigh:
-        return isla::server::LlmReasoningEffort::kXHigh;
+    if (const std::optional<isla::server::LlmReasoningEffort> mapped =
+            TryOpenAiReasoningEffortToLlmReasoningEffort(effort);
+        mapped.has_value()) {
+        return *mapped;
     }
     return invalid_reasoning_effort();
 }
