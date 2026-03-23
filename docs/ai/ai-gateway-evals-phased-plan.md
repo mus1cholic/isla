@@ -854,6 +854,47 @@ benchmark requires only a normalization adapter and a thin CLI entry point.
 - Report and artifact serialization are covered by unit tests.
 - Adding a new external benchmark requires only an adapter that returns `MemoryBenchmarkSuite`.
 
+## Phase 4.1: Shared Benchmark Adapter Utilities
+
+### Goal
+
+Extract the common ingestion and CLI scaffolding that benchmark adapters need, so new external
+benchmarks only have to describe schema-specific normalization instead of reimplementing JSON
+loading, timestamp coercion, sampling, filtering, or startup-config plumbing.
+
+### Scope
+
+- Add shared adapter utilities for common benchmark-ingestion tasks such as:
+  - JSON file loading
+  - required-field extraction
+  - string-or-integer normalization
+  - date-only benchmark timestamp normalization into canonical ISO-8601 timestamps
+  - role parsing for transcript-shaped datasets
+  - deterministic sampling and case-id filtering
+- Add a small shared benchmark CLI helper that handles:
+  - local benchmark flag parsing helpers
+  - forwarding gateway startup flags into `ParseGatewayStartupConfig(...)`
+  - testable startup-config parsing seams via injectable environment lookup
+- Cover those shared helpers with focused unit tests instead of relying only on downstream
+  benchmark-adapter tests.
+
+### Design Notes
+
+- This phase exists to complete the benchmark-first ergonomics promised by Phase 4.
+- `MemoryBenchmarkSuite` already centralizes execution and reporting, but without this phase each
+  benchmark adapter would still duplicate a substantial amount of pre-run ingestion logic.
+- Benchmark-specific adapters SHOULD primarily contain schema mapping after this phase, not generic
+  framework code.
+- Shared helpers SHOULD stay intentionally small and data-oriented rather than evolving into a
+  complex benchmark abstraction layer.
+
+### Exit Criteria
+
+- Common adapter-ingestion logic is available through shared helper utilities.
+- Benchmark CLI entry points can reuse a shared startup-config helper instead of repeating the same
+  glue code.
+- Shared helper behavior is covered by focused unit tests.
+
 ## Phase 5: LongMemEval Adapter
 
 ### Goal
@@ -1073,13 +1114,14 @@ Recommended implementation order:
 7. Phase 3.3
 8. Phase 3.4
 9. Phase 4
-10. Phase 5
-11. Optional Phase 5.1, only when LoCoMo coverage is needed
-12. Phase 6
-13. Phase 6.5
-14. Phase 7
-15. Phase 8
-16. Optional Phase 9, only when eval throughput becomes a practical bottleneck
+10. Phase 4.1
+11. Phase 5
+12. Optional Phase 5.1, only when LoCoMo coverage is needed
+13. Phase 6
+14. Phase 6.5
+15. Phase 7
+16. Phase 8
+17. Optional Phase 9, only when eval throughput becomes a practical bottleneck
 
 The critical-path rule is:
 
@@ -1095,12 +1137,16 @@ The critical-path rule is:
 
 ## Changelog
 
+- 2026-03-23: completed Phase 4.1 by extracting shared benchmark adapter utilities for common
+  ingestion work such as JSON loading, required-field parsing, timestamp normalization,
+  deterministic sampling, and case-id filtering, plus a small shared benchmark CLI helper with
+  focused unit coverage so future benchmark adapters can stay closer to pure schema mapping.
 - 2026-03-23: completed Phase 4 by extracting a generic `MemoryBenchmarkRunner` with
   `MemoryBenchmarkCase`, `MemoryBenchmarkSuite`, and `RunMemoryBenchmark` that owns the shared run
   loop, artifact writing, and report generation. Split the previous Phase 4 into Phase 4
-  (infrastructure), Phase 5 (LongMemEval adapter), and Phase 5.1 (optional LoCoMo adapter) so
-  that adding a new external benchmark requires only a normalization adapter and a thin CLI entry
-  point.
+  (infrastructure), Phase 4.1 (shared adapter utilities), Phase 5 (LongMemEval adapter), and
+  Phase 5.1 (optional LoCoMo adapter) so that adding a new external benchmark requires only a
+  normalization adapter and a thin CLI entry point.
 - 2026-03-22: completed Phase 3.4 by replacing the timeout-based post-turn memory settling loop
   with explicit blocking awaits through `AwaitAndDrainAllPendingMidTermCompactions` on the memory
   orchestrator and `AwaitSessionMemorySettled` on the responder, removing `session_settle_timeout`
