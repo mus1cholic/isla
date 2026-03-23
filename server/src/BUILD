@@ -22,6 +22,7 @@ cc_library(
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
         ":gemini_api_embedding_client",
+        ":ollama_llm_client",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
@@ -192,6 +193,19 @@ cc_library(
         ":openai_responses_client",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "ollama_llm_client",
+    srcs = ["ollama_llm_client.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":http_json_client",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 
@@ -423,6 +437,7 @@ cc_binary(
         ":ai_gateway_logging_utils",
         ":ai_gateway_server",
         ":ai_gateway_stub_responder",
+        ":ollama_llm_client",
         "//server/memory/src:supabase_memory_store",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:initialize",
@@ -618,6 +633,18 @@ cc_test(
         ":openai_llm_client",
         ":openai_responses_test_utils",
         "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "ollama_llm_client_test",
+    srcs = ["ollama_llm_client_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ollama_llm_client",
+        "@boost.beast//:boost.beast",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 

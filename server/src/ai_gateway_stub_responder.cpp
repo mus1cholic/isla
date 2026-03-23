@@ -122,7 +122,7 @@ GatewayStepRegistryConfig BuildExecutorConfig(const GatewayStubResponderConfig& 
         .llm_runtime_config = config.llm_runtime_config,
         .openai_config = config.openai_config,
         .openai_client = config.openai_client,
-        .llm_client = nullptr,
+        .llm_client = config.llm_client,
         .tool_registry = CreateDefaultToolRegistry(),
     };
 }
@@ -165,18 +165,21 @@ struct MidTermMemoryComponents {
 
 absl::StatusOr<MidTermMemoryComponents>
 CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
-    if (config.openai_client == nullptr) {
+    std::shared_ptr<const isla::server::LlmClient> llm_client = config.llm_client;
+    if (llm_client == nullptr && config.openai_client != nullptr) {
+        absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> created_llm_client =
+            isla::server::CreateOpenAiLlmClient(config.openai_client);
+        if (!created_llm_client.ok()) {
+            return created_llm_client.status();
+        }
+        llm_client = std::move(*created_llm_client);
+    }
+    if (llm_client == nullptr) {
         return MidTermMemoryComponents{};
     }
 
-    absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> llm_client =
-        isla::server::CreateOpenAiLlmClient(config.openai_client);
-    if (!llm_client.ok()) {
-        return llm_client.status();
-    }
-
     absl::StatusOr<isla::server::memory::MidTermFlushDeciderPtr> decider =
-        isla::server::memory::CreateLlmMidTermFlushDecider(*llm_client,
+        isla::server::memory::CreateLlmMidTermFlushDecider(llm_client,
                                                            ResolveMidTermFlushDeciderModel(config));
     if (!decider.ok()) {
         return decider.status();
@@ -194,7 +197,7 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
 
     absl::StatusOr<isla::server::memory::MidTermCompactorPtr> compactor =
         isla::server::memory::CreateLlmMidTermCompactor(
-            *llm_client, ResolveMidTermCompactorModel(config), std::move(embedding_client),
+            llm_client, ResolveMidTermCompactorModel(config), std::move(embedding_client),
             config.gemini_api_embedding_config.enabled || config.embedding_client != nullptr
                 ? ResolveMidTermEmbeddingModel(config)
                 : std::string());
@@ -212,14 +215,14 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
 
 GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
     : config_(std::move(config)), executor_(BuildExecutorConfig(config_)),
-      mid_term_memory_configured_(config_.openai_client != nullptr) {
+      mid_term_memory_configured_(config_.llm_client != nullptr || config_.openai_client != nullptr) {
 
     const std::string flush_decider_model = ResolveMidTermFlushDeciderModel(config_);
     const std::string compactor_model = ResolveMidTermCompactorModel(config_);
     const std::string embedding_model = ResolveMidTermEmbeddingModel(config_);
     if (!mid_term_memory_configured_) {
-        LOG(INFO) << "AI gateway stub mid-term memory not configured because no OpenAI responses"
-                  << " client was provided";
+        LOG(INFO) << "AI gateway stub mid-term memory not configured because no llm client was "
+                     "provided";
     } else {
         absl::StatusOr<MidTermMemoryComponents> created_components =
             CreateMidTermMemoryComponents(config_);

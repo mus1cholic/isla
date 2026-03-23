@@ -129,28 +129,36 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
     if (const std::optional<std::string> api_key = env_lookup("OPENAI_API_KEY");
         api_key.has_value()) {
         config->api_key = *api_key;
+        config->enabled = true;
     }
     if (const std::optional<std::string> scheme = env_lookup("OPENAI_SCHEME"); scheme.has_value()) {
         config->scheme = *scheme;
+        config->enabled = true;
     }
     if (const std::optional<std::string> host = env_lookup("OPENAI_HOST"); host.has_value()) {
         config->host = *host;
+        config->enabled = true;
     }
     if (const std::optional<std::string> target = env_lookup("OPENAI_TARGET"); target.has_value()) {
         config->target = *target;
+        config->enabled = true;
     }
     if (const std::optional<std::string> organization = env_lookup("OPENAI_ORGANIZATION");
         organization.has_value()) {
         config->organization = *organization;
+        config->enabled = true;
     }
     if (const std::optional<std::string> project = env_lookup("OPENAI_PROJECT_ID");
         project.has_value()) {
         config->project = *project;
+        config->enabled = true;
     } else if (const std::optional<std::string> legacy_project = env_lookup("OPENAI_PROJECT");
                legacy_project.has_value()) {
         config->project = *legacy_project;
+        config->enabled = true;
     }
     if (const std::optional<std::string> port = env_lookup("OPENAI_PORT"); port.has_value()) {
+        config->enabled = true;
         const absl::StatusOr<int> parsed_port = ParseIntArgument(*port, "OPENAI_PORT");
         if (!parsed_port.ok()) {
             LOG(WARNING) << "AI gateway ignored invalid OPENAI_PORT value='"
@@ -165,6 +173,7 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
     }
     if (const std::optional<std::string> timeout_ms = env_lookup("OPENAI_TIMEOUT_MS");
         timeout_ms.has_value()) {
+        config->enabled = true;
         const absl::StatusOr<int> parsed_timeout =
             ParseIntArgument(*timeout_ms, "OPENAI_TIMEOUT_MS");
         if (!parsed_timeout.ok()) {
@@ -173,6 +182,36 @@ void ApplyOpenAiEnvDefaults(OpenAiResponsesClientConfig* config,
                          << SanitizeForLog(parsed_timeout.status().message()) << "'";
         } else if (*parsed_timeout <= 0) {
             LOG(WARNING) << "AI gateway ignored non-positive OPENAI_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "'";
+        } else {
+            config->request_timeout = std::chrono::milliseconds(*parsed_timeout);
+        }
+    }
+}
+
+void ApplyOllamaEnvDefaults(isla::server::OllamaLlmClientConfig* config,
+                            const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> base_url = env_lookup("OLLAMA_BASE_URL");
+        base_url.has_value()) {
+        config->base_url = *base_url;
+        config->enabled = true;
+    }
+    if (const std::optional<std::string> api_key = env_lookup("OLLAMA_API_KEY");
+        api_key.has_value()) {
+        config->api_key = *api_key;
+        config->enabled = true;
+    }
+    if (const std::optional<std::string> timeout_ms = env_lookup("OLLAMA_TIMEOUT_MS");
+        timeout_ms.has_value()) {
+        config->enabled = true;
+        const absl::StatusOr<int> parsed_timeout =
+            ParseIntArgument(*timeout_ms, "OLLAMA_TIMEOUT_MS");
+        if (!parsed_timeout.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid OLLAMA_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "' detail='"
+                         << SanitizeForLog(parsed_timeout.status().message()) << "'";
+        } else if (*parsed_timeout <= 0) {
+            LOG(WARNING) << "AI gateway ignored non-positive OLLAMA_TIMEOUT_MS value='"
                          << SanitizeForLog(*timeout_ms) << "'";
         } else {
             config->request_timeout = std::chrono::milliseconds(*parsed_timeout);
@@ -503,6 +542,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                                                               const StartupEnvLookup& env_lookup) {
     ParsedStartupConfig parsed;
     ApplyOpenAiEnvDefaults(&parsed.openai_config, env_lookup);
+    ApplyOllamaEnvDefaults(&parsed.ollama_config, env_lookup);
     ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
     ApplyGeminiApiEmbeddingEnvDefaults(&parsed.gemini_api_embedding_config, env_lookup);
     ApplyTelemetryEnvDefaults(&parsed, env_lookup);
@@ -553,14 +593,17 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         }
         if (argument.starts_with("--openai-api-key=")) {
             parsed.openai_config.api_key = argument.substr(17);
+            parsed.openai_config.enabled = true;
             continue;
         }
         if (argument.starts_with("--openai-scheme=")) {
             parsed.openai_config.scheme = argument.substr(16);
+            parsed.openai_config.enabled = true;
             continue;
         }
         if (argument.starts_with("--openai-host=")) {
             parsed.openai_config.host = argument.substr(14);
+            parsed.openai_config.enabled = true;
             continue;
         }
         if (const absl::StatusOr<bool> handled =
@@ -571,6 +614,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                                             "openai-port must be between 0 and 65535");
                                     }
                                     parsed.openai_config.port = static_cast<std::uint16_t>(port);
+                                    parsed.openai_config.enabled = true;
                                     return absl::OkStatus();
                                 });
             !handled.ok()) {
@@ -580,18 +624,22 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         }
         if (argument.starts_with("--openai-target=")) {
             parsed.openai_config.target = argument.substr(16);
+            parsed.openai_config.enabled = true;
             continue;
         }
         if (argument.starts_with("--openai-organization=")) {
             parsed.openai_config.organization = argument.substr(22);
+            parsed.openai_config.enabled = true;
             continue;
         }
         if (argument.starts_with("--openai-project=")) {
             parsed.openai_config.project = argument.substr(17);
+            parsed.openai_config.enabled = true;
             continue;
         }
         if (argument.starts_with("--openai-project-id=")) {
             parsed.openai_config.project = argument.substr(20);
+            parsed.openai_config.enabled = true;
             continue;
         }
         if (const absl::StatusOr<bool> handled =
@@ -603,6 +651,36 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                                     }
                                     parsed.openai_config.request_timeout =
                                         std::chrono::milliseconds(timeout_ms);
+                                    parsed.openai_config.enabled = true;
+                                    return absl::OkStatus();
+                                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
+        constexpr std::string_view kOllamaBaseUrlPrefix = "--ollama-base-url=";
+        if (argument.starts_with(kOllamaBaseUrlPrefix)) {
+            parsed.ollama_config.base_url = argument.substr(kOllamaBaseUrlPrefix.size());
+            parsed.ollama_config.enabled = true;
+            continue;
+        }
+        constexpr std::string_view kOllamaApiKeyPrefix = "--ollama-api-key=";
+        if (argument.starts_with(kOllamaApiKeyPrefix)) {
+            parsed.ollama_config.api_key = argument.substr(kOllamaApiKeyPrefix.size());
+            parsed.ollama_config.enabled = true;
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled =
+                TryParseIntFlag(argument, "--ollama-timeout-ms=", "ollama-timeout-ms",
+                                [&parsed](int timeout_ms) -> absl::Status {
+                                    if (timeout_ms <= 0) {
+                                        return absl::InvalidArgumentError(
+                                            "ollama-timeout-ms must be greater than zero");
+                                    }
+                                    parsed.ollama_config.request_timeout =
+                                        std::chrono::milliseconds(timeout_ms);
+                                    parsed.ollama_config.enabled = true;
                                     return absl::OkStatus();
                                 });
             !handled.ok()) {
@@ -749,13 +827,22 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         return absl::InvalidArgumentError("unknown argument: " + argument);
     }
 
-    // NOTICE: Phase 3.5/3.6 runs the gateway only in live OpenAI mode, so startup currently
-    // forces provider enablement and validates that config unconditionally. Remove this field once
-    // the config model stops carrying the legacy optional-provider shape.
-    parsed.openai_config.enabled = true;
-    absl::Status openai_status = ValidateOpenAiStartupConfig(parsed.openai_config);
-    if (!openai_status.ok()) {
-        return openai_status;
+    if (parsed.openai_config.enabled) {
+        absl::Status openai_status = ValidateOpenAiStartupConfig(parsed.openai_config);
+        if (!openai_status.ok()) {
+            return openai_status;
+        }
+    }
+    if (parsed.ollama_config.enabled) {
+        const absl::Status ollama_status = isla::server::ValidateOllamaLlmClientConfig(
+            parsed.ollama_config);
+        if (!ollama_status.ok()) {
+            return ollama_status;
+        }
+    }
+    if (!parsed.openai_config.enabled && !parsed.ollama_config.enabled) {
+        return absl::InvalidArgumentError(
+            "missing LLM provider config; configure OpenAI or Ollama");
     }
     if (const absl::Status llm_runtime_status = ValidateLlmRuntimeConfig(parsed.llm_runtime_config);
         !llm_runtime_status.ok()) {
