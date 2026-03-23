@@ -822,31 +822,94 @@ reached a settled state.
 - Timeout-based memory settling, if still present as a fallback, is clearly secondary rather than
   the canonical eval control model.
 
-## Phase 4: External Benchmark Adapters
+## Phase 4: Generic Memory Benchmark Runner
 
 ### Goal
 
-Add benchmark adapters for the initial memory benchmark targets.
+Extract a shared benchmark runner that any external dataset adapter can plug into, so adding a new
+benchmark requires only a normalization adapter and a thin CLI entry point.
 
 ### Scope
 
-- Add an adapter for LOCOMO.
-- Add an adapter for LongMemEval.
-- Normalize each benchmark into the internal eval core shape without leaking benchmark-specific
-  assumptions into the runner.
-- Preserve benchmark-specific metadata needed for reporting and debugging.
-- Explicitly document any benchmark behaviors that cannot yet be represented exactly.
+- Introduce `MemoryBenchmarkCase` (eval case + opaque JSON metadata) and `MemoryBenchmarkSuite`
+  (named collection of cases) as the canonical adapter-to-runner interface.
+- Implement `RunMemoryBenchmark` which owns the shared run loop: OpenAI client setup, output
+  directory creation, per-case `EvalRunner::RunCase` execution, per-case artifact writing, and
+  aggregate report generation.
+- Expose `BuildMemoryBenchmarkReportJson` for unit-testable report serialization.
+- Metadata flows through from adapter input to per-case artifacts and the aggregate report without
+  the runner interpreting it.
 
 ### Design Notes
 
-- Adapters SHOULD normalize source data into the internal eval case format.
-- Adapters SHOULD NOT become the architecture themselves.
-- Benchmark reports SHOULD remain grouped by benchmark identity even when they share autoraters.
+- Adapters SHOULD normalize source data into `MemoryBenchmarkSuite` and call `RunMemoryBenchmark`.
+- Adapters SHOULD NOT duplicate run-loop, artifact-writing, or report-building logic.
+- The `isla_custom_memory` benchmark retains its own runner because it uses per-case OpenAI client
+  wrapping for deterministic mid-term stubbing, which is a fundamentally different pattern from
+  external dataset benchmarks.
 
 ### Exit Criteria
 
-- LOCOMO cases can be executed through the Isla eval runner.
-- LongMemEval cases can be executed through the Isla eval runner.
+- `RunMemoryBenchmark` can execute an arbitrary `MemoryBenchmarkSuite` end-to-end.
+- Report and artifact serialization are covered by unit tests.
+- Adding a new external benchmark requires only an adapter that returns `MemoryBenchmarkSuite`.
+
+## Phase 4.1: LongMemEval Adapter
+
+### Goal
+
+Add an adapter for LongMemEval-S that normalizes the dataset into `MemoryBenchmarkSuite` and runs
+it through the generic memory benchmark runner.
+
+### Scope
+
+- Load and parse the `longmemeval_s_cleaned.json` dataset.
+- Flatten `haystack_sessions` into the canonical conversation format with session-level timestamps
+  from `haystack_dates`.
+- Handle mixed answer types (string and integer) and date-only timestamp formats.
+- Preserve benchmark-specific metadata: `question_type`, `answer_session_ids`, and per-turn
+  `has_answer` indices for future autorater retrieval evaluation.
+- Support deterministic sampling with a configurable rate and seed to control token usage during
+  development.
+- Add a standalone `longmemeval_eval` binary with CLI flags for dataset path, sample rate, random
+  seed, and case ID filtering.
+
+### Design Notes
+
+- LongMemEval timestamps are session-level only; individual turns within a session share the same
+  timestamp. Replay ordering is guaranteed by sequential execution, not by timestamps.
+- The adapter validates entries through `BuildEvalCaseFromBenchmarkTimeline` to catch structural
+  issues (e.g., assistant messages without preceding user messages) before runtime.
+- A 5% default sample rate keeps token costs manageable for iterative development.
+
+### Exit Criteria
+
+- LongMemEval-S cases can be executed through the Isla eval runner via `RunMemoryBenchmark`.
+- Adapter parsing and normalization are covered by unit tests.
+- Known fidelity gaps, if any, are written down instead of silently ignored.
+
+## Phase 4.2 (Optional): LoCoMo Adapter
+
+### Goal
+
+Add an adapter for LoCoMo that normalizes the dataset into `MemoryBenchmarkSuite` and runs it
+through the generic memory benchmark runner.
+
+### Scope
+
+- Load and parse the LoCoMo dataset.
+- Normalize LoCoMo's conversation and question format into the canonical eval case shape.
+- Preserve LoCoMo-specific metadata needed for reporting.
+- Add a standalone `locomo_eval` binary.
+
+### Design Notes
+
+- LoCoMo's exact schema and any structural quirks should be investigated during implementation.
+- The adapter follows the same pattern established by the LongMemEval adapter in Phase 4.1.
+
+### Exit Criteria
+
+- LoCoMo cases can be executed through the Isla eval runner via `RunMemoryBenchmark`.
 - Known fidelity gaps, if any, are written down instead of silently ignored.
 
 ## Phase 5: Multiple Autoraters For Memory + Final Answer
@@ -1010,11 +1073,13 @@ Recommended implementation order:
 7. Phase 3.3
 8. Phase 3.4
 9. Phase 4
-10. Phase 5
-11. Phase 5.5
-12. Phase 6
-13. Phase 7
-14. Optional Phase 8, only when eval throughput becomes a practical bottleneck
+10. Phase 4.1
+11. Optional Phase 4.2, only when LoCoMo coverage is needed
+12. Phase 5
+13. Phase 5.5
+14. Phase 6
+15. Phase 7
+16. Optional Phase 8, only when eval throughput becomes a practical bottleneck
 
 The critical-path rule is:
 
@@ -1030,6 +1095,12 @@ The critical-path rule is:
 
 ## Changelog
 
+- 2026-03-23: completed Phase 4 by extracting a generic `MemoryBenchmarkRunner` with
+  `MemoryBenchmarkCase`, `MemoryBenchmarkSuite`, and `RunMemoryBenchmark` that owns the shared run
+  loop, artifact writing, and report generation. Split the previous Phase 4 into Phase 4
+  (infrastructure), Phase 4.1 (LongMemEval adapter), and Phase 4.2 (optional LoCoMo adapter) so
+  that adding a new external benchmark requires only a normalization adapter and a thin CLI entry
+  point.
 - 2026-03-22: completed Phase 3.4 by replacing the timeout-based post-turn memory settling loop
   with explicit blocking awaits through `AwaitAndDrainAllPendingMidTermCompactions` on the memory
   orchestrator and `AwaitSessionMemorySettled` on the responder, removing `session_settle_timeout`
