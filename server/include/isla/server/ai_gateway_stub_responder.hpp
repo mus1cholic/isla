@@ -26,6 +26,10 @@
 namespace isla::server::ai_gateway {
 
 inline constexpr std::string_view kDefaultMidTermMemoryModel = kDefaultMidTermFlushDeciderModel;
+inline constexpr std::size_t kDefaultMaxRenderedSystemPromptBytes =
+    static_cast<std::size_t>(64U * 1024U);
+inline constexpr std::size_t kDefaultMaxRenderedWorkingMemoryContextBytes =
+    static_cast<std::size_t>(64U * 1024U);
 
 // Resolves session-scoped timestamps used by the responder's memory-facing replay path.
 //
@@ -72,6 +76,11 @@ struct GatewayStubResponderConfig {
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
     GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
     std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
+    std::size_t max_rendered_system_prompt_bytes = kDefaultMaxRenderedSystemPromptBytes;
+    std::size_t max_rendered_working_memory_context_bytes =
+        kDefaultMaxRenderedWorkingMemoryContextBytes;
+    // Defaults to the sum of the system-prompt and working-memory budgets when unset.
+    std::optional<std::size_t> max_rendered_prompt_bytes;
     std::function<void(const ExecutionPlan&)> on_execution_plan;
     std::shared_ptr<const GatewaySessionClock> session_clock;
     std::function<void(std::string_view, const isla::server::memory::UserQueryMemoryResult&)>

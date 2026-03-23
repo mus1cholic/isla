@@ -322,22 +322,6 @@ BuildReplayedSessionHistoryArtifacts(const EvalCase& eval_case, std::string_view
     return history;
 }
 
-absl::Status ValidateConversationMessage(const EvalConversationMessage& message,
-                                         std::size_t index) {
-    if (message.text.empty()) {
-        return invalid_argument(
-            absl::StrCat("conversation message at index ", index, " must include non-empty text"));
-    }
-    return absl::OkStatus();
-}
-
-absl::Status ValidateInput(const EvalInput& input) {
-    if (input.text.empty()) {
-        return invalid_argument("eval case input must include non-empty text");
-    }
-    return absl::OkStatus();
-}
-
 std::string ReplayTimestampKey(std::string_view turn_id, MessageRole role) {
     return absl::StrCat(turn_id, role == MessageRole::User ? "|user" : "|assistant");
 }
@@ -348,31 +332,13 @@ absl::StatusOr<ReplayPlan> BuildReplayPlan(const EvalCase& eval_case) {
     };
 
     std::size_t next_history_turn = 1U;
-    std::optional<std::string> open_turn_id = std::nullopt;
-    for (std::size_t index = 0; index < eval_case.conversation.size(); ++index) {
-        const EvalConversationMessage& message = eval_case.conversation[index];
-        if (message.role == MessageRole::User) {
-            open_turn_id = absl::StrCat("history_turn_", next_history_turn++);
-            plan.history_messages.push_back(ReplayMessage{
-                .turn_id = *open_turn_id,
-                .role = message.role,
-                .text = message.text,
-                .create_time = message.create_time,
-            });
-            continue;
-        }
-        if (!open_turn_id.has_value()) {
-            return invalid_argument(absl::StrCat("conversation message at index ", index,
-                                                 " (role=assistant) must follow a prior user "
-                                                 "message"));
-        }
+    for (const EvalConversationMessage& message : eval_case.conversation) {
         plan.history_messages.push_back(ReplayMessage{
-            .turn_id = *open_turn_id,
+            .turn_id = absl::StrCat("history_turn_", next_history_turn++),
             .role = message.role,
             .text = message.text,
             .create_time = message.create_time,
         });
-        open_turn_id.reset();
     }
     return plan;
 }
@@ -386,15 +352,6 @@ absl::Status ValidateCase(const EvalCase& eval_case) {
     }
     if (eval_case.session_id.empty()) {
         return invalid_argument("eval case must include session_id");
-    }
-    for (std::size_t index = 0; index < eval_case.conversation.size(); ++index) {
-        if (absl::Status status = ValidateConversationMessage(eval_case.conversation[index], index);
-            !status.ok()) {
-            return status;
-        }
-    }
-    if (absl::Status status = ValidateInput(eval_case.input); !status.ok()) {
-        return status;
     }
     if (absl::StatusOr<ReplayPlan> plan = BuildReplayPlan(eval_case); !plan.ok()) {
         return invalid_argument(

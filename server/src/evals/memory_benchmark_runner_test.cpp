@@ -517,5 +517,57 @@ TEST(RunMemoryBenchmarkTest, ArtifactFileContainsCaseAndExpectedAnswer) {
     EXPECT_TRUE(artifact.contains("final_reply"));
 }
 
+TEST(RunMemoryBenchmarkTest, RaisedRenderedWorkingMemoryBudgetAllowsLargeBenchmarkCase) {
+    ScopedOutputDirectory output_directory;
+
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "large_context_bench";
+
+    EvalCase eval_case;
+    eval_case.case_id = "large_case";
+    eval_case.session_id = "session_1";
+    const std::string large_message(24U * 1024U, 'x');
+    eval_case.conversation = {
+        EvalConversationMessage{
+            .role = MessageRole::User,
+            .text = large_message,
+        },
+        EvalConversationMessage{
+            .role = MessageRole::Assistant,
+            .text = large_message,
+        },
+        EvalConversationMessage{
+            .role = MessageRole::User,
+            .text = large_message,
+        },
+        EvalConversationMessage{
+            .role = MessageRole::Assistant,
+            .text = large_message,
+        },
+    };
+    eval_case.input = EvalInput{ .text = "What did I tell you earlier?" };
+    eval_case.expected_answer = "x";
+
+    MemoryBenchmarkCase benchmark_case;
+    benchmark_case.eval_case = std::move(eval_case);
+    suite.cases.push_back(std::move(benchmark_case));
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.openai_client = MakeMidTermAwareFakeClient("some answer");
+    config.max_rendered_working_memory_context_bytes = 512U * 1024U;
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+
+    EXPECT_EQ(report->total_cases, 1U);
+    EXPECT_EQ(report->passed_cases, 1U);
+    EXPECT_EQ(report->failed_cases, 0U);
+    ASSERT_EQ(report->cases.size(), 1U);
+    EXPECT_TRUE(report->cases.front().passed);
+    EXPECT_TRUE(report->cases.front().final_reply.has_value());
+}
+
 } // namespace
 } // namespace isla::server::evals
