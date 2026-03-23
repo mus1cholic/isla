@@ -2242,6 +2242,84 @@ TEST(GatewayStubResponderStandaloneTest,
     EXPECT_EQ(events[3].turn_id, "turn_2");
 }
 
+TEST(GatewayStubResponderStandaloneTest,
+     SmallerCombinedRenderedPromptBudgetRejectsOtherwiseAllowedContext) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+        .max_rendered_system_prompt_bytes = 512U * 1024U,
+        .max_rendered_working_memory_context_bytes = 512U * 1024U,
+        .max_rendered_prompt_bytes = 70U * 1024U,
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    const std::string large_turn_text(24U * 1024U, 'x');
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = large_turn_text,
+    });
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_2",
+        .text = large_turn_text,
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(4U));
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 4U);
+    EXPECT_EQ(events[2].op, "error");
+    EXPECT_EQ(events[2].turn_id, "turn_2");
+    EXPECT_EQ(events[2].payload, "bad_request:rendered prompt exceeds maximum combined length");
+    EXPECT_EQ(events[3].op, "turn.completed");
+    EXPECT_EQ(events[3].turn_id, "turn_2");
+}
+
+TEST(GatewayStubResponderStandaloneTest,
+     LargerCombinedRenderedPromptBudgetDoesNotClampComponentBudgets) {
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+        .max_rendered_system_prompt_bytes = 512U * 1024U,
+        .max_rendered_working_memory_context_bytes = 512U * 1024U,
+        .max_rendered_prompt_bytes = 2U * 1024U * 1024U,
+    });
+    ResponderRegistryAttachment registry_scope(responder);
+    GatewaySessionRegistry& registry = registry_scope.registry();
+    auto session = std::make_shared<RecordingLiveSession>("srv_test");
+    registry.RegisterSession(session);
+    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+
+    const std::string large_turn_text(24U * 1024U, 'x');
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_1",
+        .text = large_turn_text,
+    });
+    ASSERT_TRUE(session->WaitForEventCount(2U));
+
+    responder.OnTurnAccepted(TurnAcceptedEvent{
+        .session_id = "srv_test",
+        .turn_id = "turn_2",
+        .text = large_turn_text,
+    });
+
+    ASSERT_TRUE(session->WaitForEventCount(4U));
+    const std::vector<EmittedEvent> events = session->events();
+    ASSERT_EQ(events.size(), 4U);
+    EXPECT_EQ(events[2].op, "text.output");
+    EXPECT_EQ(events[2].turn_id, "turn_2");
+    EXPECT_THAT(events[2].payload, ::testing::StartsWith("stub echo: "));
+    EXPECT_EQ(events[3].op, "turn.completed");
+    EXPECT_EQ(events[3].turn_id, "turn_2");
+}
+
 TEST(GatewayStubResponderStandaloneTest, ReplyBuilderExceptionTerminatesTurnAndWorkerContinues) {
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
@@ -2379,7 +2457,7 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
                 builder_started->set_value();
                 allow_finish_future.wait();
                 const std::string text = std::string("stub echo: ") + request.user_text;
-                const absl::Status delta_status =
+                absl::Status delta_status =
                     on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = text });
                 if (!delta_status.ok()) {
                     return delta_status;
