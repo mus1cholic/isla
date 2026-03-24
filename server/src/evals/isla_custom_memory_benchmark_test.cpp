@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -10,6 +11,7 @@
 
 #include "absl/status/status.h"
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
@@ -334,6 +336,9 @@ TEST(IslaCustomMemoryBenchmarkTest, MissingLiveGatewayPortMarksAllCasesFailed) {
         EXPECT_FALSE(case_report.passed);
         EXPECT_FALSE(case_report.final_reply.has_value());
         EXPECT_FALSE(case_report.artifact_path.has_value());
+        ASSERT_TRUE(case_report.failure.has_value());
+        EXPECT_EQ(case_report.failure->code, "invalid_argument");
+        EXPECT_FALSE(case_report.failure->message.empty());
     }
 }
 
@@ -348,7 +353,7 @@ TEST(IslaCustomMemoryBenchmarkTest, RejectsUnknownCaseIdBeforeGatewayValidation)
     EXPECT_NE(std::string(report.status().message()).find("case_id_filter"), std::string::npos);
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, UnreachableLiveGatewayReturnsError) {
+TEST(IslaCustomMemoryBenchmarkTest, UnreachableLiveGatewayMarksAllCasesFailed) {
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
             .live_gateway_host = "127.0.0.1",
@@ -364,6 +369,10 @@ TEST(IslaCustomMemoryBenchmarkTest, UnreachableLiveGatewayReturnsError) {
         EXPECT_FALSE(case_report.passed);
         EXPECT_FALSE(case_report.final_reply.has_value());
         EXPECT_FALSE(case_report.artifact_path.has_value());
+        ASSERT_TRUE(case_report.failure.has_value());
+        EXPECT_TRUE(case_report.failure->code == "unavailable" ||
+                    case_report.failure->code == "deadline_exceeded");
+        EXPECT_FALSE(case_report.failure->message.empty());
     }
 }
 
@@ -392,6 +401,7 @@ TEST(IslaCustomMemoryBenchmarkTest, RunsAllCasesAndPersistsArtifactsWithLiveGate
         EXPECT_EQ(case_report.final_answer_evaluation, "unimplemented");
         EXPECT_TRUE(case_report.final_reply.has_value()) << case_report.case_id;
         EXPECT_TRUE(case_report.artifact_path.has_value()) << case_report.case_id;
+        EXPECT_FALSE(case_report.failure.has_value()) << case_report.case_id;
     }
 
     EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "report.json"));
@@ -405,6 +415,13 @@ TEST(IslaCustomMemoryBenchmarkTest, RunsAllCasesAndPersistsArtifactsWithLiveGate
                                         "expandable_exact_detail.json"));
     EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "artifacts" /
                                         "relative_timestamp_recall.json"));
+
+    std::ifstream report_file(output_directory.path() / "report.json");
+    ASSERT_TRUE(report_file.is_open());
+    const nlohmann::json report_json = nlohmann::json::parse(report_file);
+    ASSERT_TRUE(report_json.contains("cases"));
+    ASSERT_EQ(report_json["cases"].size(), 6U);
+    EXPECT_TRUE(report_json["cases"][0]["failure"].is_null());
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithLiveGatewayOpenAi) {
@@ -432,6 +449,7 @@ TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithLiveGatewayOpe
     EXPECT_TRUE(report->cases.front().passed);
     EXPECT_TRUE(report->cases.front().final_reply.has_value());
     EXPECT_TRUE(report->cases.front().artifact_path.has_value());
+    EXPECT_FALSE(report->cases.front().failure.has_value());
 
     EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "report.json"));
     EXPECT_TRUE(
@@ -470,6 +488,7 @@ TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithLiveGatewayGen
     EXPECT_TRUE(report->cases.front().passed);
     ASSERT_TRUE(report->cases.front().final_reply.has_value());
     EXPECT_EQ(*report->cases.front().final_reply, "genmaicha");
+    EXPECT_FALSE(report->cases.front().failure.has_value());
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, PersistsConversationThroughGatewayMemoryStore) {
@@ -492,6 +511,7 @@ TEST(IslaCustomMemoryBenchmarkTest, PersistsConversationThroughGatewayMemoryStor
     ASSERT_TRUE(report.ok()) << report.status();
     ASSERT_EQ(report->cases.size(), 1U);
     EXPECT_TRUE(report->cases.front().passed);
+    EXPECT_FALSE(report->cases.front().failure.has_value());
     EXPECT_FALSE(store->session_records.empty());
     EXPECT_GE(store->message_writes.size(), 4U);
 }

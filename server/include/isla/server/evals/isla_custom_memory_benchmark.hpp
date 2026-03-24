@@ -11,6 +11,7 @@
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_llm_runtime_config.hpp"
 #include "isla/server/ai_gateway_telemetry.hpp"
+#include "isla/server/evals/eval_types.hpp"
 #include "isla/server/llm_client.hpp"
 #include "isla/server/ollama_llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
@@ -24,6 +25,7 @@ struct IslaCustomMemoryCaseReport {
     std::string final_answer_evaluation = "unimplemented";
     std::optional<std::string> final_reply;
     std::optional<std::string> artifact_path;
+    std::optional<EvalFailure> failure;
 };
 
 struct IslaCustomMemoryBenchmarkReport {

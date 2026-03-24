@@ -4,8 +4,8 @@
 #include <string_view>
 #include <vector>
 
-#include "absl/status/statusor.h"
 #include "../ai_gateway_startup_config.hpp"
+#include "absl/status/statusor.h"
 
 namespace isla::server::evals {
 

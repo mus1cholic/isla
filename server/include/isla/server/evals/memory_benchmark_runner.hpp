@@ -46,6 +46,7 @@ struct MemoryBenchmarkCaseReport {
     std::optional<std::string> final_reply;
     std::optional<std::string> expected_answer;
     std::optional<std::string> artifact_path;
+    std::optional<EvalFailure> failure;
     // Metadata carried through from the input MemoryBenchmarkCase.
     nlohmann::json metadata;
 };
@@ -66,8 +67,9 @@ struct MemoryBenchmarkRunConfig {
     std::string live_gateway_path = "/";
     std::chrono::milliseconds live_gateway_operation_timeout{ std::chrono::seconds(10) };
     std::chrono::milliseconds live_gateway_turn_completion_timeout{ std::chrono::seconds(60) };
-    // Retained so benchmark CLIs can continue reusing gateway startup parsing, even though
-    // live-serving benchmark execution no longer constructs provider clients locally.
+    // Legacy pre-live-gateway knobs retained temporarily for compatibility while callers migrate.
+    // RunMemoryBenchmark() rejects non-default values for these fields because the live gateway
+    // path no longer applies them locally.
     isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;
     isla::server::OllamaLlmClientConfig ollama_config;
     isla::server::ai_gateway::OpenAiResponsesClientConfig openai_config;

@@ -14,6 +14,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include <nlohmann/json.hpp>
 
 #include "isla/server/evals/eval_json.hpp"
@@ -31,6 +32,63 @@ std::string ToLowerAscii(std::string text) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return text;
+}
+
+std::string StatusCodeName(absl::StatusCode code) {
+    switch (code) {
+    case absl::StatusCode::kOk:
+        return "ok";
+    case absl::StatusCode::kCancelled:
+        return "cancelled";
+    case absl::StatusCode::kUnknown:
+        return "unknown";
+    case absl::StatusCode::kInvalidArgument:
+        return "invalid_argument";
+    case absl::StatusCode::kDeadlineExceeded:
+        return "deadline_exceeded";
+    case absl::StatusCode::kNotFound:
+        return "not_found";
+    case absl::StatusCode::kAlreadyExists:
+        return "already_exists";
+    case absl::StatusCode::kPermissionDenied:
+        return "permission_denied";
+    case absl::StatusCode::kResourceExhausted:
+        return "resource_exhausted";
+    case absl::StatusCode::kFailedPrecondition:
+        return "failed_precondition";
+    case absl::StatusCode::kAborted:
+        return "aborted";
+    case absl::StatusCode::kOutOfRange:
+        return "out_of_range";
+    case absl::StatusCode::kUnimplemented:
+        return "unimplemented";
+    case absl::StatusCode::kInternal:
+        return "internal";
+    case absl::StatusCode::kUnavailable:
+        return "unavailable";
+    case absl::StatusCode::kDataLoss:
+        return "data_loss";
+    case absl::StatusCode::kUnauthenticated:
+        return "unauthenticated";
+    }
+    return "unknown";
+}
+
+EvalFailure FailureFromStatus(const absl::Status& status) {
+    return EvalFailure{
+        .code = StatusCodeName(status.code()),
+        .message = std::string(status.message()),
+    };
+}
+
+ordered_json FailureToJson(const std::optional<EvalFailure>& failure) {
+    if (!failure.has_value()) {
+        return nullptr;
+    }
+    return ordered_json{
+        { "code", failure->code },
+        { "message", failure->message },
+    };
 }
 
 std::filesystem::path FindRepositoryRoot(std::filesystem::path start) {
@@ -95,6 +153,66 @@ ordered_json BuildCaseArtifactJson(const MemoryBenchmarkCase& benchmark_case) {
     return payload;
 }
 
+bool IsDefaultLlmRuntimeConfig(const isla::server::ai_gateway::GatewayLlmRuntimeConfig& config) {
+    return config.main_model.empty() && config.mid_term_flush_decider_model.empty() &&
+           config.mid_term_compactor_model.empty() && config.mid_term_embedding_model.empty();
+}
+
+bool IsDefaultOllamaConfig(const isla::server::OllamaLlmClientConfig& config) {
+    const isla::server::OllamaLlmClientConfig defaults;
+    return config.enabled == defaults.enabled && config.base_url == defaults.base_url &&
+           config.api_key == defaults.api_key &&
+           config.request_timeout == defaults.request_timeout &&
+           config.user_agent == defaults.user_agent;
+}
+
+bool IsDefaultOpenAiConfig(const isla::server::ai_gateway::OpenAiResponsesClientConfig& config) {
+    const isla::server::ai_gateway::OpenAiResponsesClientConfig defaults;
+    return config.enabled == defaults.enabled && config.api_key == defaults.api_key &&
+           config.scheme == defaults.scheme && config.host == defaults.host &&
+           config.port == defaults.port && config.target == defaults.target &&
+           config.organization == defaults.organization && config.project == defaults.project &&
+           config.trusted_ca_cert_pem == defaults.trusted_ca_cert_pem &&
+           config.request_timeout == defaults.request_timeout &&
+           config.user_agent == defaults.user_agent;
+}
+
+absl::Status ValidateUnsupportedLegacyOverrides(const MemoryBenchmarkRunConfig& config) {
+    std::vector<std::string> unsupported_fields;
+    if (!IsDefaultLlmRuntimeConfig(config.llm_runtime_config)) {
+        unsupported_fields.push_back("llm_runtime_config");
+    }
+    if (!IsDefaultOllamaConfig(config.ollama_config)) {
+        unsupported_fields.push_back("ollama_config");
+    }
+    if (!IsDefaultOpenAiConfig(config.openai_config)) {
+        unsupported_fields.push_back("openai_config");
+    }
+    if (config.llm_client != nullptr) {
+        unsupported_fields.push_back("llm_client");
+    }
+    if (config.openai_client != nullptr) {
+        unsupported_fields.push_back("openai_client");
+    }
+    if (config.max_rendered_system_prompt_bytes.has_value()) {
+        unsupported_fields.push_back("max_rendered_system_prompt_bytes");
+    }
+    if (config.max_rendered_working_memory_context_bytes.has_value()) {
+        unsupported_fields.push_back("max_rendered_working_memory_context_bytes");
+    }
+    if (config.max_rendered_prompt_bytes.has_value()) {
+        unsupported_fields.push_back("max_rendered_prompt_bytes");
+    }
+    if (unsupported_fields.empty()) {
+        return absl::OkStatus();
+    }
+    return absl::InvalidArgumentError(absl::StrCat(
+        "MemoryBenchmarkRunConfig legacy local-execution fields are unsupported in live-gateway "
+        "mode: ",
+        absl::StrJoin(unsupported_fields, ", "),
+        ". Configure the running gateway server instead."));
+}
+
 LiveEvalRunnerConfig BuildLiveEvalRunnerConfig(const MemoryBenchmarkRunConfig& config) {
     return LiveEvalRunnerConfig{
         .host = config.live_gateway_host,
@@ -138,6 +256,7 @@ ordered_json BuildMemoryBenchmarkReportJson(const MemoryBenchmarkReport& report)
         case_json["final_reply"] = case_report.final_reply;
         case_json["expected_answer"] = case_report.expected_answer;
         case_json["artifact_path"] = case_report.artifact_path;
+        case_json["failure"] = FailureToJson(case_report.failure);
         if (!case_report.metadata.is_null()) {
             case_json["metadata"] = case_report.metadata;
         }
@@ -161,6 +280,9 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
     }
     if (suite.cases.empty()) {
         return absl::InvalidArgumentError("benchmark suite must include at least one case");
+    }
+    if (const absl::Status status = ValidateUnsupportedLegacyOverrides(config); !status.ok()) {
+        return status;
     }
 
     // Validate required per-case fields early so adapters get clear, case-indexed errors.
@@ -218,10 +340,28 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
             .metadata = benchmark_case.metadata,
         };
 
+        const std::filesystem::path artifact_path =
+            artifacts_directory / (SanitizeCaseIdForFilename(eval_case.case_id) + ".json");
+
         const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(eval_case);
         if (!artifacts.ok()) {
             LOG(WARNING) << suite.benchmark_name << " case " << eval_case.case_id
                          << " failed: " << artifacts.status().message();
+            case_report.failure = FailureFromStatus(artifacts.status());
+            ordered_json case_artifact = ordered_json::object();
+            case_artifact["case"] = BuildCaseArtifactJson(benchmark_case);
+            case_artifact["artifacts"] = nullptr;
+            case_artifact["final_reply"] = nullptr;
+            case_artifact["expected_answer"] = eval_case.expected_answer;
+            case_artifact["failure"] = FailureToJson(case_report.failure);
+
+            if (const absl::Status write_status = WriteJsonFile(artifact_path, case_artifact);
+                !write_status.ok()) {
+                LOG(WARNING) << suite.benchmark_name << " failed to write artifact for case "
+                             << eval_case.case_id << ": " << write_status.message();
+            } else {
+                case_report.artifact_path = DisplayPath(artifact_path);
+            }
             report.failed_cases += 1U;
             report.cases.push_back(std::move(case_report));
             continue;
@@ -230,6 +370,7 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
         if (artifacts->final_reply.has_value() && !artifacts->final_reply->empty()) {
             case_report.final_reply = artifacts->final_reply;
         }
+        case_report.failure = artifacts->failure;
 
         // A case "passes" if the turn completed successfully with a non-empty reply. Actual answer
         // evaluation against expected_answer is deferred to Phase 5 (autoraters).
@@ -238,13 +379,12 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
 
         // Write per-case artifact file. Sanitize case_id to prevent path traversal or
         // invalid filenames; the original case_id is preserved in the JSON content.
-        const std::filesystem::path artifact_path =
-            artifacts_directory / (SanitizeCaseIdForFilename(eval_case.case_id) + ".json");
         ordered_json case_artifact = ordered_json::object();
         case_artifact["case"] = BuildCaseArtifactJson(benchmark_case);
         case_artifact["artifacts"] = EvalArtifactsToJson(*artifacts);
         case_artifact["final_reply"] = case_report.final_reply;
         case_artifact["expected_answer"] = eval_case.expected_answer;
+        case_artifact["failure"] = FailureToJson(case_report.failure);
 
         if (const absl::Status write_status = WriteJsonFile(artifact_path, case_artifact);
             !write_status.ok()) {

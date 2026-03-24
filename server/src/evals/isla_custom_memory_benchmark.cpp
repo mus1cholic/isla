@@ -40,14 +40,6 @@ isla::server::memory::Timestamp Ts(std::string_view text) {
 struct BenchmarkCaseDefinition {
     std::string suite_id;
     EvalCase eval_case;
-    std::vector<std::string> required_prompt_substrings;
-    std::vector<std::string> required_mid_term_summaries;
-    bool require_expandable_episode = false;
-    bool require_evaluation_reference_event = false;
-    bool flush_first_exchange = false;
-    std::string compacted_tier2_summary;
-    std::optional<std::string> compacted_tier1_detail;
-    int compacted_salience = 5;
 };
 
 std::string ToLowerAscii(std::string text) {
@@ -55,6 +47,63 @@ std::string ToLowerAscii(std::string text) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return text;
+}
+
+std::string StatusCodeName(absl::StatusCode code) {
+    switch (code) {
+    case absl::StatusCode::kOk:
+        return "ok";
+    case absl::StatusCode::kCancelled:
+        return "cancelled";
+    case absl::StatusCode::kUnknown:
+        return "unknown";
+    case absl::StatusCode::kInvalidArgument:
+        return "invalid_argument";
+    case absl::StatusCode::kDeadlineExceeded:
+        return "deadline_exceeded";
+    case absl::StatusCode::kNotFound:
+        return "not_found";
+    case absl::StatusCode::kAlreadyExists:
+        return "already_exists";
+    case absl::StatusCode::kPermissionDenied:
+        return "permission_denied";
+    case absl::StatusCode::kResourceExhausted:
+        return "resource_exhausted";
+    case absl::StatusCode::kFailedPrecondition:
+        return "failed_precondition";
+    case absl::StatusCode::kAborted:
+        return "aborted";
+    case absl::StatusCode::kOutOfRange:
+        return "out_of_range";
+    case absl::StatusCode::kUnimplemented:
+        return "unimplemented";
+    case absl::StatusCode::kInternal:
+        return "internal";
+    case absl::StatusCode::kUnavailable:
+        return "unavailable";
+    case absl::StatusCode::kDataLoss:
+        return "data_loss";
+    case absl::StatusCode::kUnauthenticated:
+        return "unauthenticated";
+    }
+    return "unknown";
+}
+
+EvalFailure FailureFromStatus(const absl::Status& status) {
+    return EvalFailure{
+        .code = StatusCodeName(status.code()),
+        .message = std::string(status.message()),
+    };
+}
+
+ordered_json FailureToJson(const std::optional<EvalFailure>& failure) {
+    if (!failure.has_value()) {
+        return nullptr;
+    }
+    return ordered_json{
+        { "code", failure->code },
+        { "message", failure->message },
+    };
 }
 
 std::filesystem::path FindRepositoryRoot(std::filesystem::path start) {
@@ -140,7 +189,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("genmaicha"),
                 },
-            .required_prompt_substrings = { "favorite tea is genmaicha" },
         },
         BenchmarkCaseDefinition{
             .suite_id = "direct_fact_recall",
@@ -162,7 +210,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("Rust"),
                 },
-            .required_prompt_substrings = { "favorite language is Rust" },
         },
         BenchmarkCaseDefinition{
             .suite_id = "recency_contradiction",
@@ -191,8 +238,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("Neovim"),
                 },
-            .required_prompt_substrings = { "My preferred editor is Vim.",
-                                            "Actually, I switched to Neovim last week." },
         },
         BenchmarkCaseDefinition{
             .suite_id = "mid_term_visibility",
@@ -229,11 +274,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("Atlas renderer"),
                 },
-            .required_mid_term_summaries = {
-                "Debugged the Atlas renderer and fixed the culling mode.",
-            },
-            .flush_first_exchange = true,
-            .compacted_tier2_summary = "Debugged the Atlas renderer and fixed the culling mode.",
         },
         BenchmarkCaseDefinition{
             .suite_id = "expandable_exact_detail",
@@ -267,12 +307,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                     .expected_answer =
                         std::string("bazel test //server/src:eval_runner_test"),
                 },
-            .required_mid_term_summaries = { "Fixed the failing suite with a bazel test command." },
-            .require_expandable_episode = true,
-            .flush_first_exchange = true,
-            .compacted_tier2_summary = "Fixed the failing suite with a bazel test command.",
-            .compacted_tier1_detail = std::string("bazel test //server/src:eval_runner_test"),
-            .compacted_salience = 9,
         },
         BenchmarkCaseDefinition{
             .suite_id = "relative_timestamp_recall",
@@ -303,8 +337,6 @@ std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
                         },
                     .expected_answer = std::string("2026-03-14T10:00:00Z"),
                 },
-            .required_prompt_substrings = { "2026-03-14T10:00:00Z", "2026-03-18T09:00:00Z" },
-            .require_evaluation_reference_event = true,
         },
     };
 }
@@ -362,6 +394,7 @@ ordered_json BuildBenchmarkReportJson(const IslaCustomMemoryBenchmarkReport& rep
         case_json["final_answer_evaluation"] = case_report.final_answer_evaluation;
         case_json["final_reply"] = case_report.final_reply;
         case_json["artifact_path"] = case_report.artifact_path;
+        case_json["failure"] = FailureToJson(case_report.failure);
         cases.push_back(std::move(case_json));
     }
 
@@ -424,6 +457,7 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         if (!artifacts.ok()) {
             LOG(WARNING) << kBenchmarkName << " case " << definition.eval_case.case_id
                          << " failed: " << artifacts.status().message();
+            case_report.failure = FailureFromStatus(artifacts.status());
             report.failed_cases += 1U;
             report.cases.push_back(std::move(case_report));
             continue;
@@ -434,6 +468,7 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         } else {
             case_report.final_reply = std::nullopt;
         }
+        case_report.failure = artifacts->failure;
         case_report.passed = ValidateArtifacts(definition, *artifacts);
 
         const std::filesystem::path artifact_path =

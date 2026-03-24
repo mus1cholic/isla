@@ -83,6 +83,7 @@ TEST(BuildMemoryBenchmarkReportJsonTest, CaseFieldsPreserved) {
     EXPECT_EQ(case_json["final_reply"], "The answer is blue.");
     EXPECT_EQ(case_json["expected_answer"], "blue");
     EXPECT_EQ(case_json["artifact_path"], "out/test_bench/artifacts/q1.json");
+    EXPECT_TRUE(case_json["failure"].is_null());
 }
 
 TEST(BuildMemoryBenchmarkReportJsonTest, MetadataPreservedWhenPresent) {
@@ -138,6 +139,32 @@ TEST(BuildMemoryBenchmarkReportJsonTest, NullOptionalFieldsSerializedAsNull) {
     EXPECT_TRUE(case_json["final_reply"].is_null());
     EXPECT_TRUE(case_json["expected_answer"].is_null());
     EXPECT_TRUE(case_json["artifact_path"].is_null());
+    EXPECT_TRUE(case_json["failure"].is_null());
+}
+
+TEST(BuildMemoryBenchmarkReportJsonTest, FailurePreservedWhenPresent) {
+    MemoryBenchmarkReport report{
+        .benchmark_name = "test_bench",
+        .output_directory = "out/test_bench",
+        .total_cases = 1,
+        .failed_cases = 1,
+    };
+    report.cases.push_back(MemoryBenchmarkCaseReport{
+        .case_id = "q1",
+        .passed = false,
+        .failure =
+            EvalFailure{
+                .code = "unavailable",
+                .message = "connection refused",
+            },
+    });
+
+    const ordered_json result = BuildMemoryBenchmarkReportJson(report);
+    ASSERT_EQ(result["cases"].size(), 1U);
+    const ordered_json& case_json = result["cases"][0];
+    ASSERT_TRUE(case_json.contains("failure"));
+    EXPECT_EQ(case_json["failure"]["code"], "unavailable");
+    EXPECT_EQ(case_json["failure"]["message"], "connection refused");
 }
 
 TEST(BuildMemoryBenchmarkReportJsonTest, MultipleCasesPreserved) {
@@ -265,6 +292,50 @@ TEST(RunMemoryBenchmarkTest, EmptySessionIdReturnsError) {
     EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
     EXPECT_NE(std::string(result.status().message()).find("q1"), std::string::npos);
     EXPECT_NE(std::string(result.status().message()).find("session_id"), std::string::npos);
+}
+
+TEST(RunMemoryBenchmarkTest, RejectsLegacyProviderOverridesInLiveGatewayMode) {
+    MemoryBenchmarkRunConfig config;
+    config.openai_config.enabled = true;
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "test_bench";
+    suite.cases.push_back(MemoryBenchmarkCase{
+        .eval_case =
+            EvalCase{
+                .case_id = "q1",
+                .session_id = "session_1",
+                .input = EvalInput{ .text = "What is my favorite color?" },
+            },
+    });
+
+    const absl::StatusOr<MemoryBenchmarkReport> result =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_FALSE(result.ok());
+    EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
+    EXPECT_NE(std::string(result.status().message()).find("openai_config"), std::string::npos);
+}
+
+TEST(RunMemoryBenchmarkTest, RejectsLegacyPromptBudgetOverridesInLiveGatewayMode) {
+    MemoryBenchmarkRunConfig config;
+    config.max_rendered_working_memory_context_bytes = 512U * 1024U;
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "test_bench";
+    suite.cases.push_back(MemoryBenchmarkCase{
+        .eval_case =
+            EvalCase{
+                .case_id = "q1",
+                .session_id = "session_1",
+                .input = EvalInput{ .text = "What is my favorite color?" },
+            },
+    });
+
+    const absl::StatusOr<MemoryBenchmarkReport> result =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_FALSE(result.ok());
+    EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
+    EXPECT_NE(
+        std::string(result.status().message()).find("max_rendered_working_memory_context_bytes"),
+        std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +701,7 @@ TEST(RunMemoryBenchmarkTest, MetadataPreservedThroughRunLoop) {
     EXPECT_EQ(case_report.metadata["difficulty"], 3);
 }
 
-TEST(RunMemoryBenchmarkTest, UnreachableLiveGatewayReturnsError) {
+TEST(RunMemoryBenchmarkTest, UnreachableLiveGatewayMarksCaseFailed) {
     MemoryBenchmarkRunConfig config;
     config.live_gateway_host = "127.0.0.1";
     config.live_gateway_port = 1;
@@ -646,7 +717,10 @@ TEST(RunMemoryBenchmarkTest, UnreachableLiveGatewayReturnsError) {
     ASSERT_EQ(report->cases.size(), 1U);
     EXPECT_FALSE(report->cases.front().passed);
     EXPECT_FALSE(report->cases.front().final_reply.has_value());
-    EXPECT_FALSE(report->cases.front().artifact_path.has_value());
+    ASSERT_TRUE(report->cases.front().failure.has_value());
+    EXPECT_TRUE(report->cases.front().failure->code == "unavailable" ||
+                report->cases.front().failure->code == "deadline_exceeded");
+    EXPECT_TRUE(report->cases.front().artifact_path.has_value());
 }
 
 TEST(RunMemoryBenchmarkTest, PersistsConversationThroughGatewayMemoryStore) {
@@ -697,7 +771,7 @@ TEST(RunMemoryBenchmarkTest, UsesSeparateTurnCompletionTimeout) {
     EXPECT_TRUE(report->cases.front().passed);
 }
 
-TEST(RunMemoryBenchmarkTest, GatewayTurnFailureReturnsError) {
+TEST(RunMemoryBenchmarkTest, GatewayTurnFailureMarksCaseFailed) {
     ScopedOutputDirectory output_directory;
     ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
         .response_delay = 0ms,
@@ -722,7 +796,9 @@ TEST(RunMemoryBenchmarkTest, GatewayTurnFailureReturnsError) {
     ASSERT_EQ(report->cases.size(), 1U);
     EXPECT_FALSE(report->cases.front().passed);
     EXPECT_FALSE(report->cases.front().final_reply.has_value());
-    EXPECT_FALSE(report->cases.front().artifact_path.has_value());
+    ASSERT_TRUE(report->cases.front().failure.has_value());
+    EXPECT_FALSE(report->cases.front().failure->message.empty());
+    EXPECT_TRUE(report->cases.front().artifact_path.has_value());
 }
 
 TEST(RunMemoryBenchmarkTest, ContinuesAfterOneCaseFails) {
@@ -760,6 +836,9 @@ TEST(RunMemoryBenchmarkTest, ContinuesAfterOneCaseFails) {
     ASSERT_EQ(report->cases.size(), 2U);
     EXPECT_EQ(report->cases[0].case_id, "invalid_case");
     EXPECT_FALSE(report->cases[0].passed);
+    ASSERT_TRUE(report->cases[0].failure.has_value());
+    EXPECT_EQ(report->cases[0].failure->code, "invalid_argument");
+    EXPECT_TRUE(report->cases[0].artifact_path.has_value());
     EXPECT_EQ(report->cases[1].case_id, "valid_case");
     EXPECT_TRUE(report->cases[1].passed);
     EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "artifacts" / "valid_case.json"));
@@ -797,13 +876,46 @@ TEST(RunMemoryBenchmarkTest, ArtifactFileContainsCaseAndExpectedAnswer) {
     EXPECT_EQ(artifact["expected_answer"], "blue");
     EXPECT_TRUE(artifact.contains("artifacts"));
     EXPECT_TRUE(artifact.contains("final_reply"));
+    EXPECT_TRUE(artifact.contains("failure"));
+    EXPECT_TRUE(artifact["failure"].is_null());
 }
 
-TEST(RunMemoryBenchmarkTest, RaisedRenderedWorkingMemoryBudgetAllowsLargeBenchmarkCase) {
+TEST(RunMemoryBenchmarkTest, FailedArtifactContainsFailureDetails) {
+    ScopedOutputDirectory output_directory;
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.live_gateway_host = "127.0.0.1";
+    config.live_gateway_port = 1;
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+    ASSERT_EQ(report->cases.size(), 1U);
+    ASSERT_TRUE(report->cases.front().artifact_path.has_value());
+
+    const std::filesystem::path artifact_path =
+        output_directory.path() / "artifacts" / "test_q1.json";
+    ASSERT_TRUE(std::filesystem::exists(artifact_path));
+
+    std::ifstream artifact_file(artifact_path);
+    ASSERT_TRUE(artifact_file.is_open());
+    const json artifact = json::parse(artifact_file);
+
+    ASSERT_TRUE(artifact.contains("failure"));
+    EXPECT_TRUE(artifact["failure"]["code"] == "unavailable" ||
+                artifact["failure"]["code"] == "deadline_exceeded");
+    EXPECT_FALSE(artifact["failure"]["message"].get<std::string>().empty());
+    EXPECT_TRUE(artifact["artifacts"].is_null());
+}
+
+TEST(RunMemoryBenchmarkTest, RaisedGatewayWorkingMemoryBudgetAllowsLargeBenchmarkCase) {
     ScopedOutputDirectory output_directory;
     ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
         .response_delay = 0ms,
         .openai_client = MakeMidTermAwareFakeClient("some answer"),
+        .max_rendered_working_memory_context_bytes = 512U * 1024U,
     });
     ASSERT_TRUE(live_gateway.Start().ok());
 
@@ -820,7 +932,7 @@ TEST(RunMemoryBenchmarkTest, RaisedRenderedWorkingMemoryBudgetAllowsLargeBenchma
             .text = large_message,
         },
         EvalConversationMessage{
-            .role = MessageRole::Assistant,
+            .role = MessageRole::User,
             .text = large_message,
         },
         EvalConversationMessage{
@@ -828,7 +940,7 @@ TEST(RunMemoryBenchmarkTest, RaisedRenderedWorkingMemoryBudgetAllowsLargeBenchma
             .text = large_message,
         },
         EvalConversationMessage{
-            .role = MessageRole::Assistant,
+            .role = MessageRole::User,
             .text = large_message,
         },
     };
@@ -842,7 +954,6 @@ TEST(RunMemoryBenchmarkTest, RaisedRenderedWorkingMemoryBudgetAllowsLargeBenchma
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
     config.live_gateway_port = live_gateway.port();
-    config.max_rendered_working_memory_context_bytes = 512U * 1024U;
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);

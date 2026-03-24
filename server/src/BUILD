@@ -71,7 +71,9 @@ cc_library(
         "//client/src:ai_gateway_client_session",
         "//server/include/isla/server:server_headers",
         "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
     ],
 )
