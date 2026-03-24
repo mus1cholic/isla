@@ -16,7 +16,8 @@ namespace {
 
 void PrintUsage() {
     std::cout << "Usage: isla_custom_memory_eval [--output_dir=PATH] [--case_id=CASE_ID] "
-                 "[gateway startup flags...]\n";
+                 "[gateway startup flags...]\n"
+                 "The AI gateway server must already be running on the configured host/port.\n";
 }
 
 } // namespace
@@ -58,6 +59,8 @@ int main(int argc, char** argv) {
     config.llm_runtime_config = startup_config->llm_runtime_config;
     config.ollama_config = startup_config->ollama_config;
     config.openai_config = startup_config->openai_config;
+    config.live_gateway_host = startup_config->server_config.bind_host;
+    config.live_gateway_port = startup_config->server_config.port;
 
     const absl::StatusOr<isla::server::evals::IslaCustomMemoryBenchmarkReport> report =
         isla::server::evals::RunIslaCustomMemoryBenchmark(std::move(config));

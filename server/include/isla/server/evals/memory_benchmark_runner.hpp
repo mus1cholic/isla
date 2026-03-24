@@ -1,6 +1,8 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -59,13 +61,16 @@ struct MemoryBenchmarkReport {
 
 struct MemoryBenchmarkRunConfig {
     std::filesystem::path output_directory;
+    std::string live_gateway_host = "127.0.0.1";
+    std::uint16_t live_gateway_port = 0;
+    std::string live_gateway_path = "/";
+    std::chrono::milliseconds live_gateway_operation_timeout{ std::chrono::seconds(2) };
+    // Retained so benchmark CLIs can continue reusing gateway startup parsing, even though
+    // live-serving benchmark execution no longer constructs provider clients locally.
     isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;
-    // Optional provider-neutral LLM override used for evaluated turns and
-    // mid-term memory helpers. When unset, the runner resolves one from
-    // provider config, preferring Ollama over OpenAI to match gateway startup.
-    std::shared_ptr<const isla::server::LlmClient> llm_client;
     isla::server::OllamaLlmClientConfig ollama_config;
     isla::server::ai_gateway::OpenAiResponsesClientConfig openai_config;
+    std::shared_ptr<const isla::server::LlmClient> llm_client;
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client;
     std::optional<std::size_t> max_rendered_system_prompt_bytes;
     std::optional<std::size_t> max_rendered_working_memory_context_bytes;
@@ -74,10 +79,11 @@ struct MemoryBenchmarkRunConfig {
         isla::server::ai_gateway::CreateNoOpTelemetrySink();
 };
 
-// Runs a benchmark suite through the app-boundary eval runner. Each case is executed via
-// EvalRunner::RunCase(), and per-case artifacts plus an aggregate report are written to the output
-// directory. A case "passes" when the evaluated turn completes successfully with a non-empty reply;
-// actual answer evaluation against expected_answer is deferred to Phase 5 (autoraters).
+// Runs a benchmark suite through the live AI gateway serving path. Each case is executed over the
+// gateway websocket protocol, so any configured server-side memory store is exercised and can
+// persist benchmark sessions. Per-case artifacts plus an aggregate report are written to the
+// output directory. A case "passes" when the evaluated turn completes successfully with a non-empty
+// reply; actual answer evaluation against expected_answer is deferred to Phase 5 (autoraters).
 [[nodiscard]] absl::StatusOr<MemoryBenchmarkReport>
 RunMemoryBenchmark(MemoryBenchmarkRunConfig config, const MemoryBenchmarkSuite& suite);
 

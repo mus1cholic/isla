@@ -11,18 +11,30 @@
 #include "absl/status/status.h"
 #include <gtest/gtest.h>
 
+#include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/llm_client.hpp"
+#include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 
 namespace isla::server::evals {
 namespace {
 
+using isla::server::ai_gateway::GatewayServer;
+using isla::server::ai_gateway::GatewayServerConfig;
+using isla::server::ai_gateway::GatewayStubResponder;
+using isla::server::ai_gateway::GatewayStubResponderConfig;
 using isla::server::ai_gateway::OpenAiResponsesClient;
 using isla::server::ai_gateway::OpenAiResponsesCompletedEvent;
 using isla::server::ai_gateway::OpenAiResponsesEventCallback;
 using isla::server::ai_gateway::OpenAiResponsesRequest;
 using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
+using isla::server::memory::ConversationMessageWrite;
+using isla::server::memory::Episode;
 using isla::server::memory::LoadPrompt;
+using isla::server::memory::MemorySessionRecord;
+using isla::server::memory::MemoryStore;
+using isla::server::memory::MemoryStoreSnapshot;
 using isla::server::memory::PromptAsset;
 
 std::string BuildBenchmarkReply(std::string_view user_text) {
@@ -47,6 +59,16 @@ std::string BuildBenchmarkReply(std::string_view user_text) {
     return "placeholder benchmark reply";
 }
 
+std::string BuildMidTermAwareResponse(std::string_view system_prompt, std::string_view user_text) {
+    if (system_prompt.find("should_flush") != std::string_view::npos) {
+        return R"({"should_flush":false,"item_id":null,"split_at":null,"reasoning":"test"})";
+    }
+    if (system_prompt.find("tier2_summary") != std::string_view::npos) {
+        return R"({"tier1_detail":"d","tier2_summary":"s","tier3_ref":"r","tier3_keywords":["k"],"salience":5})";
+    }
+    return BuildBenchmarkReply(user_text);
+}
+
 class FakeLiveOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
     [[nodiscard]] absl::Status Validate() const override {
@@ -60,8 +82,9 @@ class FakeLiveOpenAiResponsesClient final : public OpenAiResponsesClient {
     [[nodiscard]] absl::Status
     StreamResponse(const OpenAiResponsesRequest& request,
                    const OpenAiResponsesEventCallback& on_event) const override {
-        const absl::Status delta_status = on_event(
-            OpenAiResponsesTextDeltaEvent{ .text_delta = BuildBenchmarkReply(request.user_text) });
+        const absl::Status delta_status = on_event(OpenAiResponsesTextDeltaEvent{
+            .text_delta = BuildMidTermAwareResponse(request.system_prompt, request.user_text),
+        });
         if (!delta_status.ok()) {
             return delta_status;
         }
@@ -95,8 +118,9 @@ class RecordingFakeLiveOpenAiResponsesClient final : public OpenAiResponsesClien
             });
         }
 
-        const absl::Status delta_status = on_event(
-            OpenAiResponsesTextDeltaEvent{ .text_delta = BuildBenchmarkReply(request.user_text) });
+        const absl::Status delta_status = on_event(OpenAiResponsesTextDeltaEvent{
+            .text_delta = BuildMidTermAwareResponse(request.system_prompt, request.user_text),
+        });
         if (!delta_status.ok()) {
             return delta_status;
         }
@@ -128,7 +152,7 @@ class FakeLiveLlmClient final : public isla::server::LlmClient {
     StreamResponse(const isla::server::LlmRequest& request,
                    const isla::server::LlmEventCallback& on_event) const override {
         const absl::Status delta_status = on_event(isla::server::LlmTextDeltaEvent{
-            .text_delta = BuildBenchmarkReply(request.user_text),
+            .text_delta = BuildMidTermAwareResponse(request.system_prompt, request.user_text),
         });
         if (!delta_status.ok()) {
             return delta_status;
@@ -166,7 +190,7 @@ class RecordingFakeLiveLlmClient final : public isla::server::LlmClient {
         }
 
         const absl::Status delta_status = on_event(isla::server::LlmTextDeltaEvent{
-            .text_delta = BuildBenchmarkReply(request.user_text),
+            .text_delta = BuildMidTermAwareResponse(request.system_prompt, request.user_text),
         });
         if (!delta_status.ok()) {
             return delta_status;
@@ -206,6 +230,89 @@ class ScopedOutputDirectory {
     std::filesystem::path path_;
 };
 
+class ScopedLiveGatewayServer {
+  public:
+    explicit ScopedLiveGatewayServer(GatewayStubResponderConfig responder_config)
+        : responder_(std::move(responder_config)), server_(
+                                                       GatewayServerConfig{
+                                                           .bind_host = "127.0.0.1",
+                                                           .port = 0,
+                                                           .listen_backlog = 4,
+                                                       },
+                                                       &responder_) {
+        responder_.AttachSessionRegistry(&server_.session_registry());
+    }
+
+    ~ScopedLiveGatewayServer() {
+        server_.Stop();
+    }
+
+    [[nodiscard]] absl::Status Start() {
+        return server_.Start();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return server_.bound_port();
+    }
+
+  private:
+    GatewayStubResponder responder_;
+    GatewayServer server_;
+};
+
+class RecordingMemoryStore final : public MemoryStore {
+  public:
+    absl::Status UpsertSession(const MemorySessionRecord& record) override {
+        session_records.push_back(record);
+        return absl::OkStatus();
+    }
+
+    absl::Status AppendConversationMessage(const ConversationMessageWrite& write) override {
+        message_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status ReplaceConversationItemWithEpisodeStub(
+        const isla::server::memory::EpisodeStubWrite& write) override {
+        stub_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
+        mid_term_episode_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status SplitConversationItemWithEpisodeStub(
+        const isla::server::memory::SplitEpisodeStubWrite& write) override {
+        split_stub_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::StatusOr<std::vector<Episode>>
+    ListMidTermEpisodes(std::string_view /*session_id*/) const override {
+        return std::vector<Episode>{};
+    }
+
+    absl::StatusOr<std::optional<Episode>>
+    GetMidTermEpisode(std::string_view /*session_id*/,
+                      std::string_view /*episode_id*/) const override {
+        return std::nullopt;
+    }
+
+    absl::StatusOr<std::optional<MemoryStoreSnapshot>>
+    LoadSnapshot(std::string_view /*session_id*/) const override {
+        return std::nullopt;
+    }
+
+    std::vector<MemorySessionRecord> session_records;
+    std::vector<ConversationMessageWrite> message_writes;
+    std::vector<isla::server::memory::EpisodeStubWrite> stub_writes;
+    std::vector<isla::server::memory::SplitEpisodeStubWrite> split_stub_writes;
+    std::vector<isla::server::memory::MidTermEpisodeWrite> mid_term_episode_writes;
+};
+
 std::shared_ptr<const OpenAiResponsesClient> CreateFakeLiveClient() {
     return std::make_shared<const FakeLiveOpenAiResponsesClient>();
 }
@@ -214,17 +321,16 @@ std::shared_ptr<const isla::server::LlmClient> CreateFakeLiveLlmClient() {
     return std::make_shared<const FakeLiveLlmClient>();
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, RejectsMissingLiveOpenAiConfig) {
+TEST(IslaCustomMemoryBenchmarkTest, RejectsMissingLiveGatewayPort) {
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{});
 
     ASSERT_FALSE(report.ok());
     EXPECT_EQ(report.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(report.status().message()).find("openai responses client is disabled"),
-              std::string::npos);
+    EXPECT_NE(std::string(report.status().message()).find("port"), std::string::npos);
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, RejectsUnknownCaseIdBeforeProviderValidation) {
+TEST(IslaCustomMemoryBenchmarkTest, RejectsUnknownCaseIdBeforeGatewayValidation) {
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
             .case_id_filter = std::string("missing_case"),
@@ -235,26 +341,29 @@ TEST(IslaCustomMemoryBenchmarkTest, RejectsUnknownCaseIdBeforeProviderValidation
     EXPECT_NE(std::string(report.status().message()).find("case_id_filter"), std::string::npos);
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, RejectsAmbiguousInjectedProviderClients) {
+TEST(IslaCustomMemoryBenchmarkTest, UnreachableLiveGatewayReturnsError) {
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
-            .case_id_filter = std::string("direct_fact_recall_tea"),
-            .live_llm_client = CreateFakeLiveLlmClient(),
-            .live_openai_client = CreateFakeLiveClient(),
+            .live_gateway_host = "127.0.0.1",
+            .live_gateway_port = 1,
         });
 
     ASSERT_FALSE(report.ok());
-    EXPECT_EQ(report.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(report.status().message()).find("mutually exclusive"), std::string::npos);
+    EXPECT_TRUE(absl::IsUnavailable(report.status()) || absl::IsDeadlineExceeded(report.status()));
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, RunsAllCasesAndPersistsArtifactsWithInjectedLiveClient) {
+TEST(IslaCustomMemoryBenchmarkTest, RunsAllCasesAndPersistsArtifactsWithLiveGateway) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = std::chrono::milliseconds(0),
+        .openai_client = CreateFakeLiveClient(),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
             .output_directory = output_directory.path(),
-            .live_openai_client = CreateFakeLiveClient(),
+            .live_gateway_port = live_gateway.port(),
         });
 
     ASSERT_TRUE(report.ok()) << report.status();
@@ -283,14 +392,19 @@ TEST(IslaCustomMemoryBenchmarkTest, RunsAllCasesAndPersistsArtifactsWithInjected
                                         "relative_timestamp_recall.json"));
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithInjectedLiveClient) {
+TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithLiveGatewayOpenAi) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = std::chrono::milliseconds(0),
+        .openai_client = CreateFakeLiveClient(),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
             .output_directory = output_directory.path(),
             .case_id_filter = std::string("direct_fact_recall_tea"),
-            .live_openai_client = CreateFakeLiveClient(),
+            .live_gateway_port = live_gateway.port(),
         });
 
     ASSERT_TRUE(report.ok()) << report.status();
@@ -318,14 +432,19 @@ TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithInjectedLiveCl
     EXPECT_EQ(artifact_count, 1U);
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithInjectedGenericLlmClient) {
+TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithLiveGatewayGenericLlm) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = std::chrono::milliseconds(0),
+        .llm_client = CreateFakeLiveLlmClient(),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
             .output_directory = output_directory.path(),
             .case_id_filter = std::string("direct_fact_recall_tea"),
-            .live_llm_client = CreateFakeLiveLlmClient(),
+            .live_gateway_port = live_gateway.port(),
         });
 
     ASSERT_TRUE(report.ok()) << report.status();
@@ -338,66 +457,28 @@ TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithInjectedGeneri
     EXPECT_EQ(*report->cases.front().final_reply, "genmaicha");
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, WrapperKeepsMidTermPromptsOffInjectedLiveClient) {
+TEST(IslaCustomMemoryBenchmarkTest, PersistsConversationThroughGatewayMemoryStore) {
     ScopedOutputDirectory output_directory;
-    auto recording_client = std::make_shared<RecordingFakeLiveOpenAiResponsesClient>();
-
-    const absl::StatusOr<std::string> decider_prompt =
-        LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
-    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
-    const absl::StatusOr<std::string> compactor_prompt =
-        LoadPrompt(PromptAsset::kMidTermCompactorSystemPrompt);
-    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+    auto store = std::make_shared<RecordingMemoryStore>();
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = std::chrono::milliseconds(0),
+        .memory_store = store,
+        .openai_client = CreateFakeLiveClient(),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
             .output_directory = output_directory.path(),
             .case_id_filter = std::string("mid_term_visibility"),
-            .live_openai_client = recording_client,
+            .live_gateway_port = live_gateway.port(),
         });
 
     ASSERT_TRUE(report.ok()) << report.status();
     ASSERT_EQ(report->cases.size(), 1U);
     EXPECT_TRUE(report->cases.front().passed);
-
-    const std::vector<RecordedOpenAiRequest> requests = recording_client->RecordedRequests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_NE(requests.front().user_text.find("What project were we debugging earlier?"),
-              std::string::npos);
-    EXPECT_FALSE(requests.front().system_prompt.empty());
-    EXPECT_NE(requests.front().system_prompt, *decider_prompt);
-    EXPECT_NE(requests.front().system_prompt, *compactor_prompt);
-}
-
-TEST(IslaCustomMemoryBenchmarkTest, WrapperKeepsMidTermPromptsOffInjectedGenericLlmClient) {
-    ScopedOutputDirectory output_directory;
-    auto recording_client = std::make_shared<RecordingFakeLiveLlmClient>();
-
-    const absl::StatusOr<std::string> decider_prompt =
-        LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
-    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
-    const absl::StatusOr<std::string> compactor_prompt =
-        LoadPrompt(PromptAsset::kMidTermCompactorSystemPrompt);
-    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
-
-    const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
-        RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
-            .output_directory = output_directory.path(),
-            .case_id_filter = std::string("mid_term_visibility"),
-            .live_llm_client = recording_client,
-        });
-
-    ASSERT_TRUE(report.ok()) << report.status();
-    ASSERT_EQ(report->cases.size(), 1U);
-    EXPECT_TRUE(report->cases.front().passed);
-
-    const std::vector<RecordedLlmRequest> requests = recording_client->RecordedRequests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_NE(requests.front().user_text.find("What project were we debugging earlier?"),
-              std::string::npos);
-    EXPECT_FALSE(requests.front().system_prompt.empty());
-    EXPECT_NE(requests.front().system_prompt, *decider_prompt);
-    EXPECT_NE(requests.front().system_prompt, *compactor_prompt);
+    EXPECT_FALSE(store->session_records.empty());
+    EXPECT_GE(store->message_writes.size(), 4U);
 }
 
 } // namespace

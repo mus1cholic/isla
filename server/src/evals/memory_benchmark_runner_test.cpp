@@ -15,17 +15,30 @@
 #include "gtest/gtest.h"
 #include <nlohmann/json.hpp>
 
+#include "isla/server/ai_gateway_server.hpp"
+#include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/llm_client.hpp"
+#include "isla/server/memory/memory_store.hpp"
 #include "openai_responses_test_utils.hpp"
 
 namespace isla::server::evals {
 namespace {
 
+using isla::server::ai_gateway::GatewayServer;
+using isla::server::ai_gateway::GatewayServerConfig;
+using isla::server::ai_gateway::GatewayStubResponder;
+using isla::server::ai_gateway::GatewayStubResponderConfig;
 using isla::server::ai_gateway::test::FakeOpenAiResponsesClient;
 using isla::server::ai_gateway::test::MakeFakeOpenAiResponsesClient;
+using isla::server::memory::ConversationMessageWrite;
+using isla::server::memory::Episode;
+using isla::server::memory::MemorySessionRecord;
+using isla::server::memory::MemoryStore;
+using isla::server::memory::MemoryStoreSnapshot;
 using isla::server::memory::MessageRole;
 using nlohmann::json;
 using nlohmann::ordered_json;
+using namespace std::chrono_literals;
 
 // ---------------------------------------------------------------------------
 // BuildMemoryBenchmarkReportJson tests
@@ -281,6 +294,89 @@ class ScopedOutputDirectory {
     std::filesystem::path path_;
 };
 
+class ScopedLiveGatewayServer {
+  public:
+    explicit ScopedLiveGatewayServer(GatewayStubResponderConfig responder_config)
+        : responder_(std::move(responder_config)), server_(
+                                                       GatewayServerConfig{
+                                                           .bind_host = "127.0.0.1",
+                                                           .port = 0,
+                                                           .listen_backlog = 4,
+                                                       },
+                                                       &responder_) {
+        responder_.AttachSessionRegistry(&server_.session_registry());
+    }
+
+    ~ScopedLiveGatewayServer() {
+        server_.Stop();
+    }
+
+    [[nodiscard]] absl::Status Start() {
+        return server_.Start();
+    }
+
+    [[nodiscard]] std::uint16_t port() const {
+        return server_.bound_port();
+    }
+
+  private:
+    GatewayStubResponder responder_;
+    GatewayServer server_;
+};
+
+class RecordingMemoryStore final : public MemoryStore {
+  public:
+    absl::Status UpsertSession(const MemorySessionRecord& record) override {
+        session_records.push_back(record);
+        return absl::OkStatus();
+    }
+
+    absl::Status AppendConversationMessage(const ConversationMessageWrite& write) override {
+        message_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status ReplaceConversationItemWithEpisodeStub(
+        const isla::server::memory::EpisodeStubWrite& write) override {
+        stub_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
+        mid_term_episode_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status SplitConversationItemWithEpisodeStub(
+        const isla::server::memory::SplitEpisodeStubWrite& write) override {
+        split_stub_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::StatusOr<std::vector<Episode>>
+    ListMidTermEpisodes(std::string_view /*session_id*/) const override {
+        return std::vector<Episode>{};
+    }
+
+    absl::StatusOr<std::optional<Episode>>
+    GetMidTermEpisode(std::string_view /*session_id*/,
+                      std::string_view /*episode_id*/) const override {
+        return std::nullopt;
+    }
+
+    absl::StatusOr<std::optional<MemoryStoreSnapshot>>
+    LoadSnapshot(std::string_view /*session_id*/) const override {
+        return std::nullopt;
+    }
+
+    std::vector<MemorySessionRecord> session_records;
+    std::vector<ConversationMessageWrite> message_writes;
+    std::vector<isla::server::memory::EpisodeStubWrite> stub_writes;
+    std::vector<isla::server::memory::SplitEpisodeStubWrite> split_stub_writes;
+    std::vector<isla::server::memory::MidTermEpisodeWrite> mid_term_episode_writes;
+};
+
 class FakeBenchmarkLlmClient final : public isla::server::LlmClient {
   public:
     explicit FakeBenchmarkLlmClient(std::string user_reply) : user_reply_(std::move(user_reply)) {}
@@ -391,10 +487,15 @@ MemoryBenchmarkSuite MakeSingleCaseSuite(std::string case_id = "test_q1",
 
 TEST(RunMemoryBenchmarkTest, SingleCasePassesAndWritesArtifacts) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeMidTermAwareFakeClient("The answer is blue."),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = MakeMidTermAwareFakeClient("The answer is blue.");
+    config.live_gateway_port = live_gateway.port();
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
@@ -422,10 +523,15 @@ TEST(RunMemoryBenchmarkTest, SingleCasePassesAndWritesArtifacts) {
 
 TEST(RunMemoryBenchmarkTest, SupportsInjectedGenericLlmClient) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .llm_client = std::make_shared<const FakeBenchmarkLlmClient>("The answer is blue."),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.llm_client = std::make_shared<const FakeBenchmarkLlmClient>("The answer is blue.");
+    config.live_gateway_port = live_gateway.port();
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
@@ -444,6 +550,11 @@ TEST(RunMemoryBenchmarkTest, SupportsInjectedGenericLlmClient) {
 
 TEST(RunMemoryBenchmarkTest, MultipleCasesTracksPassedAndFailed) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeMidTermAwareFakeClient("some answer"),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     // Build a suite with two cases.
     MemoryBenchmarkSuite suite;
@@ -473,7 +584,7 @@ TEST(RunMemoryBenchmarkTest, MultipleCasesTracksPassedAndFailed) {
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = MakeMidTermAwareFakeClient("some answer");
+    config.live_gateway_port = live_gateway.port();
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);
@@ -495,13 +606,18 @@ TEST(RunMemoryBenchmarkTest, MultipleCasesTracksPassedAndFailed) {
 
 TEST(RunMemoryBenchmarkTest, MetadataPreservedThroughRunLoop) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeMidTermAwareFakeClient("answer text"),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     const json metadata = json{ { "question_type", "temporal-reasoning" }, { "difficulty", 3 } };
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite("meta_q1", "expected", metadata);
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = MakeMidTermAwareFakeClient("answer text");
+    config.live_gateway_port = live_gateway.port();
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);
@@ -514,65 +630,76 @@ TEST(RunMemoryBenchmarkTest, MetadataPreservedThroughRunLoop) {
     EXPECT_EQ(case_report.metadata["difficulty"], 3);
 }
 
-TEST(RunMemoryBenchmarkTest, ValidateFailureReturnsError) {
-    auto failing_client = MakeFakeOpenAiResponsesClient(
-        absl::OkStatus(), /*full_text=*/"", /*response_id=*/"resp_test",
-        /*validate_status=*/absl::InternalError("connection refused"));
-
+TEST(RunMemoryBenchmarkTest, UnreachableLiveGatewayReturnsError) {
     MemoryBenchmarkRunConfig config;
-    config.openai_client = failing_client;
+    config.live_gateway_host = "127.0.0.1";
+    config.live_gateway_port = 1;
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);
     EXPECT_FALSE(report.ok());
-    EXPECT_TRUE(absl::IsInternal(report.status()));
+    EXPECT_TRUE(absl::IsUnavailable(report.status()) || absl::IsDeadlineExceeded(report.status()));
 }
 
-TEST(RunMemoryBenchmarkTest, EnabledOllamaConfigDoesNotFallBackToOpenAi) {
+TEST(RunMemoryBenchmarkTest, PersistsConversationThroughGatewayMemoryStore) {
+    ScopedOutputDirectory output_directory;
+    auto store = std::make_shared<RecordingMemoryStore>();
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .memory_store = store,
+        .openai_client = MakeMidTermAwareFakeClient("The answer is blue."),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
+
     MemoryBenchmarkRunConfig config;
-    config.ollama_config.enabled = true;
-    config.ollama_config.base_url = "";
-    config.openai_client = MakeMidTermAwareFakeClient("The answer is blue.");
+    config.output_directory = output_directory.path();
+    config.live_gateway_port = live_gateway.port();
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+
+    EXPECT_FALSE(store->session_records.empty());
+    EXPECT_GE(store->message_writes.size(), 4U);
+}
+
+TEST(RunMemoryBenchmarkTest, GatewayTurnFailureReturnsError) {
+    ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeMidTermAwareFakeClient(""),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.live_gateway_port = live_gateway.port();
+    // Empty user reply — mid-term requests still get valid JSON, but the user-facing turn
+    // produces an empty final_reply.
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);
     ASSERT_FALSE(report.ok());
-    EXPECT_TRUE(absl::IsInvalidArgument(report.status()));
-    EXPECT_NE(std::string(report.status().message()).find("ollama"), std::string::npos);
-}
-
-TEST(RunMemoryBenchmarkTest, EmptyReplyMarkedAsFailed) {
-    ScopedOutputDirectory output_directory;
-
-    MemoryBenchmarkRunConfig config;
-    config.output_directory = output_directory.path();
-    // Empty user reply — mid-term requests still get valid JSON, but the user-facing turn
-    // produces an empty final_reply.
-    config.openai_client = MakeMidTermAwareFakeClient("");
-
-    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
-
-    const absl::StatusOr<MemoryBenchmarkReport> report =
-        RunMemoryBenchmark(std::move(config), suite);
-    ASSERT_TRUE(report.ok()) << report.status();
-
-    EXPECT_EQ(report->total_cases, 1U);
-    EXPECT_EQ(report->passed_cases, 0U);
-    EXPECT_EQ(report->failed_cases, 1U);
-    ASSERT_EQ(report->cases.size(), 1U);
-    EXPECT_FALSE(report->cases.front().passed);
+    EXPECT_TRUE(absl::IsFailedPrecondition(report.status()) ||
+                absl::IsUnavailable(report.status()));
 }
 
 TEST(RunMemoryBenchmarkTest, ArtifactFileContainsCaseAndExpectedAnswer) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeMidTermAwareFakeClient("The color is blue."),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = MakeMidTermAwareFakeClient("The color is blue.");
+    config.live_gateway_port = live_gateway.port();
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
@@ -598,6 +725,11 @@ TEST(RunMemoryBenchmarkTest, ArtifactFileContainsCaseAndExpectedAnswer) {
 
 TEST(RunMemoryBenchmarkTest, RaisedRenderedWorkingMemoryBudgetAllowsLargeBenchmarkCase) {
     ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeMidTermAwareFakeClient("some answer"),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
 
     MemoryBenchmarkSuite suite;
     suite.benchmark_name = "large_context_bench";
@@ -633,7 +765,7 @@ TEST(RunMemoryBenchmarkTest, RaisedRenderedWorkingMemoryBudgetAllowsLargeBenchma
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
-    config.openai_client = MakeMidTermAwareFakeClient("some answer");
+    config.live_gateway_port = live_gateway.port();
     config.max_rendered_working_memory_context_bytes = 512U * 1024U;
 
     const absl::StatusOr<MemoryBenchmarkReport> report =

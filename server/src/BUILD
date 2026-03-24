@@ -63,6 +63,20 @@ cc_library(
 )
 
 cc_library(
+    name = "live_eval_runner",
+    srcs = ["evals/live_eval_runner.cpp"],
+    hdrs = ["evals/live_eval_runner.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//client/src:ai_gateway_client_session",
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+cc_library(
     name = "eval_runner",
     srcs = ["evals/eval_runner.cpp"],
     visibility = ["//visibility:public"],
@@ -120,12 +134,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
-        "//server/memory/src:prompt_loader",
+        "//server/memory/src:memory_types",
         ":eval_json",
-        ":eval_runner",
-        ":ollama_llm_client",
-        ":openai_llm_client",
-        ":openai_responses_client",
+        ":live_eval_runner",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/log:log",
@@ -140,10 +151,7 @@ cc_library(
     deps = [
         "//server/include/isla/server:server_headers",
         ":eval_json",
-        ":eval_runner",
-        ":ollama_llm_client",
-        ":openai_llm_client",
-        ":openai_responses_client",
+        ":live_eval_runner",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -473,7 +481,10 @@ cc_test(
     srcs = ["evals/memory_benchmark_runner_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_store",
         ":memory_benchmark_runner",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
         ":openai_responses_test_utils",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -719,7 +730,10 @@ cc_test(
     name = "isla_custom_memory_benchmark_test",
     srcs = ["evals/isla_custom_memory_benchmark_test.cpp"],
     deps = [
+        "//server/memory/src:memory_store",
         ":isla_custom_memory_benchmark",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],

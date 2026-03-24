@@ -3,7 +3,6 @@
 #include <cctype>
 #include <cstddef>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,57 +17,14 @@
 #include <nlohmann/json.hpp>
 
 #include "isla/server/evals/eval_json.hpp"
-#include "isla/server/evals/eval_runner.hpp"
 #include "isla/server/evals/eval_types.hpp"
-#include "isla/server/ollama_llm_client.hpp"
-#include "isla/server/openai_llm_client.hpp"
-#include "isla/server/openai_responses_client.hpp"
+#include "server/src/evals/live_eval_runner.hpp"
 
 namespace isla::server::evals {
 namespace {
 
-using isla::server::ai_gateway::CreateOpenAiResponsesClient;
 using nlohmann::json;
 using nlohmann::ordered_json;
-using namespace std::chrono_literals;
-
-struct ResolvedBenchmarkLlm {
-    std::shared_ptr<const isla::server::LlmClient> llm_client;
-};
-
-absl::StatusOr<ResolvedBenchmarkLlm>
-ResolveBenchmarkLlmClient(const MemoryBenchmarkRunConfig& config) {
-    if (config.llm_client != nullptr) {
-        return ResolvedBenchmarkLlm{
-            .llm_client = config.llm_client,
-        };
-    }
-
-    if (config.ollama_config.enabled) {
-        const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> created_client =
-            isla::server::CreateOllamaLlmClient(config.ollama_config);
-        if (!created_client.ok()) {
-            return created_client.status();
-        }
-        return ResolvedBenchmarkLlm{
-            .llm_client = *created_client,
-        };
-    }
-
-    std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client =
-        config.openai_client;
-    if (openai_client == nullptr) {
-        openai_client = CreateOpenAiResponsesClient(config.openai_config);
-    }
-    const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> created_client =
-        isla::server::CreateOpenAiLlmClient(openai_client);
-    if (!created_client.ok()) {
-        return created_client.status();
-    }
-    return ResolvedBenchmarkLlm{
-        .llm_client = *created_client,
-    };
-}
 
 std::string ToLowerAscii(std::string text) {
     for (char& ch : text) {
@@ -137,6 +93,15 @@ ordered_json BuildCaseArtifactJson(const MemoryBenchmarkCase& benchmark_case) {
         payload["metadata"] = benchmark_case.metadata;
     }
     return payload;
+}
+
+LiveEvalRunnerConfig BuildLiveEvalRunnerConfig(const MemoryBenchmarkRunConfig& config) {
+    return LiveEvalRunnerConfig{
+        .host = config.live_gateway_host,
+        .port = config.live_gateway_port,
+        .path = config.live_gateway_path,
+        .operation_timeout = config.live_gateway_operation_timeout,
+    };
 }
 
 } // namespace
@@ -210,20 +175,6 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
         }
     }
 
-    const absl::StatusOr<ResolvedBenchmarkLlm> resolved_llm = ResolveBenchmarkLlmClient(config);
-    if (!resolved_llm.ok()) {
-        return resolved_llm.status();
-    }
-    if (const absl::Status validate_status = resolved_llm->llm_client->Validate();
-        !validate_status.ok()) {
-        return validate_status;
-    }
-    if (const absl::Status warmup_status = resolved_llm->llm_client->WarmUp();
-        !warmup_status.ok()) {
-        LOG(WARNING) << suite.benchmark_name << " benchmark llm warmup failed detail='"
-                     << warmup_status.message() << "'";
-    }
-
     // Set up output directory.
     if (config.output_directory.empty()) {
         config.output_directory = std::filesystem::current_path() / "server" / "src" / "evals" /
@@ -246,6 +197,7 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
     report.output_directory = DisplayPath(config.output_directory);
     report.total_cases = suite.cases.size();
     report.cases.reserve(suite.cases.size());
+    const LiveEvalRunner runner(BuildLiveEvalRunnerConfig(config));
 
     for (std::size_t case_idx = 0; case_idx < suite.cases.size(); ++case_idx) {
         const MemoryBenchmarkCase& benchmark_case = suite.cases[case_idx];
@@ -259,27 +211,6 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
                   << suite.cases.size() << " id=" << eval_case.case_id
                   << " conversation_turns=" << eval_case.conversation.size();
 
-        isla::server::ai_gateway::GatewayStubResponderConfig responder_config{
-            .response_delay = 0ms,
-            .async_emit_timeout = 30s,
-            .llm_runtime_config = config.llm_runtime_config,
-            .llm_client = resolved_llm->llm_client,
-        };
-        if (config.max_rendered_system_prompt_bytes.has_value()) {
-            responder_config.max_rendered_system_prompt_bytes =
-                *config.max_rendered_system_prompt_bytes;
-        }
-        if (config.max_rendered_working_memory_context_bytes.has_value()) {
-            responder_config.max_rendered_working_memory_context_bytes =
-                *config.max_rendered_working_memory_context_bytes;
-        }
-        responder_config.max_rendered_prompt_bytes = config.max_rendered_prompt_bytes;
-
-        EvalRunner runner(EvalRunnerConfig{
-            .responder_config = std::move(responder_config),
-            .telemetry_sink = config.telemetry_sink,
-        });
-
         MemoryBenchmarkCaseReport case_report{
             .case_id = eval_case.case_id,
             .expected_answer = eval_case.expected_answer,
@@ -288,11 +219,7 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
 
         const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(eval_case);
         if (!artifacts.ok()) {
-            LOG(WARNING) << suite.benchmark_name << " case " << eval_case.case_id
-                         << " failed: " << artifacts.status().message();
-            report.failed_cases += 1U;
-            report.cases.push_back(std::move(case_report));
-            continue;
+            return artifacts.status();
         }
 
         if (artifacts->final_reply.has_value() && !artifacts->final_reply->empty()) {
