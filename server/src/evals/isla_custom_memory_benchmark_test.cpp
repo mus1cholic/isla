@@ -246,11 +246,19 @@ class ScopedLiveGatewayServer {
     }
 
     ~ScopedLiveGatewayServer() {
-        server_.Stop();
+        Stop();
     }
 
     [[nodiscard]] absl::Status Start() {
         return server_.Start();
+    }
+
+    void Stop() {
+        if (stopped_) {
+            return;
+        }
+        server_.Stop();
+        stopped_ = true;
     }
 
     [[nodiscard]] std::uint16_t port() const {
@@ -260,7 +268,18 @@ class ScopedLiveGatewayServer {
   private:
     GatewayStubResponder responder_;
     GatewayServer server_;
+    bool stopped_ = false;
 };
+
+absl::StatusOr<std::uint16_t> FindUnreachableGatewayPort() {
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{});
+    if (const absl::Status status = live_gateway.Start(); !status.ok()) {
+        return status;
+    }
+    const std::uint16_t port = live_gateway.port();
+    live_gateway.Stop();
+    return port;
+}
 
 class RecordingMemoryStore final : public MemoryStore {
   public:
@@ -324,8 +343,11 @@ std::shared_ptr<const isla::server::LlmClient> CreateFakeLiveLlmClient() {
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, MissingLiveGatewayPortMarksAllCasesFailed) {
+    ScopedOutputDirectory output_directory;
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
-        RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{});
+        RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
+            .output_directory = output_directory.path(),
+        });
 
     ASSERT_TRUE(report.ok()) << report.status();
     EXPECT_EQ(report->total_cases, 6U);
@@ -335,11 +357,25 @@ TEST(IslaCustomMemoryBenchmarkTest, MissingLiveGatewayPortMarksAllCasesFailed) {
     for (const IslaCustomMemoryCaseReport& case_report : report->cases) {
         EXPECT_FALSE(case_report.passed);
         EXPECT_FALSE(case_report.final_reply.has_value());
-        EXPECT_FALSE(case_report.artifact_path.has_value());
+        EXPECT_TRUE(case_report.artifact_path.has_value());
         ASSERT_TRUE(case_report.failure.has_value());
         EXPECT_EQ(case_report.failure->code, "invalid_argument");
         EXPECT_FALSE(case_report.failure->message.empty());
     }
+
+    const std::filesystem::path artifact_path =
+        output_directory.path() / "artifacts" / "direct_fact_recall.json";
+    ASSERT_TRUE(std::filesystem::exists(artifact_path));
+    std::ifstream artifact_file(artifact_path);
+    ASSERT_TRUE(artifact_file.is_open());
+    const nlohmann::json artifact_json = nlohmann::json::parse(artifact_file);
+    ASSERT_TRUE(artifact_json.contains("cases"));
+    ASSERT_FALSE(artifact_json["cases"].empty());
+    ASSERT_TRUE(artifact_json["cases"][0].contains("result"));
+    EXPECT_FALSE(artifact_json["cases"][0]["result"]["passed"].get<bool>());
+    EXPECT_EQ(artifact_json["cases"][0]["result"]["failure"]["code"], "invalid_argument");
+    EXPECT_FALSE(
+        artifact_json["cases"][0]["result"]["failure"]["message"].get<std::string>().empty());
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, RejectsUnknownCaseIdBeforeGatewayValidation) {
@@ -354,10 +390,15 @@ TEST(IslaCustomMemoryBenchmarkTest, RejectsUnknownCaseIdBeforeGatewayValidation)
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, UnreachableLiveGatewayMarksAllCasesFailed) {
+    ScopedOutputDirectory output_directory;
+    const absl::StatusOr<std::uint16_t> unreachable_port = FindUnreachableGatewayPort();
+    ASSERT_TRUE(unreachable_port.ok()) << unreachable_port.status();
+
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
+            .output_directory = output_directory.path(),
             .live_gateway_host = "127.0.0.1",
-            .live_gateway_port = 1,
+            .live_gateway_port = *unreachable_port,
         });
 
     ASSERT_TRUE(report.ok()) << report.status();
@@ -368,12 +409,25 @@ TEST(IslaCustomMemoryBenchmarkTest, UnreachableLiveGatewayMarksAllCasesFailed) {
     for (const IslaCustomMemoryCaseReport& case_report : report->cases) {
         EXPECT_FALSE(case_report.passed);
         EXPECT_FALSE(case_report.final_reply.has_value());
-        EXPECT_FALSE(case_report.artifact_path.has_value());
+        EXPECT_TRUE(case_report.artifact_path.has_value());
         ASSERT_TRUE(case_report.failure.has_value());
         EXPECT_TRUE(case_report.failure->code == "unavailable" ||
                     case_report.failure->code == "deadline_exceeded");
         EXPECT_FALSE(case_report.failure->message.empty());
     }
+
+    const std::filesystem::path artifact_path =
+        output_directory.path() / "artifacts" / "direct_fact_recall.json";
+    ASSERT_TRUE(std::filesystem::exists(artifact_path));
+    std::ifstream artifact_file(artifact_path);
+    ASSERT_TRUE(artifact_file.is_open());
+    const nlohmann::json artifact_json = nlohmann::json::parse(artifact_file);
+    ASSERT_TRUE(artifact_json.contains("cases"));
+    ASSERT_FALSE(artifact_json["cases"].empty());
+    ASSERT_TRUE(artifact_json["cases"][0].contains("result"));
+    EXPECT_FALSE(artifact_json["cases"][0]["result"]["passed"].get<bool>());
+    EXPECT_TRUE(artifact_json["cases"][0]["result"]["failure"]["code"] == "unavailable" ||
+                artifact_json["cases"][0]["result"]["failure"]["code"] == "deadline_exceeded");
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, RunsAllCasesAndPersistsArtifactsWithLiveGateway) {

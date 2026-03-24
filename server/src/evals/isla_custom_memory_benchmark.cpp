@@ -18,6 +18,7 @@
 
 #include "isla/server/evals/eval_json.hpp"
 #include "isla/server/memory/memory_timestamp_utils.hpp"
+#include "server/src/evals/eval_failure_utils.hpp"
 #include "server/src/evals/live_eval_runner.hpp"
 
 namespace isla::server::evals {
@@ -47,63 +48,6 @@ std::string ToLowerAscii(std::string text) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return text;
-}
-
-std::string StatusCodeName(absl::StatusCode code) {
-    switch (code) {
-    case absl::StatusCode::kOk:
-        return "ok";
-    case absl::StatusCode::kCancelled:
-        return "cancelled";
-    case absl::StatusCode::kUnknown:
-        return "unknown";
-    case absl::StatusCode::kInvalidArgument:
-        return "invalid_argument";
-    case absl::StatusCode::kDeadlineExceeded:
-        return "deadline_exceeded";
-    case absl::StatusCode::kNotFound:
-        return "not_found";
-    case absl::StatusCode::kAlreadyExists:
-        return "already_exists";
-    case absl::StatusCode::kPermissionDenied:
-        return "permission_denied";
-    case absl::StatusCode::kResourceExhausted:
-        return "resource_exhausted";
-    case absl::StatusCode::kFailedPrecondition:
-        return "failed_precondition";
-    case absl::StatusCode::kAborted:
-        return "aborted";
-    case absl::StatusCode::kOutOfRange:
-        return "out_of_range";
-    case absl::StatusCode::kUnimplemented:
-        return "unimplemented";
-    case absl::StatusCode::kInternal:
-        return "internal";
-    case absl::StatusCode::kUnavailable:
-        return "unavailable";
-    case absl::StatusCode::kDataLoss:
-        return "data_loss";
-    case absl::StatusCode::kUnauthenticated:
-        return "unauthenticated";
-    }
-    return "unknown";
-}
-
-EvalFailure FailureFromStatus(const absl::Status& status) {
-    return EvalFailure{
-        .code = StatusCodeName(status.code()),
-        .message = std::string(status.message()),
-    };
-}
-
-ordered_json FailureToJson(const std::optional<EvalFailure>& failure) {
-    if (!failure.has_value()) {
-        return nullptr;
-    }
-    return ordered_json{
-        { "code", failure->code },
-        { "message", failure->message },
-    };
 }
 
 std::filesystem::path FindRepositoryRoot(std::filesystem::path start) {
@@ -370,12 +314,26 @@ ordered_json BuildCaseArtifactJson(const BenchmarkCaseDefinition& definition) {
     return payload;
 }
 
-ordered_json
-BuildSuiteArtifactJson(std::string_view suite_id,
-                       const std::vector<const BenchmarkCaseDefinition*>& definitions) {
+ordered_json BuildCaseResultJson(const IslaCustomMemoryCaseReport& case_report) {
+    return ordered_json{
+        { "passed", case_report.passed },
+        { "final_answer_evaluation", case_report.final_answer_evaluation },
+        { "final_reply", case_report.final_reply },
+        { "failure", FailureToJson(case_report.failure) },
+    };
+}
+
+ordered_json BuildSuiteArtifactJson(
+    std::string_view suite_id, const std::vector<const BenchmarkCaseDefinition*>& definitions,
+    const absl::flat_hash_map<std::string, const IslaCustomMemoryCaseReport*>& case_reports) {
     ordered_json cases = ordered_json::array();
     for (const BenchmarkCaseDefinition* definition : definitions) {
-        cases.push_back(BuildCaseArtifactJson(*definition));
+        ordered_json case_json = BuildCaseArtifactJson(*definition);
+        if (const auto it = case_reports.find(definition->eval_case.case_id);
+            it != case_reports.end()) {
+            case_json["result"] = BuildCaseResultJson(*it->second);
+        }
+        cases.push_back(std::move(case_json));
     }
 
     ordered_json payload = ordered_json::object();
@@ -471,26 +429,44 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         case_report.failure = artifacts->failure;
         case_report.passed = ValidateArtifacts(definition, *artifacts);
 
-        const std::filesystem::path artifact_path =
-            artifacts_directory / (definition.suite_id + ".json");
-        const auto suite_it = suite_definitions.find(definition.suite_id);
-        const absl::Status write_status =
-            suite_it == suite_definitions.end()
-                ? absl::InternalError("benchmark suite definitions missing during artifact write")
-                : WriteJsonFile(artifact_path,
-                                BuildSuiteArtifactJson(definition.suite_id, suite_it->second));
-        if (!write_status.ok()) {
-            case_report.passed = false;
-        } else {
-            case_report.artifact_path = DisplayPath(artifact_path);
-        }
-
         if (case_report.passed) {
             report.passed_cases += 1U;
         } else {
             report.failed_cases += 1U;
         }
         report.cases.push_back(std::move(case_report));
+    }
+
+    for (const auto& [suite_id, definitions] : suite_definitions) {
+        std::vector<IslaCustomMemoryCaseReport*> suite_case_reports;
+        absl::flat_hash_map<std::string, const IslaCustomMemoryCaseReport*> case_reports;
+        for (IslaCustomMemoryCaseReport& case_report : report.cases) {
+            if (case_report.suite_id != suite_id) {
+                continue;
+            }
+            suite_case_reports.push_back(&case_report);
+            case_reports.insert_or_assign(case_report.case_id, &case_report);
+        }
+
+        const std::filesystem::path artifact_path = artifacts_directory / (suite_id + ".json");
+        const absl::Status write_status = WriteJsonFile(
+            artifact_path, BuildSuiteArtifactJson(suite_id, definitions, case_reports));
+        if (!write_status.ok()) {
+            for (IslaCustomMemoryCaseReport* case_report : suite_case_reports) {
+                if (case_report->passed) {
+                    report.passed_cases -= 1U;
+                    report.failed_cases += 1U;
+                }
+                case_report->passed = false;
+                case_report->artifact_path = std::nullopt;
+            }
+            continue;
+        }
+
+        const std::string display_path = DisplayPath(artifact_path);
+        for (IslaCustomMemoryCaseReport* case_report : suite_case_reports) {
+            case_report->artifact_path = display_path;
+        }
     }
 
     if (const absl::Status report_status = WriteJsonFile(config.output_directory / "report.json",

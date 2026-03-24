@@ -1,6 +1,7 @@
 #include "server/src/evals/live_eval_runner.hpp"
 
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>

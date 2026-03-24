@@ -379,11 +379,19 @@ class ScopedLiveGatewayServer {
     }
 
     ~ScopedLiveGatewayServer() {
-        server_.Stop();
+        Stop();
     }
 
     [[nodiscard]] absl::Status Start() {
         return server_.Start();
+    }
+
+    void Stop() {
+        if (stopped_) {
+            return;
+        }
+        server_.Stop();
+        stopped_ = true;
     }
 
     [[nodiscard]] std::uint16_t port() const {
@@ -393,7 +401,18 @@ class ScopedLiveGatewayServer {
   private:
     GatewayStubResponder responder_;
     GatewayServer server_;
+    bool stopped_ = false;
 };
+
+absl::StatusOr<std::uint16_t> FindUnreachableGatewayPort() {
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{});
+    if (const absl::Status status = live_gateway.Start(); !status.ok()) {
+        return status;
+    }
+    const std::uint16_t port = live_gateway.port();
+    live_gateway.Stop();
+    return port;
+}
 
 class RecordingMemoryStore final : public MemoryStore {
   public:
@@ -702,9 +721,12 @@ TEST(RunMemoryBenchmarkTest, MetadataPreservedThroughRunLoop) {
 }
 
 TEST(RunMemoryBenchmarkTest, UnreachableLiveGatewayMarksCaseFailed) {
+    const absl::StatusOr<std::uint16_t> unreachable_port = FindUnreachableGatewayPort();
+    ASSERT_TRUE(unreachable_port.ok()) << unreachable_port.status();
+
     MemoryBenchmarkRunConfig config;
     config.live_gateway_host = "127.0.0.1";
-    config.live_gateway_port = 1;
+    config.live_gateway_port = *unreachable_port;
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
 
@@ -882,11 +904,13 @@ TEST(RunMemoryBenchmarkTest, ArtifactFileContainsCaseAndExpectedAnswer) {
 
 TEST(RunMemoryBenchmarkTest, FailedArtifactContainsFailureDetails) {
     ScopedOutputDirectory output_directory;
+    const absl::StatusOr<std::uint16_t> unreachable_port = FindUnreachableGatewayPort();
+    ASSERT_TRUE(unreachable_port.ok()) << unreachable_port.status();
 
     MemoryBenchmarkRunConfig config;
     config.output_directory = output_directory.path();
     config.live_gateway_host = "127.0.0.1";
-    config.live_gateway_port = 1;
+    config.live_gateway_port = *unreachable_port;
 
     const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
     const absl::StatusOr<MemoryBenchmarkReport> report =

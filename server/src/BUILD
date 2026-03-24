@@ -106,6 +106,18 @@ cc_library(
 )
 
 cc_library(
+    name = "eval_failure_utils",
+    srcs = ["evals/eval_failure_utils.cpp"],
+    hdrs = ["evals/eval_failure_utils.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
     name = "benchmark_adapter_utils",
     srcs = ["evals/benchmark_adapter_utils.cpp"],
     visibility = ["//visibility:public"],
@@ -136,6 +148,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":eval_failure_utils",
         "//server/memory/src:memory_types",
         ":eval_json",
         ":live_eval_runner",
@@ -152,6 +165,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":eval_failure_utils",
         ":eval_json",
         ":live_eval_runner",
         "@abseil-cpp//absl/log:log",
@@ -469,11 +483,9 @@ cc_binary(
     tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
-        ":ai_gateway_startup_config",
         ":benchmark_cli_utils",
         ":isla_custom_memory_benchmark",
         "@abseil-cpp//absl/log:initialize",
-        "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
     ],
 )

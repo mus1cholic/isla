@@ -3,18 +3,12 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "absl/status/statusor.h"
-#include "isla/server/ai_gateway_llm_runtime_config.hpp"
-#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/evals/eval_types.hpp"
-#include "isla/server/llm_client.hpp"
-#include "isla/server/ollama_llm_client.hpp"
-#include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::evals {
 
@@ -45,13 +39,6 @@ struct IslaCustomMemoryBenchmarkRunConfig {
     std::string live_gateway_path = "/";
     std::chrono::milliseconds live_gateway_operation_timeout{ std::chrono::seconds(10) };
     std::chrono::milliseconds live_gateway_turn_completion_timeout{ std::chrono::seconds(60) };
-    isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;
-    isla::server::OllamaLlmClientConfig ollama_config;
-    isla::server::ai_gateway::OpenAiResponsesClientConfig openai_config;
-    std::shared_ptr<const isla::server::LlmClient> live_llm_client;
-    std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> live_openai_client;
-    std::shared_ptr<const isla::server::ai_gateway::TelemetrySink> telemetry_sink =
-        isla::server::ai_gateway::CreateNoOpTelemetrySink();
 };
 
 [[nodiscard]] absl::StatusOr<IslaCustomMemoryBenchmarkReport> RunIslaCustomMemoryBenchmark(
