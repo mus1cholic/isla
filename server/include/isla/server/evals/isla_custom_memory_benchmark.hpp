@@ -9,6 +9,8 @@
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_llm_runtime_config.hpp"
 #include "isla/server/ai_gateway_telemetry.hpp"
+#include "isla/server/llm_client.hpp"
+#include "isla/server/ollama_llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::evals {
@@ -35,7 +37,9 @@ struct IslaCustomMemoryBenchmarkRunConfig {
     std::filesystem::path output_directory;
     std::optional<std::string> case_id_filter;
     isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;
+    isla::server::OllamaLlmClientConfig ollama_config;
     isla::server::ai_gateway::OpenAiResponsesClientConfig openai_config;
+    std::shared_ptr<const isla::server::LlmClient> live_llm_client;
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> live_openai_client;
     std::shared_ptr<const isla::server::ai_gateway::TelemetrySink> telemetry_sink =
         isla::server::ai_gateway::CreateNoOpTelemetrySink();

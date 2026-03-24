@@ -15,6 +15,7 @@
 #include "gtest/gtest.h"
 #include <nlohmann/json.hpp>
 
+#include "isla/server/llm_client.hpp"
 #include "openai_responses_test_utils.hpp"
 
 namespace isla::server::evals {
@@ -280,6 +281,47 @@ class ScopedOutputDirectory {
     std::filesystem::path path_;
 };
 
+class FakeBenchmarkLlmClient final : public isla::server::LlmClient {
+  public:
+    explicit FakeBenchmarkLlmClient(std::string user_reply) : user_reply_(std::move(user_reply)) {}
+
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status WarmUp() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const isla::server::LlmRequest& request,
+                   const isla::server::LlmEventCallback& on_event) const override {
+        std::string text;
+        if (request.system_prompt.find("should_flush") != std::string::npos) {
+            text = R"({"should_flush":false,"item_id":null,"split_at":null,"reasoning":"test"})";
+        } else if (request.system_prompt.find("tier2_summary") != std::string::npos) {
+            text =
+                R"({"tier1_detail":"d","tier2_summary":"s","tier3_ref":"r","tier3_keywords":["k"],"salience":5})";
+        } else {
+            text = user_reply_;
+        }
+        if (!text.empty()) {
+            const absl::Status delta_status = on_event(isla::server::LlmTextDeltaEvent{
+                .text_delta = std::move(text),
+            });
+            if (!delta_status.ok()) {
+                return delta_status;
+            }
+        }
+        return on_event(isla::server::LlmCompletedEvent{
+            .response_id = "resp_fake_llm",
+        });
+    }
+
+  private:
+    std::string user_reply_;
+};
+
 // Creates a FakeOpenAiResponsesClient with a StreamHandler that returns valid JSON for mid-term
 // flush decider and compactor requests (identified by distinctive prompt substrings), and the
 // configured user_reply for all other (user-facing) requests.
@@ -378,6 +420,28 @@ TEST(RunMemoryBenchmarkTest, SingleCasePassesAndWritesArtifacts) {
     EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "artifacts" / "test_q1.json"));
 }
 
+TEST(RunMemoryBenchmarkTest, SupportsInjectedGenericLlmClient) {
+    ScopedOutputDirectory output_directory;
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.llm_client = std::make_shared<const FakeBenchmarkLlmClient>("The answer is blue.");
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+
+    EXPECT_EQ(report->total_cases, 1U);
+    EXPECT_EQ(report->passed_cases, 1U);
+    EXPECT_EQ(report->failed_cases, 0U);
+    ASSERT_EQ(report->cases.size(), 1U);
+    EXPECT_TRUE(report->cases.front().passed);
+    ASSERT_TRUE(report->cases.front().final_reply.has_value());
+    EXPECT_EQ(*report->cases.front().final_reply, "The answer is blue.");
+}
+
 TEST(RunMemoryBenchmarkTest, MultipleCasesTracksPassedAndFailed) {
     ScopedOutputDirectory output_directory;
 
@@ -464,6 +528,21 @@ TEST(RunMemoryBenchmarkTest, ValidateFailureReturnsError) {
         RunMemoryBenchmark(std::move(config), suite);
     EXPECT_FALSE(report.ok());
     EXPECT_TRUE(absl::IsInternal(report.status()));
+}
+
+TEST(RunMemoryBenchmarkTest, EnabledOllamaConfigDoesNotFallBackToOpenAi) {
+    MemoryBenchmarkRunConfig config;
+    config.ollama_config.enabled = true;
+    config.ollama_config.base_url = "";
+    config.openai_client = MakeMidTermAwareFakeClient("The answer is blue.");
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_FALSE(report.ok());
+    EXPECT_TRUE(absl::IsInvalidArgument(report.status()));
+    EXPECT_NE(std::string(report.status().message()).find("ollama"), std::string::npos);
 }
 
 TEST(RunMemoryBenchmarkTest, EmptyReplyMarkedAsFailed) {

@@ -20,6 +20,8 @@
 #include "isla/server/evals/eval_json.hpp"
 #include "isla/server/evals/eval_runner.hpp"
 #include "isla/server/evals/eval_types.hpp"
+#include "isla/server/ollama_llm_client.hpp"
+#include "isla/server/openai_llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::evals {
@@ -29,6 +31,43 @@ using isla::server::ai_gateway::CreateOpenAiResponsesClient;
 using nlohmann::json;
 using nlohmann::ordered_json;
 using namespace std::chrono_literals;
+
+struct ResolvedBenchmarkLlm {
+    std::shared_ptr<const isla::server::LlmClient> llm_client;
+};
+
+absl::StatusOr<ResolvedBenchmarkLlm> ResolveBenchmarkLlmClient(MemoryBenchmarkRunConfig config) {
+    if (config.llm_client != nullptr) {
+        return ResolvedBenchmarkLlm{
+            .llm_client = std::move(config.llm_client),
+        };
+    }
+
+    if (config.ollama_config.enabled) {
+        const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> created_client =
+            isla::server::CreateOllamaLlmClient(config.ollama_config);
+        if (!created_client.ok()) {
+            return created_client.status();
+        }
+        return ResolvedBenchmarkLlm{
+            .llm_client = *created_client,
+        };
+    }
+
+    std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client =
+        std::move(config.openai_client);
+    if (openai_client == nullptr) {
+        openai_client = CreateOpenAiResponsesClient(config.openai_config);
+    }
+    const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> created_client =
+        isla::server::CreateOpenAiLlmClient(openai_client);
+    if (!created_client.ok()) {
+        return created_client.status();
+    }
+    return ResolvedBenchmarkLlm{
+        .llm_client = *created_client,
+    };
+}
 
 std::string ToLowerAscii(std::string text) {
     for (char& ch : text) {
@@ -170,16 +209,17 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
         }
     }
 
-    // Set up OpenAI client.
-    auto openai_client = std::move(config.openai_client);
-    if (openai_client == nullptr) {
-        openai_client = CreateOpenAiResponsesClient(config.openai_config);
+    const absl::StatusOr<ResolvedBenchmarkLlm> resolved_llm = ResolveBenchmarkLlmClient(config);
+    if (!resolved_llm.ok()) {
+        return resolved_llm.status();
     }
-    if (const absl::Status validate_status = openai_client->Validate(); !validate_status.ok()) {
+    if (const absl::Status validate_status = resolved_llm->llm_client->Validate();
+        !validate_status.ok()) {
         return validate_status;
     }
-    if (const absl::Status warmup_status = openai_client->WarmUp(); !warmup_status.ok()) {
-        LOG(WARNING) << suite.benchmark_name << " benchmark OpenAI warmup failed detail='"
+    if (const absl::Status warmup_status = resolved_llm->llm_client->WarmUp();
+        !warmup_status.ok()) {
+        LOG(WARNING) << suite.benchmark_name << " benchmark llm warmup failed detail='"
                      << warmup_status.message() << "'";
     }
 
@@ -222,8 +262,7 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
             .response_delay = 0ms,
             .async_emit_timeout = 30s,
             .llm_runtime_config = config.llm_runtime_config,
-            .openai_config = config.openai_config,
-            .openai_client = openai_client,
+            .llm_client = resolved_llm->llm_client,
         };
         if (config.max_rendered_system_prompt_bytes.has_value()) {
             responder_config.max_rendered_system_prompt_bytes =
