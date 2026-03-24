@@ -421,7 +421,11 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         };
         const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(definition.eval_case);
         if (!artifacts.ok()) {
-            return artifacts.status();
+            LOG(WARNING) << kBenchmarkName << " case " << definition.eval_case.case_id
+                         << " failed: " << artifacts.status().message();
+            report.failed_cases += 1U;
+            report.cases.push_back(std::move(case_report));
+            continue;
         }
 
         if (artifacts->final_reply.has_value() && !artifacts->final_reply->empty()) {

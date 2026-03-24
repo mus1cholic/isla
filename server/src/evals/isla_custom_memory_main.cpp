@@ -10,7 +10,7 @@
 
 #include "absl/log/initialize.h"
 #include "absl/status/statusor.h"
-#include "evals/benchmark_cli_utils.hpp"
+#include "benchmark_cli_utils.hpp"
 
 namespace {
 

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "client/src/ai_gateway_client_session.hpp"
@@ -296,7 +297,7 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
 
     constexpr std::string_view kEvaluatedTurnId = "evaluated_turn";
     recorder->RecordBenchmarkUserMessage(std::string(kEvaluatedTurnId), eval_case.input.text);
-    if (const absl::Status send_status =
+    if (absl::Status send_status =
             session.SendTextInput(std::string(kEvaluatedTurnId), eval_case.input.text);
         !send_status.ok()) {
         session.Close();
@@ -305,7 +306,12 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
     const absl::StatusOr<TurnCompletion> completion = recorder->WaitForTurn(kEvaluatedTurnId);
 
     if (session.is_open()) {
-        static_cast<void>(session.EndSession());
+        const absl::Status end_status = session.EndSession();
+        if (!end_status.ok()) {
+            LOG(WARNING) << "live eval runner failed to end gateway session session_id="
+                         << recorder->session_id().value_or(eval_case.session_id) << " detail='"
+                         << end_status.message() << "'";
+        }
     }
     session.Close();
 

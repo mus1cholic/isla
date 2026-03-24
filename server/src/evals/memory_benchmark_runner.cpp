@@ -219,7 +219,11 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
 
         const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(eval_case);
         if (!artifacts.ok()) {
-            return artifacts.status();
+            LOG(WARNING) << suite.benchmark_name << " case " << eval_case.case_id
+                         << " failed: " << artifacts.status().message();
+            report.failed_cases += 1U;
+            report.cases.push_back(std::move(case_report));
+            continue;
         }
 
         if (artifacts->final_reply.has_value() && !artifacts->final_reply->empty()) {

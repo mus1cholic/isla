@@ -639,8 +639,14 @@ TEST(RunMemoryBenchmarkTest, UnreachableLiveGatewayReturnsError) {
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);
-    EXPECT_FALSE(report.ok());
-    EXPECT_TRUE(absl::IsUnavailable(report.status()) || absl::IsDeadlineExceeded(report.status()));
+    ASSERT_TRUE(report.ok()) << report.status();
+    EXPECT_EQ(report->total_cases, 1U);
+    EXPECT_EQ(report->passed_cases, 0U);
+    EXPECT_EQ(report->failed_cases, 1U);
+    ASSERT_EQ(report->cases.size(), 1U);
+    EXPECT_FALSE(report->cases.front().passed);
+    EXPECT_FALSE(report->cases.front().final_reply.has_value());
+    EXPECT_FALSE(report->cases.front().artifact_path.has_value());
 }
 
 TEST(RunMemoryBenchmarkTest, PersistsConversationThroughGatewayMemoryStore) {
@@ -684,9 +690,54 @@ TEST(RunMemoryBenchmarkTest, GatewayTurnFailureReturnsError) {
 
     const absl::StatusOr<MemoryBenchmarkReport> report =
         RunMemoryBenchmark(std::move(config), suite);
-    ASSERT_FALSE(report.ok());
-    EXPECT_TRUE(absl::IsFailedPrecondition(report.status()) ||
-                absl::IsUnavailable(report.status()));
+    ASSERT_TRUE(report.ok()) << report.status();
+    EXPECT_EQ(report->total_cases, 1U);
+    EXPECT_EQ(report->passed_cases, 0U);
+    EXPECT_EQ(report->failed_cases, 1U);
+    ASSERT_EQ(report->cases.size(), 1U);
+    EXPECT_FALSE(report->cases.front().passed);
+    EXPECT_FALSE(report->cases.front().final_reply.has_value());
+    EXPECT_FALSE(report->cases.front().artifact_path.has_value());
+}
+
+TEST(RunMemoryBenchmarkTest, ContinuesAfterOneCaseFails) {
+    ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .openai_client = MakeMidTermAwareFakeClient("The answer is blue."),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
+
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "mixed_bench";
+
+    MemoryBenchmarkCase failing_case;
+    failing_case.eval_case.case_id = "invalid_case";
+    failing_case.eval_case.session_id = "session_invalid";
+    failing_case.eval_case.input = EvalInput{ .text = "" };
+    suite.cases.push_back(failing_case);
+
+    MemoryBenchmarkCase passing_case = MakeSingleCaseSuite().cases.front();
+    passing_case.eval_case.case_id = "valid_case";
+    passing_case.eval_case.session_id = "session_valid";
+    suite.cases.push_back(std::move(passing_case));
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.live_gateway_port = live_gateway.port();
+
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+    EXPECT_EQ(report->total_cases, 2U);
+    EXPECT_EQ(report->passed_cases, 1U);
+    EXPECT_EQ(report->failed_cases, 1U);
+    ASSERT_EQ(report->cases.size(), 2U);
+    EXPECT_EQ(report->cases[0].case_id, "invalid_case");
+    EXPECT_FALSE(report->cases[0].passed);
+    EXPECT_EQ(report->cases[1].case_id, "valid_case");
+    EXPECT_TRUE(report->cases[1].passed);
+    EXPECT_TRUE(std::filesystem::exists(output_directory.path() / "artifacts" / "valid_case.json"));
 }
 
 TEST(RunMemoryBenchmarkTest, ArtifactFileContainsCaseAndExpectedAnswer) {

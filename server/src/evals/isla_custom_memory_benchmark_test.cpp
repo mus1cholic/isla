@@ -321,13 +321,20 @@ std::shared_ptr<const isla::server::LlmClient> CreateFakeLiveLlmClient() {
     return std::make_shared<const FakeLiveLlmClient>();
 }
 
-TEST(IslaCustomMemoryBenchmarkTest, RejectsMissingLiveGatewayPort) {
+TEST(IslaCustomMemoryBenchmarkTest, MissingLiveGatewayPortMarksAllCasesFailed) {
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{});
 
-    ASSERT_FALSE(report.ok());
-    EXPECT_EQ(report.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(report.status().message()).find("port"), std::string::npos);
+    ASSERT_TRUE(report.ok()) << report.status();
+    EXPECT_EQ(report->total_cases, 6U);
+    EXPECT_EQ(report->passed_cases, 0U);
+    EXPECT_EQ(report->failed_cases, 6U);
+    ASSERT_EQ(report->cases.size(), 6U);
+    for (const IslaCustomMemoryCaseReport& case_report : report->cases) {
+        EXPECT_FALSE(case_report.passed);
+        EXPECT_FALSE(case_report.final_reply.has_value());
+        EXPECT_FALSE(case_report.artifact_path.has_value());
+    }
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, RejectsUnknownCaseIdBeforeGatewayValidation) {
@@ -348,8 +355,16 @@ TEST(IslaCustomMemoryBenchmarkTest, UnreachableLiveGatewayReturnsError) {
             .live_gateway_port = 1,
         });
 
-    ASSERT_FALSE(report.ok());
-    EXPECT_TRUE(absl::IsUnavailable(report.status()) || absl::IsDeadlineExceeded(report.status()));
+    ASSERT_TRUE(report.ok()) << report.status();
+    EXPECT_EQ(report->total_cases, 6U);
+    EXPECT_EQ(report->passed_cases, 0U);
+    EXPECT_EQ(report->failed_cases, 6U);
+    ASSERT_EQ(report->cases.size(), 6U);
+    for (const IslaCustomMemoryCaseReport& case_report : report->cases) {
+        EXPECT_FALSE(case_report.passed);
+        EXPECT_FALSE(case_report.final_reply.has_value());
+        EXPECT_FALSE(case_report.artifact_path.has_value());
+    }
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, RunsAllCasesAndPersistsArtifactsWithLiveGateway) {

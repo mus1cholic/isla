@@ -41,7 +41,7 @@ struct IslaCustomMemoryBenchmarkRunConfig {
     std::string live_gateway_host = "127.0.0.1";
     std::uint16_t live_gateway_port = 0;
     std::string live_gateway_path = "/";
-    std::chrono::milliseconds live_gateway_operation_timeout{ std::chrono::seconds(2) };
+    std::chrono::milliseconds live_gateway_operation_timeout{ std::chrono::seconds(10) };
     isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;
     isla::server::OllamaLlmClientConfig ollama_config;
     isla::server::ai_gateway::OpenAiResponsesClientConfig openai_config;
