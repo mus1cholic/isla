@@ -278,18 +278,56 @@ CreateCaseClient(BenchmarkCaseDefinition definition, std::string decider_prompt,
         std::move(live_openai_client), std::move(live_llm_client));
 }
 
-absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>>
-ResolveBenchmarkLiveLlmClient(const IslaCustomMemoryBenchmarkRunConfig& config) {
+struct ResolvedBenchmarkLiveClient {
+    std::shared_ptr<const isla::server::LlmClient> llm_client;
+    std::shared_ptr<const OpenAiResponsesClient> openai_client;
+};
+
+absl::StatusOr<ResolvedBenchmarkLiveClient>
+ResolveBenchmarkLiveClient(const IslaCustomMemoryBenchmarkRunConfig& config) {
+    if (config.live_llm_client != nullptr && config.live_openai_client != nullptr) {
+        return invalid_argument("benchmark live_llm_client and live_openai_client are mutually "
+                                "exclusive; configure only one");
+    }
     if (config.live_llm_client != nullptr) {
-        return config.live_llm_client;
+        return ResolvedBenchmarkLiveClient{
+            .llm_client = config.live_llm_client,
+            .openai_client = nullptr,
+        };
     }
     if (config.live_openai_client != nullptr) {
-        return isla::server::CreateOpenAiLlmClient(config.live_openai_client);
+        const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> llm_client =
+            isla::server::CreateOpenAiLlmClient(config.live_openai_client);
+        if (!llm_client.ok()) {
+            return llm_client.status();
+        }
+        return ResolvedBenchmarkLiveClient{
+            .llm_client = *llm_client,
+            .openai_client = config.live_openai_client,
+        };
     }
     if (config.ollama_config.enabled) {
-        return isla::server::CreateOllamaLlmClient(config.ollama_config);
+        const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> llm_client =
+            isla::server::CreateOllamaLlmClient(config.ollama_config);
+        if (!llm_client.ok()) {
+            return llm_client.status();
+        }
+        return ResolvedBenchmarkLiveClient{
+            .llm_client = *llm_client,
+            .openai_client = nullptr,
+        };
     }
-    return isla::server::CreateOpenAiLlmClient(CreateOpenAiResponsesClient(config.openai_config));
+    const std::shared_ptr<const OpenAiResponsesClient> openai_client =
+        CreateOpenAiResponsesClient(config.openai_config);
+    const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> llm_client =
+        isla::server::CreateOpenAiLlmClient(openai_client);
+    if (!llm_client.ok()) {
+        return llm_client.status();
+    }
+    return ResolvedBenchmarkLiveClient{
+        .llm_client = *llm_client,
+        .openai_client = openai_client,
+    };
 }
 
 std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
@@ -621,16 +659,16 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         return compactor_prompt.status();
     }
 
-    const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> live_llm_client =
-        ResolveBenchmarkLiveLlmClient(config);
-    if (!live_llm_client.ok()) {
-        return live_llm_client.status();
+    const absl::StatusOr<ResolvedBenchmarkLiveClient> live_client =
+        ResolveBenchmarkLiveClient(config);
+    if (!live_client.ok()) {
+        return live_client.status();
     }
-    if (const absl::Status validate_status = (*live_llm_client)->Validate();
+    if (const absl::Status validate_status = live_client->llm_client->Validate();
         !validate_status.ok()) {
         return validate_status;
     }
-    if (const absl::Status warmup_status = (*live_llm_client)->WarmUp(); !warmup_status.ok()) {
+    if (const absl::Status warmup_status = live_client->llm_client->WarmUp(); !warmup_status.ok()) {
         LOG(WARNING) << "isla_custom_memory benchmark llm warmup failed detail='"
                      << warmup_status.message() << "'";
     }
@@ -666,7 +704,7 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
                     .openai_config = config.openai_config,
                     .openai_client =
                         CreateCaseClient(definition, *decider_prompt, *compactor_prompt,
-                                         config.live_openai_client, *live_llm_client),
+                                         live_client->openai_client, live_client->llm_client),
                 },
             .telemetry_sink = config.telemetry_sink,
         });
