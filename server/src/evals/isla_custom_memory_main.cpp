@@ -1,7 +1,7 @@
 #include "isla/server/evals/isla_custom_memory_benchmark.hpp"
 
-#include <cstdlib>
 #include <charconv>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -30,12 +30,11 @@ std::optional<std::uint16_t> ParsePort(std::string_view value) {
 }
 
 void PrintUsage() {
-    std::cout
-        << "Usage: isla_custom_memory_eval [--output_dir=PATH] [--case_id=CASE_ID] "
-           "[--host=HOST] [--port=PORT]\n"
-           "The AI gateway server must already be running.\n"
-           "Provider/model flags are configured on the running gateway process, not this "
-           "benchmark binary.\n";
+    std::cout << "Usage: isla_custom_memory_eval [--output_dir=PATH] [--case_id=CASE_ID] "
+                 "[--host=HOST] [--port=PORT]\n"
+                 "The AI gateway server must already be running.\n"
+                 "Provider/model flags are configured on the running gateway process, not this "
+                 "benchmark binary.\n";
 }
 
 } // namespace

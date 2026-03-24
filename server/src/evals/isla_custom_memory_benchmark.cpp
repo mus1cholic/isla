@@ -452,12 +452,16 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         const absl::Status write_status = WriteJsonFile(
             artifact_path, BuildSuiteArtifactJson(suite_id, definitions, case_reports));
         if (!write_status.ok()) {
+            LOG(WARNING) << kBenchmarkName << " failed to write suite artifact " << suite_id << ": "
+                         << write_status.message();
+            const EvalFailure write_failure = FailureFromStatus(write_status);
             for (IslaCustomMemoryCaseReport* case_report : suite_case_reports) {
                 if (case_report->passed) {
                     report.passed_cases -= 1U;
                     report.failed_cases += 1U;
                 }
                 case_report->passed = false;
+                case_report->failure = write_failure;
                 case_report->artifact_path = std::nullopt;
             }
             continue;

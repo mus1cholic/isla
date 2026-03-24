@@ -45,6 +45,19 @@ struct TurnCompletion {
     std::optional<std::string> reply_text;
 };
 
+absl::Status HistoryReplayTurnFailureStatus(std::string_view turn_id,
+                                            const TurnCompletion& completion) {
+    std::string detail = absl::StrCat("gateway history replay turn failed turn_id=", turn_id);
+    if (completion.cancelled) {
+        absl::StrAppend(&detail, " cancelled=true");
+    }
+    if (completion.failure.has_value()) {
+        absl::StrAppend(&detail, " code=", completion.failure->code,
+                        " message=", completion.failure->message);
+    }
+    return absl::FailedPreconditionError(detail);
+}
+
 class RecordingLiveEvalSession final {
   public:
     explicit RecordingLiveEvalSession(std::chrono::milliseconds timeout) : timeout_(timeout) {}
@@ -267,7 +280,7 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
             [recorder](absl::Status status) { recorder->OnTransportClosed(std::move(status)); },
     });
 
-    const absl::Status connect_status = session.ConnectAndStart(eval_case.session_id);
+    absl::Status connect_status = session.ConnectAndStart(eval_case.session_id);
     if (!connect_status.ok()) {
         return connect_status;
     }
@@ -279,7 +292,7 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
         }
         const std::string turn_id = absl::StrCat("history_turn_", next_history_turn++);
         recorder->RecordBenchmarkUserMessage(turn_id, message.text);
-        if (const absl::Status send_status = session.SendTextInput(turn_id, message.text);
+        if (absl::Status send_status = session.SendTextInput(turn_id, message.text);
             !send_status.ok()) {
             session.Close();
             return send_status;
@@ -291,8 +304,7 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
         }
         if (completion->cancelled || completion->failure.has_value()) {
             session.Close();
-            return absl::FailedPreconditionError(
-                absl::StrCat("gateway history replay turn failed turn_id=", turn_id));
+            return HistoryReplayTurnFailureStatus(turn_id, *completion);
         }
     }
 
