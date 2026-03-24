@@ -672,6 +672,31 @@ TEST(RunMemoryBenchmarkTest, PersistsConversationThroughGatewayMemoryStore) {
     EXPECT_GE(store->message_writes.size(), 4U);
 }
 
+TEST(RunMemoryBenchmarkTest, UsesSeparateTurnCompletionTimeout) {
+    ScopedOutputDirectory output_directory;
+    ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
+        .response_delay = 250ms,
+        .openai_client = MakeMidTermAwareFakeClient("The answer is blue."),
+    });
+    ASSERT_TRUE(live_gateway.Start().ok());
+
+    MemoryBenchmarkRunConfig config;
+    config.output_directory = output_directory.path();
+    config.live_gateway_port = live_gateway.port();
+    config.live_gateway_operation_timeout = 50ms;
+    config.live_gateway_turn_completion_timeout = 2s;
+
+    const MemoryBenchmarkSuite suite = MakeSingleCaseSuite();
+    const absl::StatusOr<MemoryBenchmarkReport> report =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_TRUE(report.ok()) << report.status();
+    EXPECT_EQ(report->total_cases, 1U);
+    EXPECT_EQ(report->passed_cases, 1U);
+    EXPECT_EQ(report->failed_cases, 0U);
+    ASSERT_EQ(report->cases.size(), 1U);
+    EXPECT_TRUE(report->cases.front().passed);
+}
+
 TEST(RunMemoryBenchmarkTest, GatewayTurnFailureReturnsError) {
     ScopedOutputDirectory output_directory;
     ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{

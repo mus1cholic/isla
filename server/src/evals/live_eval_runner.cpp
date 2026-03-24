@@ -254,7 +254,7 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
         return invalid_argument("live eval runner requires a non-zero gateway port");
     }
 
-    auto recorder = std::make_shared<RecordingLiveEvalSession>(config_.operation_timeout);
+    auto recorder = std::make_shared<RecordingLiveEvalSession>(config_.turn_completion_timeout);
     isla::client::AiGatewayClientSession session(isla::client::AiGatewayClientConfig{
         .host = ResolveGatewayConnectHost(config_.host),
         .port = config_.port,

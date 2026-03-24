@@ -14,6 +14,7 @@ struct LiveEvalRunnerConfig {
     std::uint16_t port = 0;
     std::string path = "/";
     std::chrono::milliseconds operation_timeout{ std::chrono::seconds(10) };
+    std::chrono::milliseconds turn_completion_timeout{ std::chrono::seconds(60) };
 };
 
 class LiveEvalRunner final {

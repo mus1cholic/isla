@@ -65,6 +65,7 @@ struct MemoryBenchmarkRunConfig {
     std::uint16_t live_gateway_port = 0;
     std::string live_gateway_path = "/";
     std::chrono::milliseconds live_gateway_operation_timeout{ std::chrono::seconds(10) };
+    std::chrono::milliseconds live_gateway_turn_completion_timeout{ std::chrono::seconds(60) };
     // Retained so benchmark CLIs can continue reusing gateway startup parsing, even though
     // live-serving benchmark execution no longer constructs provider clients locally.
     isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;

@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
-#include "ai_gateway_startup_config.hpp"
+#include "../ai_gateway_startup_config.hpp"
 
 namespace isla::server::evals {
 

@@ -101,6 +101,7 @@ LiveEvalRunnerConfig BuildLiveEvalRunnerConfig(const MemoryBenchmarkRunConfig& c
         .port = config.live_gateway_port,
         .path = config.live_gateway_path,
         .operation_timeout = config.live_gateway_operation_timeout,
+        .turn_completion_timeout = config.live_gateway_turn_completion_timeout,
     };
 }
 
