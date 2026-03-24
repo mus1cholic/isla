@@ -36,10 +36,11 @@ struct ResolvedBenchmarkLlm {
     std::shared_ptr<const isla::server::LlmClient> llm_client;
 };
 
-absl::StatusOr<ResolvedBenchmarkLlm> ResolveBenchmarkLlmClient(MemoryBenchmarkRunConfig config) {
+absl::StatusOr<ResolvedBenchmarkLlm>
+ResolveBenchmarkLlmClient(const MemoryBenchmarkRunConfig& config) {
     if (config.llm_client != nullptr) {
         return ResolvedBenchmarkLlm{
-            .llm_client = std::move(config.llm_client),
+            .llm_client = config.llm_client,
         };
     }
 
@@ -55,7 +56,7 @@ absl::StatusOr<ResolvedBenchmarkLlm> ResolveBenchmarkLlmClient(MemoryBenchmarkRu
     }
 
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client =
-        std::move(config.openai_client);
+        config.openai_client;
     if (openai_client == nullptr) {
         openai_client = CreateOpenAiResponsesClient(config.openai_config);
     }
