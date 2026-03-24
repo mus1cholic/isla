@@ -14,6 +14,8 @@
 #include "isla/server/ai_gateway_llm_runtime_config.hpp"
 #include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/evals/eval_types.hpp"
+#include "isla/server/llm_client.hpp"
+#include "isla/server/ollama_llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::evals {
@@ -58,6 +60,11 @@ struct MemoryBenchmarkReport {
 struct MemoryBenchmarkRunConfig {
     std::filesystem::path output_directory;
     isla::server::ai_gateway::GatewayLlmRuntimeConfig llm_runtime_config;
+    // Optional provider-neutral LLM override used for evaluated turns and
+    // mid-term memory helpers. When unset, the runner resolves one from
+    // provider config, preferring Ollama over OpenAI to match gateway startup.
+    std::shared_ptr<const isla::server::LlmClient> llm_client;
+    isla::server::OllamaLlmClientConfig ollama_config;
     isla::server::ai_gateway::OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client;
     std::optional<std::size_t> max_rendered_system_prompt_bytes;

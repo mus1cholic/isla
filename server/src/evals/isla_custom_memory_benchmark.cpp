@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -22,20 +23,26 @@
 
 #include "isla/server/evals/eval_json.hpp"
 #include "isla/server/evals/eval_runner.hpp"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_timestamp_utils.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
+#include "isla/server/ollama_llm_client.hpp"
+#include "isla/server/openai_llm_client.hpp"
+#include "isla/server/openai_reasoning_effort_utils.hpp"
 #include "isla/server/openai_responses_client.hpp"
 
 namespace isla::server::evals {
 namespace {
 
 using isla::server::ai_gateway::CreateOpenAiResponsesClient;
+using isla::server::ai_gateway::OpenAiReasoningEffort;
 using isla::server::ai_gateway::OpenAiResponsesClient;
 using isla::server::ai_gateway::OpenAiResponsesCompletedEvent;
 using isla::server::ai_gateway::OpenAiResponsesEventCallback;
 using isla::server::ai_gateway::OpenAiResponsesOutputItem;
 using isla::server::ai_gateway::OpenAiResponsesRequest;
 using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
+using isla::server::ai_gateway::TryOpenAiReasoningEffortToLlmReasoningEffort;
 using isla::server::memory::ParseTimestamp;
 using isla::server::memory::PromptAsset;
 using nlohmann::json;
@@ -74,26 +81,36 @@ absl::Status EmitTextResponse(std::string text, const OpenAiResponsesEventCallba
 
 class BenchmarkCaseOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
-    BenchmarkCaseOpenAiResponsesClient(BenchmarkCaseDefinition definition,
-                                       std::string decider_prompt, std::string compactor_prompt,
-                                       std::shared_ptr<const OpenAiResponsesClient> live_client)
+    BenchmarkCaseOpenAiResponsesClient(
+        BenchmarkCaseDefinition definition, std::string decider_prompt,
+        std::string compactor_prompt,
+        std::shared_ptr<const OpenAiResponsesClient> live_openai_client,
+        std::shared_ptr<const isla::server::LlmClient> live_llm_client)
         : definition_(std::move(definition)), decider_prompt_(std::move(decider_prompt)),
-          compactor_prompt_(std::move(compactor_prompt)), live_client_(std::move(live_client)) {}
+          compactor_prompt_(std::move(compactor_prompt)),
+          live_openai_client_(std::move(live_openai_client)),
+          live_llm_client_(std::move(live_llm_client)) {}
 
     [[nodiscard]] absl::Status Validate() const override {
-        if (live_client_ == nullptr) {
-            return failed_precondition(
-                "benchmark live OpenAI client must be configured for evaluated turns");
+        if (live_openai_client_ == nullptr && live_llm_client_ == nullptr) {
+            return failed_precondition("benchmark live LLM client must be configured for "
+                                       "evaluated turns");
         }
-        return live_client_->Validate();
+        if (live_openai_client_ != nullptr) {
+            return live_openai_client_->Validate();
+        }
+        return live_llm_client_->Validate();
     }
 
     [[nodiscard]] absl::Status WarmUp() const override {
-        if (live_client_ == nullptr) {
-            return failed_precondition(
-                "benchmark live OpenAI client must be configured for evaluated turns");
+        if (live_openai_client_ == nullptr && live_llm_client_ == nullptr) {
+            return failed_precondition("benchmark live LLM client must be configured for "
+                                       "evaluated turns");
         }
-        return live_client_->WarmUp();
+        if (live_openai_client_ != nullptr) {
+            return live_openai_client_->WarmUp();
+        }
+        return live_llm_client_->WarmUp();
     }
 
     [[nodiscard]] absl::Status
@@ -133,14 +150,53 @@ class BenchmarkCaseOpenAiResponsesClient final : public OpenAiResponsesClient {
                 on_event, "resp_compactor");
         }
 
-        return live_client_->StreamResponse(request, on_event);
+        if (live_openai_client_ != nullptr) {
+            return live_openai_client_->StreamResponse(request, on_event);
+        }
+        if (live_llm_client_ == nullptr) {
+            return failed_precondition("benchmark live LLM client must be configured for "
+                                       "evaluated turns");
+        }
+        const std::optional<isla::server::LlmReasoningEffort> reasoning_effort =
+            TryOpenAiReasoningEffortToLlmReasoningEffort(request.reasoning_effort);
+        if (!reasoning_effort.has_value()) {
+            return failed_precondition("benchmark generic LLM adapter received unsupported "
+                                       "reasoning_effort");
+        }
+        return live_llm_client_->StreamResponse(
+            isla::server::LlmRequest{
+                .model = request.model,
+                .system_prompt = request.system_prompt,
+                .user_text = request.user_text,
+                .reasoning_effort = *reasoning_effort,
+                .telemetry_context = request.telemetry_context,
+            },
+            [&on_event](const isla::server::LlmEvent& event) -> absl::Status {
+                return std::visit(
+                    [&on_event](const auto& concrete_event) -> absl::Status {
+                        using Event = std::decay_t<decltype(concrete_event)>;
+                        if constexpr (std::is_same_v<Event, isla::server::LlmTextDeltaEvent>) {
+                            return on_event(OpenAiResponsesTextDeltaEvent{
+                                .text_delta = concrete_event.text_delta,
+                            });
+                        }
+                        if constexpr (std::is_same_v<Event, isla::server::LlmCompletedEvent>) {
+                            return on_event(OpenAiResponsesCompletedEvent{
+                                .response_id = concrete_event.response_id,
+                            });
+                        }
+                        return absl::OkStatus();
+                    },
+                    event);
+            });
     }
 
   private:
     BenchmarkCaseDefinition definition_;
     std::string decider_prompt_;
     std::string compactor_prompt_;
-    std::shared_ptr<const OpenAiResponsesClient> live_client_;
+    std::shared_ptr<const OpenAiResponsesClient> live_openai_client_;
+    std::shared_ptr<const isla::server::LlmClient> live_llm_client_;
     mutable std::atomic<int> decider_call_count_{ 0 };
 };
 
@@ -215,10 +271,63 @@ std::string DisplayPath(const std::filesystem::path& path) {
 std::shared_ptr<const OpenAiResponsesClient>
 CreateCaseClient(BenchmarkCaseDefinition definition, std::string decider_prompt,
                  std::string compactor_prompt,
-                 std::shared_ptr<const OpenAiResponsesClient> live_client) {
+                 std::shared_ptr<const OpenAiResponsesClient> live_openai_client,
+                 std::shared_ptr<const isla::server::LlmClient> live_llm_client) {
     return std::make_shared<const BenchmarkCaseOpenAiResponsesClient>(
         std::move(definition), std::move(decider_prompt), std::move(compactor_prompt),
-        std::move(live_client));
+        std::move(live_openai_client), std::move(live_llm_client));
+}
+
+struct ResolvedBenchmarkLiveClient {
+    std::shared_ptr<const isla::server::LlmClient> llm_client;
+    std::shared_ptr<const OpenAiResponsesClient> openai_client;
+};
+
+absl::StatusOr<ResolvedBenchmarkLiveClient>
+ResolveBenchmarkLiveClient(const IslaCustomMemoryBenchmarkRunConfig& config) {
+    if (config.live_llm_client != nullptr && config.live_openai_client != nullptr) {
+        return invalid_argument("benchmark live_llm_client and live_openai_client are mutually "
+                                "exclusive; configure only one");
+    }
+    if (config.live_llm_client != nullptr) {
+        return ResolvedBenchmarkLiveClient{
+            .llm_client = config.live_llm_client,
+            .openai_client = nullptr,
+        };
+    }
+    if (config.live_openai_client != nullptr) {
+        const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> llm_client =
+            isla::server::CreateOpenAiLlmClient(config.live_openai_client);
+        if (!llm_client.ok()) {
+            return llm_client.status();
+        }
+        return ResolvedBenchmarkLiveClient{
+            .llm_client = *llm_client,
+            .openai_client = config.live_openai_client,
+        };
+    }
+    if (config.ollama_config.enabled) {
+        const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> llm_client =
+            isla::server::CreateOllamaLlmClient(config.ollama_config);
+        if (!llm_client.ok()) {
+            return llm_client.status();
+        }
+        return ResolvedBenchmarkLiveClient{
+            .llm_client = *llm_client,
+            .openai_client = nullptr,
+        };
+    }
+    const std::shared_ptr<const OpenAiResponsesClient> openai_client =
+        CreateOpenAiResponsesClient(config.openai_config);
+    const absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> llm_client =
+        isla::server::CreateOpenAiLlmClient(openai_client);
+    if (!llm_client.ok()) {
+        return llm_client.status();
+    }
+    return ResolvedBenchmarkLiveClient{
+        .llm_client = *llm_client,
+        .openai_client = openai_client,
+    };
 }
 
 std::vector<BenchmarkCaseDefinition> BuildBenchmarkCases() {
@@ -550,16 +659,17 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
         return compactor_prompt.status();
     }
 
-    auto live_openai_client = config.live_openai_client;
-    if (live_openai_client == nullptr) {
-        live_openai_client = CreateOpenAiResponsesClient(config.openai_config);
+    const absl::StatusOr<ResolvedBenchmarkLiveClient> live_client =
+        ResolveBenchmarkLiveClient(config);
+    if (!live_client.ok()) {
+        return live_client.status();
     }
-    if (const absl::Status validate_status = live_openai_client->Validate();
+    if (const absl::Status validate_status = live_client->llm_client->Validate();
         !validate_status.ok()) {
         return validate_status;
     }
-    if (const absl::Status warmup_status = live_openai_client->WarmUp(); !warmup_status.ok()) {
-        LOG(WARNING) << "isla_custom_memory benchmark OpenAI warmup failed detail='"
+    if (const absl::Status warmup_status = live_client->llm_client->WarmUp(); !warmup_status.ok()) {
+        LOG(WARNING) << "isla_custom_memory benchmark llm warmup failed detail='"
                      << warmup_status.message() << "'";
     }
 
@@ -592,8 +702,9 @@ RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig config) {
                     .async_emit_timeout = 10s,
                     .llm_runtime_config = config.llm_runtime_config,
                     .openai_config = config.openai_config,
-                    .openai_client = CreateCaseClient(definition, *decider_prompt,
-                                                      *compactor_prompt, live_openai_client),
+                    .openai_client =
+                        CreateCaseClient(definition, *decider_prompt, *compactor_prompt,
+                                         live_client->openai_client, live_client->llm_client),
                 },
             .telemetry_sink = config.telemetry_sink,
         });

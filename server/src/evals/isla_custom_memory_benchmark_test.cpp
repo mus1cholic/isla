@@ -11,6 +11,7 @@
 #include "absl/status/status.h"
 #include <gtest/gtest.h>
 
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 
 namespace isla::server::evals {
@@ -113,6 +114,78 @@ class RecordingFakeLiveOpenAiResponsesClient final : public OpenAiResponsesClien
     mutable std::vector<RecordedOpenAiRequest> requests_;
 };
 
+class FakeLiveLlmClient final : public isla::server::LlmClient {
+  public:
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status WarmUp() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const isla::server::LlmRequest& request,
+                   const isla::server::LlmEventCallback& on_event) const override {
+        const absl::Status delta_status = on_event(isla::server::LlmTextDeltaEvent{
+            .text_delta = BuildBenchmarkReply(request.user_text),
+        });
+        if (!delta_status.ok()) {
+            return delta_status;
+        }
+        return on_event(isla::server::LlmCompletedEvent{
+            .response_id = "fake_llm_response_id",
+        });
+    }
+};
+
+struct RecordedLlmRequest {
+    std::string system_prompt;
+    std::string user_text;
+};
+
+class RecordingFakeLiveLlmClient final : public isla::server::LlmClient {
+  public:
+    [[nodiscard]] absl::Status Validate() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status WarmUp() const override {
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    StreamResponse(const isla::server::LlmRequest& request,
+                   const isla::server::LlmEventCallback& on_event) const override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            requests_.push_back(RecordedLlmRequest{
+                .system_prompt = request.system_prompt,
+                .user_text = request.user_text,
+            });
+        }
+
+        const absl::Status delta_status = on_event(isla::server::LlmTextDeltaEvent{
+            .text_delta = BuildBenchmarkReply(request.user_text),
+        });
+        if (!delta_status.ok()) {
+            return delta_status;
+        }
+        return on_event(isla::server::LlmCompletedEvent{
+            .response_id = "recording_fake_llm_response_id",
+        });
+    }
+
+    [[nodiscard]] std::vector<RecordedLlmRequest> RecordedRequests() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return requests_;
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    mutable std::vector<RecordedLlmRequest> requests_;
+};
+
 class ScopedOutputDirectory {
   public:
     ScopedOutputDirectory()
@@ -137,6 +210,10 @@ std::shared_ptr<const OpenAiResponsesClient> CreateFakeLiveClient() {
     return std::make_shared<const FakeLiveOpenAiResponsesClient>();
 }
 
+std::shared_ptr<const isla::server::LlmClient> CreateFakeLiveLlmClient() {
+    return std::make_shared<const FakeLiveLlmClient>();
+}
+
 TEST(IslaCustomMemoryBenchmarkTest, RejectsMissingLiveOpenAiConfig) {
     const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
         RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{});
@@ -156,6 +233,19 @@ TEST(IslaCustomMemoryBenchmarkTest, RejectsUnknownCaseIdBeforeProviderValidation
     ASSERT_FALSE(report.ok());
     EXPECT_EQ(report.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_NE(std::string(report.status().message()).find("case_id_filter"), std::string::npos);
+}
+
+TEST(IslaCustomMemoryBenchmarkTest, RejectsAmbiguousInjectedProviderClients) {
+    const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
+        RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
+            .case_id_filter = std::string("direct_fact_recall_tea"),
+            .live_llm_client = CreateFakeLiveLlmClient(),
+            .live_openai_client = CreateFakeLiveClient(),
+        });
+
+    ASSERT_FALSE(report.ok());
+    EXPECT_EQ(report.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(report.status().message()).find("mutually exclusive"), std::string::npos);
 }
 
 TEST(IslaCustomMemoryBenchmarkTest, RunsAllCasesAndPersistsArtifactsWithInjectedLiveClient) {
@@ -228,6 +318,26 @@ TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithInjectedLiveCl
     EXPECT_EQ(artifact_count, 1U);
 }
 
+TEST(IslaCustomMemoryBenchmarkTest, SupportsFilteringToOneCaseWithInjectedGenericLlmClient) {
+    ScopedOutputDirectory output_directory;
+
+    const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
+        RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
+            .output_directory = output_directory.path(),
+            .case_id_filter = std::string("direct_fact_recall_tea"),
+            .live_llm_client = CreateFakeLiveLlmClient(),
+        });
+
+    ASSERT_TRUE(report.ok()) << report.status();
+    EXPECT_EQ(report->total_cases, 1U);
+    EXPECT_EQ(report->passed_cases, 1U);
+    EXPECT_EQ(report->failed_cases, 0U);
+    ASSERT_EQ(report->cases.size(), 1U);
+    EXPECT_TRUE(report->cases.front().passed);
+    ASSERT_TRUE(report->cases.front().final_reply.has_value());
+    EXPECT_EQ(*report->cases.front().final_reply, "genmaicha");
+}
+
 TEST(IslaCustomMemoryBenchmarkTest, WrapperKeepsMidTermPromptsOffInjectedLiveClient) {
     ScopedOutputDirectory output_directory;
     auto recording_client = std::make_shared<RecordingFakeLiveOpenAiResponsesClient>();
@@ -251,6 +361,37 @@ TEST(IslaCustomMemoryBenchmarkTest, WrapperKeepsMidTermPromptsOffInjectedLiveCli
     EXPECT_TRUE(report->cases.front().passed);
 
     const std::vector<RecordedOpenAiRequest> requests = recording_client->RecordedRequests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests.front().user_text.find("What project were we debugging earlier?"),
+              std::string::npos);
+    EXPECT_FALSE(requests.front().system_prompt.empty());
+    EXPECT_NE(requests.front().system_prompt, *decider_prompt);
+    EXPECT_NE(requests.front().system_prompt, *compactor_prompt);
+}
+
+TEST(IslaCustomMemoryBenchmarkTest, WrapperKeepsMidTermPromptsOffInjectedGenericLlmClient) {
+    ScopedOutputDirectory output_directory;
+    auto recording_client = std::make_shared<RecordingFakeLiveLlmClient>();
+
+    const absl::StatusOr<std::string> decider_prompt =
+        LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
+    ASSERT_TRUE(decider_prompt.ok()) << decider_prompt.status();
+    const absl::StatusOr<std::string> compactor_prompt =
+        LoadPrompt(PromptAsset::kMidTermCompactorSystemPrompt);
+    ASSERT_TRUE(compactor_prompt.ok()) << compactor_prompt.status();
+
+    const absl::StatusOr<IslaCustomMemoryBenchmarkReport> report =
+        RunIslaCustomMemoryBenchmark(IslaCustomMemoryBenchmarkRunConfig{
+            .output_directory = output_directory.path(),
+            .case_id_filter = std::string("mid_term_visibility"),
+            .live_llm_client = recording_client,
+        });
+
+    ASSERT_TRUE(report.ok()) << report.status();
+    ASSERT_EQ(report->cases.size(), 1U);
+    EXPECT_TRUE(report->cases.front().passed);
+
+    const std::vector<RecordedLlmRequest> requests = recording_client->RecordedRequests();
     ASSERT_EQ(requests.size(), 1U);
     EXPECT_NE(requests.front().user_text.find("What project were we debugging earlier?"),
               std::string::npos);

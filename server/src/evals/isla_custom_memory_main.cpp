@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
     config.llm_runtime_config = startup_config->llm_runtime_config;
+    config.ollama_config = startup_config->ollama_config;
     config.openai_config = startup_config->openai_config;
 
     const absl::StatusOr<isla::server::evals::IslaCustomMemoryBenchmarkReport> report =
