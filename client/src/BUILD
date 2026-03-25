@@ -263,6 +263,7 @@ cc_test(
     deps = [
         ":ai_gateway_client_session",
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
         "//server/src:ai_gateway_server",
         "//server/src:openai_responses_test_utils",
         "//server/src:ai_gateway_stub_responder",

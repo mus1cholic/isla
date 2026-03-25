@@ -41,6 +41,9 @@ auto kOrg = std::to_array("--openai-organization=org_123");
 auto kProject = std::to_array("--openai-project=proj_123");
 auto kProjectId = std::to_array("--openai-project-id=proj_456");
 auto kTimeout = std::to_array("--openai-timeout-ms=1500");
+auto kOllamaBaseUrl = std::to_array("--ollama-base-url=http://127.0.0.1:11434");
+auto kOllamaApiKey = std::to_array("--ollama-api-key=ollama_key");
+auto kOllamaTimeout = std::to_array("--ollama-timeout-ms=1800");
 auto kMainLlmModel = std::to_array("--main-llm-model=gpt-4.1-mini");
 auto kMidTermFlushDeciderModel = std::to_array("--mid-term-flush-decider-model=gpt-4.1-mini");
 auto kMidTermCompactorModel = std::to_array("--mid-term-compactor-model=gpt-4.1-nano");
@@ -281,6 +284,46 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_embedding_model.empty());
 }
 
+TEST(AiGatewayStartupConfigTest, AllowsOllamaOnlyConfigurationFromCli) {
+    std::array<char*, 5> argv = { kArg0.data(), kOllamaBaseUrl.data(), kOllamaApiKey.data(),
+                                  kOllamaTimeout.data(), kMainLlmModel.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_FALSE(parsed->openai_config.enabled);
+    EXPECT_TRUE(parsed->ollama_config.enabled);
+    EXPECT_EQ(parsed->ollama_config.base_url, "http://127.0.0.1:11434");
+    ASSERT_TRUE(parsed->ollama_config.api_key.has_value());
+    EXPECT_EQ(*parsed->ollama_config.api_key, "ollama_key");
+    EXPECT_EQ(parsed->ollama_config.request_timeout, std::chrono::milliseconds(1800));
+    EXPECT_EQ(parsed->llm_runtime_config.main_model, "gpt-4.1-mini");
+}
+
+TEST(AiGatewayStartupConfigTest, AllowsOllamaOnlyConfigurationFromEnvironment) {
+    std::array<char*, 1> argv = { kArg0.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "OLLAMA_BASE_URL") {
+                                          return "http://localhost:11434";
+                                      }
+                                      if (name == "OLLAMA_TIMEOUT_MS") {
+                                          return "2200";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_FALSE(parsed->openai_config.enabled);
+    EXPECT_TRUE(parsed->ollama_config.enabled);
+    EXPECT_EQ(parsed->ollama_config.base_url, "http://localhost:11434");
+    EXPECT_EQ(parsed->ollama_config.request_timeout, std::chrono::milliseconds(2200));
+}
+
 TEST(AiGatewayStartupConfigTest, UsesLlmModelEnvironmentDefaultsWhenCliOmitted) {
     std::array<char*, 1> argv = { kArg0.data() };
 
@@ -486,7 +529,7 @@ TEST(AiGatewayStartupConfigTest, UsesLegacyProjectEnvWhenPreferredProjectIdEnvMi
     EXPECT_EQ(*parsed->openai_config.project, "proj_legacy_123");
 }
 
-TEST(AiGatewayStartupConfigTest, RejectsMissingApiKeyAfterEnvAndCliResolution) {
+TEST(AiGatewayStartupConfigTest, RejectsMissingLlmProviderConfiguration) {
     std::array<char*, 1> argv = { kArg0.data() };
 
     const absl::StatusOr<ParsedStartupConfig> parsed =
@@ -495,6 +538,18 @@ TEST(AiGatewayStartupConfigTest, RejectsMissingApiKeyAfterEnvAndCliResolution) {
                                       static_cast<void>(name);
                                       return std::nullopt;
                                   });
+
+    ASSERT_FALSE(parsed.ok());
+    EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(parsed.status().message(), "missing LLM provider config; configure OpenAI or Ollama");
+}
+
+TEST(AiGatewayStartupConfigTest, RejectsPartialOpenAiConfigurationWithoutApiKey) {
+    std::array<char*, 2> argv = { kArg0.data(), kOpenAiHost.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
 
     ASSERT_FALSE(parsed.ok());
     EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);

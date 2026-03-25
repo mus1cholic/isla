@@ -19,6 +19,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/embedding_client.hpp"
 #include "isla/server/gemini_api_embedding_client.hpp"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 #include "isla/server/memory/memory_store.hpp"
 #include "isla/server/openai_responses_client.hpp"
@@ -72,6 +73,7 @@ struct GatewayStubResponderConfig {
     std::string memory_user_id = "gateway_user";
     isla::server::memory::MemoryStorePtr memory_store;
     GatewayLlmRuntimeConfig llm_runtime_config;
+    std::shared_ptr<const isla::server::LlmClient> llm_client;
     OpenAiResponsesClientConfig openai_config;
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
     GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
@@ -115,6 +117,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void AttachSessionRegistry(GatewaySessionRegistry* session_registry);
 
     void OnSessionStarted(const SessionStartedEvent& event) override;
+    [[nodiscard]] absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;
     void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) override;
     void OnSessionClosed(const SessionClosedEvent& event) override;
@@ -163,6 +166,11 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
         bool cancel_requested = false;
     };
 
+    struct LiveReplayClockState {
+        std::optional<isla::server::memory::Timestamp> session_start_time;
+        absl::flat_hash_map<std::string, isla::server::memory::Timestamp> conversation_times;
+    };
+
     void StopWorker();
     void WorkerLoop();
     void RecordDequeueTelemetry(const PendingTurn& turn, Clock::time_point dequeued_at) const;
@@ -193,6 +201,12 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     FindSessionMemory(std::string_view session_id) const;
     [[nodiscard]] std::optional<absl::Status>
     FindSessionStartFailure(std::string_view session_id) const;
+    void
+    RecordSessionReplayClock(std::string_view session_id,
+                             std::optional<isla::server::memory::Timestamp> session_start_time);
+    void RecordConversationReplayTime(std::string_view session_id, std::string_view turn_id,
+                                      isla::server::memory::MessageRole role,
+                                      std::optional<isla::server::memory::Timestamp> create_time);
     [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id);
     [[nodiscard]] isla::server::memory::Timestamp
     ResolveSessionStartTime(std::string_view session_id) const;
@@ -222,6 +236,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     absl::flat_hash_map<std::string, PendingTurn> pending_turns_;
     absl::flat_hash_map<std::string, PendingTurn> in_progress_turns_;
     absl::flat_hash_map<std::string, std::shared_ptr<SessionMemoryState>> memory_by_session_;
+    absl::flat_hash_map<std::string, LiveReplayClockState> live_replay_clock_by_session_;
     absl::flat_hash_map<std::string, absl::Status> failed_session_starts_;
     bool stopping_ = false;
     bool worker_stop_requested_ = false;

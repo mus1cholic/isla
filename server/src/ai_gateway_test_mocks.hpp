@@ -34,6 +34,7 @@ class MockGatewayWebSocketConnection : public GatewayWebSocketConnection {
 class MockGatewaySessionEventSink : public GatewaySessionEventSink {
   public:
     MOCK_METHOD(void, OnSessionStarted, (const SessionStartedEvent& event), (override));
+    MOCK_METHOD(absl::Status, HandleTranscriptSeed, (const TranscriptSeedEvent& event), (override));
     MOCK_METHOD(void, OnTurnAccepted, (const TurnAcceptedEvent& event), (override));
     MOCK_METHOD(void, OnTurnCancelRequested, (const TurnCancelRequestedEvent& event), (override));
     MOCK_METHOD(void, OnSessionClosed, (const SessionClosedEvent& event), (override));

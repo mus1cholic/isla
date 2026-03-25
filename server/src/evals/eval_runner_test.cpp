@@ -592,7 +592,7 @@ TEST(EvalRunnerTest, BuildsBenchmarkTimelineWithAssistantMessageWithoutPriorUser
                 {
                     EvalConversationMessage{
                         .role = MessageRole::Assistant,
-                        .text = "this should be rejected",
+                        .text = "assistant context",
                     },
                 },
             .input =
@@ -604,7 +604,7 @@ TEST(EvalRunnerTest, BuildsBenchmarkTimelineWithAssistantMessageWithoutPriorUser
     ASSERT_TRUE(eval_case.ok()) << eval_case.status();
     ASSERT_EQ(eval_case->conversation.size(), 1U);
     EXPECT_EQ(eval_case->conversation[0].role, MessageRole::Assistant);
-    EXPECT_EQ(eval_case->conversation[0].text, "this should be rejected");
+    EXPECT_EQ(eval_case->conversation[0].text, "assistant context");
 }
 
 TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptContext) {

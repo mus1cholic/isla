@@ -3,7 +3,6 @@
 #include <cctype>
 #include <cstddef>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,20 +14,18 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include <nlohmann/json.hpp>
 
 #include "isla/server/evals/eval_json.hpp"
-#include "isla/server/evals/eval_runner.hpp"
-#include "isla/server/evals/eval_types.hpp"
-#include "isla/server/openai_responses_client.hpp"
+#include "server/src/evals/eval_failure_utils.hpp"
+#include "server/src/evals/live_eval_runner.hpp"
 
 namespace isla::server::evals {
 namespace {
 
-using isla::server::ai_gateway::CreateOpenAiResponsesClient;
 using nlohmann::json;
 using nlohmann::ordered_json;
-using namespace std::chrono_literals;
 
 std::string ToLowerAscii(std::string text) {
     for (char& ch : text) {
@@ -99,6 +96,76 @@ ordered_json BuildCaseArtifactJson(const MemoryBenchmarkCase& benchmark_case) {
     return payload;
 }
 
+bool IsDefaultLlmRuntimeConfig(const isla::server::ai_gateway::GatewayLlmRuntimeConfig& config) {
+    return config.main_model.empty() && config.mid_term_flush_decider_model.empty() &&
+           config.mid_term_compactor_model.empty() && config.mid_term_embedding_model.empty();
+}
+
+bool IsDefaultOllamaConfig(const isla::server::OllamaLlmClientConfig& config) {
+    const isla::server::OllamaLlmClientConfig defaults;
+    return config.enabled == defaults.enabled && config.base_url == defaults.base_url &&
+           config.api_key == defaults.api_key &&
+           config.request_timeout == defaults.request_timeout &&
+           config.user_agent == defaults.user_agent;
+}
+
+bool IsDefaultOpenAiConfig(const isla::server::ai_gateway::OpenAiResponsesClientConfig& config) {
+    const isla::server::ai_gateway::OpenAiResponsesClientConfig defaults;
+    return config.enabled == defaults.enabled && config.api_key == defaults.api_key &&
+           config.scheme == defaults.scheme && config.host == defaults.host &&
+           config.port == defaults.port && config.target == defaults.target &&
+           config.organization == defaults.organization && config.project == defaults.project &&
+           config.trusted_ca_cert_pem == defaults.trusted_ca_cert_pem &&
+           config.request_timeout == defaults.request_timeout &&
+           config.user_agent == defaults.user_agent;
+}
+
+absl::Status ValidateUnsupportedLegacyOverrides(const MemoryBenchmarkRunConfig& config) {
+    std::vector<std::string> unsupported_fields;
+    if (!IsDefaultLlmRuntimeConfig(config.llm_runtime_config)) {
+        unsupported_fields.push_back("llm_runtime_config");
+    }
+    if (!IsDefaultOllamaConfig(config.ollama_config)) {
+        unsupported_fields.push_back("ollama_config");
+    }
+    if (!IsDefaultOpenAiConfig(config.openai_config)) {
+        unsupported_fields.push_back("openai_config");
+    }
+    if (config.llm_client != nullptr) {
+        unsupported_fields.push_back("llm_client");
+    }
+    if (config.openai_client != nullptr) {
+        unsupported_fields.push_back("openai_client");
+    }
+    if (config.max_rendered_system_prompt_bytes.has_value()) {
+        unsupported_fields.push_back("max_rendered_system_prompt_bytes");
+    }
+    if (config.max_rendered_working_memory_context_bytes.has_value()) {
+        unsupported_fields.push_back("max_rendered_working_memory_context_bytes");
+    }
+    if (config.max_rendered_prompt_bytes.has_value()) {
+        unsupported_fields.push_back("max_rendered_prompt_bytes");
+    }
+    if (unsupported_fields.empty()) {
+        return absl::OkStatus();
+    }
+    return absl::InvalidArgumentError(absl::StrCat(
+        "MemoryBenchmarkRunConfig legacy local-execution fields are unsupported in live-gateway "
+        "mode: ",
+        absl::StrJoin(unsupported_fields, ", "),
+        ". Configure the running gateway server instead."));
+}
+
+LiveEvalRunnerConfig BuildLiveEvalRunnerConfig(const MemoryBenchmarkRunConfig& config) {
+    return LiveEvalRunnerConfig{
+        .host = config.live_gateway_host,
+        .port = config.live_gateway_port,
+        .path = config.live_gateway_path,
+        .operation_timeout = config.live_gateway_operation_timeout,
+        .turn_completion_timeout = config.live_gateway_turn_completion_timeout,
+    };
+}
+
 } // namespace
 
 std::string SanitizeCaseIdForFilename(std::string_view case_id) {
@@ -132,6 +199,7 @@ ordered_json BuildMemoryBenchmarkReportJson(const MemoryBenchmarkReport& report)
         case_json["final_reply"] = case_report.final_reply;
         case_json["expected_answer"] = case_report.expected_answer;
         case_json["artifact_path"] = case_report.artifact_path;
+        case_json["failure"] = FailureToJson(case_report.failure);
         if (!case_report.metadata.is_null()) {
             case_json["metadata"] = case_report.metadata;
         }
@@ -156,6 +224,9 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
     if (suite.cases.empty()) {
         return absl::InvalidArgumentError("benchmark suite must include at least one case");
     }
+    if (const absl::Status status = ValidateUnsupportedLegacyOverrides(config); !status.ok()) {
+        return status;
+    }
 
     // Validate required per-case fields early so adapters get clear, case-indexed errors.
     for (std::size_t i = 0; i < suite.cases.size(); ++i) {
@@ -168,19 +239,6 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
             return absl::InvalidArgumentError(absl::StrCat("case ", i, " (", eval_case.case_id,
                                                            "): session_id must not be empty"));
         }
-    }
-
-    // Set up OpenAI client.
-    auto openai_client = std::move(config.openai_client);
-    if (openai_client == nullptr) {
-        openai_client = CreateOpenAiResponsesClient(config.openai_config);
-    }
-    if (const absl::Status validate_status = openai_client->Validate(); !validate_status.ok()) {
-        return validate_status;
-    }
-    if (const absl::Status warmup_status = openai_client->WarmUp(); !warmup_status.ok()) {
-        LOG(WARNING) << suite.benchmark_name << " benchmark OpenAI warmup failed detail='"
-                     << warmup_status.message() << "'";
     }
 
     // Set up output directory.
@@ -205,6 +263,7 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
     report.output_directory = DisplayPath(config.output_directory);
     report.total_cases = suite.cases.size();
     report.cases.reserve(suite.cases.size());
+    const LiveEvalRunner runner(BuildLiveEvalRunnerConfig(config));
 
     for (std::size_t case_idx = 0; case_idx < suite.cases.size(); ++case_idx) {
         const MemoryBenchmarkCase& benchmark_case = suite.cases[case_idx];
@@ -218,38 +277,34 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
                   << suite.cases.size() << " id=" << eval_case.case_id
                   << " conversation_turns=" << eval_case.conversation.size();
 
-        isla::server::ai_gateway::GatewayStubResponderConfig responder_config{
-            .response_delay = 0ms,
-            .async_emit_timeout = 30s,
-            .llm_runtime_config = config.llm_runtime_config,
-            .openai_config = config.openai_config,
-            .openai_client = openai_client,
-        };
-        if (config.max_rendered_system_prompt_bytes.has_value()) {
-            responder_config.max_rendered_system_prompt_bytes =
-                *config.max_rendered_system_prompt_bytes;
-        }
-        if (config.max_rendered_working_memory_context_bytes.has_value()) {
-            responder_config.max_rendered_working_memory_context_bytes =
-                *config.max_rendered_working_memory_context_bytes;
-        }
-        responder_config.max_rendered_prompt_bytes = config.max_rendered_prompt_bytes;
-
-        EvalRunner runner(EvalRunnerConfig{
-            .responder_config = std::move(responder_config),
-            .telemetry_sink = config.telemetry_sink,
-        });
-
         MemoryBenchmarkCaseReport case_report{
             .case_id = eval_case.case_id,
             .expected_answer = eval_case.expected_answer,
             .metadata = benchmark_case.metadata,
         };
 
+        const std::filesystem::path artifact_path =
+            artifacts_directory / (SanitizeCaseIdForFilename(eval_case.case_id) + ".json");
+
         const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(eval_case);
         if (!artifacts.ok()) {
             LOG(WARNING) << suite.benchmark_name << " case " << eval_case.case_id
                          << " failed: " << artifacts.status().message();
+            case_report.failure = FailureFromStatus(artifacts.status());
+            ordered_json case_artifact = ordered_json::object();
+            case_artifact["case"] = BuildCaseArtifactJson(benchmark_case);
+            case_artifact["artifacts"] = nullptr;
+            case_artifact["final_reply"] = nullptr;
+            case_artifact["expected_answer"] = eval_case.expected_answer;
+            case_artifact["failure"] = FailureToJson(case_report.failure);
+
+            if (const absl::Status write_status = WriteJsonFile(artifact_path, case_artifact);
+                !write_status.ok()) {
+                LOG(WARNING) << suite.benchmark_name << " failed to write artifact for case "
+                             << eval_case.case_id << ": " << write_status.message();
+            } else {
+                case_report.artifact_path = DisplayPath(artifact_path);
+            }
             report.failed_cases += 1U;
             report.cases.push_back(std::move(case_report));
             continue;
@@ -258,6 +313,7 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
         if (artifacts->final_reply.has_value() && !artifacts->final_reply->empty()) {
             case_report.final_reply = artifacts->final_reply;
         }
+        case_report.failure = artifacts->failure;
 
         // A case "passes" if the turn completed successfully with a non-empty reply. Actual answer
         // evaluation against expected_answer is deferred to Phase 5 (autoraters).
@@ -266,13 +322,12 @@ absl::StatusOr<MemoryBenchmarkReport> RunMemoryBenchmark(MemoryBenchmarkRunConfi
 
         // Write per-case artifact file. Sanitize case_id to prevent path traversal or
         // invalid filenames; the original case_id is preserved in the JSON content.
-        const std::filesystem::path artifact_path =
-            artifacts_directory / (SanitizeCaseIdForFilename(eval_case.case_id) + ".json");
         ordered_json case_artifact = ordered_json::object();
         case_artifact["case"] = BuildCaseArtifactJson(benchmark_case);
         case_artifact["artifacts"] = EvalArtifactsToJson(*artifacts);
         case_artifact["final_reply"] = case_report.final_reply;
         case_artifact["expected_answer"] = eval_case.expected_answer;
+        case_artifact["failure"] = FailureToJson(case_report.failure);
 
         if (const absl::Status write_status = WriteJsonFile(artifact_path, case_artifact);
             !write_status.ok()) {

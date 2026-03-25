@@ -75,6 +75,22 @@ TEST(AiGatewaySessionHandlerTest, SessionStartEmitsSessionStarted) {
     EXPECT_EQ(std::get<protocol::SessionStartedMessage>(*frame).session_id, "srv_test");
 }
 
+TEST(AiGatewaySessionHandlerTest, SessionStartParsesOptionalReplayTimestamps) {
+    GatewaySessionHandler handler("srv_test");
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"session.start","session_start_time":"2026-03-14T09:59:00Z","evaluation_reference_time":"2026-03-20T08:00:00Z"})json");
+
+    ASSERT_TRUE(result.ok);
+    ASSERT_TRUE(result.session_started.has_value());
+    ASSERT_TRUE(result.session_started->session_start_time.has_value());
+    ASSERT_TRUE(result.session_started->evaluation_reference_time.has_value());
+    EXPECT_EQ(*result.session_started->session_start_time,
+              isla::server::memory::ParseTimestamp("2026-03-14T09:59:00Z"));
+    EXPECT_EQ(*result.session_started->evaluation_reference_time,
+              isla::server::memory::ParseTimestamp("2026-03-20T08:00:00Z"));
+}
+
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateSessionStart) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
@@ -130,6 +146,51 @@ TEST(AiGatewaySessionHandlerTest, AcceptsTextInputAsApplicationEvent) {
     EXPECT_EQ(result.accepted_turn->telemetry_context->turn_id, "turn_1");
 }
 
+TEST(AiGatewaySessionHandlerTest, AcceptsTextInputCreateTimeAsApplicationEvent) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"text.input","turn_id":"turn_1","text":"hello","create_time":"2026-03-15T11:30:00Z"})json");
+
+    ASSERT_TRUE(result.ok);
+    ASSERT_TRUE(result.accepted_turn.has_value());
+    ASSERT_TRUE(result.accepted_turn->create_time.has_value());
+    EXPECT_EQ(*result.accepted_turn->create_time,
+              isla::server::memory::ParseTimestamp("2026-03-15T11:30:00Z"));
+}
+
+TEST(AiGatewaySessionHandlerTest, AcceptsTranscriptSeedAsApplicationEvent) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"assistant","text":"seeded context"})json");
+
+    ASSERT_TRUE(result.ok);
+    EXPECT_TRUE(result.outgoing_frames.empty());
+    ASSERT_TRUE(result.transcript_seed.has_value());
+    EXPECT_EQ(result.transcript_seed->session_id, "srv_test");
+    EXPECT_EQ(result.transcript_seed->turn_id, "turn_seed");
+    EXPECT_EQ(result.transcript_seed->role, "assistant");
+    EXPECT_EQ(result.transcript_seed->text, "seeded context");
+    EXPECT_FALSE(result.accepted_turn.has_value());
+}
+
+TEST(AiGatewaySessionHandlerTest, AcceptsTranscriptSeedCreateTimeAsApplicationEvent) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"assistant","text":"seeded context","create_time":"2026-03-14T10:00:05Z"})json");
+
+    ASSERT_TRUE(result.ok);
+    ASSERT_TRUE(result.transcript_seed.has_value());
+    ASSERT_TRUE(result.transcript_seed->create_time.has_value());
+    EXPECT_EQ(*result.transcript_seed->create_time,
+              isla::server::memory::ParseTimestamp("2026-03-14T10:00:05Z"));
+}
+
 TEST(AiGatewaySessionHandlerTest, AcceptedTurnNotifiesCustomTelemetrySink) {
     auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
     GatewaySessionHandler handler("srv_test", telemetry_sink);
@@ -175,6 +236,29 @@ TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
     EXPECT_EQ(*error.turn_id, "turn_2");
 }
 
+TEST(AiGatewaySessionHandlerTest, RejectsTranscriptSeedWhileLiveTurnIsActive) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok);
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"user","text":"blocked"})json");
+
+    EXPECT_FALSE(result.ok);
+    ASSERT_EQ(result.outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    ASSERT_TRUE(error.turn_id.has_value());
+    EXPECT_EQ(*error.turn_id, "turn_seed");
+    EXPECT_EQ(error.message, "transcript.seed is not allowed while a live turn is active");
+}
+
 TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextInputBeforeTurnAcceptance) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
@@ -199,6 +283,24 @@ TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextInputBeforeTurnAcceptance)
     ASSERT_TRUE(error.turn_id.has_value());
     EXPECT_EQ(*error.turn_id, "turn_1");
     EXPECT_EQ(error.message, "text.input text exceeds maximum length");
+}
+
+TEST(AiGatewaySessionHandlerTest, EmitsTranscriptSeededAcknowledgement) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const absl::StatusOr<EmitResult> result =
+        handler.EmitTranscriptSeeded("turn_seed", "assistant");
+
+    ASSERT_TRUE(result.ok()) << result.status().ToString();
+    ASSERT_EQ(result->outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result->outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TranscriptSeededMessage>(*frame));
+    const auto& seeded = std::get<protocol::TranscriptSeededMessage>(*frame);
+    EXPECT_EQ(seeded.turn_id, "turn_seed");
+    EXPECT_EQ(seeded.role, "assistant");
 }
 
 TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
@@ -354,7 +456,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsServerOwnedInboundMessages) {
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
-        R"json({"type":"text.output","turn_id":"turn_1","text":"x"})json");
+        R"json({"type":"transcript.seeded","turn_id":"turn_1","role":"assistant"})json");
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
@@ -438,6 +540,23 @@ TEST(AiGatewaySessionHandlerTest, ParseFailureReturnsErrorFrame) {
     const auto& error = std::get<protocol::ErrorMessage>(*frame);
     EXPECT_FALSE(error.session_id.has_value());
     EXPECT_EQ(error.code, "bad_request");
+}
+
+TEST(AiGatewaySessionHandlerTest, InvalidReplayTimestampReturnsErrorFrame) {
+    GatewaySessionHandler handler("srv_test");
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"session.start","session_start_time":"not-a-timestamp"})json");
+
+    EXPECT_FALSE(result.ok);
+    ASSERT_EQ(result.outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_EQ(error.code, "bad_request");
+    EXPECT_NE(error.message.find("session_start_time is not a valid timestamp"), std::string::npos);
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTextOutput) {

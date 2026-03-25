@@ -40,21 +40,24 @@ bool IsLongMemEvalTimestampText(std::string_view text) {
     if (text.size() != 22U) {
         return false;
     }
-    return std::isdigit(static_cast<unsigned char>(text[0])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(text[1])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(text[2])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(text[3])) != 0 && text[4] == '/' &&
-           std::isdigit(static_cast<unsigned char>(text[5])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(text[6])) != 0 && text[7] == '/' &&
-           std::isdigit(static_cast<unsigned char>(text[8])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(text[9])) != 0 && text[10] == ' ' &&
-           text[11] == '(' && std::isalpha(static_cast<unsigned char>(text[12])) != 0 &&
-           std::isalpha(static_cast<unsigned char>(text[13])) != 0 &&
-           std::isalpha(static_cast<unsigned char>(text[14])) != 0 && text[15] == ')' &&
-           text[16] == ' ' && std::isdigit(static_cast<unsigned char>(text[17])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(text[18])) != 0 && text[19] == ':' &&
-           std::isdigit(static_cast<unsigned char>(text[20])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(text[21])) != 0;
+
+    const auto is_digit = [text](std::size_t index) {
+        return std::isdigit(static_cast<unsigned char>(text[index])) != 0;
+    };
+    const auto is_alpha = [text](std::size_t index) {
+        return std::isalpha(static_cast<unsigned char>(text[index])) != 0;
+    };
+
+    return
+        // YYYY/MM/DD
+        is_digit(0) && is_digit(1) && is_digit(2) && is_digit(3) && text[4] == '/' && is_digit(5) &&
+        is_digit(6) && text[7] == '/' && is_digit(8) && is_digit(9) &&
+        //  (Dow)
+        text[10] == ' ' && text[11] == '(' && is_alpha(12) && is_alpha(13) && is_alpha(14) &&
+        text[15] == ')' &&
+        //  HH:MM
+        text[16] == ' ' && is_digit(17) && is_digit(18) && text[19] == ':' && is_digit(20) &&
+        is_digit(21);
 }
 
 } // namespace

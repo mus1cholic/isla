@@ -14,6 +14,8 @@ enum class MessageType {
     SessionStarted,
     SessionEnd,
     SessionEnded,
+    TranscriptSeed,
+    TranscriptSeeded,
     TextInput,
     TextOutput,
     AudioOutput,
@@ -25,6 +27,8 @@ enum class MessageType {
 
 struct SessionStartMessage {
     std::optional<std::string> client_session_id;
+    std::optional<std::string> session_start_time;
+    std::optional<std::string> evaluation_reference_time;
 };
 
 struct SessionStartedMessage {
@@ -39,9 +43,22 @@ struct SessionEndedMessage {
     std::string session_id;
 };
 
+struct TranscriptSeedMessage {
+    std::string turn_id;
+    std::string role;
+    std::string text;
+    std::optional<std::string> create_time;
+};
+
+struct TranscriptSeededMessage {
+    std::string turn_id;
+    std::string role;
+};
+
 struct TextInputMessage {
     std::string turn_id;
     std::string text;
+    std::optional<std::string> create_time;
 };
 
 struct TextOutputMessage {
@@ -76,8 +93,9 @@ struct ErrorMessage {
 
 using GatewayMessage =
     std::variant<SessionStartMessage, SessionStartedMessage, SessionEndMessage, SessionEndedMessage,
-                 TextInputMessage, TextOutputMessage, AudioOutputMessage, TurnCompletedMessage,
-                 TurnCancelMessage, TurnCancelledMessage, ErrorMessage>;
+                 TranscriptSeedMessage, TranscriptSeededMessage, TextInputMessage,
+                 TextOutputMessage, AudioOutputMessage, TurnCompletedMessage, TurnCancelMessage,
+                 TurnCancelledMessage, ErrorMessage>;
 
 [[nodiscard]] const char* message_type_name(MessageType type);
 [[nodiscard]] std::optional<MessageType> parse_message_type(std::string_view type_name);

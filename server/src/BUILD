@@ -22,6 +22,7 @@ cc_library(
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
         ":gemini_api_embedding_client",
+        ":ollama_llm_client",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
@@ -62,6 +63,23 @@ cc_library(
 )
 
 cc_library(
+    name = "live_eval_runner",
+    srcs = ["evals/live_eval_runner.cpp"],
+    hdrs = ["evals/live_eval_runner.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//client/src:ai_gateway_client_session",
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+cc_library(
     name = "eval_runner",
     srcs = ["evals/eval_runner.cpp"],
     visibility = ["//visibility:public"],
@@ -80,6 +98,18 @@ cc_library(
 cc_library(
     name = "eval_json",
     srcs = ["evals/eval_json.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
+    name = "eval_failure_utils",
+    srcs = ["evals/eval_failure_utils.cpp"],
+    hdrs = ["evals/eval_failure_utils.hpp"],
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
@@ -119,10 +149,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
-        "//server/memory/src:prompt_loader",
+        ":eval_failure_utils",
+        "//server/memory/src:memory_types",
         ":eval_json",
-        ":eval_runner",
-        ":openai_responses_client",
+        ":live_eval_runner",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/log:log",
@@ -136,9 +166,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":eval_failure_utils",
         ":eval_json",
-        ":eval_runner",
-        ":openai_responses_client",
+        ":live_eval_runner",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -192,6 +222,21 @@ cc_library(
         ":openai_responses_client",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
+    name = "ollama_llm_client",
+    srcs = ["ollama_llm_client.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":http_json_client",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@boost.beast//:boost.beast",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 
@@ -321,6 +366,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
         "//shared/src:ai_gateway_protocol",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -423,6 +469,7 @@ cc_binary(
         ":ai_gateway_logging_utils",
         ":ai_gateway_server",
         ":ai_gateway_stub_responder",
+        ":ollama_llm_client",
         "//server/memory/src:supabase_memory_store",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:initialize",
@@ -438,11 +485,9 @@ cc_binary(
     tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
-        ":ai_gateway_startup_config",
         ":benchmark_cli_utils",
         ":isla_custom_memory_benchmark",
         "@abseil-cpp//absl/log:initialize",
-        "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
     ],
 )
@@ -452,7 +497,10 @@ cc_test(
     srcs = ["evals/memory_benchmark_runner_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_store",
         ":memory_benchmark_runner",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
         ":openai_responses_test_utils",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -622,6 +670,18 @@ cc_test(
 )
 
 cc_test(
+    name = "ollama_llm_client_test",
+    srcs = ["ollama_llm_client_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":ollama_llm_client",
+        "@boost.beast//:boost.beast",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
     name = "http_json_client_test",
     srcs = ["http_json_client_test.cpp"],
     deps = [
@@ -683,10 +743,27 @@ cc_test(
 )
 
 cc_test(
+    name = "live_eval_runner_test",
+    srcs = ["evals/live_eval_runner_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_store",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
+        ":live_eval_runner",
+        ":openai_responses_test_utils",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "isla_custom_memory_benchmark_test",
     srcs = ["evals/isla_custom_memory_benchmark_test.cpp"],
     deps = [
+        "//server/memory/src:memory_store",
         ":isla_custom_memory_benchmark",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
@@ -765,7 +842,12 @@ cc_test(
 
 cc_test(
     name = "ai_gateway_stub_responder_test",
-    srcs = ["ai_gateway_stub_responder_test.cpp"],
+    srcs = [
+        "ai_gateway_stub_responder_concurrency_test.cpp",
+        "ai_gateway_stub_responder_mid_term_memory_test.cpp",
+        "ai_gateway_stub_responder_test.cpp",
+        "ai_gateway_stub_responder_test_support.hpp",
+    ],
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_server",
