@@ -1,5 +1,6 @@
 #include "isla/server/ollama_llm_client.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -320,7 +321,14 @@ BuildToolMessagesForRequest(std::string_view system_prompt, std::string_view use
             "ollama tool call request must include user_text or continuation_token");
     }
 
+    std::vector<std::string_view> seen_call_ids;
+    seen_call_ids.reserve(tool_outputs.size());
     for (const LlmFunctionCallOutput& tool_output : tool_outputs) {
+        if (std::find(seen_call_ids.begin(), seen_call_ids.end(), tool_output.call_id) !=
+            seen_call_ids.end()) {
+            return invalid_argument(
+                "ollama tool outputs must cover each pending tool call exactly once");
+        }
         const auto pending_it =
             std::find_if(state.pending_tool_calls.begin(), state.pending_tool_calls.end(),
                          [&tool_output](const OllamaPendingToolCall& pending_tool_call) {
@@ -329,11 +337,19 @@ BuildToolMessagesForRequest(std::string_view system_prompt, std::string_view use
         if (pending_it == state.pending_tool_calls.end()) {
             return invalid_argument("ollama tool output must match a pending tool call");
         }
+        seen_call_ids.push_back(tool_output.call_id);
         messages.push_back(json{
             { "role", "tool" },
             { "tool_name", pending_it->tool_name },
             { "content", tool_output.output },
         });
+    }
+    for (const OllamaPendingToolCall& pending_tool_call : state.pending_tool_calls) {
+        if (std::find(seen_call_ids.begin(), seen_call_ids.end(), pending_tool_call.call_id) ==
+            seen_call_ids.end()) {
+            return invalid_argument(
+                "ollama tool outputs must cover each pending tool call exactly once");
+        }
     }
 
     return messages;

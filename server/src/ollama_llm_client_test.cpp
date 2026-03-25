@@ -489,6 +489,88 @@ TEST(OllamaLlmClientTest, RunToolCallRoundReplaysContinuationTokenAcrossRounds) 
     EXPECT_EQ(second_request_body.at("messages")[3].at("content"), "22C");
 }
 
+TEST(OllamaLlmClientTest, RunToolCallRoundRejectsDuplicateToolOutputCallIds) {
+    const std::string first_response_body = R"json({
+        "created_at":"resp_round_1",
+        "message":{
+            "role":"assistant",
+            "tool_calls":[
+                {
+                    "function":{
+                        "name":"lookup_weather",
+                        "arguments":{"city":"San Francisco"}
+                    }
+                },
+                {
+                    "function":{
+                        "name":"read_calendar",
+                        "arguments":{}
+                    }
+                }
+            ]
+        },
+        "done":true
+    })json";
+    ScriptedHttpServer server({ MakeJsonResponse(200, "OK", first_response_body) });
+    const absl::StatusOr<std::shared_ptr<const LlmClient>> client =
+        CreateOllamaLlmClient(OllamaLlmClientConfig{
+            .enabled = true,
+            .base_url = "http://127.0.0.1:" + std::to_string(server.port()),
+        });
+    ASSERT_TRUE(client.ok()) << client.status();
+
+    const std::vector<LlmFunctionTool> function_tools = {
+        LlmFunctionTool{
+            .name = "lookup_weather",
+            .description = "Look up the weather.",
+            .parameters_json_schema =
+                R"({"type":"object","properties":{"city":{"type":"string"}}})",
+            .strict = true,
+        },
+        LlmFunctionTool{
+            .name = "read_calendar",
+            .description = "Read the next calendar event.",
+            .parameters_json_schema = R"({"type":"object","properties":{}})",
+            .strict = true,
+        },
+    };
+
+    const absl::StatusOr<LlmToolCallResponse> first_round =
+        (*client)->RunToolCallRound(LlmToolCallRequest{
+            .model = "qwen3:4b",
+            .user_text = "hello",
+            .function_tools = std::span<const LlmFunctionTool>(function_tools),
+        });
+    ASSERT_TRUE(first_round.ok()) << first_round.status();
+    ASSERT_EQ(first_round->tool_calls.size(), 2U);
+    ASSERT_TRUE(server.WaitForRequests(1U));
+
+    const std::vector<LlmFunctionCallOutput> duplicate_tool_outputs = {
+        LlmFunctionCallOutput{
+            .call_id = first_round->tool_calls[0].call_id,
+            .output = "22C",
+        },
+        LlmFunctionCallOutput{
+            .call_id = first_round->tool_calls[0].call_id,
+            .output = "calendar item",
+        },
+    };
+
+    const absl::StatusOr<LlmToolCallResponse> second_round =
+        (*client)->RunToolCallRound(LlmToolCallRequest{
+            .model = "qwen3:4b",
+            .function_tools = std::span<const LlmFunctionTool>(function_tools),
+            .tool_outputs = std::span<const LlmFunctionCallOutput>(duplicate_tool_outputs),
+            .continuation_token = first_round->continuation_token,
+        });
+
+    ASSERT_FALSE(second_round.ok());
+    EXPECT_EQ(second_round.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(second_round.status().message(),
+              "ollama tool outputs must cover each pending tool call exactly once");
+    ASSERT_TRUE(server.WaitForRequests(1U));
+}
+
 TEST(OllamaLlmClientTest, RunToolCallRoundRejectsOversizedAggregatedOutput) {
     const std::string response_body =
         json{
