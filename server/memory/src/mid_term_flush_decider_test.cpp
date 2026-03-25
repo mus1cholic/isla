@@ -423,6 +423,20 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsEmptyLlmResponse) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LlmMidTermFlushDeciderTest, DecideStripsMarkdownCodeFencesAndRetries) {
+    const std::string response = "```json\n"
+                                 R"({"should_flush": false})"
+                                 "\n```";
+    const DeciderWithFake built = MakeDecider(response);
+    ASSERT_NE(built.decider, nullptr);
+
+    const Conversation conversation = MakeSimpleConversation();
+    const absl::StatusOr<MidTermFlushDecision> decision = built.decider->Decide(conversation);
+
+    ASSERT_TRUE(decision.ok()) << decision.status();
+    EXPECT_FALSE(decision->should_flush);
+}
+
 TEST(LlmMidTermFlushDeciderTest, FactorySucceedsWithValidInputs) {
     auto fake = std::make_shared<isla::server::test::MockLlmClient>();
     absl::StatusOr<MidTermFlushDeciderPtr> decider =

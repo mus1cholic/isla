@@ -16,6 +16,7 @@
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/embedding_client.hpp"
 #include "isla/server/llm_client.hpp"
+#include "isla/server/memory/llm_json_utils.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 #include "nlohmann/json.hpp"
 
@@ -89,8 +90,20 @@ absl::StatusOr<CompactedMidTermEpisode> ParseCompactorResponse(const std::string
     try {
         response = json::parse(response_text);
     } catch (const json::parse_error& error) {
-        return invalid_argument(std::string("mid-term compactor returned invalid JSON: ") +
-                                error.what());
+        // Fallback: some models wrap JSON in markdown code fences despite prompt instructions.
+        const std::string stripped = StripMarkdownCodeFences(response_text);
+        if (stripped == response_text) {
+            return invalid_argument(std::string("mid-term compactor returned invalid JSON: ") +
+                                    error.what());
+        }
+        try {
+            response = json::parse(stripped);
+        } catch (const json::parse_error& inner_error) {
+            return invalid_argument(
+                std::string(
+                    "mid-term compactor returned invalid JSON (after stripping code fences): ") +
+                inner_error.what());
+        }
     }
 
     constexpr std::array<std::string_view, 5> kExpectedFields = {

@@ -121,10 +121,29 @@ cc_library(
 )
 
 cc_library(
+    name = "llm_json_utils",
+    srcs = ["llm_json_utils.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/memory/include/isla/server/memory:memory_headers",
+    ],
+)
+
+cc_test(
+    name = "llm_json_utils_test",
+    srcs = ["llm_json_utils_test.cpp"],
+    deps = [
+        ":llm_json_utils",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_library(
     name = "mid_term_flush_decider",
     srcs = ["mid_term_flush_decider.cpp"],
     visibility = ["//visibility:public"],
     deps = [
+        ":llm_json_utils",
         ":memory_types",
         ":prompt_loader",
         "//server/memory/include/isla/server/memory:memory_headers",
@@ -142,6 +161,7 @@ cc_library(
     srcs = ["mid_term_compactor.cpp"],
     visibility = ["//visibility:public"],
     deps = [
+        ":llm_json_utils",
         ":memory_types",
         ":prompt_loader",
         "//server/memory/include/isla/server/memory:memory_headers",

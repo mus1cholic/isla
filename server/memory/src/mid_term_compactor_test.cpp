@@ -535,6 +535,28 @@ TEST(LlmMidTermCompactorTest, CompactRejectsEmptyLlmResponse) {
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LlmMidTermCompactorTest, CompactStripsMarkdownCodeFencesAndRetries) {
+    const std::string response = "```json\n"
+                                 R"({
+        "tier1_detail": "Stripped from code fences.",
+        "tier2_summary": "The model wrapped JSON in markdown fences.",
+        "tier3_ref": "Handled a code-fenced LLM response.",
+        "tier3_keywords": ["markdown", "code fence", "json", "fallback", "parse"],
+        "salience": 5
+    })"
+                                 "\n```";
+    const CompactorWithFake built = MakeCompactor(response);
+    ASSERT_NE(built.compactor, nullptr);
+
+    const absl::StatusOr<CompactedMidTermEpisode> compacted =
+        built.compactor->Compact(MakeCompactionRequest());
+
+    ASSERT_TRUE(compacted.ok()) << compacted.status();
+    ASSERT_TRUE(compacted->tier1_detail.has_value());
+    EXPECT_EQ(*compacted->tier1_detail, "Stripped from code fences.");
+    EXPECT_EQ(compacted->salience, 5);
+}
+
 TEST(LlmMidTermCompactorTest, FactorySucceedsWithValidInputs) {
     auto fake = std::make_shared<isla::server::test::MockLlmClient>();
     absl::StatusOr<MidTermCompactorPtr> compactor = CreateLlmMidTermCompactor(fake, "gpt-4o-mini");
