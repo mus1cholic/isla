@@ -284,14 +284,11 @@ class RecordingLiveEvalSession final {
         std::stable_sort(
             sorted.begin(), sorted.end(),
             [](const EvalReplayEventArtifact& lhs, const EvalReplayEventArtifact& rhs) {
-                if (lhs.timestamp.has_value() && rhs.timestamp.has_value()) {
-                    return *lhs.timestamp < *rhs.timestamp;
+                if (lhs.timestamp.has_value() != rhs.timestamp.has_value()) {
+                    return lhs.timestamp.has_value();
                 }
                 if (lhs.timestamp.has_value()) {
-                    return true;
-                }
-                if (rhs.timestamp.has_value()) {
-                    return false;
+                    return *lhs.timestamp < *rhs.timestamp;
                 }
                 return false;
             });
