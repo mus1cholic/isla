@@ -84,11 +84,12 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
             const absl::StatusOr<EmitResult> emit =
                 handler_.EmitError(result.transcript_seed->turn_id,
                                    TranscriptSeedErrorCode(seed_status), seed_status.message());
-            if (emit.ok()) {
-                result.outgoing_frames.insert(result.outgoing_frames.end(),
-                                              emit->outgoing_frames.begin(),
-                                              emit->outgoing_frames.end());
+            if (!emit.ok()) {
+                return emit.status();
             }
+            result.outgoing_frames.insert(result.outgoing_frames.end(),
+                                          emit->outgoing_frames.begin(),
+                                          emit->outgoing_frames.end());
             result.ok = false;
             result.error_message = std::string(seed_status.message());
         } else {
