@@ -63,6 +63,23 @@ cc_library(
 )
 
 cc_library(
+    name = "live_eval_runner",
+    srcs = ["evals/live_eval_runner.cpp"],
+    hdrs = ["evals/live_eval_runner.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//client/src:ai_gateway_client_session",
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+cc_library(
     name = "eval_runner",
     srcs = ["evals/eval_runner.cpp"],
     visibility = ["//visibility:public"],
@@ -81,6 +98,18 @@ cc_library(
 cc_library(
     name = "eval_json",
     srcs = ["evals/eval_json.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
+    name = "eval_failure_utils",
+    srcs = ["evals/eval_failure_utils.cpp"],
+    hdrs = ["evals/eval_failure_utils.hpp"],
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
@@ -120,10 +149,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
-        "//server/memory/src:prompt_loader",
+        ":eval_failure_utils",
+        "//server/memory/src:memory_types",
         ":eval_json",
-        ":eval_runner",
-        ":openai_responses_client",
+        ":live_eval_runner",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/log:log",
@@ -137,9 +166,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":eval_failure_utils",
         ":eval_json",
-        ":eval_runner",
-        ":openai_responses_client",
+        ":live_eval_runner",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -337,6 +366,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
         "//shared/src:ai_gateway_protocol",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -455,11 +485,9 @@ cc_binary(
     tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
-        ":ai_gateway_startup_config",
         ":benchmark_cli_utils",
         ":isla_custom_memory_benchmark",
         "@abseil-cpp//absl/log:initialize",
-        "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
     ],
 )
@@ -469,7 +497,10 @@ cc_test(
     srcs = ["evals/memory_benchmark_runner_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_store",
         ":memory_benchmark_runner",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
         ":openai_responses_test_utils",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
@@ -712,10 +743,27 @@ cc_test(
 )
 
 cc_test(
+    name = "live_eval_runner_test",
+    srcs = ["evals/live_eval_runner_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_store",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
+        ":live_eval_runner",
+        ":openai_responses_test_utils",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "isla_custom_memory_benchmark_test",
     srcs = ["evals/isla_custom_memory_benchmark_test.cpp"],
     deps = [
+        "//server/memory/src:memory_store",
         ":isla_custom_memory_benchmark",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],

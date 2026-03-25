@@ -31,6 +31,10 @@ class GatewayApplicationEventSink {
     virtual ~GatewayApplicationEventSink() = default;
 
     virtual void OnSessionStarted(const SessionStartedEvent& event) = 0;
+    [[nodiscard]] virtual absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) {
+        static_cast<void>(event);
+        return absl::UnimplementedError("transcript seeding is unsupported");
+    }
     virtual void OnTurnAccepted(const TurnAcceptedEvent& event) = 0;
     virtual void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) = 0;
     virtual void OnSessionClosed(const SessionClosedEvent& event) = 0;
@@ -74,6 +78,7 @@ class GatewaySessionRegistry final : public GatewaySessionEventSink {
     void NotifyServerStopping();
 
     void OnSessionStarted(const SessionStartedEvent& event) override;
+    [[nodiscard]] absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;
     void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) override;
     void OnSessionClosed(const SessionClosedEvent& event) override;
