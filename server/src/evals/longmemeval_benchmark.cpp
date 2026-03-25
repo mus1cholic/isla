@@ -107,8 +107,17 @@ absl::StatusOr<MemoryBenchmarkCase> ParseBenchmarkCase(const json& entry, std::s
             " has mismatched haystack_session_ids, haystack_dates, and haystack_sessions lengths"));
     }
 
+    std::size_t total_turns = 0;
+    for (const auto& session_turns : **sessions_it) {
+        if (session_turns.is_array()) {
+            total_turns += session_turns.size();
+        }
+    }
+
     std::vector<EvalConversationMessage> conversation;
+    conversation.reserve(total_turns);
     std::vector<std::string> normalized_haystack_dates;
+    normalized_haystack_dates.reserve((**sessions_it).size());
     std::optional<Timestamp> session_start_time;
     json has_answer_locations = json::array();
     std::size_t flattened_turn_index = 0U;
