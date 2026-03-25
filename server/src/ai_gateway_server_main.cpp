@@ -251,7 +251,11 @@ int main(int argc, char** argv) {
                      ResolveMidTermCompactorModel(startup_config->llm_runtime_config))
               << " mid_term_embedding="
               << isla::server::ai_gateway::SanitizeForLog(
-                     ResolveMidTermEmbeddingModel(startup_config->llm_runtime_config));
+                     ResolveMidTermEmbeddingModel(startup_config->llm_runtime_config))
+              << " reasoning_effort="
+              << isla::server::ai_gateway::TryOpenAiReasoningEffortToString(
+                     startup_config->llm_runtime_config.reasoning_effort)
+                     .value_or("unknown");
     LOG(INFO) << "AI gateway generic llm provider="
               << (startup_config->ollama_config.enabled ? "ollama"
                   : (llm_client != nullptr)             ? "openai"

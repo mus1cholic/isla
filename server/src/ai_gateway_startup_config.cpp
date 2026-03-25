@@ -335,6 +335,19 @@ void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLoo
         embedding_model.has_value()) {
         parsed->llm_runtime_config.mid_term_embedding_model = *embedding_model;
     }
+    if (const std::optional<std::string> reasoning_effort =
+            env_lookup("AI_GATEWAY_REASONING_EFFORT");
+        reasoning_effort.has_value()) {
+        const std::optional<isla::server::ai_gateway::OpenAiReasoningEffort> effort =
+            isla::server::ai_gateway::TryParseOpenAiReasoningEffort(*reasoning_effort);
+        if (effort.has_value()) {
+            parsed->llm_runtime_config.reasoning_effort = *effort;
+        } else {
+            LOG(WARNING) << "AI gateway ignored invalid AI_GATEWAY_REASONING_EFFORT value='"
+                         << *reasoning_effort
+                         << "'; expected one of: none, minimal, low, medium, high, xhigh";
+        }
+    }
 }
 
 absl::Status ValidateOptionalModelOverride(std::string_view field_name, std::string_view value) {
@@ -733,6 +746,18 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                 return absl::InvalidArgumentError("mid-term-embedding-model must not be empty");
             }
             parsed.llm_runtime_config.mid_term_embedding_model = model;
+            continue;
+        }
+        constexpr std::string_view kReasoningEffortPrefix = "--reasoning-effort=";
+        if (argument.starts_with(kReasoningEffortPrefix)) {
+            const std::string value = argument.substr(kReasoningEffortPrefix.size());
+            const std::optional<isla::server::ai_gateway::OpenAiReasoningEffort> effort =
+                isla::server::ai_gateway::TryParseOpenAiReasoningEffort(value);
+            if (!effort.has_value()) {
+                return absl::InvalidArgumentError(
+                    "reasoning-effort must be one of: none, minimal, low, medium, high, xhigh");
+            }
+            parsed.llm_runtime_config.reasoning_effort = *effort;
             continue;
         }
         constexpr std::string_view kGeminiApiKeyPrefix = "--gemini-api-key=";

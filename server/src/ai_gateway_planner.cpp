@@ -11,7 +11,7 @@ constexpr std::string_view kMainStepName = "main";
 
 } // namespace
 
-absl::StatusOr<ExecutionPlan> CreateOpenAiPlan() {
+absl::StatusOr<ExecutionPlan> CreateOpenAiPlan(OpenAiReasoningEffort reasoning_effort) {
     const absl::StatusOr<std::string> system_prompt = isla::server::memory::LoadSystemPrompt();
     if (!system_prompt.ok()) {
         return system_prompt.status();
@@ -22,7 +22,7 @@ absl::StatusOr<ExecutionPlan> CreateOpenAiPlan() {
         .step_name = std::string(kMainStepName),
         .system_prompt = *system_prompt,
         .model = std::string(kDefaultMainLlmModel),
-        .reasoning_effort = OpenAiReasoningEffort::kMedium,
+        .reasoning_effort = reasoning_effort,
     });
     return plan;
 }
