@@ -70,6 +70,7 @@ cc_library(
     deps = [
         "//client/src:ai_gateway_client_session",
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
@@ -365,6 +366,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
         "//shared/src:ai_gateway_protocol",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",

@@ -137,7 +137,9 @@ class AiGatewayClientSession::Impl
         : config_(std::move(config)), resolver_(std::make_unique<tcp::resolver>(io_context_)),
           websocket_(std::make_unique<websocket::stream<tcp::socket>>(io_context_)) {}
 
-    absl::Status ConnectAndStart(std::optional<std::string> client_session_id) {
+    absl::Status ConnectAndStart(std::optional<std::string> client_session_id,
+                                 std::optional<std::string> session_start_time,
+                                 std::optional<std::string> evaluation_reference_time) {
         if (config_.host.empty()) {
             return invalid_argument("ai gateway host must be non-empty");
         }
@@ -174,15 +176,20 @@ class AiGatewayClientSession::Impl
 
         auto promise = std::make_shared<std::promise<absl::Status>>();
         std::future<absl::Status> future = promise->get_future();
-        asio::post(io_context_, [self = shared_from_this(), promise,
-                                 client_session_id = std::move(client_session_id)] {
-            if (self->closing_.load()) {
-                resolve_promise(promise, failed_precondition("ai gateway session is closing"));
-                return;
-            }
-            self->start_promise_ = promise;
-            self->DoResolve(std::move(client_session_id));
-        });
+        asio::post(
+            io_context_,
+            [self = shared_from_this(), promise, client_session_id = std::move(client_session_id),
+             session_start_time = std::move(session_start_time),
+             evaluation_reference_time = std::move(evaluation_reference_time)]() mutable {
+                if (self->closing_.load()) {
+                    self->resolve_promise(promise,
+                                          failed_precondition("ai gateway session is closing"));
+                    return;
+                }
+                self->start_promise_ = promise;
+                self->DoResolve(std::move(client_session_id), std::move(session_start_time),
+                                std::move(evaluation_reference_time));
+            });
 
         const absl::StatusOr<absl::Status> status =
             await_future(future, config_.operation_timeout, "ai gateway connect/start");
@@ -197,17 +204,20 @@ class AiGatewayClientSession::Impl
         return absl::OkStatus();
     }
 
-    absl::Status SendTextInput(std::string turn_id, std::string text) {
+    absl::Status SendTextInput(std::string turn_id, std::string text,
+                               std::optional<std::string> create_time) {
         if (turn_id.empty() || text.empty()) {
             return invalid_argument("ai gateway text input requires non-empty turn_id and text");
         }
         return SendMessage(protocol::TextInputMessage{
             .turn_id = std::move(turn_id),
             .text = std::move(text),
+            .create_time = std::move(create_time),
         });
     }
 
-    absl::Status SendTranscriptSeed(std::string turn_id, std::string role, std::string text) {
+    absl::Status SendTranscriptSeed(std::string turn_id, std::string role, std::string text,
+                                    std::optional<std::string> create_time) {
         if (turn_id.empty() || role.empty() || text.empty()) {
             return invalid_argument(
                 "ai gateway transcript seed requires non-empty turn_id, role, and text");
@@ -216,6 +226,7 @@ class AiGatewayClientSession::Impl
             .turn_id = std::move(turn_id),
             .role = std::move(role),
             .text = std::move(text),
+            .create_time = std::move(create_time),
         });
     }
 
@@ -382,10 +393,14 @@ class AiGatewayClientSession::Impl
         return *status;
     }
 
-    void DoResolve(std::optional<std::string> client_session_id) {
+    void DoResolve(std::optional<std::string> client_session_id,
+                   std::optional<std::string> session_start_time,
+                   std::optional<std::string> evaluation_reference_time) {
         resolver_->async_resolve(
             config_.host, std::to_string(config_.port),
-            [self = shared_from_this(), client_session_id = std::move(client_session_id)](
+            [self = shared_from_this(), client_session_id = std::move(client_session_id),
+             session_start_time = std::move(session_start_time),
+             evaluation_reference_time = std::move(evaluation_reference_time)](
                 const boost::system::error_code& error,
                 const tcp::resolver::results_type& results) mutable {
                 if (error) {
@@ -393,32 +408,43 @@ class AiGatewayClientSession::Impl
                         unavailable(format_error("ai gateway resolve failed", error)));
                     return;
                 }
-                self->DoConnect(results, std::move(client_session_id));
+                self->DoConnect(results, std::move(client_session_id),
+                                std::move(session_start_time),
+                                std::move(evaluation_reference_time));
             });
     }
 
     void DoConnect(const tcp::resolver::results_type& results,
-                   std::optional<std::string> client_session_id) {
+                   std::optional<std::string> client_session_id,
+                   std::optional<std::string> session_start_time,
+                   std::optional<std::string> evaluation_reference_time) {
         asio::async_connect(
             websocket_->next_layer(), results,
-            [self = shared_from_this(), client_session_id = std::move(client_session_id)](
+            [self = shared_from_this(), client_session_id = std::move(client_session_id),
+             session_start_time = std::move(session_start_time),
+             evaluation_reference_time = std::move(evaluation_reference_time)](
                 const boost::system::error_code& error, const tcp::endpoint& /*unused*/) mutable {
                 if (error) {
                     self->HandleIoFailure(
                         unavailable(format_error("ai gateway connect failed", error)));
                     return;
                 }
-                self->DoHandshake(std::move(client_session_id));
+                self->DoHandshake(std::move(client_session_id), std::move(session_start_time),
+                                  std::move(evaluation_reference_time));
             });
     }
 
-    void DoHandshake(std::optional<std::string> client_session_id) {
+    void DoHandshake(std::optional<std::string> client_session_id,
+                     std::optional<std::string> session_start_time,
+                     std::optional<std::string> evaluation_reference_time) {
         websocket_->set_option(
             websocket::stream_base::timeout::suggested(beast::role_type::client));
         websocket_->read_message_max(kMaxInboundWebSocketMessageBytes);
         websocket_->async_handshake(
             config_.host + ":" + std::to_string(config_.port), config_.path,
-            [self = shared_from_this(), client_session_id = std::move(client_session_id)](
+            [self = shared_from_this(), client_session_id = std::move(client_session_id),
+             session_start_time = std::move(session_start_time),
+             evaluation_reference_time = std::move(evaluation_reference_time)](
                 const boost::system::error_code& error) mutable {
                 if (error) {
                     self->HandleIoFailure(
@@ -433,6 +459,8 @@ class AiGatewayClientSession::Impl
                 self->QueueWrite(PendingWrite{
                     .frame = protocol::to_json_string(protocol::SessionStartMessage{
                         .client_session_id = std::move(client_session_id),
+                        .session_start_time = std::move(session_start_time),
+                        .evaluation_reference_time = std::move(evaluation_reference_time),
                     }),
                     .completion = nullptr,
                 });
@@ -705,17 +733,24 @@ AiGatewayClientSession::~AiGatewayClientSession() {
     }
 }
 
-absl::Status AiGatewayClientSession::ConnectAndStart(std::optional<std::string> client_session_id) {
-    return impl_->ConnectAndStart(std::move(client_session_id));
+absl::Status
+AiGatewayClientSession::ConnectAndStart(std::optional<std::string> client_session_id,
+                                        std::optional<std::string> session_start_time,
+                                        std::optional<std::string> evaluation_reference_time) {
+    return impl_->ConnectAndStart(std::move(client_session_id), std::move(session_start_time),
+                                  std::move(evaluation_reference_time));
 }
 
-absl::Status AiGatewayClientSession::SendTextInput(std::string turn_id, std::string text) {
-    return impl_->SendTextInput(std::move(turn_id), std::move(text));
+absl::Status AiGatewayClientSession::SendTextInput(std::string turn_id, std::string text,
+                                                   std::optional<std::string> create_time) {
+    return impl_->SendTextInput(std::move(turn_id), std::move(text), std::move(create_time));
 }
 
 absl::Status AiGatewayClientSession::SendTranscriptSeed(std::string turn_id, std::string role,
-                                                        std::string text) {
-    return impl_->SendTranscriptSeed(std::move(turn_id), std::move(role), std::move(text));
+                                                        std::string text,
+                                                        std::optional<std::string> create_time) {
+    return impl_->SendTranscriptSeed(std::move(turn_id), std::move(role), std::move(text),
+                                     std::move(create_time));
 }
 
 absl::Status AiGatewayClientSession::RequestTurnCancel(std::string turn_id) {

@@ -166,6 +166,11 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
         bool cancel_requested = false;
     };
 
+    struct LiveReplayClockState {
+        std::optional<isla::server::memory::Timestamp> session_start_time;
+        absl::flat_hash_map<std::string, isla::server::memory::Timestamp> conversation_times;
+    };
+
     void StopWorker();
     void WorkerLoop();
     void RecordDequeueTelemetry(const PendingTurn& turn, Clock::time_point dequeued_at) const;
@@ -196,6 +201,12 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     FindSessionMemory(std::string_view session_id) const;
     [[nodiscard]] std::optional<absl::Status>
     FindSessionStartFailure(std::string_view session_id) const;
+    void
+    RecordSessionReplayClock(std::string_view session_id,
+                             std::optional<isla::server::memory::Timestamp> session_start_time);
+    void RecordConversationReplayTime(std::string_view session_id, std::string_view turn_id,
+                                      isla::server::memory::MessageRole role,
+                                      std::optional<isla::server::memory::Timestamp> create_time);
     [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id);
     [[nodiscard]] isla::server::memory::Timestamp
     ResolveSessionStartTime(std::string_view session_id) const;
@@ -225,6 +236,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     absl::flat_hash_map<std::string, PendingTurn> pending_turns_;
     absl::flat_hash_map<std::string, PendingTurn> in_progress_turns_;
     absl::flat_hash_map<std::string, std::shared_ptr<SessionMemoryState>> memory_by_session_;
+    absl::flat_hash_map<std::string, LiveReplayClockState> live_replay_clock_by_session_;
     absl::flat_hash_map<std::string, absl::Status> failed_session_starts_;
     bool stopping_ = false;
     bool worker_stop_requested_ = false;

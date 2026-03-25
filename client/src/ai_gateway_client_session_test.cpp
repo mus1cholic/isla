@@ -18,6 +18,8 @@
 
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
+#include "isla/server/memory/memory_store.hpp"
+#include "isla/server/memory/memory_timestamp_utils.hpp"
 #include "isla/server/openai_responses_client.hpp"
 #include "server/src/openai_responses_test_utils.hpp"
 
@@ -37,8 +39,62 @@ using isla::server::ai_gateway::OpenAiResponsesEventCallback;
 using isla::server::ai_gateway::OpenAiResponsesRequest;
 using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
 using isla::server::ai_gateway::SequentialSessionIdGenerator;
+using isla::server::ai_gateway::test::ExtractLatestPromptLine;
+using isla::server::ai_gateway::test::MakeFakeOpenAiResponsesClient;
+using isla::server::memory::ConversationMessageWrite;
+using isla::server::memory::Episode;
+using isla::server::memory::MemorySessionRecord;
+using isla::server::memory::MemoryStore;
+using isla::server::memory::MemoryStoreSnapshot;
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
+
+class RecordingMemoryStore final : public MemoryStore {
+  public:
+    absl::Status UpsertSession(const MemorySessionRecord& record) override {
+        session_records.push_back(record);
+        return absl::OkStatus();
+    }
+
+    absl::Status AppendConversationMessage(const ConversationMessageWrite& write) override {
+        message_writes.push_back(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status ReplaceConversationItemWithEpisodeStub(
+        const isla::server::memory::EpisodeStubWrite& /*write*/) override {
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& /*write*/) override {
+        return absl::OkStatus();
+    }
+
+    absl::Status SplitConversationItemWithEpisodeStub(
+        const isla::server::memory::SplitEpisodeStubWrite& /*write*/) override {
+        return absl::OkStatus();
+    }
+
+    absl::StatusOr<std::vector<Episode>>
+    ListMidTermEpisodes(std::string_view /*session_id*/) const override {
+        return std::vector<Episode>{};
+    }
+
+    absl::StatusOr<std::optional<Episode>>
+    GetMidTermEpisode(std::string_view /*session_id*/,
+                      std::string_view /*episode_id*/) const override {
+        return std::nullopt;
+    }
+
+    absl::StatusOr<std::optional<MemoryStoreSnapshot>>
+    LoadSnapshot(std::string_view /*session_id*/) const override {
+        return std::nullopt;
+    }
+
+    std::vector<MemorySessionRecord> session_records;
+    std::vector<ConversationMessageWrite> message_writes;
+};
 
 class FakeOpenAiResponsesClient final : public OpenAiResponsesClient {
   public:
@@ -81,6 +137,18 @@ class FailingOpenAiResponsesClient final : public OpenAiResponsesClient {
 
 std::shared_ptr<FailingOpenAiResponsesClient> MakeFailingOpenAiResponsesClient() {
     return std::make_shared<FailingOpenAiResponsesClient>();
+}
+
+absl::Status EmitResponseText(std::string_view text, const OpenAiResponsesEventCallback& on_event,
+                              std::string_view response_id = "resp_client_test") {
+    absl::Status delta_status =
+        on_event(OpenAiResponsesTextDeltaEvent{ .text_delta = std::string(text) });
+    if (!delta_status.ok()) {
+        return delta_status;
+    }
+    return on_event(OpenAiResponsesCompletedEvent{
+        .response_id = std::string(response_id),
+    });
 }
 
 class RawTcpHandshakeRejectServer {
@@ -455,6 +523,83 @@ TEST_F(AiGatewayClientSessionIntegrationTest, SendsTranscriptSeedAndReceivesAckn
     ASSERT_TRUE(events.WaitForTranscriptSeeded("turn_seed", "assistant"));
 
     session.Close();
+}
+
+TEST_F(AiGatewayClientSessionIntegrationTest, SendsReplayTimestampsThroughGateway) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto client = MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_client_test", absl::OkStatus(),
+        [](const OpenAiResponsesRequest& request,
+           const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            if (request.system_prompt.find("should_flush") != std::string::npos) {
+                return EmitResponseText(R"json({
+            "should_flush": false,
+            "item_id": null,
+            "split_at": null,
+            "reasoning": "No completed episode boundary."
+        })json",
+                                        on_event, "resp_client_decider");
+            }
+            if (request.system_prompt.find("tier2_summary") != std::string::npos) {
+                return EmitResponseText(R"json({
+            "tier1_detail": "detail",
+            "tier2_summary": "summary",
+            "tier3_ref": "ref",
+            "tier3_keywords": ["client", "timestamp", "memory", "test", "summary"],
+            "salience": 5
+        })json",
+                                        on_event, "resp_client_compactor");
+            }
+            return EmitResponseText("stub echo: " + ExtractLatestPromptLine(request.user_text),
+                                    on_event);
+        });
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .memory_store = store,
+        .openai_client = client,
+    });
+    GatewayServer server(
+        GatewayServerConfig{
+            .bind_host = "127.0.0.1",
+            .port = 0,
+            .listen_backlog = 4,
+        },
+        &responder, std::make_unique<SequentialSessionIdGenerator>("cli_ts_"));
+    responder.AttachSessionRegistry(&server.session_registry());
+    ASSERT_TRUE(server.Start().ok());
+
+    RecordingClientEvents events;
+    AiGatewayClientSession session(AiGatewayClientConfig{
+        .host = "127.0.0.1",
+        .port = server.bound_port(),
+        .path = "/",
+        .operation_timeout = 2s,
+        .on_message =
+            [&events](const protocol::GatewayMessage& message) { events.RecordMessage(message); },
+    });
+
+    ASSERT_TRUE(
+        session.ConnectAndStart("client_session_1", "2026-03-14T09:59:00Z", "2026-03-20T08:00:00Z")
+            .ok());
+    ASSERT_TRUE(
+        session
+            .SendTranscriptSeed("turn_seed", "assistant", "seeded context", "2026-03-14T10:00:05Z")
+            .ok());
+    ASSERT_TRUE(events.WaitForTranscriptSeeded("turn_seed", "assistant"));
+    ASSERT_TRUE(session.SendTextInput("turn_1", "hello gateway", "2026-03-15T11:30:00Z").ok());
+    ASSERT_TRUE(events.WaitForTextOutputAndCompletion("turn_1", "stub echo: hello gateway"));
+
+    ASSERT_EQ(store->session_records.size(), 1U);
+    EXPECT_EQ(store->session_records[0].created_at,
+              isla::server::memory::ParseTimestamp("2026-03-14T09:59:00Z"));
+    ASSERT_GE(store->message_writes.size(), 3U);
+    EXPECT_EQ(store->message_writes[0].create_time,
+              isla::server::memory::ParseTimestamp("2026-03-14T10:00:05Z"));
+    EXPECT_EQ(store->message_writes[1].create_time,
+              isla::server::memory::ParseTimestamp("2026-03-15T11:30:00Z"));
+
+    session.Close();
+    server.Stop();
 }
 
 TEST_F(AiGatewayClientSessionIntegrationTest, RejectsSendAfterTransportFailureWithoutTimingOut) {

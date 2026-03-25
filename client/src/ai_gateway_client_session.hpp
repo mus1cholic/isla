@@ -34,10 +34,14 @@ class AiGatewayClientSession {
     AiGatewayClientSession& operator=(const AiGatewayClientSession&) = delete;
 
     [[nodiscard]] absl::Status
-    ConnectAndStart(std::optional<std::string> client_session_id = std::nullopt);
-    [[nodiscard]] absl::Status SendTranscriptSeed(std::string turn_id, std::string role,
-                                                  std::string text);
-    [[nodiscard]] absl::Status SendTextInput(std::string turn_id, std::string text);
+    ConnectAndStart(std::optional<std::string> client_session_id = std::nullopt,
+                    std::optional<std::string> session_start_time = std::nullopt,
+                    std::optional<std::string> evaluation_reference_time = std::nullopt);
+    [[nodiscard]] absl::Status
+    SendTranscriptSeed(std::string turn_id, std::string role, std::string text,
+                       std::optional<std::string> create_time = std::nullopt);
+    [[nodiscard]] absl::Status SendTextInput(std::string turn_id, std::string text,
+                                             std::optional<std::string> create_time = std::nullopt);
     [[nodiscard]] absl::Status RequestTurnCancel(std::string turn_id);
     [[nodiscard]] absl::Status EndSession();
     void Close();
