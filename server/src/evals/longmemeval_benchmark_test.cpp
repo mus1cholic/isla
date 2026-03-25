@@ -346,8 +346,7 @@ TEST(LongMemEvalBenchmarkTest, PreservesEmptyTranscriptMessages) {
 
     const json dataset = json::array({ MakeCase(
         "q_empty_message", "blue", json::array({ "2026-03-01" }),
-        json::array({ json::array({ MakeTurn("user", "first"),
-                                    MakeTurn("assistant", "reply"),
+        json::array({ json::array({ MakeTurn("user", "first"), MakeTurn("assistant", "reply"),
                                     MakeTurn("user", ""),
                                     MakeTurn("assistant", "Did you have a question?") }) }),
         json::array({ "session_a" }), "single-session-user", "What color?", "2026-03-20") });
