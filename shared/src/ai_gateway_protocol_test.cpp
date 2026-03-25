@@ -36,7 +36,11 @@ TEST(AiGatewayProtocolTest, ParsesAudioOutputMessage) {
 }
 
 TEST(AiGatewayProtocolTest, RoundTripsSessionStartWithClientSessionId) {
-    const GatewayMessage original = SessionStartMessage{ "client_123" };
+    const GatewayMessage original = SessionStartMessage{
+        .client_session_id = "client_123",
+        .session_start_time = "2026-03-14T09:59:00Z",
+        .evaluation_reference_time = "2026-03-20T08:00:00Z",
+    };
 
     const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));
 
@@ -46,6 +50,10 @@ TEST(AiGatewayProtocolTest, RoundTripsSessionStartWithClientSessionId) {
     const auto& round_trip = std::get<SessionStartMessage>(*parsed);
     ASSERT_TRUE(round_trip.client_session_id.has_value());
     EXPECT_EQ(*round_trip.client_session_id, "client_123");
+    ASSERT_TRUE(round_trip.session_start_time.has_value());
+    EXPECT_EQ(*round_trip.session_start_time, "2026-03-14T09:59:00Z");
+    ASSERT_TRUE(round_trip.evaluation_reference_time.has_value());
+    EXPECT_EQ(*round_trip.evaluation_reference_time, "2026-03-20T08:00:00Z");
 }
 
 TEST(AiGatewayProtocolTest, RoundTripsSessionLifecycleMessages) {
@@ -77,7 +85,10 @@ TEST(AiGatewayProtocolTest, RoundTripsSessionLifecycleMessages) {
 TEST(AiGatewayProtocolTest, RoundTripsTurnMessages) {
     {
         const GatewayMessage original =
-            TranscriptSeedMessage{ .turn_id = "turn_1", .role = "assistant", .text = "seeded" };
+            TranscriptSeedMessage{ .turn_id = "turn_1",
+                                   .role = "assistant",
+                                   .text = "seeded",
+                                   .create_time = "2026-03-14T10:00:05Z" };
         const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));
         ASSERT_TRUE(parsed.ok()) << parsed.status().ToString();
         ASSERT_TRUE(std::holds_alternative<TranscriptSeedMessage>(*parsed));
@@ -85,6 +96,8 @@ TEST(AiGatewayProtocolTest, RoundTripsTurnMessages) {
         EXPECT_EQ(message.turn_id, "turn_1");
         EXPECT_EQ(message.role, "assistant");
         EXPECT_EQ(message.text, "seeded");
+        ASSERT_TRUE(message.create_time.has_value());
+        EXPECT_EQ(*message.create_time, "2026-03-14T10:00:05Z");
     }
 
     {
@@ -99,13 +112,19 @@ TEST(AiGatewayProtocolTest, RoundTripsTurnMessages) {
     }
 
     {
-        const GatewayMessage original = TextInputMessage{ .turn_id = "turn_1", .text = "hello" };
+        const GatewayMessage original = TextInputMessage{
+            .turn_id = "turn_1",
+            .text = "hello",
+            .create_time = "2026-03-15T11:30:00Z",
+        };
         const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));
         ASSERT_TRUE(parsed.ok()) << parsed.status().ToString();
         ASSERT_TRUE(std::holds_alternative<TextInputMessage>(*parsed));
         const auto& message = std::get<TextInputMessage>(*parsed);
         EXPECT_EQ(message.turn_id, "turn_1");
         EXPECT_EQ(message.text, "hello");
+        ASSERT_TRUE(message.create_time.has_value());
+        EXPECT_EQ(*message.create_time, "2026-03-15T11:30:00Z");
     }
 
     {

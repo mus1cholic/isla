@@ -14,6 +14,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/ai_gateway_stub_responder_utils.hpp"
@@ -80,6 +81,11 @@ absl::StatusOr<isla::server::memory::MessageRole> ParseTranscriptSeedRole(std::s
         return isla::server::memory::MessageRole::Assistant;
     }
     return absl::InvalidArgumentError("transcript seed role must be 'user' or 'assistant'");
+}
+
+std::string ReplayTimestampKey(std::string_view turn_id, isla::server::memory::MessageRole role) {
+    return absl::StrCat(turn_id,
+                        role == isla::server::memory::MessageRole::User ? "|user" : "|assistant");
 }
 
 std::string ResolveMidTermFlushDeciderModel(const GatewayStubResponderConfig& config) {
@@ -290,6 +296,8 @@ const absl::Status& GatewayStubResponder::MidTermMemoryInitializationStatus() co
 void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
     LOG(INFO) << "AI gateway stub observed session start session="
               << SanitizeForLog(event.session_id);
+    RecordSessionReplayClock(event.session_id, event.session_start_time,
+                             event.evaluation_reference_time);
     const absl::Status status = InitializeSessionMemory(event.session_id);
     if (!status.ok()) {
         LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
@@ -305,6 +313,7 @@ absl::Status GatewayStubResponder::HandleTranscriptSeed(const TranscriptSeedEven
     if (!role.ok()) {
         return role.status();
     }
+    RecordConversationReplayTime(event.session_id, event.turn_id, *role, event.create_time);
     if (*role == isla::server::memory::MessageRole::User) {
         return AppendSessionUserMessage(event.session_id, event.turn_id, event.text);
     }
@@ -349,6 +358,8 @@ GatewayStubResponder::PrepareAcceptedTurn(const TurnAcceptedEvent& event) {
 void GatewayStubResponder::OnTurnAccepted(const TurnAcceptedEvent& event) {
     LOG(INFO) << "AI gateway stub accepted turn session=" << SanitizeForLog(event.session_id)
               << " turn_id=" << SanitizeForLog(event.turn_id);
+    RecordConversationReplayTime(event.session_id, event.turn_id,
+                                 isla::server::memory::MessageRole::User, event.create_time);
 
     bool stopping = false;
     {
@@ -413,6 +424,7 @@ void GatewayStubResponder::OnSessionClosed(const SessionClosedEvent& event) {
     const auto pending_erased = pending_turns_.erase(event.session_id);
     const auto in_progress_erased = in_progress_turns_.erase(event.session_id);
     memory_by_session_.erase(event.session_id);
+    live_replay_clock_by_session_.erase(event.session_id);
     failed_session_starts_.erase(event.session_id);
     if (pending_erased > 0U || in_progress_erased > 0U) {
         VLOG(1) << "AI gateway stub dropped pending turn for closed session session="
@@ -437,6 +449,7 @@ void GatewayStubResponder::OnServerStopping(GatewaySessionRegistry& session_regi
         pending_turns_.clear();
         in_progress_turns_.clear();
         memory_by_session_.clear();
+        live_replay_clock_by_session_.clear();
         failed_session_starts_.clear();
     }
 
@@ -1246,6 +1259,26 @@ GatewayStubResponder::FindSessionStartFailure(std::string_view session_id) const
     return it->second;
 }
 
+void GatewayStubResponder::RecordSessionReplayClock(
+    std::string_view session_id, std::optional<isla::server::memory::Timestamp> session_start_time,
+    std::optional<isla::server::memory::Timestamp> evaluation_reference_time) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    LiveReplayClockState& state = live_replay_clock_by_session_[std::string(session_id)];
+    state.session_start_time = session_start_time;
+    state.evaluation_reference_time = evaluation_reference_time;
+}
+
+void GatewayStubResponder::RecordConversationReplayTime(
+    std::string_view session_id, std::string_view turn_id, isla::server::memory::MessageRole role,
+    std::optional<isla::server::memory::Timestamp> create_time) {
+    if (!create_time.has_value()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    live_replay_clock_by_session_[std::string(session_id)].conversation_times.insert_or_assign(
+        ReplayTimestampKey(turn_id, role), *create_time);
+}
+
 absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view session_id) {
     std::shared_ptr<SessionMemoryState> session_memory;
     const Clock::time_point initialization_started_at = Clock::now();
@@ -1348,6 +1381,14 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
 
 isla::server::memory::Timestamp
 GatewayStubResponder::ResolveSessionStartTime(std::string_view session_id) const {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = live_replay_clock_by_session_.find(std::string(session_id));
+        if (it != live_replay_clock_by_session_.end() &&
+            it->second.session_start_time.has_value()) {
+            return *it->second.session_start_time;
+        }
+    }
     if (config_.session_clock != nullptr) {
         if (const std::optional<isla::server::memory::Timestamp> overridden =
                 config_.session_clock->ResolveSessionStartTime(session_id);
@@ -1362,6 +1403,17 @@ isla::server::memory::Timestamp
 GatewayStubResponder::ResolveConversationMessageTime(std::string_view session_id,
                                                      std::string_view turn_id,
                                                      isla::server::memory::MessageRole role) const {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto session_it = live_replay_clock_by_session_.find(std::string(session_id));
+        if (session_it != live_replay_clock_by_session_.end()) {
+            const auto time_it =
+                session_it->second.conversation_times.find(ReplayTimestampKey(turn_id, role));
+            if (time_it != session_it->second.conversation_times.end()) {
+                return time_it->second;
+            }
+        }
+    }
     if (config_.session_clock != nullptr) {
         if (const std::optional<isla::server::memory::Timestamp> overridden =
                 config_.session_clock->ResolveConversationMessageTime(session_id, turn_id, role);

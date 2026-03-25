@@ -27,6 +27,8 @@ enum class MessageType {
 
 struct SessionStartMessage {
     std::optional<std::string> client_session_id;
+    std::optional<std::string> session_start_time;
+    std::optional<std::string> evaluation_reference_time;
 };
 
 struct SessionStartedMessage {
@@ -45,6 +47,7 @@ struct TranscriptSeedMessage {
     std::string turn_id;
     std::string role;
     std::string text;
+    std::optional<std::string> create_time;
 };
 
 struct TranscriptSeededMessage {
@@ -55,6 +58,7 @@ struct TranscriptSeededMessage {
 struct TextInputMessage {
     std::string turn_id;
     std::string text;
+    std::optional<std::string> create_time;
 };
 
 struct TextOutputMessage {

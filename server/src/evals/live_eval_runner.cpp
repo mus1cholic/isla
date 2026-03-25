@@ -1,5 +1,6 @@
 #include "server/src/evals/live_eval_runner.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -14,6 +15,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "client/src/ai_gateway_client_session.hpp"
+#include "isla/server/memory/memory_timestamp_utils.hpp"
 
 namespace isla::server::evals {
 namespace {
@@ -42,6 +44,14 @@ std::string BuildTranscriptSeedKey(std::string_view turn_id, std::string_view ro
     return absl::StrCat(turn_id, "|", role);
 }
 
+std::optional<std::string>
+FormatOptionalTimestamp(std::optional<isla::server::memory::Timestamp> timestamp) {
+    if (!timestamp.has_value()) {
+        return std::nullopt;
+    }
+    return isla::server::memory::FormatTimestamp(*timestamp);
+}
+
 struct TurnCompletion {
     bool completed = false;
     bool cancelled = false;
@@ -68,16 +78,32 @@ absl::Status HistoryReplayTurnFailureStatus(std::string_view turn_id,
 
 class RecordingLiveEvalSession final {
   public:
-    explicit RecordingLiveEvalSession(std::chrono::milliseconds timeout) : timeout_(timeout) {}
+    RecordingLiveEvalSession(
+        std::chrono::milliseconds timeout,
+        std::optional<isla::server::memory::Timestamp> session_start_time,
+        std::optional<isla::server::memory::Timestamp> evaluation_reference_time)
+        : timeout_(timeout), session_start_time_(session_start_time),
+          evaluation_reference_time_(evaluation_reference_time) {
+        if (evaluation_reference_time_.has_value()) {
+            history_.push_back(EvalReplayEventArtifact{
+                .kind = EvalReplayEventKind::kEvaluationReferenceTime,
+                .turn_id = std::nullopt,
+                .role = std::nullopt,
+                .timestamp = evaluation_reference_time_,
+                .text = std::nullopt,
+            });
+        }
+    }
 
-    void RecordBenchmarkConversationMessage(std::string turn_id, std::string role,
-                                            std::string text) {
+    void
+    RecordBenchmarkConversationMessage(std::string turn_id, std::string role, std::string text,
+                                       std::optional<isla::server::memory::Timestamp> timestamp) {
         std::lock_guard<std::mutex> lock(mutex_);
         history_.push_back(EvalReplayEventArtifact{
             .kind = EvalReplayEventKind::kConversationMessage,
             .turn_id = std::move(turn_id),
             .role = std::move(role),
-            .timestamp = std::nullopt,
+            .timestamp = timestamp,
             .text = std::move(text),
         });
     }
@@ -92,7 +118,7 @@ class RecordingLiveEvalSession final {
                 .kind = EvalReplayEventKind::kSessionStart,
                 .turn_id = std::nullopt,
                 .role = std::nullopt,
-                .timestamp = std::nullopt,
+                .timestamp = session_start_time_,
                 .text = std::nullopt,
             });
             break;
@@ -254,7 +280,22 @@ class RecordingLiveEvalSession final {
 
     [[nodiscard]] std::vector<EvalReplayEventArtifact> history() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return history_;
+        std::vector<EvalReplayEventArtifact> sorted = history_;
+        std::stable_sort(
+            sorted.begin(), sorted.end(),
+            [](const EvalReplayEventArtifact& lhs, const EvalReplayEventArtifact& rhs) {
+                if (lhs.timestamp.has_value() && rhs.timestamp.has_value()) {
+                    return *lhs.timestamp < *rhs.timestamp;
+                }
+                if (lhs.timestamp.has_value()) {
+                    return true;
+                }
+                if (rhs.timestamp.has_value()) {
+                    return false;
+                }
+                return false;
+            });
+        return sorted;
     }
 
     [[nodiscard]] std::vector<EvalEmittedEvent> FilterTurnEvents(std::string_view turn_id) const {
@@ -277,6 +318,8 @@ class RecordingLiveEvalSession final {
     std::vector<EvalReplayEventArtifact> history_;
     std::vector<EvalEmittedEvent> events_;
     std::optional<std::string> session_id_;
+    std::optional<isla::server::memory::Timestamp> session_start_time_;
+    std::optional<isla::server::memory::Timestamp> evaluation_reference_time_;
     std::optional<EvalFailure> session_error_;
     std::optional<absl::Status> transport_closed_status_;
 };
@@ -327,7 +370,9 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
         return invalid_argument("live eval runner requires a non-zero gateway port");
     }
 
-    auto recorder = std::make_shared<RecordingLiveEvalSession>(config_.turn_completion_timeout);
+    auto recorder = std::make_shared<RecordingLiveEvalSession>(config_.turn_completion_timeout,
+                                                               eval_case.session_start_time,
+                                                               eval_case.evaluation_reference_time);
     isla::client::AiGatewayClientSession session(isla::client::AiGatewayClientConfig{
         .host = ResolveGatewayConnectHost(config_.host),
         .port = config_.port,
@@ -339,7 +384,9 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
             [recorder](absl::Status status) { recorder->OnTransportClosed(std::move(status)); },
     });
 
-    absl::Status connect_status = session.ConnectAndStart(eval_case.session_id);
+    absl::Status connect_status = session.ConnectAndStart(
+        eval_case.session_id, FormatOptionalTimestamp(eval_case.session_start_time),
+        FormatOptionalTimestamp(eval_case.evaluation_reference_time));
     if (!connect_status.ok()) {
         return connect_status;
     }
@@ -354,8 +401,10 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
         const std::string turn_id = *current_history_turn_id;
         const std::string role =
             message.role == isla::server::memory::MessageRole::User ? "user" : "assistant";
-        recorder->RecordBenchmarkConversationMessage(turn_id, role, message.text);
-        if (absl::Status send_status = session.SendTranscriptSeed(turn_id, role, message.text);
+        recorder->RecordBenchmarkConversationMessage(turn_id, role, message.text,
+                                                     message.create_time);
+        if (absl::Status send_status = session.SendTranscriptSeed(
+                turn_id, role, message.text, FormatOptionalTimestamp(message.create_time));
             !send_status.ok()) {
             session.Close();
             return send_status;
@@ -369,9 +418,10 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
 
     constexpr std::string_view kEvaluatedTurnId = "evaluated_turn";
     recorder->RecordBenchmarkConversationMessage(std::string(kEvaluatedTurnId), "user",
-                                                 eval_case.input.text);
+                                                 eval_case.input.text, eval_case.input.create_time);
     if (absl::Status send_status =
-            session.SendTextInput(std::string(kEvaluatedTurnId), eval_case.input.text);
+            session.SendTextInput(std::string(kEvaluatedTurnId), eval_case.input.text,
+                                  FormatOptionalTimestamp(eval_case.input.create_time));
         !send_status.ok()) {
         session.Close();
         return send_status;
@@ -397,8 +447,8 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
         .case_id = eval_case.case_id,
         .session_id = recorder->session_id().value_or(eval_case.session_id),
         .evaluated_turn_id = std::string(kEvaluatedTurnId),
-        .session_start_time = std::nullopt,
-        .evaluation_reference_time = std::nullopt,
+        .session_start_time = eval_case.session_start_time,
+        .evaluation_reference_time = eval_case.evaluation_reference_time,
         .prompt = EvalPromptArtifacts{},
         .replayed_session_history = recorder->history(),
         .pre_turn_mid_term_episodes = {},
