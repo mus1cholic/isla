@@ -296,8 +296,7 @@ const absl::Status& GatewayStubResponder::MidTermMemoryInitializationStatus() co
 void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
     LOG(INFO) << "AI gateway stub observed session start session="
               << SanitizeForLog(event.session_id);
-    RecordSessionReplayClock(event.session_id, event.session_start_time,
-                             event.evaluation_reference_time);
+    RecordSessionReplayClock(event.session_id, event.session_start_time);
     const absl::Status status = InitializeSessionMemory(event.session_id);
     if (!status.ok()) {
         LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
@@ -1260,12 +1259,11 @@ GatewayStubResponder::FindSessionStartFailure(std::string_view session_id) const
 }
 
 void GatewayStubResponder::RecordSessionReplayClock(
-    std::string_view session_id, std::optional<isla::server::memory::Timestamp> session_start_time,
-    std::optional<isla::server::memory::Timestamp> evaluation_reference_time) {
+    std::string_view session_id,
+    std::optional<isla::server::memory::Timestamp> session_start_time) {
     std::lock_guard<std::mutex> lock(mutex_);
     LiveReplayClockState& state = live_replay_clock_by_session_[std::string(session_id)];
     state.session_start_time = session_start_time;
-    state.evaluation_reference_time = evaluation_reference_time;
 }
 
 void GatewayStubResponder::RecordConversationReplayTime(

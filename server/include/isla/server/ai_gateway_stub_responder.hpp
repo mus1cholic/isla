@@ -168,7 +168,6 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
     struct LiveReplayClockState {
         std::optional<isla::server::memory::Timestamp> session_start_time;
-        std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
         absl::flat_hash_map<std::string, isla::server::memory::Timestamp> conversation_times;
     };
 
@@ -202,10 +201,9 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     FindSessionMemory(std::string_view session_id) const;
     [[nodiscard]] std::optional<absl::Status>
     FindSessionStartFailure(std::string_view session_id) const;
-    void RecordSessionReplayClock(
-        std::string_view session_id,
-        std::optional<isla::server::memory::Timestamp> session_start_time,
-        std::optional<isla::server::memory::Timestamp> evaluation_reference_time);
+    void
+    RecordSessionReplayClock(std::string_view session_id,
+                             std::optional<isla::server::memory::Timestamp> session_start_time);
     void RecordConversationReplayTime(std::string_view session_id, std::string_view turn_id,
                                       isla::server::memory::MessageRole role,
                                       std::optional<isla::server::memory::Timestamp> create_time);

@@ -228,15 +228,14 @@ TEST(LiveEvalRunnerTest, SeedsHistoricalAssistantMessagesThroughLiveGateway) {
     EXPECT_EQ(store->message_writes[2].turn_id, "evaluated_turn");
     EXPECT_EQ(store->message_writes[2].role, MessageRole::User);
 
-    ASSERT_EQ(artifacts->replayed_session_history.size(), 5U);
-    EXPECT_EQ(artifacts->replayed_session_history[0].kind, EvalReplayEventKind::kSessionStart);
+    ASSERT_EQ(artifacts->replayed_session_history.size(), 4U);
+    EXPECT_EQ(artifacts->replayed_session_history[0].turn_id,
+              std::optional<std::string>("history_turn_1"));
+    EXPECT_EQ(artifacts->replayed_session_history[0].role, std::optional<std::string>("user"));
     EXPECT_EQ(artifacts->replayed_session_history[1].turn_id,
               std::optional<std::string>("history_turn_1"));
-    EXPECT_EQ(artifacts->replayed_session_history[1].role, std::optional<std::string>("user"));
-    EXPECT_EQ(artifacts->replayed_session_history[2].turn_id,
-              std::optional<std::string>("history_turn_1"));
-    EXPECT_EQ(artifacts->replayed_session_history[2].role, std::optional<std::string>("assistant"));
-    EXPECT_EQ(artifacts->replayed_session_history[2].text,
+    EXPECT_EQ(artifacts->replayed_session_history[1].role, std::optional<std::string>("assistant"));
+    EXPECT_EQ(artifacts->replayed_session_history[1].text,
               std::optional<std::string>("seeded assistant context"));
 }
 

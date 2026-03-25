@@ -114,13 +114,15 @@ class RecordingLiveEvalSession final {
         case protocol::MessageType::SessionStarted: {
             const auto& started = std::get<protocol::SessionStartedMessage>(message);
             session_id_ = started.session_id;
-            history_.push_back(EvalReplayEventArtifact{
-                .kind = EvalReplayEventKind::kSessionStart,
-                .turn_id = std::nullopt,
-                .role = std::nullopt,
-                .timestamp = session_start_time_,
-                .text = std::nullopt,
-            });
+            if (session_start_time_.has_value()) {
+                history_.push_back(EvalReplayEventArtifact{
+                    .kind = EvalReplayEventKind::kSessionStart,
+                    .turn_id = std::nullopt,
+                    .role = std::nullopt,
+                    .timestamp = session_start_time_,
+                    .text = std::nullopt,
+                });
+            }
             break;
         }
         case protocol::MessageType::TranscriptSeeded: {
