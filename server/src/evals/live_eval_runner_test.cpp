@@ -238,5 +238,37 @@ TEST(LiveEvalRunnerTest, SeedsHistoricalAssistantMessagesThroughLiveGateway) {
               std::optional<std::string>("seeded assistant context"));
 }
 
+TEST(LiveEvalRunnerTest, RejectsEmptyAssistantHistoryMessageBeforeConnecting) {
+    const LiveEvalRunner runner(LiveEvalRunnerConfig{
+        .host = "127.0.0.1",
+        .port = 12345,
+        .path = "/",
+        .operation_timeout = 2s,
+        .turn_completion_timeout = 2s,
+    });
+
+    const absl::StatusOr<EvalArtifacts> artifacts = runner.RunCase(EvalCase{
+        .benchmark_name = "live_eval_test",
+        .case_id = "empty_assistant_history",
+        .session_id = "empty_assistant_history_session",
+        .conversation =
+            {
+                EvalConversationMessage{
+                    .role = MessageRole::Assistant,
+                    .text = "",
+                },
+            },
+        .input =
+            EvalInput{
+                .text = "what did i just say?",
+            },
+    });
+
+    ASSERT_FALSE(artifacts.ok());
+    EXPECT_EQ(artifacts.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(artifacts.status().message(),
+              "live eval case conversation assistant text must not be empty");
+}
+
 } // namespace
 } // namespace isla::server::evals

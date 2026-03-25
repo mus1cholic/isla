@@ -27,6 +27,7 @@ std::string TranscriptSeedErrorCode(const absl::Status& status) {
     case absl::StatusCode::kFailedPrecondition:
     case absl::StatusCode::kAlreadyExists:
     case absl::StatusCode::kNotFound:
+    case absl::StatusCode::kUnimplemented:
         return "bad_request";
     default:
         return "internal_error";

@@ -10,6 +10,7 @@ namespace {
 TEST(AiGatewayProtocolTest, MessageTypeNamesRemainStable) {
     EXPECT_STREQ(message_type_name(MessageType::SessionStart), "session.start");
     EXPECT_STREQ(message_type_name(MessageType::TranscriptSeed), "transcript.seed");
+    EXPECT_STREQ(message_type_name(MessageType::TranscriptSeeded), "transcript.seeded");
     EXPECT_STREQ(message_type_name(MessageType::AudioOutput), "audio.output");
     EXPECT_STREQ(message_type_name(MessageType::TurnCancelled), "turn.cancelled");
     EXPECT_STREQ(message_type_name(MessageType::Error), "error");

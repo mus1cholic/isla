@@ -295,8 +295,11 @@ absl::Status ValidateLiveEvalCase(const EvalCase& eval_case) {
         return invalid_argument("live eval case input.text must not be empty");
     }
     for (const EvalConversationMessage& message : eval_case.conversation) {
-        if (message.role == isla::server::memory::MessageRole::User && message.text.empty()) {
-            return invalid_argument("live eval case conversation user text must not be empty");
+        if (message.text.empty()) {
+            return invalid_argument(message.role == isla::server::memory::MessageRole::User
+                                        ? "live eval case conversation user text must not be empty"
+                                        : "live eval case conversation assistant text must not be "
+                                          "empty");
         }
     }
     return absl::OkStatus();
