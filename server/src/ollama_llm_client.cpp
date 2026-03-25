@@ -290,7 +290,7 @@ std::string SerializeToolContinuationToken(const OllamaToolContinuationState& st
 }
 
 absl::StatusOr<std::vector<json>>
-BuildToolMessagesForRequest(std::string_view user_text,
+BuildToolMessagesForRequest(std::string_view system_prompt, std::string_view user_text,
                             std::span<const LlmFunctionCallOutput> tool_outputs,
                             const OllamaToolContinuationState& state) {
     if (state.pending_tool_calls.empty() && !tool_outputs.empty()) {
@@ -301,10 +301,13 @@ BuildToolMessagesForRequest(std::string_view user_text,
         return invalid_argument("ollama tool outputs must cover all pending tool calls");
     }
 
-    std::vector<json> messages;
-    messages.reserve(state.messages.size() + (user_text.empty() ? 0U : 1U) + tool_outputs.size());
-    for (const json& message : state.messages) {
-        messages.push_back(message);
+    std::vector<json> messages(state.messages.begin(), state.messages.end());
+    messages.reserve(messages.size() + (user_text.empty() ? 0U : 1U) + tool_outputs.size());
+    if (messages.empty() && !system_prompt.empty()) {
+        messages.push_back(json{
+            { "role", "system" },
+            { "content", std::string(system_prompt) },
+        });
     }
     if (!user_text.empty()) {
         messages.push_back(json{
@@ -604,8 +607,8 @@ class OllamaLlmClient final : public LlmClient {
         if (!state.ok()) {
             return state.status();
         }
-        const absl::StatusOr<std::vector<json>> messages =
-            BuildToolMessagesForRequest(request.user_text, request.tool_outputs, *state);
+        const absl::StatusOr<std::vector<json>> messages = BuildToolMessagesForRequest(
+            request.system_prompt, request.user_text, request.tool_outputs, *state);
         if (!messages.ok()) {
             return messages.status();
         }
@@ -614,12 +617,6 @@ class OllamaLlmClient final : public LlmClient {
             { "model", request.model },    { "stream", false },      { "think", *think },
             { "messages", json::array() }, { "tools", *tools_json },
         };
-        if (!request.system_prompt.empty()) {
-            body["messages"].push_back(json{
-                { "role", "system" },
-                { "content", request.system_prompt },
-            });
-        }
         for (const json& message : *messages) {
             body["messages"].push_back(message);
         }

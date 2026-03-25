@@ -433,6 +433,7 @@ TEST(OllamaLlmClientTest, RunToolCallRoundReplaysContinuationTokenAcrossRounds) 
     const absl::StatusOr<LlmToolCallResponse> first_round =
         (*client)->RunToolCallRound(LlmToolCallRequest{
             .model = "qwen3:4b",
+            .system_prompt = "system prompt",
             .user_text = "hello",
             .function_tools = std::span<const LlmFunctionTool>(function_tools),
         });
@@ -450,6 +451,7 @@ TEST(OllamaLlmClientTest, RunToolCallRoundReplaysContinuationTokenAcrossRounds) 
     const absl::StatusOr<LlmToolCallResponse> second_round =
         (*client)->RunToolCallRound(LlmToolCallRequest{
             .model = "qwen3:4b",
+            .system_prompt = "system prompt",
             .function_tools = std::span<const LlmFunctionTool>(function_tools),
             .tool_outputs = std::span<const LlmFunctionCallOutput>(tool_outputs),
             .continuation_token = first_round->continuation_token,
@@ -460,27 +462,31 @@ TEST(OllamaLlmClientTest, RunToolCallRoundReplaysContinuationTokenAcrossRounds) 
 
     ASSERT_TRUE(server.WaitForRequests(2U));
     const json first_request_body = json::parse(ExtractRequestBody(server.request_text(0U)));
-    ASSERT_EQ(first_request_body.at("messages").size(), 1U);
-    EXPECT_EQ(first_request_body.at("messages")[0].at("role"), "user");
-    EXPECT_EQ(first_request_body.at("messages")[0].at("content"), "hello");
+    ASSERT_EQ(first_request_body.at("messages").size(), 2U);
+    EXPECT_EQ(first_request_body.at("messages")[0].at("role"), "system");
+    EXPECT_EQ(first_request_body.at("messages")[0].at("content"), "system prompt");
+    EXPECT_EQ(first_request_body.at("messages")[1].at("role"), "user");
+    EXPECT_EQ(first_request_body.at("messages")[1].at("content"), "hello");
 
     const json second_request_body = json::parse(ExtractRequestBody(server.request_text(1U)));
-    ASSERT_EQ(second_request_body.at("messages").size(), 3U);
-    EXPECT_EQ(second_request_body.at("messages")[0].at("role"), "user");
-    EXPECT_EQ(second_request_body.at("messages")[0].at("content"), "hello");
-    EXPECT_EQ(second_request_body.at("messages")[1].at("role"), "assistant");
-    ASSERT_EQ(second_request_body.at("messages")[1].at("tool_calls").size(), 1U);
-    EXPECT_EQ(second_request_body.at("messages")[1].at("tool_calls")[0].at("type"), "function");
-    EXPECT_EQ(second_request_body.at("messages")[1].at("tool_calls")[0].at("function").at("index"),
+    ASSERT_EQ(second_request_body.at("messages").size(), 4U);
+    EXPECT_EQ(second_request_body.at("messages")[0].at("role"), "system");
+    EXPECT_EQ(second_request_body.at("messages")[0].at("content"), "system prompt");
+    EXPECT_EQ(second_request_body.at("messages")[1].at("role"), "user");
+    EXPECT_EQ(second_request_body.at("messages")[1].at("content"), "hello");
+    EXPECT_EQ(second_request_body.at("messages")[2].at("role"), "assistant");
+    ASSERT_EQ(second_request_body.at("messages")[2].at("tool_calls").size(), 1U);
+    EXPECT_EQ(second_request_body.at("messages")[2].at("tool_calls")[0].at("type"), "function");
+    EXPECT_EQ(second_request_body.at("messages")[2].at("tool_calls")[0].at("function").at("index"),
               0);
-    EXPECT_EQ(second_request_body.at("messages")[1].at("tool_calls")[0].at("function").at("name"),
+    EXPECT_EQ(second_request_body.at("messages")[2].at("tool_calls")[0].at("function").at("name"),
               "lookup_weather");
     EXPECT_EQ(
-        second_request_body.at("messages")[1].at("tool_calls")[0].at("function").at("arguments"),
+        second_request_body.at("messages")[2].at("tool_calls")[0].at("function").at("arguments"),
         json::parse(R"({"city":"San Francisco"})"));
-    EXPECT_EQ(second_request_body.at("messages")[2].at("role"), "tool");
-    EXPECT_EQ(second_request_body.at("messages")[2].at("tool_name"), "lookup_weather");
-    EXPECT_EQ(second_request_body.at("messages")[2].at("content"), "22C");
+    EXPECT_EQ(second_request_body.at("messages")[3].at("role"), "tool");
+    EXPECT_EQ(second_request_body.at("messages")[3].at("tool_name"), "lookup_weather");
+    EXPECT_EQ(second_request_body.at("messages")[3].at("content"), "22C");
 }
 
 TEST(OllamaLlmClientTest, RunToolCallRoundRejectsOversizedAggregatedOutput) {
