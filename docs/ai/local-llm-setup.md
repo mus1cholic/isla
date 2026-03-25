@@ -8,7 +8,8 @@ Responses upstream.
 - Running the gateway without an OpenAI API key when you want a fully local main LLM.
 - Reusing the existing provider-neutral `LlmClient` path for normal turn generation and the
   mid-term memory flush/compaction helpers.
-- Keeping the OpenAI-specific Responses tool loop available only when OpenAI is also configured.
+- Running the provider-neutral tool loop locally through Ollama models that support tool calling,
+  such as Qwen.
 
 ## Ollama Configuration
 
@@ -38,7 +39,10 @@ endpoint sits behind auth.
 - The current Ollama client uses `/api/chat`.
 - The current implementation returns the final assistant text through the gateway's streaming
   interface as one aggregated text delta, then emits completion.
+- The current implementation also maps Ollama native tool calls onto the provider-neutral
+  `LlmClient::RunToolCallRound(...)` abstraction, so the gateway can execute tools locally when the
+  selected model supports them.
 - If both OpenAI and Ollama are configured, the gateway prefers Ollama for the generic `LlmClient`
-  path while still using OpenAI for the Responses-native tool loop.
+  path while still allowing the OpenAI adapter to be used when you explicitly route work there.
 - Use the exact local model tag exposed by your runtime. For Ollama this is typically a tag such
   as `qwen3:4b`, but your installed tag may differ.
