@@ -16,6 +16,7 @@ cc_library(
         "supabase_memory_store.hpp",
         "working_memory_utils.hpp",
         "working_memory.hpp",
+        "llm_json_utils.hpp",
     ],
     strip_include_prefix = "/server/memory/include",
     visibility = ["//visibility:public"],
