@@ -342,6 +342,10 @@ void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLoo
             isla::server::ai_gateway::TryParseOpenAiReasoningEffort(*reasoning_effort);
         if (effort.has_value()) {
             parsed->llm_runtime_config.reasoning_effort = *effort;
+        } else {
+            LOG(WARNING) << "AI gateway ignored invalid AI_GATEWAY_REASONING_EFFORT value='"
+                         << *reasoning_effort
+                         << "'; expected one of: none, minimal, low, medium, high, xhigh";
         }
     }
 }

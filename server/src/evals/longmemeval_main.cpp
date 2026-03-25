@@ -1,6 +1,7 @@
 #include "isla/server/evals/longmemeval_benchmark.hpp"
 
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -71,7 +72,8 @@ int main(int argc, char** argv) {
             sample_rate.has_value()) {
             char* end_ptr = nullptr;
             const double parsed = std::strtod(std::string(*sample_rate).c_str(), &end_ptr);
-            if (end_ptr == nullptr || *end_ptr != '\0' || parsed < 0.0 || parsed > 1.0) {
+            if (end_ptr == nullptr || *end_ptr != '\0' || !std::isfinite(parsed) || parsed <= 0.0 ||
+                parsed > 1.0) {
                 std::cerr << "Invalid --sample_rate value: " << *sample_rate << "\n";
                 PrintUsage();
                 return EXIT_FAILURE;
