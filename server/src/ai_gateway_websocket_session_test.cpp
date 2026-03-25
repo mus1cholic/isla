@@ -59,6 +59,11 @@ class RecordingEventSink final : public NiceMock<test::MockGatewaySessionEventSi
         ON_CALL(*this, OnSessionStarted(_)).WillByDefault([this](const SessionStartedEvent& event) {
             started_sessions.push_back(event);
         });
+        ON_CALL(*this, HandleTranscriptSeed(_))
+            .WillByDefault([this](const TranscriptSeedEvent& event) {
+                transcript_seeds.push_back(event);
+                return absl::OkStatus();
+            });
         ON_CALL(*this, OnTurnAccepted(_)).WillByDefault([this](const TurnAcceptedEvent& event) {
             accepted_turns.push_back(event);
         });
@@ -72,6 +77,7 @@ class RecordingEventSink final : public NiceMock<test::MockGatewaySessionEventSi
     }
 
     std::vector<SessionStartedEvent> started_sessions;
+    std::vector<TranscriptSeedEvent> transcript_seeds;
     std::vector<TurnAcceptedEvent> accepted_turns;
     std::vector<TurnCancelRequestedEvent> cancel_requests;
     std::vector<SessionClosedEvent> closed_sessions;
@@ -218,6 +224,59 @@ TEST(AiGatewayWebSocketSessionTest, AcceptedTurnCreatesTelemetryContextAtGateway
     ASSERT_EQ(telemetry_sink->accepted_turns.size(), 1U);
     EXPECT_EQ(telemetry_sink->accepted_turns.front().session_id, "srv_test");
     EXPECT_EQ(telemetry_sink->accepted_turns.front().turn_id, "turn_1");
+}
+
+TEST(AiGatewayWebSocketSessionTest, TranscriptSeedIsForwardedAndAcknowledged) {
+    RecordingWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(
+        session
+            .HandleIncomingTextFrame(
+                R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"assistant","text":"seeded context"})json")
+            .ok());
+
+    ASSERT_EQ(sink.transcript_seeds.size(), 1U);
+    EXPECT_EQ(sink.transcript_seeds.front().session_id, "srv_test");
+    EXPECT_EQ(sink.transcript_seeds.front().turn_id, "turn_seed");
+    EXPECT_EQ(sink.transcript_seeds.front().role, "assistant");
+    EXPECT_EQ(sink.transcript_seeds.front().text, "seeded context");
+
+    ASSERT_EQ(connection.sent_frames.size(), 2U);
+    const absl::StatusOr<protocol::GatewayMessage> frame = parse_frame(connection.sent_frames[1]);
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TranscriptSeededMessage>(*frame));
+    EXPECT_EQ(std::get<protocol::TranscriptSeededMessage>(*frame).turn_id, "turn_seed");
+    EXPECT_EQ(std::get<protocol::TranscriptSeededMessage>(*frame).role, "assistant");
+}
+
+TEST(AiGatewayWebSocketSessionTest, TranscriptSeedFailureReturnsErrorFrameAndKeepsSessionOpen) {
+    RecordingWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ON_CALL(sink, HandleTranscriptSeed(_)).WillByDefault([](const TranscriptSeedEvent& /*event*/) {
+        return absl::InvalidArgumentError("seed rejected");
+    });
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    const absl::Status status = session.HandleIncomingTextFrame(
+        R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"assistant","text":"seeded context"})json");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_FALSE(session.is_closed());
+    EXPECT_EQ(connection.close_calls, 0);
+    ASSERT_EQ(connection.sent_frames.size(), 2U);
+    const absl::StatusOr<protocol::GatewayMessage> frame = parse_frame(connection.sent_frames[1]);
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_EQ(error.code, "bad_request");
+    ASSERT_TRUE(error.turn_id.has_value());
+    EXPECT_EQ(*error.turn_id, "turn_seed");
+    EXPECT_EQ(error.message, "seed rejected");
 }
 
 TEST(AiGatewayWebSocketSessionTest, RejectedClientFrameSendsErrorAndKeepsSessionOpen) {

@@ -35,6 +35,8 @@ class AiGatewayClientSession {
 
     [[nodiscard]] absl::Status
     ConnectAndStart(std::optional<std::string> client_session_id = std::nullopt);
+    [[nodiscard]] absl::Status SendTranscriptSeed(std::string turn_id, std::string role,
+                                                  std::string text);
     [[nodiscard]] absl::Status SendTextInput(std::string turn_id, std::string text);
     [[nodiscard]] absl::Status RequestTurnCancel(std::string turn_id);
     [[nodiscard]] absl::Status EndSession();

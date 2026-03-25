@@ -741,6 +741,20 @@ cc_test(
 )
 
 cc_test(
+    name = "live_eval_runner_test",
+    srcs = ["evals/live_eval_runner_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_store",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
+        ":live_eval_runner",
+        ":openai_responses_test_utils",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "isla_custom_memory_benchmark_test",
     srcs = ["evals/isla_custom_memory_benchmark_test.cpp"],
     deps = [

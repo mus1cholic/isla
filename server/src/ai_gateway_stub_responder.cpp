@@ -72,6 +72,16 @@ GatewayAcceptedTurnResult SucceededAcceptedTurnResult(std::string reply_text) {
     };
 }
 
+absl::StatusOr<isla::server::memory::MessageRole> ParseTranscriptSeedRole(std::string_view role) {
+    if (role == "user") {
+        return isla::server::memory::MessageRole::User;
+    }
+    if (role == "assistant") {
+        return isla::server::memory::MessageRole::Assistant;
+    }
+    return absl::InvalidArgumentError("transcript seed role must be 'user' or 'assistant'");
+}
+
 std::string ResolveMidTermFlushDeciderModel(const GatewayStubResponderConfig& config) {
     return config.llm_runtime_config.mid_term_flush_decider_model.empty()
                ? std::string(kDefaultMidTermFlushDeciderModel)
@@ -287,6 +297,18 @@ void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
                    << SanitizeForLog(status.message()) << "'";
         BestEffortEmitSessionStartFailure(event.session_id, status);
     }
+}
+
+absl::Status GatewayStubResponder::HandleTranscriptSeed(const TranscriptSeedEvent& event) {
+    const absl::StatusOr<isla::server::memory::MessageRole> role =
+        ParseTranscriptSeedRole(event.role);
+    if (!role.ok()) {
+        return role.status();
+    }
+    if (*role == isla::server::memory::MessageRole::User) {
+        return AppendSessionUserMessage(event.session_id, event.turn_id, event.text);
+    }
+    return AppendSessionAssistantMessage(event.session_id, event.turn_id, event.text);
 }
 
 GatewayStubResponder::PendingTurn

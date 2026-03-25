@@ -179,6 +179,21 @@ class RecordingClientEvents {
         });
     }
 
+    bool WaitForTranscriptSeeded(std::string_view turn_id, std::string_view role) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, 2s, [&] {
+            for (const auto& message : messages_) {
+                if (std::holds_alternative<protocol::TranscriptSeededMessage>(message)) {
+                    const auto& seeded = std::get<protocol::TranscriptSeededMessage>(message);
+                    if (seeded.turn_id == turn_id && seeded.role == role) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        });
+    }
+
     bool WaitForSessionEnded(std::string_view session_id) {
         std::unique_lock<std::mutex> lock(mutex_);
         return cv_.wait_for(lock, 2s, [&] {
@@ -323,6 +338,11 @@ TEST(AiGatewayClientSessionTest, RejectsOperationsOutsideStartedSessionState) {
     EXPECT_FALSE(send_before_start.ok());
     EXPECT_EQ(send_before_start.code(), absl::StatusCode::kFailedPrecondition);
 
+    const absl::Status seed_before_start =
+        session.SendTranscriptSeed("turn_1", "assistant", "seeded");
+    EXPECT_FALSE(seed_before_start.ok());
+    EXPECT_EQ(seed_before_start.code(), absl::StatusCode::kFailedPrecondition);
+
     const absl::Status cancel_before_start = session.RequestTurnCancel("turn_1");
     EXPECT_FALSE(cancel_before_start.ok());
     EXPECT_EQ(cancel_before_start.code(), absl::StatusCode::kFailedPrecondition);
@@ -415,6 +435,24 @@ TEST_F(AiGatewayClientSessionIntegrationTest, RequestsCancellationAndReceivesTur
     ASSERT_TRUE(session.RequestTurnCancel("turn_cancel").ok());
 
     ASSERT_TRUE(events.WaitForTurnCancelled("turn_cancel"));
+
+    session.Close();
+}
+
+TEST_F(AiGatewayClientSessionIntegrationTest, SendsTranscriptSeedAndReceivesAcknowledgement) {
+    RecordingClientEvents events;
+    AiGatewayClientSession session(AiGatewayClientConfig{
+        .host = "127.0.0.1",
+        .port = server_.bound_port(),
+        .path = "/",
+        .operation_timeout = 2s,
+        .on_message =
+            [&events](const protocol::GatewayMessage& message) { events.RecordMessage(message); },
+    });
+
+    ASSERT_TRUE(session.ConnectAndStart().ok());
+    ASSERT_TRUE(session.SendTranscriptSeed("turn_seed", "assistant", "seeded context").ok());
+    ASSERT_TRUE(events.WaitForTranscriptSeeded("turn_seed", "assistant"));
 
     session.Close();
 }

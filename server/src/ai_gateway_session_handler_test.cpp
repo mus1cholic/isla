@@ -130,6 +130,23 @@ TEST(AiGatewaySessionHandlerTest, AcceptsTextInputAsApplicationEvent) {
     EXPECT_EQ(result.accepted_turn->telemetry_context->turn_id, "turn_1");
 }
 
+TEST(AiGatewaySessionHandlerTest, AcceptsTranscriptSeedAsApplicationEvent) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"assistant","text":"seeded context"})json");
+
+    ASSERT_TRUE(result.ok);
+    EXPECT_TRUE(result.outgoing_frames.empty());
+    ASSERT_TRUE(result.transcript_seed.has_value());
+    EXPECT_EQ(result.transcript_seed->session_id, "srv_test");
+    EXPECT_EQ(result.transcript_seed->turn_id, "turn_seed");
+    EXPECT_EQ(result.transcript_seed->role, "assistant");
+    EXPECT_EQ(result.transcript_seed->text, "seeded context");
+    EXPECT_FALSE(result.accepted_turn.has_value());
+}
+
 TEST(AiGatewaySessionHandlerTest, AcceptedTurnNotifiesCustomTelemetrySink) {
     auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
     GatewaySessionHandler handler("srv_test", telemetry_sink);
@@ -175,6 +192,29 @@ TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
     EXPECT_EQ(*error.turn_id, "turn_2");
 }
 
+TEST(AiGatewaySessionHandlerTest, RejectsTranscriptSeedWhileLiveTurnIsActive) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler
+                    .HandleIncomingJson(
+                        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
+                    .ok);
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"user","text":"blocked"})json");
+
+    EXPECT_FALSE(result.ok);
+    ASSERT_EQ(result.outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    ASSERT_TRUE(error.turn_id.has_value());
+    EXPECT_EQ(*error.turn_id, "turn_seed");
+    EXPECT_EQ(error.message, "transcript.seed is not allowed while a live turn is active");
+}
+
 TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextInputBeforeTurnAcceptance) {
     GatewaySessionHandler handler("srv_test");
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
@@ -199,6 +239,24 @@ TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextInputBeforeTurnAcceptance)
     ASSERT_TRUE(error.turn_id.has_value());
     EXPECT_EQ(*error.turn_id, "turn_1");
     EXPECT_EQ(error.message, "text.input text exceeds maximum length");
+}
+
+TEST(AiGatewaySessionHandlerTest, EmitsTranscriptSeededAcknowledgement) {
+    GatewaySessionHandler handler("srv_test");
+    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+
+    const absl::StatusOr<EmitResult> result =
+        handler.EmitTranscriptSeeded("turn_seed", "assistant");
+
+    ASSERT_TRUE(result.ok()) << result.status().ToString();
+    ASSERT_EQ(result->outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result->outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TranscriptSeededMessage>(*frame));
+    const auto& seeded = std::get<protocol::TranscriptSeededMessage>(*frame);
+    EXPECT_EQ(seeded.turn_id, "turn_seed");
+    EXPECT_EQ(seeded.role, "assistant");
 }
 
 TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
@@ -354,7 +412,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsServerOwnedInboundMessages) {
     ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
-        R"json({"type":"text.output","turn_id":"turn_1","text":"x"})json");
+        R"json({"type":"transcript.seeded","turn_id":"turn_1","role":"assistant"})json");
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);

@@ -21,9 +21,6 @@ class LiveEvalRunner final {
   public:
     explicit LiveEvalRunner(LiveEvalRunnerConfig config = {});
 
-    // TODO: Add a serving-path transcript seeding mode so evals can replay historical assistant
-    // messages, not just user turns, while still preserving per-turn replay semantics and
-    // Supabase-backed persistence through the live gateway.
     // TODO: Extend the live gateway protocol/session API to accept seeded replay timestamps
     // (session_start_time, evaluation_reference_time, and per-message/input create_time) so
     // timestamp-sensitive eval suites can run reproducibly over the serving path.
