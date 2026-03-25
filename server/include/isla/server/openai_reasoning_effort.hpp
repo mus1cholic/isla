@@ -33,4 +33,27 @@ TryOpenAiReasoningEffortToString(OpenAiReasoningEffort effort) {
     return std::nullopt;
 }
 
+[[nodiscard]] constexpr std::optional<OpenAiReasoningEffort>
+TryParseOpenAiReasoningEffort(std::string_view text) {
+    if (text == "none") {
+        return OpenAiReasoningEffort::kNone;
+    }
+    if (text == "minimal") {
+        return OpenAiReasoningEffort::kMinimal;
+    }
+    if (text == "low") {
+        return OpenAiReasoningEffort::kLow;
+    }
+    if (text == "medium") {
+        return OpenAiReasoningEffort::kMedium;
+    }
+    if (text == "high") {
+        return OpenAiReasoningEffort::kHigh;
+    }
+    if (text == "xhigh") {
+        return OpenAiReasoningEffort::kXHigh;
+    }
+    return std::nullopt;
+}
+
 } // namespace isla::server::ai_gateway

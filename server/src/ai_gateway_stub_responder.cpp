@@ -978,7 +978,8 @@ GatewayStubResponder::ExecutePreparedTurnToTerminal(const PendingTurn& turn) {
     ScopedTelemetryPhase plan_create_phase(turn.telemetry_context, telemetry::kPhasePlanCreate,
                                            telemetry::kEventPlanCreateStarted,
                                            telemetry::kEventPlanCreateCompleted);
-    const absl::StatusOr<ExecutionPlan> execution_plan = CreateOpenAiPlan();
+    const absl::StatusOr<ExecutionPlan> execution_plan =
+        CreateOpenAiPlan(config_.llm_runtime_config.reasoning_effort);
     plan_create_phase.Finish();
     if (!execution_plan.ok()) {
         LOG(ERROR) << "AI gateway stub planner rejected accepted turn session="
