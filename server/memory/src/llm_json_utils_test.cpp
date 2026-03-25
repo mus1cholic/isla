@@ -25,6 +25,16 @@ TEST(StripMarkdownCodeFencesTest, SingleLineFenced) {
     EXPECT_EQ(StripMarkdownCodeFences(input), R"({"should_flush": false})");
 }
 
+TEST(StripMarkdownCodeFencesTest, SingleLineFencedWithLanguageTag) {
+    const std::string input = "```json{\"a\": 1}```";
+    EXPECT_EQ(StripMarkdownCodeFences(input), R"({"a": 1})");
+}
+
+TEST(StripMarkdownCodeFencesTest, SingleLineFencedWithLanguageTagAndSpace) {
+    const std::string input = "```json {\"a\": 1}```";
+    EXPECT_EQ(StripMarkdownCodeFences(input), R"({"a": 1})");
+}
+
 TEST(StripMarkdownCodeFencesTest, SurroundingWhitespace) {
     const std::string input = "  \n```json\n{\"key\": \"val\"}\n```\n  ";
     EXPECT_EQ(StripMarkdownCodeFences(input), R"({"key": "val"})");
@@ -51,6 +61,11 @@ TEST(StripMarkdownCodeFencesTest, OnlyOpeningFenceReturnsUnchanged) {
 
 TEST(StripMarkdownCodeFencesTest, OnlyClosingFenceReturnsUnchanged) {
     const std::string input = "{\"key\": \"val\"}\n```";
+    EXPECT_EQ(StripMarkdownCodeFences(input), input);
+}
+
+TEST(StripMarkdownCodeFencesTest, NonFencedWithWhitespaceReturnedUnchanged) {
+    const std::string input = "  not json at all  ";
     EXPECT_EQ(StripMarkdownCodeFences(input), input);
 }
 

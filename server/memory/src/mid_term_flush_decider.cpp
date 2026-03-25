@@ -111,12 +111,12 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
     json response;
     try {
         response = json::parse(response_text);
-    } catch (const json::parse_error&) {
+    } catch (const json::parse_error& error) {
         // Fallback: some models wrap JSON in markdown code fences despite prompt instructions.
         const std::string stripped = StripMarkdownCodeFences(response_text);
         if (stripped == response_text) {
-            return invalid_argument(
-                std::string("flush decider returned invalid JSON that is not code-fenced"));
+            return invalid_argument(std::string("flush decider returned invalid JSON: ") +
+                                    error.what());
         }
         try {
             response = json::parse(stripped);
