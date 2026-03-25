@@ -889,6 +889,8 @@ void ClientApp::process_gateway_message(const shared::ai_gateway::GatewayMessage
     }
     case protocol::MessageType::SessionStart:
     case protocol::MessageType::SessionEnd:
+    case protocol::MessageType::TranscriptSeed:
+    case protocol::MessageType::TranscriptSeeded:
     case protocol::MessageType::TextInput:
     case protocol::MessageType::TurnCancel:
         return;

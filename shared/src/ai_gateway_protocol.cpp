@@ -18,11 +18,13 @@ struct MessageTypeEntry {
     MessageType type;
 };
 
-constexpr std::array<MessageTypeEntry, 11> kMessageTypeEntries = { {
+constexpr std::array<MessageTypeEntry, 13> kMessageTypeEntries = { {
     { .name = "session.start", .type = MessageType::SessionStart },
     { .name = "session.started", .type = MessageType::SessionStarted },
     { .name = "session.end", .type = MessageType::SessionEnd },
     { .name = "session.ended", .type = MessageType::SessionEnded },
+    { .name = "transcript.seed", .type = MessageType::TranscriptSeed },
+    { .name = "transcript.seeded", .type = MessageType::TranscriptSeeded },
     { .name = "text.input", .type = MessageType::TextInput },
     { .name = "text.output", .type = MessageType::TextOutput },
     { .name = "audio.output", .type = MessageType::AudioOutput },
@@ -86,6 +88,17 @@ json serialize_message(const GatewayMessage& message) {
             [](const SessionEndedMessage& value) {
                 return json{ { "type", message_type_name(MessageType::SessionEnded) },
                              { "session_id", value.session_id } };
+            },
+            [](const TranscriptSeedMessage& value) {
+                return json{ { "type", message_type_name(MessageType::TranscriptSeed) },
+                             { "turn_id", value.turn_id },
+                             { "role", value.role },
+                             { "text", value.text } };
+            },
+            [](const TranscriptSeededMessage& value) {
+                return json{ { "type", message_type_name(MessageType::TranscriptSeeded) },
+                             { "turn_id", value.turn_id },
+                             { "role", value.role } };
             },
             [](const TextInputMessage& value) {
                 return json{ { "type", message_type_name(MessageType::TextInput) },
@@ -155,6 +168,30 @@ absl::StatusOr<GatewayMessage> parse_message_object(const json& root, MessageTyp
             return make_parse_error("session.ended requires non-empty session_id");
         }
         return SessionEndedMessage{ std::move(*session_id) };
+    }
+    case MessageType::TranscriptSeed: {
+        auto turn_id = read_required_string(root, "turn_id");
+        auto role = read_required_string(root, "role");
+        auto text = read_required_string(root, "text");
+        if (!turn_id.has_value() || !role.has_value() || !text.has_value()) {
+            return make_parse_error("transcript.seed requires non-empty turn_id, role, and text");
+        }
+        return TranscriptSeedMessage{
+            .turn_id = std::move(*turn_id),
+            .role = std::move(*role),
+            .text = std::move(*text),
+        };
+    }
+    case MessageType::TranscriptSeeded: {
+        auto turn_id = read_required_string(root, "turn_id");
+        auto role = read_required_string(root, "role");
+        if (!turn_id.has_value() || !role.has_value()) {
+            return make_parse_error("transcript.seeded requires non-empty turn_id and role");
+        }
+        return TranscriptSeededMessage{
+            .turn_id = std::move(*turn_id),
+            .role = std::move(*role),
+        };
     }
     case MessageType::TextInput: {
         auto turn_id = read_required_string(root, "turn_id");
@@ -244,20 +281,23 @@ std::optional<MessageType> parse_message_type(std::string_view type_name) {
 }
 
 MessageType message_type(const GatewayMessage& message) {
-    return std::visit(Overloaded{
-                          [](const SessionStartMessage&) { return MessageType::SessionStart; },
-                          [](const SessionStartedMessage&) { return MessageType::SessionStarted; },
-                          [](const SessionEndMessage&) { return MessageType::SessionEnd; },
-                          [](const SessionEndedMessage&) { return MessageType::SessionEnded; },
-                          [](const TextInputMessage&) { return MessageType::TextInput; },
-                          [](const TextOutputMessage&) { return MessageType::TextOutput; },
-                          [](const AudioOutputMessage&) { return MessageType::AudioOutput; },
-                          [](const TurnCompletedMessage&) { return MessageType::TurnCompleted; },
-                          [](const TurnCancelMessage&) { return MessageType::TurnCancel; },
-                          [](const TurnCancelledMessage&) { return MessageType::TurnCancelled; },
-                          [](const ErrorMessage&) { return MessageType::Error; },
-                      },
-                      message);
+    return std::visit(
+        Overloaded{
+            [](const SessionStartMessage&) { return MessageType::SessionStart; },
+            [](const SessionStartedMessage&) { return MessageType::SessionStarted; },
+            [](const SessionEndMessage&) { return MessageType::SessionEnd; },
+            [](const SessionEndedMessage&) { return MessageType::SessionEnded; },
+            [](const TranscriptSeedMessage&) { return MessageType::TranscriptSeed; },
+            [](const TranscriptSeededMessage&) { return MessageType::TranscriptSeeded; },
+            [](const TextInputMessage&) { return MessageType::TextInput; },
+            [](const TextOutputMessage&) { return MessageType::TextOutput; },
+            [](const AudioOutputMessage&) { return MessageType::AudioOutput; },
+            [](const TurnCompletedMessage&) { return MessageType::TurnCompleted; },
+            [](const TurnCancelMessage&) { return MessageType::TurnCancel; },
+            [](const TurnCancelledMessage&) { return MessageType::TurnCancelled; },
+            [](const ErrorMessage&) { return MessageType::Error; },
+        },
+        message);
 }
 
 std::string to_json_string(const GatewayMessage& message) {

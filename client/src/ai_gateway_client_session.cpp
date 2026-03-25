@@ -207,6 +207,18 @@ class AiGatewayClientSession::Impl
         });
     }
 
+    absl::Status SendTranscriptSeed(std::string turn_id, std::string role, std::string text) {
+        if (turn_id.empty() || role.empty() || text.empty()) {
+            return invalid_argument(
+                "ai gateway transcript seed requires non-empty turn_id, role, and text");
+        }
+        return SendMessage(protocol::TranscriptSeedMessage{
+            .turn_id = std::move(turn_id),
+            .role = std::move(role),
+            .text = std::move(text),
+        });
+    }
+
     absl::Status RequestTurnCancel(std::string turn_id) {
         if (turn_id.empty()) {
             return invalid_argument("ai gateway turn cancel requires non-empty turn_id");
@@ -510,6 +522,8 @@ class AiGatewayClientSession::Impl
         case protocol::MessageType::SessionStart:
         case protocol::MessageType::SessionEnd:
         case protocol::MessageType::TextInput:
+        case protocol::MessageType::TranscriptSeed:
+        case protocol::MessageType::TranscriptSeeded:
         case protocol::MessageType::TextOutput:
         case protocol::MessageType::AudioOutput:
         case protocol::MessageType::TurnCompleted:
@@ -697,6 +711,11 @@ absl::Status AiGatewayClientSession::ConnectAndStart(std::optional<std::string> 
 
 absl::Status AiGatewayClientSession::SendTextInput(std::string turn_id, std::string text) {
     return impl_->SendTextInput(std::move(turn_id), std::move(text));
+}
+
+absl::Status AiGatewayClientSession::SendTranscriptSeed(std::string turn_id, std::string role,
+                                                        std::string text) {
+    return impl_->SendTranscriptSeed(std::move(turn_id), std::move(role), std::move(text));
 }
 
 absl::Status AiGatewayClientSession::RequestTurnCancel(std::string turn_id) {

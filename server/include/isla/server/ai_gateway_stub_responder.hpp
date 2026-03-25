@@ -117,6 +117,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void AttachSessionRegistry(GatewaySessionRegistry* session_registry);
 
     void OnSessionStarted(const SessionStartedEvent& event) override;
+    [[nodiscard]] absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;
     void OnTurnCancelRequested(const TurnCancelRequestedEvent& event) override;
     void OnSessionClosed(const SessionClosedEvent& event) override;

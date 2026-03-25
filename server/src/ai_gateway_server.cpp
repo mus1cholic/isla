@@ -635,6 +635,13 @@ class GatewaySessionRegistry::Impl {
         }
     }
 
+    [[nodiscard]] absl::Status ForwardTranscriptSeed(const TranscriptSeedEvent& event) {
+        if (application_sink_ == nullptr) {
+            return absl::FailedPreconditionError("missing application sink for transcript seed");
+        }
+        return application_sink_->HandleTranscriptSeed(event);
+    }
+
     void ForwardAccepted(const TurnAcceptedEvent& event) {
         if (application_sink_ != nullptr) {
             application_sink_->OnTurnAccepted(event);
@@ -701,6 +708,10 @@ void GatewaySessionRegistry::NotifyServerStopping() {
 
 void GatewaySessionRegistry::OnSessionStarted(const SessionStartedEvent& event) {
     impl_->ForwardSessionStarted(event);
+}
+
+absl::Status GatewaySessionRegistry::HandleTranscriptSeed(const TranscriptSeedEvent& event) {
+    return impl_->ForwardTranscriptSeed(event);
 }
 
 void GatewaySessionRegistry::OnTurnAccepted(const TurnAcceptedEvent& event) {

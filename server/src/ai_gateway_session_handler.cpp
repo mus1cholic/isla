@@ -22,6 +22,14 @@ absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
 }
 
+absl::Status failed_precondition(std::string_view message) {
+    return absl::FailedPreconditionError(std::string(message));
+}
+
+bool IsSupportedTranscriptSeedRole(std::string_view role) {
+    return role == "user" || role == "assistant";
+}
+
 } // namespace
 
 GatewaySessionHandler::GatewaySessionHandler(std::string session_id,
@@ -68,6 +76,34 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
             encode(protocol::SessionEndedMessage{ current_session_id() }));
         return result;
     }
+    case protocol::MessageType::TranscriptSeed: {
+        const auto& transcript_seed = std::get<protocol::TranscriptSeedMessage>(message);
+        if (session_state_.snapshot().status != protocol::SessionStatus::Active) {
+            return RejectIncoming(transcript_seed.turn_id, "bad_request",
+                                  "transcript.seed requires an active session");
+        }
+        if (session_state_.snapshot().active_turn.has_value()) {
+            return RejectIncoming(transcript_seed.turn_id, "bad_request",
+                                  "transcript.seed is not allowed while a live turn is active");
+        }
+        if (!IsSupportedTranscriptSeedRole(transcript_seed.role)) {
+            return RejectIncoming(transcript_seed.turn_id, "bad_request",
+                                  "transcript.seed role must be 'user' or 'assistant'");
+        }
+        if (transcript_seed.text.size() > kMaxTextInputBytes) {
+            return RejectIncoming(transcript_seed.turn_id, "bad_request",
+                                  "transcript.seed text exceeds maximum length");
+        }
+
+        result.ok = true;
+        result.transcript_seed = TranscriptSeedEvent{
+            .session_id = current_session_id(),
+            .turn_id = transcript_seed.turn_id,
+            .role = transcript_seed.role,
+            .text = transcript_seed.text,
+        };
+        return result;
+    }
     case protocol::MessageType::TextInput: {
         const auto& text_input = std::get<protocol::TextInputMessage>(message);
         if (text_input.text.size() > kMaxTextInputBytes) {
@@ -110,6 +146,7 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
     }
     case protocol::MessageType::SessionStarted:
     case protocol::MessageType::SessionEnded:
+    case protocol::MessageType::TranscriptSeeded:
     case protocol::MessageType::TextOutput:
     case protocol::MessageType::AudioOutput:
     case protocol::MessageType::TurnCompleted:
@@ -160,6 +197,21 @@ absl::StatusOr<EmitResult> GatewaySessionHandler::EmitAudioOutput(std::string_vi
         .mime_type = std::string(mime_type),
         .audio_base64 = std::string(audio_base64),
     }));
+    return result;
+}
+
+absl::StatusOr<EmitResult>
+GatewaySessionHandler::EmitTranscriptSeeded(std::string_view turn_id, std::string_view role) const {
+    if (turn_id.empty() || role.empty()) {
+        return invalid_argument("transcript seeded emission requires non-empty turn_id and role");
+    }
+    if (session_state_.snapshot().status != protocol::SessionStatus::Active) {
+        return failed_precondition("session must be active to emit transcript seeded");
+    }
+
+    EmitResult result{};
+    result.outgoing_frames.push_back(encode(protocol::TranscriptSeededMessage{
+        .turn_id = std::string(turn_id), .role = std::string(role) }));
     return result;
 }
 

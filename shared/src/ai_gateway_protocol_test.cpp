@@ -9,6 +9,8 @@ namespace {
 
 TEST(AiGatewayProtocolTest, MessageTypeNamesRemainStable) {
     EXPECT_STREQ(message_type_name(MessageType::SessionStart), "session.start");
+    EXPECT_STREQ(message_type_name(MessageType::TranscriptSeed), "transcript.seed");
+    EXPECT_STREQ(message_type_name(MessageType::TranscriptSeeded), "transcript.seeded");
     EXPECT_STREQ(message_type_name(MessageType::AudioOutput), "audio.output");
     EXPECT_STREQ(message_type_name(MessageType::TurnCancelled), "turn.cancelled");
     EXPECT_STREQ(message_type_name(MessageType::Error), "error");
@@ -73,6 +75,29 @@ TEST(AiGatewayProtocolTest, RoundTripsSessionLifecycleMessages) {
 }
 
 TEST(AiGatewayProtocolTest, RoundTripsTurnMessages) {
+    {
+        const GatewayMessage original =
+            TranscriptSeedMessage{ .turn_id = "turn_1", .role = "assistant", .text = "seeded" };
+        const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));
+        ASSERT_TRUE(parsed.ok()) << parsed.status().ToString();
+        ASSERT_TRUE(std::holds_alternative<TranscriptSeedMessage>(*parsed));
+        const auto& message = std::get<TranscriptSeedMessage>(*parsed);
+        EXPECT_EQ(message.turn_id, "turn_1");
+        EXPECT_EQ(message.role, "assistant");
+        EXPECT_EQ(message.text, "seeded");
+    }
+
+    {
+        const GatewayMessage original =
+            TranscriptSeededMessage{ .turn_id = "turn_1", .role = "assistant" };
+        const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));
+        ASSERT_TRUE(parsed.ok()) << parsed.status().ToString();
+        ASSERT_TRUE(std::holds_alternative<TranscriptSeededMessage>(*parsed));
+        const auto& message = std::get<TranscriptSeededMessage>(*parsed);
+        EXPECT_EQ(message.turn_id, "turn_1");
+        EXPECT_EQ(message.role, "assistant");
+    }
+
     {
         const GatewayMessage original = TextInputMessage{ .turn_id = "turn_1", .text = "hello" };
         const absl::StatusOr<GatewayMessage> parsed = parse_json_message(to_json_string(original));

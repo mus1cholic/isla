@@ -38,11 +38,19 @@ std::string BuildEventPayload(std::string_view code, std::string_view message) {
     return absl::StrCat(code, ":", message);
 }
 
+std::string BuildTranscriptSeedKey(std::string_view turn_id, std::string_view role) {
+    return absl::StrCat(turn_id, "|", role);
+}
+
 struct TurnCompletion {
     bool completed = false;
     bool cancelled = false;
     std::optional<EvalFailure> failure;
     std::optional<std::string> reply_text;
+};
+
+struct SeedCompletion {
+    bool seeded = false;
 };
 
 absl::Status HistoryReplayTurnFailureStatus(std::string_view turn_id,
@@ -62,12 +70,13 @@ class RecordingLiveEvalSession final {
   public:
     explicit RecordingLiveEvalSession(std::chrono::milliseconds timeout) : timeout_(timeout) {}
 
-    void RecordBenchmarkUserMessage(std::string turn_id, std::string text) {
+    void RecordBenchmarkConversationMessage(std::string turn_id, std::string role,
+                                            std::string text) {
         std::lock_guard<std::mutex> lock(mutex_);
         history_.push_back(EvalReplayEventArtifact{
             .kind = EvalReplayEventKind::kConversationMessage,
             .turn_id = std::move(turn_id),
-            .role = std::string("user"),
+            .role = std::move(role),
             .timestamp = std::nullopt,
             .text = std::move(text),
         });
@@ -86,6 +95,12 @@ class RecordingLiveEvalSession final {
                 .timestamp = std::nullopt,
                 .text = std::nullopt,
             });
+            break;
+        }
+        case protocol::MessageType::TranscriptSeeded: {
+            const auto& seeded = std::get<protocol::TranscriptSeededMessage>(message);
+            seeded_messages_[BuildTranscriptSeedKey(seeded.turn_id, seeded.role)].seeded = true;
+            cv_.notify_all();
             break;
         }
         case protocol::MessageType::TextOutput: {
@@ -151,6 +166,7 @@ class RecordingLiveEvalSession final {
         case protocol::MessageType::SessionEnded:
         case protocol::MessageType::SessionStart:
         case protocol::MessageType::SessionEnd:
+        case protocol::MessageType::TranscriptSeed:
         case protocol::MessageType::TextInput:
         case protocol::MessageType::AudioOutput:
         case protocol::MessageType::TurnCancel:
@@ -192,6 +208,45 @@ class RecordingLiveEvalSession final {
             absl::StrCat("gateway turn did not complete turn_id=", turn_id));
     }
 
+    [[nodiscard]] absl::Status WaitForTranscriptSeed(std::string_view turn_id,
+                                                     std::string_view role) const {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const std::string seed_key = BuildTranscriptSeedKey(turn_id, role);
+        const bool ready = cv_.wait_for(lock, timeout_, [&] {
+            const auto it = seeded_messages_.find(seed_key);
+            const bool seeded = it != seeded_messages_.end() && it->second.seeded;
+            const auto turn_it = turns_.find(std::string(turn_id));
+            const bool turn_failed = turn_it != turns_.end() && turn_it->second.failure.has_value();
+            return seeded || turn_failed || transport_closed_status_.has_value() ||
+                   session_error_.has_value();
+        });
+        if (!ready) {
+            return absl::DeadlineExceededError(absl::StrCat(
+                "timed out waiting for transcript seed acknowledgement turn_id=", turn_id,
+                " role=", role));
+        }
+        if (transport_closed_status_.has_value() && !transport_closed_status_->ok()) {
+            return *transport_closed_status_;
+        }
+        if (const auto it = seeded_messages_.find(seed_key);
+            it != seeded_messages_.end() && it->second.seeded) {
+            return absl::OkStatus();
+        }
+        if (const auto it = turns_.find(std::string(turn_id));
+            it != turns_.end() && it->second.failure.has_value()) {
+            return absl::FailedPreconditionError(absl::StrCat(
+                "gateway transcript seed failed turn_id=", turn_id,
+                " code=", it->second.failure->code, " message=", it->second.failure->message));
+        }
+        if (session_error_.has_value()) {
+            return absl::FailedPreconditionError(
+                absl::StrCat("gateway session failed before transcript seed acknowledged code=",
+                             session_error_->code, " message=", session_error_->message));
+        }
+        return absl::FailedPreconditionError(absl::StrCat(
+            "gateway transcript seed was not acknowledged turn_id=", turn_id, " role=", role));
+    }
+
     [[nodiscard]] std::optional<std::string> session_id() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return session_id_;
@@ -218,6 +273,7 @@ class RecordingLiveEvalSession final {
     mutable std::mutex mutex_;
     mutable std::condition_variable cv_;
     absl::flat_hash_map<std::string, TurnCompletion> turns_;
+    absl::flat_hash_map<std::string, SeedCompletion> seeded_messages_;
     std::vector<EvalReplayEventArtifact> history_;
     std::vector<EvalEmittedEvent> events_;
     std::optional<std::string> session_id_;
@@ -239,8 +295,11 @@ absl::Status ValidateLiveEvalCase(const EvalCase& eval_case) {
         return invalid_argument("live eval case input.text must not be empty");
     }
     for (const EvalConversationMessage& message : eval_case.conversation) {
-        if (message.role == isla::server::memory::MessageRole::User && message.text.empty()) {
-            return invalid_argument("live eval case conversation user text must not be empty");
+        if (message.text.empty()) {
+            return invalid_argument(message.role == isla::server::memory::MessageRole::User
+                                        ? "live eval case conversation user text must not be empty"
+                                        : "live eval case conversation assistant text must not be "
+                                          "empty");
         }
     }
     return absl::OkStatus();
@@ -286,30 +345,31 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
     }
 
     std::size_t next_history_turn = 1U;
+    std::optional<std::string> current_history_turn_id;
     for (const EvalConversationMessage& message : eval_case.conversation) {
-        if (message.role != isla::server::memory::MessageRole::User) {
-            continue;
+        if (message.role == isla::server::memory::MessageRole::User ||
+            !current_history_turn_id.has_value()) {
+            current_history_turn_id = absl::StrCat("history_turn_", next_history_turn++);
         }
-        const std::string turn_id = absl::StrCat("history_turn_", next_history_turn++);
-        recorder->RecordBenchmarkUserMessage(turn_id, message.text);
-        if (absl::Status send_status = session.SendTextInput(turn_id, message.text);
+        const std::string turn_id = *current_history_turn_id;
+        const std::string role =
+            message.role == isla::server::memory::MessageRole::User ? "user" : "assistant";
+        recorder->RecordBenchmarkConversationMessage(turn_id, role, message.text);
+        if (absl::Status send_status = session.SendTranscriptSeed(turn_id, role, message.text);
             !send_status.ok()) {
             session.Close();
             return send_status;
         }
-        const absl::StatusOr<TurnCompletion> completion = recorder->WaitForTurn(turn_id);
-        if (!completion.ok()) {
+        if (absl::Status seed_status = recorder->WaitForTranscriptSeed(turn_id, role);
+            !seed_status.ok()) {
             session.Close();
-            return completion.status();
-        }
-        if (completion->cancelled || completion->failure.has_value()) {
-            session.Close();
-            return HistoryReplayTurnFailureStatus(turn_id, *completion);
+            return seed_status;
         }
     }
 
     constexpr std::string_view kEvaluatedTurnId = "evaluated_turn";
-    recorder->RecordBenchmarkUserMessage(std::string(kEvaluatedTurnId), eval_case.input.text);
+    recorder->RecordBenchmarkConversationMessage(std::string(kEvaluatedTurnId), "user",
+                                                 eval_case.input.text);
     if (absl::Status send_status =
             session.SendTextInput(std::string(kEvaluatedTurnId), eval_case.input.text);
         !send_status.ok()) {

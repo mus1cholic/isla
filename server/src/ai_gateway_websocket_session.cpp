@@ -21,6 +21,19 @@ absl::Status failed_precondition(std::string_view message) {
     return absl::FailedPreconditionError(std::string(message));
 }
 
+std::string TranscriptSeedErrorCode(const absl::Status& status) {
+    switch (status.code()) {
+    case absl::StatusCode::kInvalidArgument:
+    case absl::StatusCode::kFailedPrecondition:
+    case absl::StatusCode::kAlreadyExists:
+    case absl::StatusCode::kNotFound:
+    case absl::StatusCode::kUnimplemented:
+        return "bad_request";
+    default:
+        return "internal_error";
+    }
+}
+
 const char* close_reason_name(SessionCloseReason reason) {
     switch (reason) {
     case SessionCloseReason::ProtocolEnded:
@@ -63,7 +76,34 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
         return failed_precondition("websocket session is closed");
     }
 
-    const HandleIncomingResult result = handler_.HandleIncomingJson(frame);
+    HandleIncomingResult result = handler_.HandleIncomingJson(frame);
+    if (result.transcript_seed.has_value()) {
+        absl::Status seed_status = event_sink_ != nullptr
+                                       ? event_sink_->HandleTranscriptSeed(*result.transcript_seed)
+                                       : failed_precondition("missing transcript seed handler");
+        if (!seed_status.ok()) {
+            const absl::StatusOr<EmitResult> emit =
+                handler_.EmitError(result.transcript_seed->turn_id,
+                                   TranscriptSeedErrorCode(seed_status), seed_status.message());
+            if (!emit.ok()) {
+                return emit.status();
+            }
+            result.outgoing_frames.insert(result.outgoing_frames.end(),
+                                          emit->outgoing_frames.begin(),
+                                          emit->outgoing_frames.end());
+            result.ok = false;
+            result.error_message = std::string(seed_status.message());
+        } else {
+            const absl::StatusOr<EmitResult> emit = handler_.EmitTranscriptSeeded(
+                result.transcript_seed->turn_id, result.transcript_seed->role);
+            if (!emit.ok()) {
+                return emit.status();
+            }
+            result.outgoing_frames.insert(result.outgoing_frames.end(),
+                                          emit->outgoing_frames.begin(),
+                                          emit->outgoing_frames.end());
+        }
+    }
     // NOTICE: `session.started` is encoded inside HandleIncomingJson(), so the transport sends the
     // frame before the application sink can begin startup side effects like session persistence.
     // TODO: Rework session.start so the application sink can accept or reject startup before

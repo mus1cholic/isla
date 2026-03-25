@@ -33,10 +33,18 @@ struct TurnCancelRequestedEvent {
     std::string turn_id;
 };
 
+struct TranscriptSeedEvent {
+    std::string session_id;
+    std::string turn_id;
+    std::string role;
+    std::string text;
+};
+
 struct HandleIncomingResult {
     bool ok = false;
     std::vector<std::string> outgoing_frames;
     std::optional<SessionStartedEvent> session_started;
+    std::optional<TranscriptSeedEvent> transcript_seed;
     std::optional<TurnAcceptedEvent> accepted_turn;
     std::optional<TurnCancelRequestedEvent> cancel_requested;
     bool should_close = false;
@@ -59,6 +67,8 @@ class GatewaySessionHandler {
     [[nodiscard]] absl::StatusOr<EmitResult> EmitAudioOutput(std::string_view turn_id,
                                                              std::string_view mime_type,
                                                              std::string_view audio_base64);
+    [[nodiscard]] absl::StatusOr<EmitResult> EmitTranscriptSeeded(std::string_view turn_id,
+                                                                  std::string_view role) const;
     [[nodiscard]] absl::StatusOr<EmitResult> EmitTurnCompleted(std::string_view turn_id);
     [[nodiscard]] absl::StatusOr<EmitResult> EmitTurnCancelled(std::string_view turn_id);
     [[nodiscard]] absl::StatusOr<EmitResult> EmitError(std::optional<std::string_view> turn_id,
