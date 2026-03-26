@@ -433,5 +433,87 @@ TEST_F(GatewayStubResponderStandaloneFixture,
     EXPECT_TRUE(session().events().empty());
 }
 
+TEST_F(GatewayStubResponderStandaloneFixture, TranscriptSeedDrainsCompactionBeforeNextSeed) {
+    // Track the order of decider/compactor calls and verify that when the flush
+    // decider fires a second time (on a later seed), the first compaction has
+    // already been applied — i.e. the conversation items have been compacted,
+    // not left as raw ongoing episodes.
+
+    auto decider_call_count = std::make_shared<std::atomic<int>>(0);
+
+    auto client = test::MakeFakeOpenAiResponsesClient(
+        absl::OkStatus(), "", "resp_test", absl::OkStatus(),
+        [decider_call_count](const OpenAiResponsesRequest& request,
+                             const OpenAiResponsesEventCallback& on_event) -> absl::Status {
+            if (request.system_prompt == MidTermFlushDeciderPromptText()) {
+                const int call_index = decider_call_count->fetch_add(1);
+                // Return the last conversation item (the active ongoing episode).
+                // After the first flush, prior items become stubs, so the ongoing
+                // episode shifts to a higher index.
+                const std::string item_id = "i" + std::to_string(call_index);
+                const std::string response = R"json({
+                    "should_flush": true,
+                    "item_id": ")json" + item_id +
+                                             R"json(",
+                    "split_at": null,
+                    "reasoning": "Completed exchange."
+                })json";
+                return EmitResponseText(response, on_event, "resp_decider");
+            }
+            if (request.system_prompt == MidTermCompactorPromptText()) {
+                return EmitResponseText(R"json({
+                    "tier1_detail": "Seed episode detail.",
+                    "tier2_summary": "Seed episode summary.",
+                    "tier3_ref": "Seed episode ref.",
+                    "tier3_keywords": ["seed", "transcript", "replay", "memory", "test"],
+                    "salience": 6
+                })json",
+                                        on_event, "resp_compactor");
+            }
+            const std::string reply =
+                std::string("stub echo: ") + test::ExtractLatestPromptLine(request.user_text);
+            return EmitResponseText(reply, on_event);
+        });
+
+    GatewayStubResponderConfig config = MakeEchoConfig();
+    config.openai_client = client;
+    InitializeResponder(std::move(config));
+    StartSession();
+
+    // Replay several pairs of transcript seeds.  Each assistant reply should
+    // trigger the flush decider, and HandleTranscriptSeed should block until the
+    // compaction is applied before accepting the next seed.
+    for (int pair = 0; pair < 3; ++pair) {
+        const std::string turn_id = "seed_" + std::to_string(pair);
+        const absl::Status user_status = responder().HandleTranscriptSeed(TranscriptSeedEvent{
+            .session_id = session_id(),
+            .turn_id = turn_id,
+            .role = "user",
+            .text = "user message " + std::to_string(pair),
+        });
+        ASSERT_TRUE(user_status.ok()) << "pair=" << pair << " user seed: " << user_status;
+        const absl::Status assistant_status = responder().HandleTranscriptSeed(TranscriptSeedEvent{
+            .session_id = session_id(),
+            .turn_id = turn_id,
+            .role = "assistant",
+            .text = "assistant reply " + std::to_string(pair),
+        });
+        ASSERT_TRUE(assistant_status.ok())
+            << "pair=" << pair << " assistant seed: " << assistant_status;
+    }
+
+    // The decider should have been called exactly once per assistant seed (3
+    // pairs → 3 calls) because each compaction was drained synchronously before
+    // the next seed pair was processed.  Without the synchronous drain, only the
+    // first call would fire (pending_mid_term_flushes_ would be non-empty).
+    EXPECT_EQ(decider_call_count->load(), 3);
+
+    // Verify the memory is settled: there should be compacted mid-term episodes.
+    const absl::StatusOr<isla::server::memory::WorkingMemoryState> state =
+        responder().SnapshotSessionWorkingMemoryState(session_id());
+    ASSERT_TRUE(state.ok()) << state.status();
+    EXPECT_GE(state->mid_term_episodes.size(), 1U);
+}
+
 } // namespace
 } // namespace isla::server::ai_gateway

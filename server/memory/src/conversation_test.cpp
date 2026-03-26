@@ -353,5 +353,33 @@ TEST(ConversationTest, ReplaceOngoingEpisodeWithStubRejectsBadTargets) {
         ReplaceOngoingEpisodeWithStub(conversation, 0, "", Ts("2026-03-08T14:00:03Z")).ok());
 }
 
+TEST(ConversationTest, DuplicateTimestampsPreserveInsertionOrder) {
+    Conversation conversation{
+        .items = {},
+        .user_id = "user_001",
+    };
+
+    // All messages share the exact same timestamp — this mirrors LongMemEval
+    // haystack sessions where date granularity is coarse.
+    const Timestamp same_ts = Ts("2026-03-08T14:00:00Z");
+    AppendUserMessage(conversation, "first", same_ts);
+    AppendAssistantMessage(conversation, "second", same_ts);
+    AppendUserMessage(conversation, "third", same_ts);
+    AppendAssistantMessage(conversation, "fourth", same_ts);
+
+    ASSERT_EQ(conversation.items.size(), 1U);
+    const auto& messages = conversation.items[0].ongoing_episode->messages;
+    ASSERT_EQ(messages.size(), 4U);
+
+    EXPECT_EQ(messages[0].content, "first");
+    EXPECT_EQ(messages[0].role, MessageRole::User);
+    EXPECT_EQ(messages[1].content, "second");
+    EXPECT_EQ(messages[1].role, MessageRole::Assistant);
+    EXPECT_EQ(messages[2].content, "third");
+    EXPECT_EQ(messages[2].role, MessageRole::User);
+    EXPECT_EQ(messages[3].content, "fourth");
+    EXPECT_EQ(messages[3].role, MessageRole::Assistant);
+}
+
 } // namespace
 } // namespace isla::server::memory

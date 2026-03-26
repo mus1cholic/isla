@@ -477,6 +477,7 @@ absl::Status MemoryOrchestrator::QueueMidTermAnalysis(const Conversation& conver
                             .split_at_message_index = chosen.split_at_message_index,
                         },
                     .captured_message_count = candidate->ongoing_episode.messages.size(),
+                    .resolved_conversation_item_index = chosen.conversation_item_index,
                 };
             }),
         .freeze_tail_before_append = false,
@@ -552,8 +553,14 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
         }
 
         absl::StatusOr<AsyncMidTermFlushResult> result = it->future.get();
+        // Prefer the index resolved by the async analysis task (populated when
+        // QueueMidTermAnalysis lets the decider choose the target).  Fall back to
+        // the index recorded when the PendingMidTermFlush was enqueued (populated
+        // by QueueMidTermFlush for direct flushes).
         const std::optional<std::size_t> adjusted_conversation_item_index =
-            it->conversation_item_index;
+            result.ok() && result->resolved_conversation_item_index.has_value()
+                ? result->resolved_conversation_item_index
+                : it->conversation_item_index;
         it = pending_mid_term_flushes_.erase(it);
         if (!result.ok()) {
             LOG(WARNING) << "MemoryOrchestrator async mid-term flush failed session_id="

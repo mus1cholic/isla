@@ -480,5 +480,35 @@ TEST_F(WorkingMemoryTest, FlushOngoingEpisodeRejectsInvalidRequests) {
     EXPECT_FALSE(bad_episode.ok());
 }
 
+TEST_F(WorkingMemoryTest, DuplicateTimestampsRenderInInsertionOrder) {
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
+
+    // All messages share the same timestamp.
+    const Timestamp same_ts = Ts("2026-03-08T14:00:00Z");
+    AppendUserMessage(memory->mutable_conversation(), "alpha", same_ts);
+    AppendAssistantMessage(memory->mutable_conversation(), "bravo", same_ts);
+    AppendUserMessage(memory->mutable_conversation(), "charlie", same_ts);
+    AppendAssistantMessage(memory->mutable_conversation(), "delta", same_ts);
+
+    const absl::StatusOr<std::string> prompt = memory->RenderFullWorkingMemory();
+    ASSERT_TRUE(prompt.ok()) << prompt.status();
+
+    const std::size_t alpha_pos = prompt->find("alpha");
+    const std::size_t bravo_pos = prompt->find("bravo");
+    const std::size_t charlie_pos = prompt->find("charlie");
+    const std::size_t delta_pos = prompt->find("delta");
+
+    ASSERT_NE(alpha_pos, std::string::npos);
+    ASSERT_NE(bravo_pos, std::string::npos);
+    ASSERT_NE(charlie_pos, std::string::npos);
+    ASSERT_NE(delta_pos, std::string::npos);
+
+    // Insertion order must be preserved regardless of duplicate timestamps.
+    EXPECT_LT(alpha_pos, bravo_pos);
+    EXPECT_LT(bravo_pos, charlie_pos);
+    EXPECT_LT(charlie_pos, delta_pos);
+}
+
 } // namespace
 } // namespace isla::server::memory

@@ -199,6 +199,11 @@ class MemoryOrchestrator {
     struct AsyncMidTermFlushResult {
         std::optional<CompletedFlushBuildInput> completed_flush;
         std::size_t captured_message_count = 0;
+        // Conversation item index chosen by the async analysis task.  When the
+        // flush was queued via QueueMidTermAnalysis (decider-driven), this
+        // carries the index the decider selected so DrainCompletedMidTermCompactions
+        // can apply the flush to the correct item.
+        std::optional<std::size_t> resolved_conversation_item_index;
     };
 
     struct PendingMidTermFlush {
