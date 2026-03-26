@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
@@ -132,6 +133,16 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
     }
     const bool should_flush = response["should_flush"].get<bool>();
 
+    // Extract optional reasoning text (absent or null is fine, wrong type is rejected).
+    std::optional<std::string> reasoning;
+    if (response.contains("reasoning") && !response["reasoning"].is_null()) {
+        if (!response["reasoning"].is_string()) {
+            return invalid_argument(
+                "flush decider response field 'reasoning' must be a string or null");
+        }
+        reasoning = response["reasoning"].get<std::string>();
+    }
+
     if (!should_flush) {
         // Validate consistency: flush-only fields should be null when not flushing.
         if (response.contains("item_id") && !response["item_id"].is_null()) {
@@ -142,7 +153,7 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
             return invalid_argument(
                 "flush decider returned should_flush=false but split_at is non-null");
         }
-        return MidTermFlushDecision{ .should_flush = false };
+        return MidTermFlushDecision{ .should_flush = false, .reasoning = std::move(reasoning) };
     }
 
     // should_flush == true: item_id is required.
@@ -178,6 +189,7 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
         .should_flush = true,
         .conversation_item_index = *conversation_item_index,
         .split_at_message_index = split_at_message_index,
+        .reasoning = std::move(reasoning),
     };
 }
 
@@ -194,7 +206,29 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
 
     [[nodiscard]] absl::StatusOr<MidTermFlushDecision>
     Decide(const Conversation& conversation) override {
-        VLOG(1) << "LlmMidTermFlushDecider deciding item_count=" << conversation.items.size();
+        if (VLOG_IS_ON(1)) {
+            // Build compact summary of conversation shape for diagnostics.
+            std::string items_summary = "[";
+            for (std::size_t i = 0; i < conversation.items.size(); ++i) {
+                if (i > 0)
+                    items_summary += ", ";
+                const ConversationItem& item = conversation.items[i];
+                if (item.type == ConversationItemType::EpisodeStub) {
+                    items_summary += "stub";
+                } else if (item.type == ConversationItemType::OngoingEpisode &&
+                           item.ongoing_episode.has_value()) {
+                    items_summary += "ongoing(" +
+                                     std::to_string(item.ongoing_episode->messages.size()) +
+                                     " msgs)";
+                } else {
+                    items_summary += "unknown";
+                }
+            }
+            items_summary += "]";
+
+            VLOG(1) << "LlmMidTermFlushDecider deciding item_count=" << conversation.items.size()
+                    << " items=" << items_summary;
+        }
 
         const json input_json = SerializeConversationForDecider(conversation);
         const std::string user_text = input_json.dump();
@@ -272,7 +306,8 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
                 << " split_at_message_index="
                 << (decision->split_at_message_index.has_value()
                         ? std::to_string(*decision->split_at_message_index)
-                        : "none");
+                        : "none")
+                << " reasoning='" << SanitizeForLog(decision->reasoning.value_or("")) << "'";
         return decision;
     }
 
