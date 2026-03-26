@@ -138,7 +138,7 @@ A topic boundary does NOT exist when:
 ### Decision Guidelines
 
 1. **Default to `should_flush: false`.** Most conversations do not contain a topic boundary at any
-   given point. Returning `false` is the normal, expected outcome. A missed boundary can always be
+   given point. Returning `false` is the normal, expected outcome. A missed boundary can usually be
    caught on the next turn — a premature flush cannot be undone and fragments coherent topics.
 
 2. **Topic completion is the strongest signal.** Explicit closure language from the user is the
