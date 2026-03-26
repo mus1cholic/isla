@@ -6,11 +6,8 @@
 #include <string>
 
 #include "absl/status/statusor.h"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_types.hpp"
-
-namespace isla::server {
-class LlmClient;
-} // namespace isla::server
 
 namespace isla::server::memory {
 
@@ -35,8 +32,8 @@ using MidTermFlushDeciderPtr = std::shared_ptr<MidTermFlushDecider>;
 
 // Creates the LLM-backed flush decider. The returned implementation validates the model's JSON
 // response against the live conversation before handing the decision back to the orchestrator.
-[[nodiscard]] absl::StatusOr<MidTermFlushDeciderPtr>
-CreateLlmMidTermFlushDecider(std::shared_ptr<const isla::server::LlmClient> llm_client,
-                             std::string model);
+[[nodiscard]] absl::StatusOr<MidTermFlushDeciderPtr> CreateLlmMidTermFlushDecider(
+    std::shared_ptr<const isla::server::LlmClient> llm_client, std::string model,
+    isla::server::LlmReasoningEffort reasoning_effort = isla::server::LlmReasoningEffort::kNone);
 
 } // namespace isla::server::memory

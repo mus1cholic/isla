@@ -30,7 +30,9 @@ struct DeciderWithFake {
     MidTermFlushDeciderPtr decider;
 };
 
-DeciderWithFake MakeDecider(std::string canned_response) {
+DeciderWithFake
+MakeDecider(std::string canned_response,
+            std::optional<isla::server::LlmReasoningEffort> reasoning_effort = std::nullopt) {
     auto fake = std::make_shared<isla::server::test::MockLlmClient>();
     auto last_request = std::make_shared<LlmRequest>();
     EXPECT_CALL(*fake, StreamResponse(_, _))
@@ -40,7 +42,9 @@ DeciderWithFake MakeDecider(std::string canned_response) {
             return isla::server::test::EmitLlmResponse(canned_response, on_event);
         });
     absl::StatusOr<MidTermFlushDeciderPtr> decider =
-        CreateLlmMidTermFlushDecider(fake, "test-model");
+        reasoning_effort.has_value()
+            ? CreateLlmMidTermFlushDecider(fake, "test-model", *reasoning_effort)
+            : CreateLlmMidTermFlushDecider(fake, "test-model");
     if (!decider.ok()) {
         return { .fake_client = fake, .last_request = last_request, .decider = nullptr };
     }
@@ -460,6 +464,38 @@ TEST(LlmMidTermFlushDeciderTest, FactoryFailsForEmptyModel) {
 
     ASSERT_FALSE(decider.ok());
     EXPECT_EQ(decider.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LlmMidTermFlushDeciderTest, DefaultReasoningEffortIsNone) {
+    auto [fake_client, last_request, decider] = MakeDecider(R"json({
+        "should_flush": false,
+        "item_id": null,
+        "split_at": null,
+        "reasoning": "Nothing to flush."
+    })json");
+    ASSERT_NE(decider, nullptr);
+
+    Conversation conversation = MakeSimpleConversation();
+    const auto result = decider->Decide(conversation);
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(last_request->reasoning_effort, isla::server::LlmReasoningEffort::kNone);
+}
+
+TEST(LlmMidTermFlushDeciderTest, ReasoningEffortIsConfigurable) {
+    auto [fake_client, last_request, decider] =
+        MakeDecider(R"json({
+        "should_flush": false,
+        "item_id": null,
+        "split_at": null,
+        "reasoning": "Nothing to flush."
+    })json",
+                    isla::server::LlmReasoningEffort::kHigh);
+    ASSERT_NE(decider, nullptr);
+
+    Conversation conversation = MakeSimpleConversation();
+    const auto result = decider->Decide(conversation);
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(last_request->reasoning_effort, isla::server::LlmReasoningEffort::kHigh);
 }
 
 } // namespace

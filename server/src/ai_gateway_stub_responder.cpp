@@ -22,6 +22,7 @@
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/openai_llm_client.hpp"
+#include "isla/server/openai_reasoning_effort_utils.hpp"
 #include "isla/server/tools/expand_mid_term_tool.hpp"
 #include "isla/server/tools/tool_registry.hpp"
 
@@ -194,9 +195,13 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
         return MidTermMemoryComponents{};
     }
 
+    const isla::server::LlmReasoningEffort reasoning_effort =
+        TryOpenAiReasoningEffortToLlmReasoningEffort(config.llm_runtime_config.reasoning_effort)
+            .value_or(isla::server::LlmReasoningEffort::kMedium);
+
     absl::StatusOr<isla::server::memory::MidTermFlushDeciderPtr> decider =
-        isla::server::memory::CreateLlmMidTermFlushDecider(llm_client,
-                                                           ResolveMidTermFlushDeciderModel(config));
+        isla::server::memory::CreateLlmMidTermFlushDecider(
+            llm_client, ResolveMidTermFlushDeciderModel(config), reasoning_effort);
     if (!decider.ok()) {
         return decider.status();
     }
@@ -216,7 +221,8 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
             llm_client, ResolveMidTermCompactorModel(config), std::move(embedding_client),
             config.gemini_api_embedding_config.enabled || config.embedding_client != nullptr
                 ? ResolveMidTermEmbeddingModel(config)
-                : std::string());
+                : std::string(),
+            reasoning_effort);
     if (!compactor.ok()) {
         return compactor.status();
     }
