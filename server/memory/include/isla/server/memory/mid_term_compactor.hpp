@@ -12,7 +12,6 @@
 
 namespace isla::server {
 class EmbeddingClient;
-class LlmClient;
 } // namespace isla::server
 
 namespace isla::server::memory {

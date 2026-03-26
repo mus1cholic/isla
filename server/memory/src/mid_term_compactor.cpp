@@ -193,8 +193,7 @@ class LlmMidTermCompactor final : public MidTermCompactor {
     LlmMidTermCompactor(std::shared_ptr<const LlmClient> llm_client, std::string model,
                         std::string system_prompt,
                         std::shared_ptr<const EmbeddingClient> embedding_client,
-                        std::string embedding_model,
-                        LlmReasoningEffort reasoning_effort)
+                        std::string embedding_model, LlmReasoningEffort reasoning_effort)
         : llm_client_(std::move(llm_client)), model_(std::move(model)),
           system_prompt_(std::move(system_prompt)), embedding_client_(std::move(embedding_client)),
           embedding_model_(std::move(embedding_model)), reasoning_effort_(reasoning_effort) {}
@@ -296,12 +295,10 @@ class LlmMidTermCompactor final : public MidTermCompactor {
 
 } // namespace
 
-absl::StatusOr<MidTermCompactorPtr>
-CreateLlmMidTermCompactor(std::shared_ptr<const isla::server::LlmClient> llm_client,
-                          std::string model,
-                          std::shared_ptr<const isla::server::EmbeddingClient> embedding_client,
-                          std::string embedding_model,
-                          isla::server::LlmReasoningEffort reasoning_effort) {
+absl::StatusOr<MidTermCompactorPtr> CreateLlmMidTermCompactor(
+    std::shared_ptr<const isla::server::LlmClient> llm_client, std::string model,
+    std::shared_ptr<const isla::server::EmbeddingClient> embedding_client,
+    std::string embedding_model, isla::server::LlmReasoningEffort reasoning_effort) {
     if (!llm_client) {
         return invalid_argument("LlmMidTermCompactor requires a non-null llm client");
     }

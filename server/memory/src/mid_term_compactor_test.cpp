@@ -63,7 +63,8 @@ MidTermCompactionRequest MakeCompactionRequest() {
 CompactorWithFake MakeCompactor(
     std::string canned_response,
     const std::shared_ptr<isla::server::test::MockEmbeddingClient>& embedding_client = nullptr,
-    std::string embedding_model = "") {
+    std::string embedding_model = "",
+    std::optional<isla::server::LlmReasoningEffort> reasoning_effort = std::nullopt) {
     auto fake = std::make_shared<isla::server::test::MockLlmClient>();
     auto last_request = std::make_shared<LlmRequest>();
     auto last_embedding_request = std::make_shared<EmbeddingRequest>();
@@ -91,7 +92,11 @@ CompactorWithFake MakeCompactor(
             });
     }
     absl::StatusOr<MidTermCompactorPtr> compactor =
-        CreateLlmMidTermCompactor(fake, "test-model", embedding_client, std::move(embedding_model));
+        reasoning_effort.has_value()
+            ? CreateLlmMidTermCompactor(fake, "test-model", embedding_client,
+                                        std::move(embedding_model), *reasoning_effort)
+            : CreateLlmMidTermCompactor(fake, "test-model", embedding_client,
+                                        std::move(embedding_model));
     if (!compactor.ok()) {
         return { .fake_client = fake,
                  .fake_embedding_client = embedding_client,
@@ -619,27 +624,18 @@ TEST(LlmMidTermCompactorTest, DefaultReasoningEffortIsNone) {
 }
 
 TEST(LlmMidTermCompactorTest, ReasoningEffortIsConfigurable) {
-    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
-    auto last_request = std::make_shared<LlmRequest>();
-    EXPECT_CALL(*fake, Validate()).Times(0);
-    EXPECT_CALL(*fake, StreamResponse(_, _))
-        .WillOnce([last_request](const LlmRequest& request,
-                                 const isla::server::LlmEventCallback& on_event) {
-            *last_request = request;
-            return isla::server::test::EmitLlmResponse(R"json({
-                "tier1_detail": "Detail.",
-                "tier2_summary": "Summary.",
-                "tier3_ref": "Ref.",
-                "tier3_keywords": ["a", "b", "c", "d", "e"],
-                "salience": 5
-            })json",
-                                                       on_event);
-        });
-    absl::StatusOr<MidTermCompactorPtr> compactor = CreateLlmMidTermCompactor(
-        fake, "test-model", nullptr, "", isla::server::LlmReasoningEffort::kLow);
-    ASSERT_TRUE(compactor.ok()) << compactor.status();
+    auto [fake_client, fake_embedding_client, last_request, last_embedding_request, compactor] =
+        MakeCompactor(R"json({
+            "tier1_detail": "Detail.",
+            "tier2_summary": "Summary.",
+            "tier3_ref": "Ref.",
+            "tier3_keywords": ["a", "b", "c", "d", "e"],
+            "salience": 5
+        })json",
+                      nullptr, "", isla::server::LlmReasoningEffort::kLow);
+    ASSERT_NE(compactor, nullptr);
 
-    const auto result = (*compactor)->Compact(MakeCompactionRequest());
+    const auto result = compactor->Compact(MakeCompactionRequest());
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_EQ(last_request->reasoning_effort, isla::server::LlmReasoningEffort::kLow);
 }

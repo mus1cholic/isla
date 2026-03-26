@@ -188,8 +188,7 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
 class LlmMidTermFlushDecider final : public MidTermFlushDecider {
   public:
     LlmMidTermFlushDecider(std::shared_ptr<const LlmClient> llm_client, std::string model,
-                           std::string system_prompt,
-                           LlmReasoningEffort reasoning_effort)
+                           std::string system_prompt, LlmReasoningEffort reasoning_effort)
         : llm_client_(std::move(llm_client)), model_(std::move(model)),
           system_prompt_(std::move(system_prompt)), reasoning_effort_(reasoning_effort) {}
 
@@ -292,8 +291,7 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
 
 absl::StatusOr<MidTermFlushDeciderPtr>
 CreateLlmMidTermFlushDecider(std::shared_ptr<const isla::server::LlmClient> llm_client,
-                             std::string model,
-                             isla::server::LlmReasoningEffort reasoning_effort) {
+                             std::string model, isla::server::LlmReasoningEffort reasoning_effort) {
     if (!llm_client) {
         return invalid_argument("LlmMidTermFlushDecider requires a non-null llm client");
     }
