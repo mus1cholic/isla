@@ -602,5 +602,47 @@ TEST(LlmMidTermCompactorTest, FactoryFailsForEmbeddingModelWithoutEmbeddingClien
     EXPECT_EQ(compactor.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LlmMidTermCompactorTest, DefaultReasoningEffortIsNone) {
+    auto [fake_client, fake_embedding_client, last_request, last_embedding_request, compactor] =
+        MakeCompactor(R"json({
+            "tier1_detail": "Detail.",
+            "tier2_summary": "Summary.",
+            "tier3_ref": "Ref.",
+            "tier3_keywords": ["a", "b", "c", "d", "e"],
+            "salience": 5
+        })json");
+    ASSERT_NE(compactor, nullptr);
+
+    const auto result = compactor->Compact(MakeCompactionRequest());
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(last_request->reasoning_effort, isla::server::LlmReasoningEffort::kNone);
+}
+
+TEST(LlmMidTermCompactorTest, ReasoningEffortIsConfigurable) {
+    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
+    auto last_request = std::make_shared<LlmRequest>();
+    EXPECT_CALL(*fake, Validate()).Times(0);
+    EXPECT_CALL(*fake, StreamResponse(_, _))
+        .WillOnce([last_request](const LlmRequest& request,
+                                 const isla::server::LlmEventCallback& on_event) {
+            *last_request = request;
+            return isla::server::test::EmitLlmResponse(R"json({
+                "tier1_detail": "Detail.",
+                "tier2_summary": "Summary.",
+                "tier3_ref": "Ref.",
+                "tier3_keywords": ["a", "b", "c", "d", "e"],
+                "salience": 5
+            })json",
+                                                       on_event);
+        });
+    absl::StatusOr<MidTermCompactorPtr> compactor = CreateLlmMidTermCompactor(
+        fake, "test-model", nullptr, "", isla::server::LlmReasoningEffort::kLow);
+    ASSERT_TRUE(compactor.ok()) << compactor.status();
+
+    const auto result = (*compactor)->Compact(MakeCompactionRequest());
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(last_request->reasoning_effort, isla::server::LlmReasoningEffort::kLow);
+}
+
 } // namespace
 } // namespace isla::server::memory

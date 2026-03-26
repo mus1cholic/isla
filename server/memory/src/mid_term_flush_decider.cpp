@@ -188,9 +188,10 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
 class LlmMidTermFlushDecider final : public MidTermFlushDecider {
   public:
     LlmMidTermFlushDecider(std::shared_ptr<const LlmClient> llm_client, std::string model,
-                           std::string system_prompt)
+                           std::string system_prompt,
+                           LlmReasoningEffort reasoning_effort)
         : llm_client_(std::move(llm_client)), model_(std::move(model)),
-          system_prompt_(std::move(system_prompt)) {}
+          system_prompt_(std::move(system_prompt)), reasoning_effort_(reasoning_effort) {}
 
     [[nodiscard]] absl::StatusOr<MidTermFlushDecision>
     Decide(const Conversation& conversation) override {
@@ -206,7 +207,7 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
                 .model = model_,
                 .system_prompt = system_prompt_,
                 .user_text = user_text,
-                .reasoning_effort = isla::server::LlmReasoningEffort::kMedium,
+                .reasoning_effort = reasoning_effort_,
             },
             [&output_text](const LlmEvent& event) -> absl::Status {
                 return std::visit(
@@ -280,6 +281,7 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
     std::shared_ptr<const LlmClient> llm_client_;
     std::string model_;
     std::string system_prompt_;
+    LlmReasoningEffort reasoning_effort_;
 };
 
 } // namespace
@@ -290,7 +292,8 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
 
 absl::StatusOr<MidTermFlushDeciderPtr>
 CreateLlmMidTermFlushDecider(std::shared_ptr<const isla::server::LlmClient> llm_client,
-                             std::string model) {
+                             std::string model,
+                             isla::server::LlmReasoningEffort reasoning_effort) {
     if (!llm_client) {
         return invalid_argument("LlmMidTermFlushDecider requires a non-null llm client");
     }
@@ -303,7 +306,7 @@ CreateLlmMidTermFlushDecider(std::shared_ptr<const isla::server::LlmClient> llm_
         return system_prompt.status();
     }
     return std::make_shared<LlmMidTermFlushDecider>(std::move(llm_client), std::move(model),
-                                                    std::move(*system_prompt));
+                                                    std::move(*system_prompt), reasoning_effort);
 }
 
 } // namespace isla::server::memory

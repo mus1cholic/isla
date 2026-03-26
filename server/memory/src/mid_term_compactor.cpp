@@ -193,10 +193,11 @@ class LlmMidTermCompactor final : public MidTermCompactor {
     LlmMidTermCompactor(std::shared_ptr<const LlmClient> llm_client, std::string model,
                         std::string system_prompt,
                         std::shared_ptr<const EmbeddingClient> embedding_client,
-                        std::string embedding_model)
+                        std::string embedding_model,
+                        LlmReasoningEffort reasoning_effort)
         : llm_client_(std::move(llm_client)), model_(std::move(model)),
           system_prompt_(std::move(system_prompt)), embedding_client_(std::move(embedding_client)),
-          embedding_model_(std::move(embedding_model)) {}
+          embedding_model_(std::move(embedding_model)), reasoning_effort_(reasoning_effort) {}
 
     [[nodiscard]] absl::StatusOr<CompactedMidTermEpisode>
     Compact(const MidTermCompactionRequest& request) override {
@@ -215,7 +216,7 @@ class LlmMidTermCompactor final : public MidTermCompactor {
                 .model = model_,
                 .system_prompt = system_prompt_,
                 .user_text = user_text,
-                .reasoning_effort = isla::server::LlmReasoningEffort::kMedium,
+                .reasoning_effort = reasoning_effort_,
             },
             [&output_text](const LlmEvent& event) -> absl::Status {
                 return std::visit(
@@ -290,6 +291,7 @@ class LlmMidTermCompactor final : public MidTermCompactor {
     std::string system_prompt_;
     std::shared_ptr<const EmbeddingClient> embedding_client_;
     std::string embedding_model_;
+    LlmReasoningEffort reasoning_effort_;
 };
 
 } // namespace
@@ -298,7 +300,8 @@ absl::StatusOr<MidTermCompactorPtr>
 CreateLlmMidTermCompactor(std::shared_ptr<const isla::server::LlmClient> llm_client,
                           std::string model,
                           std::shared_ptr<const isla::server::EmbeddingClient> embedding_client,
-                          std::string embedding_model) {
+                          std::string embedding_model,
+                          isla::server::LlmReasoningEffort reasoning_effort) {
     if (!llm_client) {
         return invalid_argument("LlmMidTermCompactor requires a non-null llm client");
     }
@@ -322,7 +325,7 @@ CreateLlmMidTermCompactor(std::shared_ptr<const isla::server::LlmClient> llm_cli
     }
     return std::make_shared<LlmMidTermCompactor>(
         std::move(llm_client), std::move(model), std::move(*system_prompt),
-        std::move(embedding_client), std::move(embedding_model));
+        std::move(embedding_client), std::move(embedding_model), reasoning_effort);
 }
 
 } // namespace isla::server::memory

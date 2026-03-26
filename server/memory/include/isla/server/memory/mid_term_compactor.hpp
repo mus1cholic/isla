@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
@@ -47,6 +48,7 @@ using MidTermCompactorPtr = std::shared_ptr<MidTermCompactor>;
 [[nodiscard]] absl::StatusOr<MidTermCompactorPtr> CreateLlmMidTermCompactor(
     std::shared_ptr<const isla::server::LlmClient> llm_client, std::string model,
     std::shared_ptr<const isla::server::EmbeddingClient> embedding_client = nullptr,
-    std::string embedding_model = "");
+    std::string embedding_model = "",
+    isla::server::LlmReasoningEffort reasoning_effort = isla::server::LlmReasoningEffort::kNone);
 
 } // namespace isla::server::memory
