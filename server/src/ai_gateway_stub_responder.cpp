@@ -313,10 +313,20 @@ absl::Status GatewayStubResponder::HandleTranscriptSeed(const TranscriptSeedEven
         return role.status();
     }
     RecordConversationReplayTime(event.session_id, event.turn_id, *role, event.create_time);
+    absl::Status append_status;
     if (*role == isla::server::memory::MessageRole::User) {
-        return AppendSessionUserMessage(event.session_id, event.turn_id, event.text);
+        append_status = AppendSessionUserMessage(event.session_id, event.turn_id, event.text);
+    } else {
+        append_status = AppendSessionAssistantMessage(event.session_id, event.turn_id, event.text);
     }
-    return AppendSessionAssistantMessage(event.session_id, event.turn_id, event.text);
+    if (!append_status.ok()) {
+        return append_status;
+    }
+    // Block until any mid-term compaction triggered by this seed completes before
+    // accepting the next seed.  This ensures the flush decider always evaluates a
+    // settled memory state, so rapid transcript-seed replay doesn't skip natural
+    // flush boundaries.
+    return AwaitSessionMemorySettled(event.session_id);
 }
 
 GatewayStubResponder::PendingTurn
