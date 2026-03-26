@@ -484,6 +484,33 @@ TEST(LlmMidTermFlushDeciderTest, DecideReasoningIsNulloptWhenAbsent) {
     EXPECT_FALSE(decision->reasoning.has_value());
 }
 
+TEST(LlmMidTermFlushDeciderTest, DecideReasoningIsNulloptWhenExplicitlyNull) {
+    const std::string response =
+        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": null})";
+    auto [fake, last_request, decider] = MakeDecider(response);
+    ASSERT_NE(decider, nullptr);
+
+    const Conversation conversation = MakeSimpleConversation();
+    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+
+    ASSERT_TRUE(decision.ok()) << decision.status();
+    EXPECT_FALSE(decision->should_flush);
+    EXPECT_FALSE(decision->reasoning.has_value());
+}
+
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsReasoningWithWrongType) {
+    const std::string response =
+        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": 42})";
+    auto [fake, last_request, decider] = MakeDecider(response);
+    ASSERT_NE(decider, nullptr);
+
+    const Conversation conversation = MakeSimpleConversation();
+    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+
+    ASSERT_FALSE(decision.ok());
+    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LlmMidTermFlushDeciderTest, FactorySucceedsWithValidInputs) {
     auto fake = std::make_shared<isla::server::test::MockLlmClient>();
     absl::StatusOr<MidTermFlushDeciderPtr> decider =

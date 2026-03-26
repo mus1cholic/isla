@@ -15,6 +15,9 @@ struct MidTermFlushDecision {
     bool should_flush = false;
     std::optional<std::size_t> conversation_item_index;
     std::optional<std::size_t> split_at_message_index;
+    // Free-form text from the model explaining why it chose to flush (or not). Present only when
+    // the model includes a "reasoning" field in its JSON response. Intended for diagnostics and
+    // logging only — not stable or machine-parseable. Must be sanitized before logging.
     std::optional<std::string> reasoning;
 };
 
