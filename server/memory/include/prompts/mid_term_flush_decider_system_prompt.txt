@@ -137,8 +137,9 @@ A topic boundary does NOT exist when:
 
 ### Decision Guidelines
 
-1. **Prefer no boundary over a premature one.** A missed boundary can be caught on the next turn.
-   A premature split fragments coherent topics.
+1. **Default to `should_flush: false`.** Most conversations do not contain a topic boundary at any
+   given point. Returning `false` is the normal, expected outcome. A missed boundary can always be
+   caught on the next turn — a premature flush cannot be undone and fragments coherent topics.
 
 2. **Topic completion is the strongest signal.** Explicit closure language from the user is the
    clearest indicator.
@@ -311,7 +312,37 @@ Output:
   "reasoning": "The user is asking follow-up questions about the same subject. The discussion on Python virtual environments is still ongoing."
 }
 
-Example 5: Boundary with split - completed topic followed by a new one, with stubs
+Example 5: No boundary - short conversation with only one exchange
+
+Input:
+{
+  "items": [
+    {
+      "id": "i0",
+      "type": "ongoing_episode",
+      "ongoing_episode": {
+        "messages": [
+          { "id": "m0", "role": "user",
+            "content": "What's the capital of France?",
+            "create_time": "2026-03-14T11:00:00Z" },
+          { "id": "m1", "role": "assistant",
+            "content": "The capital of France is Paris.",
+            "create_time": "2026-03-14T11:00:10Z" }
+        ]
+      }
+    }
+  ]
+}
+
+Output:
+{
+  "should_flush": false,
+  "item_id": null,
+  "split_at": null,
+  "reasoning": "There is only a single exchange. The user may continue with follow-up questions. Wait for a clear signal that the topic is finished."
+}
+
+Example 6: Boundary with split - completed topic followed by a new one, with stubs
 
 Input:
 {
