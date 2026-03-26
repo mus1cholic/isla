@@ -313,20 +313,26 @@ absl::Status GatewayStubResponder::HandleTranscriptSeed(const TranscriptSeedEven
         return role.status();
     }
     RecordConversationReplayTime(event.session_id, event.turn_id, *role, event.create_time);
-    absl::Status append_status;
-    if (*role == isla::server::memory::MessageRole::User) {
-        append_status = AppendSessionUserMessage(event.session_id, event.turn_id, event.text);
-    } else {
-        append_status = AppendSessionAssistantMessage(event.session_id, event.turn_id, event.text);
-    }
+    absl::Status append_status =
+        *role == isla::server::memory::MessageRole::User
+            ? AppendSessionUserMessage(event.session_id, event.turn_id, event.text)
+            : AppendSessionAssistantMessage(event.session_id, event.turn_id, event.text);
     if (!append_status.ok()) {
         return append_status;
     }
     // Block until any mid-term compaction triggered by this seed completes before
     // accepting the next seed.  This ensures the flush decider always evaluates a
     // settled memory state, so rapid transcript-seed replay doesn't skip natural
-    // flush boundaries.
-    return AwaitSessionMemorySettled(event.session_id);
+    // flush boundaries.  A failed flush is still "settled" (no longer pending),
+    // so we log the failure but do not propagate it — the seed was already
+    // appended successfully.
+    if (const absl::Status settled = AwaitSessionMemorySettled(event.session_id); !settled.ok()) {
+        LOG(WARNING) << "AI gateway stub transcript seed memory settle failed session="
+                     << SanitizeForLog(event.session_id)
+                     << " turn_id=" << SanitizeForLog(event.turn_id) << " detail='"
+                     << SanitizeForLog(settled.message()) << "'";
+    }
+    return absl::OkStatus();
 }
 
 GatewayStubResponder::PendingTurn

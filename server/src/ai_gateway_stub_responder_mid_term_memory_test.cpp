@@ -502,11 +502,11 @@ TEST_F(GatewayStubResponderStandaloneFixture, TranscriptSeedDrainsCompactionBefo
             << "pair=" << pair << " assistant seed: " << assistant_status;
     }
 
-    // The decider should have been called more than once — once per completed
-    // exchange — because each compaction was drained before the next seed pair
-    // was processed.  Without the synchronous drain, the second and third calls
-    // would be skipped (pending_mid_term_flushes_ would be non-empty).
-    EXPECT_GE(decider_call_count->load(), 2);
+    // The decider should have been called exactly once per assistant seed (3
+    // pairs → 3 calls) because each compaction was drained synchronously before
+    // the next seed pair was processed.  Without the synchronous drain, only the
+    // first call would fire (pending_mid_term_flushes_ would be non-empty).
+    EXPECT_EQ(decider_call_count->load(), 3);
 
     // Verify the memory is settled: there should be compacted mid-term episodes.
     const absl::StatusOr<isla::server::memory::WorkingMemoryState> state =
