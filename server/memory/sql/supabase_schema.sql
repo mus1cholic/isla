@@ -82,6 +82,15 @@ alter table public.conversation_messages
     on delete cascade
     deferrable initially immediate;
 
+alter table public.user_working_memory
+    drop constraint if exists user_working_memory_session_id_fkey;
+
+alter table public.user_working_memory
+    add constraint user_working_memory_session_id_fkey
+    foreign key (session_id)
+    references public.memory_sessions(session_id)
+    on delete cascade;
+
 create or replace function public.split_conversation_item_with_episode_stub(
     p_session_id text,
     p_conversation_item_index bigint,
