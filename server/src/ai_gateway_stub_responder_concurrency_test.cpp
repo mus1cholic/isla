@@ -58,8 +58,8 @@ TEST(GatewayStubResponderStandaloneTest,
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test",
-                                                    .user_id = "test_user" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
 
     auto turn_future = std::async(std::launch::async, [&] {
         return responder.RunAcceptedTurnToCompletion(TurnAcceptedEvent{
@@ -103,8 +103,8 @@ TEST(GatewayStubResponderStandaloneTest, SessionClosedDuringExecutionDropsLaterE
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test",
-                                                    .user_id = "test_user" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
 
     responder.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = "srv_test",
@@ -142,8 +142,8 @@ TEST(GatewayStubResponderStandaloneTest, MatchingCancelForInProgressTurnEmitsCan
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test",
-                                                    .user_id = "test_user" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
 
     responder.OnTurnAccepted(TurnAcceptedEvent{
         .session_id = "srv_test",
@@ -174,8 +174,8 @@ TEST(GatewayStubResponderStandaloneTest, AcceptedTurnDuringShutdownDoesNotBlockO
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test",
-                                                    .user_id = "test_user" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
 
     responder.OnServerStopping(registry);
     session->DelayNextErrorCompletion();
@@ -235,10 +235,10 @@ TEST(GatewayStubResponderStandaloneTest,
     auto session_two = std::make_shared<RecordingLiveSession>("srv_two");
     registry.RegisterSession(session_one);
     registry.RegisterSession(session_two);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_one",
-                                                    .user_id = "test_user_one" });
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_two",
-                                                    .user_id = "test_user_two" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_one", .user_id = "test_user_one" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_two", .user_id = "test_user_two" });
 
     auto accepted_future = std::async(std::launch::async, [&] {
         responder.OnTurnAccepted(TurnAcceptedEvent{
@@ -288,8 +288,8 @@ TEST(GatewayStubResponderStandaloneTest, SameSessionRenderWaitsForOngoingMemoryM
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test",
-                                                    .user_id = "test_user" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
 
     auto accepted_future = std::async(std::launch::async, [&] {
         responder.OnTurnAccepted(TurnAcceptedEvent{
@@ -326,10 +326,10 @@ TEST(GatewayStubResponderStandaloneTest, ConcurrentMultiSessionTurnsKeepMemoryIs
     auto session_two = std::make_shared<RecordingLiveSession>("srv_two");
     registry.RegisterSession(session_one);
     registry.RegisterSession(session_two);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_one",
-                                                    .user_id = "test_user_one" });
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_two",
-                                                    .user_id = "test_user_two" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_one", .user_id = "test_user_one" });
+    responder.OnSessionStarted(
+        SessionStartedEvent{ .session_id = "srv_two", .user_id = "test_user_two" });
 
     auto first_turn = std::async(std::launch::async, [&] {
         responder.OnTurnAccepted(TurnAcceptedEvent{

@@ -580,10 +580,10 @@ TEST_F(AiGatewayClientSessionIntegrationTest, SendsReplayTimestampsThroughGatewa
             [&events](const protocol::GatewayMessage& message) { events.RecordMessage(message); },
     });
 
-    ASSERT_TRUE(
-        session.ConnectAndStart(std::string(kTestUserId), "client_session_1",
-                                "2026-03-14T09:59:00Z", "2026-03-20T08:00:00Z")
-            .ok());
+    ASSERT_TRUE(session
+                    .ConnectAndStart(std::string(kTestUserId), "client_session_1",
+                                     "2026-03-14T09:59:00Z", "2026-03-20T08:00:00Z")
+                    .ok());
     ASSERT_TRUE(
         session
             .SendTranscriptSeed("turn_seed", "assistant", "seeded context", "2026-03-14T10:00:05Z")

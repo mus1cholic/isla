@@ -328,6 +328,7 @@ TEST(LiveEvalRunnerTest, UsesBenchmarkSuppliedTimesOverLiveGateway) {
 
     ASSERT_TRUE(artifacts.ok()) << artifacts.status();
     ASSERT_EQ(store->session_records.size(), 1U);
+    EXPECT_EQ(store->session_records[0].user_id, "live_eval_live_eval_test");
     EXPECT_EQ(store->session_records[0].created_at, session_start_time);
 
     ASSERT_GE(store->message_writes.size(), 4U);

@@ -63,6 +63,13 @@ cc_library(
 )
 
 cc_library(
+    name = "eval_memory_user_id",
+    srcs = ["evals/eval_memory_user_id.cpp"],
+    hdrs = ["evals/eval_memory_user_id.hpp"],
+    visibility = ["//visibility:private"],
+)
+
+cc_library(
     name = "live_eval_runner",
     srcs = ["evals/live_eval_runner.cpp"],
     hdrs = ["evals/live_eval_runner.hpp"],
@@ -71,6 +78,7 @@ cc_library(
         "//client/src:ai_gateway_client_session",
         "//server/include/isla/server:server_headers",
         "//server/memory/src:memory_types",
+        ":eval_memory_user_id",
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
@@ -87,6 +95,7 @@ cc_library(
         "//server/include/isla/server:server_headers",
         ":ai_gateway_server",
         ":ai_gateway_stub_responder",
+        ":eval_memory_user_id",
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",

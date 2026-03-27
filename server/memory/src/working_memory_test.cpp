@@ -5,6 +5,7 @@
 
 #include <string>
 
+#include "absl/status/status.h"
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -64,6 +65,17 @@ TEST_F(WorkingMemoryTest, CreateWithoutExplicitSystemPromptUsesBundledPrompt) {
     const absl::StatusOr<std::string> system_prompt = LoadSystemPrompt();
     ASSERT_TRUE(system_prompt.ok()) << system_prompt.status();
     EXPECT_EQ(memory->snapshot().system_prompt.base_instructions, *system_prompt);
+}
+
+TEST_F(WorkingMemoryTest, CreateRejectsEmptyUserId) {
+    const absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
+        .system_prompt = "You are Isla.",
+        .user_id = "",
+    });
+
+    ASSERT_FALSE(memory.ok());
+    EXPECT_EQ(memory.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(memory.status().message(), "working memory must include a user_id");
 }
 
 TEST_F(WorkingMemoryTest, RenderWithoutExplicitSystemPromptStartsWithBundledPrompt) {

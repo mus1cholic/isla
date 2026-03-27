@@ -226,8 +226,9 @@ TEST(AiGatewayProtocolTest, RejectsSessionStartWithoutUserId) {
     )json");
 
     EXPECT_FALSE(result.ok());
-    EXPECT_NE(std::string(result.status().message()).find("session.start requires non-empty user_id"),
-              std::string::npos);
+    EXPECT_NE(
+        std::string(result.status().message()).find("session.start requires non-empty user_id"),
+        std::string::npos);
 }
 
 TEST(AiGatewayProtocolTest, RejectsAudioOutputWithoutPayload) {

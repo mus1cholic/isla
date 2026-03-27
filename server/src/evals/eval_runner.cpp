@@ -1,7 +1,6 @@
 #include "isla/server/evals/eval_runner.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -16,6 +15,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "isla/server/memory/memory_types.hpp"
+#include "server/src/evals/eval_memory_user_id.hpp"
 
 namespace isla::server::evals {
 namespace {
@@ -229,32 +229,6 @@ std::vector<EvalMidTermEpisodeArtifact> BuildMidTermArtifacts(const WorkingMemor
     return artifacts;
 }
 
-std::string BuildEvalMemoryUserId(std::string_view benchmark_name) {
-    std::string benchmark_suffix;
-    benchmark_suffix.reserve(benchmark_name.size());
-
-    bool previous_was_separator = true;
-    for (const unsigned char ch : benchmark_name) {
-        if (std::isalnum(ch) != 0) {
-            benchmark_suffix.push_back(static_cast<char>(std::tolower(ch)));
-            previous_was_separator = false;
-            continue;
-        }
-        if (!previous_was_separator) {
-            benchmark_suffix.push_back('_');
-            previous_was_separator = true;
-        }
-    }
-    while (!benchmark_suffix.empty() && benchmark_suffix.back() == '_') {
-        benchmark_suffix.pop_back();
-    }
-    if (benchmark_suffix.empty()) {
-        return "eval_session";
-    }
-
-    return absl::StrCat("eval_", benchmark_suffix);
-}
-
 std::vector<EvalReplayEventArtifact>
 BuildReplayedSessionHistoryArtifacts(const EvalCase& eval_case, std::string_view evaluated_turn_id,
                                      const std::optional<std::string>& final_reply) {
@@ -417,7 +391,8 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
 
     isla::server::ai_gateway::GatewayStubResponderConfig responder_config =
         config_.responder_config;
-    responder_config.memory_user_id = BuildEvalMemoryUserId(eval_case.benchmark_name);
+    responder_config.memory_user_id =
+        BuildBenchmarkMemoryUserId("eval_", "eval_session", eval_case.benchmark_name);
     responder_config.session_clock = std::make_shared<const ReplaySessionClock>(
         eval_case.session_id, eval_case.session_start_time, eval_case.evaluation_reference_time,
         replay_times);
@@ -445,7 +420,7 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     registry_scope.registry().RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{
         .session_id = eval_case.session_id,
-        .user_id = BuildEvalMemoryUserId(eval_case.benchmark_name),
+        .user_id = BuildBenchmarkMemoryUserId("eval_", "eval_session", eval_case.benchmark_name),
     });
 
     for (const ReplayMessage& message : replay_plan->history_messages) {

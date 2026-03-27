@@ -5,7 +5,6 @@
 
 #include "absl/log/log.h"
 #include "isla/server/memory/conversation.hpp"
-#include "isla/server/memory/prompt_loader.hpp"
 #include "isla/server/memory/system_prompt.hpp"
 #include "isla/server/memory/working_memory_utils.hpp"
 

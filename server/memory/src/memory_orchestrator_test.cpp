@@ -1587,6 +1587,17 @@ TEST_F(MemoryOrchestratorTest, CreateRejectsEmptySessionId) {
     EXPECT_EQ(handler.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST_F(MemoryOrchestratorTest, CreateRejectsEmptyUserId) {
+    const absl::StatusOr<MemoryOrchestrator> handler =
+        MemoryOrchestrator::Create("srv_test", MemoryOrchestratorInit{
+                                                   .user_id = "",
+                                               });
+
+    ASSERT_FALSE(handler.ok());
+    EXPECT_EQ(handler.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(handler.status().message(), "memory orchestrator must include a user_id");
+}
+
 // --- Split flush tests ---
 
 TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtOutOfRange) {
