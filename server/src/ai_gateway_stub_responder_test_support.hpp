@@ -542,7 +542,6 @@ class GatewayStubResponderStandaloneFixture : public ::testing::Test {
     [[nodiscard]] GatewayStubResponderConfig
     MakeStoreEchoConfig(const std::shared_ptr<RecordingGatewayMemoryStore>& store) const {
         GatewayStubResponderConfig config = MakeEchoConfig();
-        config.memory_user_id = "gateway_user";
         config.memory_store = store;
         return config;
     }

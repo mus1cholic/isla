@@ -1048,7 +1048,6 @@ TEST(AiGatewayServerIntegrationTest,
         .async_emit_timeout = 2s,
         .session_start_persistence_max_attempts = 3,
         .session_start_persistence_retry_delay = 0ms,
-        .memory_user_id = "gateway_user",
         .memory_store = store,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });

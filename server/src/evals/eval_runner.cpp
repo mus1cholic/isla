@@ -389,10 +389,10 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     std::optional<EvalPromptArtifacts> captured_prompt;
     bool capture_next_prompt = false;
 
+    const std::string memory_user_id =
+        BuildBenchmarkMemoryUserId("eval_", "eval_session", eval_case.benchmark_name);
     isla::server::ai_gateway::GatewayStubResponderConfig responder_config =
         config_.responder_config;
-    responder_config.memory_user_id =
-        BuildBenchmarkMemoryUserId("eval_", "eval_session", eval_case.benchmark_name);
     responder_config.session_clock = std::make_shared<const ReplaySessionClock>(
         eval_case.session_id, eval_case.session_start_time, eval_case.evaluation_reference_time,
         replay_times);
@@ -420,7 +420,7 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     registry_scope.registry().RegisterSession(session);
     responder.OnSessionStarted(SessionStartedEvent{
         .session_id = eval_case.session_id,
-        .user_id = BuildBenchmarkMemoryUserId("eval_", "eval_session", eval_case.benchmark_name),
+        .user_id = memory_user_id,
     });
 
     for (const ReplayMessage& message : replay_plan->history_messages) {

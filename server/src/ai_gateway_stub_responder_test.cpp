@@ -154,7 +154,6 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
         .async_emit_timeout = 2s,
-        .memory_user_id = "gateway_user",
         .openai_client = capturing_client,
     });
     ResponderRegistryAttachment registry_scope(responder);
@@ -213,7 +212,6 @@ TEST_F(GatewayStubResponderTest,
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
         .async_emit_timeout = 2s,
-        .memory_user_id = "gateway_user",
         .openai_client = capturing_client,
     });
     ResponderRegistryAttachment registry_scope(responder);
@@ -393,7 +391,6 @@ TEST_F(GatewayStubResponderStandaloneFixture, AcceptedTurnFlowsThroughPlannerAnd
     std::optional<ExecutionPlan> execution_plan;
 
     GatewayStubResponderConfig config = MakeEchoConfig();
-    config.memory_user_id = "gateway_user";
     config.on_execution_plan = [&](const ExecutionPlan& plan) { execution_plan = plan; };
     InitializeResponder(std::move(config));
     StartSession();
@@ -420,7 +417,6 @@ TEST_F(GatewayStubResponderStandaloneFixture, MissingSessionMemoryStillEmitsFail
     auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
 
     GatewayStubResponderConfig config = MakeEchoConfig();
-    config.memory_user_id = "gateway_user";
     InitializeResponder(std::move(config));
 
     responder().OnTurnAccepted(TurnAcceptedEvent{
@@ -471,7 +467,6 @@ TEST_F(GatewayStubResponderStandaloneFixture, MissingSessionMemoryStillEmitsFail
 TEST_F(GatewayStubResponderStandaloneFixture,
        DirectAcceptedTurnFailureReturnsFailedOutcomeAndEmitsTerminalEvents) {
     GatewayStubResponderConfig config = MakeEchoConfig();
-    config.memory_user_id = "gateway_user";
     InitializeResponder(std::move(config));
 
     const absl::StatusOr<GatewayAcceptedTurnResult> result =
