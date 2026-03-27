@@ -176,6 +176,9 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
     if (session_id.empty()) {
         return invalid_argument("memory orchestrator must include a session_id");
     }
+    if (init.user_id.empty()) {
+        return invalid_argument("memory orchestrator must include a user_id");
+    }
 
     absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
         .system_prompt = "",

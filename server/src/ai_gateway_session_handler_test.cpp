@@ -12,6 +12,9 @@ namespace isla::server::ai_gateway {
 namespace {
 
 namespace protocol = isla::shared::ai_gateway;
+constexpr std::string_view kRequiredUserId = "user_001";
+constexpr std::string_view kSessionStartJson =
+    R"json({"type":"session.start","user_id":"user_001"})json";
 
 absl::StatusOr<protocol::GatewayMessage> parse_frame(const std::string& frame) {
     return protocol::parse_json_message(frame);
@@ -59,13 +62,13 @@ class RecordingTelemetrySink final : public TelemetrySink {
 TEST(AiGatewaySessionHandlerTest, SessionStartEmitsSessionStarted) {
     GatewaySessionHandler handler("srv_test");
 
-    const HandleIncomingResult result =
-        handler.HandleIncomingJson(R"json({"type":"session.start"})json");
+    const HandleIncomingResult result = handler.HandleIncomingJson(kSessionStartJson);
 
     ASSERT_TRUE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
     ASSERT_TRUE(result.session_started.has_value());
     EXPECT_EQ(result.session_started->session_id, "srv_test");
+    EXPECT_EQ(result.session_started->user_id, kRequiredUserId);
     ASSERT_FALSE(result.accepted_turn.has_value());
 
     const absl::StatusOr<protocol::GatewayMessage> frame =
@@ -79,7 +82,7 @@ TEST(AiGatewaySessionHandlerTest, SessionStartParsesOptionalReplayTimestamps) {
     GatewaySessionHandler handler("srv_test");
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
-        R"json({"type":"session.start","session_start_time":"2026-03-14T09:59:00Z","evaluation_reference_time":"2026-03-20T08:00:00Z"})json");
+        R"json({"type":"session.start","user_id":"user_001","session_start_time":"2026-03-14T09:59:00Z","evaluation_reference_time":"2026-03-20T08:00:00Z"})json");
 
     ASSERT_TRUE(result.ok);
     ASSERT_TRUE(result.session_started.has_value());
@@ -93,10 +96,9 @@ TEST(AiGatewaySessionHandlerTest, SessionStartParsesOptionalReplayTimestamps) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateSessionStart) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
-    const HandleIncomingResult result =
-        handler.HandleIncomingJson(R"json({"type":"session.start"})json");
+    const HandleIncomingResult result = handler.HandleIncomingJson(kSessionStartJson);
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
@@ -130,7 +132,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsTextInputBeforeSessionStart) {
 
 TEST(AiGatewaySessionHandlerTest, AcceptsTextInputAsApplicationEvent) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json");
@@ -148,7 +150,7 @@ TEST(AiGatewaySessionHandlerTest, AcceptsTextInputAsApplicationEvent) {
 
 TEST(AiGatewaySessionHandlerTest, AcceptsTextInputCreateTimeAsApplicationEvent) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
         R"json({"type":"text.input","turn_id":"turn_1","text":"hello","create_time":"2026-03-15T11:30:00Z"})json");
@@ -162,7 +164,7 @@ TEST(AiGatewaySessionHandlerTest, AcceptsTextInputCreateTimeAsApplicationEvent) 
 
 TEST(AiGatewaySessionHandlerTest, AcceptsTranscriptSeedAsApplicationEvent) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
         R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"assistant","text":"seeded context"})json");
@@ -179,7 +181,7 @@ TEST(AiGatewaySessionHandlerTest, AcceptsTranscriptSeedAsApplicationEvent) {
 
 TEST(AiGatewaySessionHandlerTest, AcceptsTranscriptSeedCreateTimeAsApplicationEvent) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
         R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"assistant","text":"seeded context","create_time":"2026-03-14T10:00:05Z"})json");
@@ -194,7 +196,7 @@ TEST(AiGatewaySessionHandlerTest, AcceptsTranscriptSeedCreateTimeAsApplicationEv
 TEST(AiGatewaySessionHandlerTest, AcceptedTurnNotifiesCustomTelemetrySink) {
     auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
     GatewaySessionHandler handler("srv_test", telemetry_sink);
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json");
@@ -216,7 +218,7 @@ TEST(AiGatewaySessionHandlerTest, AcceptedTurnNotifiesCustomTelemetrySink) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -238,7 +240,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsConcurrentSecondTurn) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsTranscriptSeedWhileLiveTurnIsActive) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -261,7 +263,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsTranscriptSeedWhileLiveTurnIsActive) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextInputBeforeTurnAcceptance) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const std::string oversized_text(kMaxTextInputBytes + 1U, 'x');
     const std::string json =
@@ -287,7 +289,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextInputBeforeTurnAcceptance)
 
 TEST(AiGatewaySessionHandlerTest, EmitsTranscriptSeededAcknowledgement) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const absl::StatusOr<EmitResult> result =
         handler.EmitTranscriptSeeded("turn_seed", "assistant");
@@ -305,7 +307,7 @@ TEST(AiGatewaySessionHandlerTest, EmitsTranscriptSeededAcknowledgement) {
 
 TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -342,7 +344,7 @@ TEST(AiGatewaySessionHandlerTest, EmitsTextAudioAndCompletionForAcceptedTurn) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextOutput) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -358,7 +360,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsOversizedTextOutput) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsAudioBeforeText) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -373,7 +375,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsAudioBeforeText) {
 
 TEST(AiGatewaySessionHandlerTest, SurfacesTurnCancelAsApplicationEvent) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -397,7 +399,7 @@ TEST(AiGatewaySessionHandlerTest, SurfacesTurnCancelAsApplicationEvent) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsTurnCancelForUnknownTurn) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const HandleIncomingResult result =
         handler.HandleIncomingJson(R"json({"type":"turn.cancel","turn_id":"turn_missing"})json");
@@ -415,7 +417,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsTurnCancelForUnknownTurn) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTurnCancelRequest) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -439,7 +441,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTurnCancelRequest) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsEmitTurnCancelledWithoutCancelRequest) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -453,7 +455,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsEmitTurnCancelledWithoutCancelRequest) 
 
 TEST(AiGatewaySessionHandlerTest, RejectsServerOwnedInboundMessages) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
         R"json({"type":"transcript.seeded","turn_id":"turn_1","role":"assistant"})json");
@@ -468,7 +470,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsServerOwnedInboundMessages) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWhileTurnIsActive) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -487,7 +489,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWhileTurnIsActive) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWithMismatchedSessionId) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const HandleIncomingResult result =
         handler.HandleIncomingJson(R"json({"type":"session.end","session_id":"srv_other"})json");
@@ -505,7 +507,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsSessionEndWithMismatchedSessionId) {
 
 TEST(AiGatewaySessionHandlerTest, SessionEndEmitsSessionEndedAfterTurnCompletes) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -546,7 +548,7 @@ TEST(AiGatewaySessionHandlerTest, InvalidReplayTimestampReturnsErrorFrame) {
     GatewaySessionHandler handler("srv_test");
 
     const HandleIncomingResult result = handler.HandleIncomingJson(
-        R"json({"type":"session.start","session_start_time":"not-a-timestamp"})json");
+        R"json({"type":"session.start","user_id":"user_001","session_start_time":"not-a-timestamp"})json");
 
     EXPECT_FALSE(result.ok);
     ASSERT_EQ(result.outgoing_frames.size(), 1U);
@@ -561,7 +563,7 @@ TEST(AiGatewaySessionHandlerTest, InvalidReplayTimestampReturnsErrorFrame) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTextOutput) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -576,7 +578,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsDuplicateTextOutput) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsDuplicateAudioOutput) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -593,7 +595,7 @@ TEST(AiGatewaySessionHandlerTest, RejectsDuplicateAudioOutput) {
 
 TEST(AiGatewaySessionHandlerTest, RejectsTurnCompletedForUnknownTurn) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
 
     const absl::StatusOr<EmitResult> result = handler.EmitTurnCompleted("turn_missing");
 
@@ -620,7 +622,7 @@ TEST(AiGatewaySessionHandlerTest, EmitErrorOmitsIdsBeforeSessionStart) {
 
 TEST(AiGatewaySessionHandlerTest, EmitErrorIncludesSessionAndTurnAfterSessionStart) {
     GatewaySessionHandler handler("srv_test");
-    ASSERT_TRUE(handler.HandleIncomingJson(R"json({"type":"session.start"})json").ok);
+    ASSERT_TRUE(handler.HandleIncomingJson(kSessionStartJson).ok);
     ASSERT_TRUE(handler
                     .HandleIncomingJson(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")

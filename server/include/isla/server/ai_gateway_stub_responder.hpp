@@ -70,7 +70,6 @@ struct GatewayStubResponderConfig {
     // treated as 1. At least one attempt is always made if a memory store is configured.
     std::size_t session_start_persistence_max_attempts = 3;
     std::chrono::milliseconds session_start_persistence_retry_delay{ 100 };
-    std::string memory_user_id = "gateway_user";
     isla::server::memory::MemoryStorePtr memory_store;
     GatewayLlmRuntimeConfig llm_runtime_config;
     std::shared_ptr<const isla::server::LlmClient> llm_client;
@@ -207,7 +206,8 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void RecordConversationReplayTime(std::string_view session_id, std::string_view turn_id,
                                       isla::server::memory::MessageRole role,
                                       std::optional<isla::server::memory::Timestamp> create_time);
-    [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id);
+    [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id,
+                                                       std::string_view user_id);
     [[nodiscard]] isla::server::memory::Timestamp
     ResolveSessionStartTime(std::string_view session_id) const;
     [[nodiscard]] isla::server::memory::Timestamp

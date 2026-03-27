@@ -137,9 +137,12 @@ class AiGatewayClientSession::Impl
         : config_(std::move(config)), resolver_(std::make_unique<tcp::resolver>(io_context_)),
           websocket_(std::make_unique<websocket::stream<tcp::socket>>(io_context_)) {}
 
-    absl::Status ConnectAndStart(std::optional<std::string> client_session_id,
+    absl::Status ConnectAndStart(std::string user_id, std::optional<std::string> client_session_id,
                                  std::optional<std::string> session_start_time,
                                  std::optional<std::string> evaluation_reference_time) {
+        if (user_id.empty()) {
+            return invalid_argument("ai gateway session requires non-empty user_id");
+        }
         if (config_.host.empty()) {
             return invalid_argument("ai gateway host must be non-empty");
         }
@@ -176,20 +179,20 @@ class AiGatewayClientSession::Impl
 
         auto promise = std::make_shared<std::promise<absl::Status>>();
         std::future<absl::Status> future = promise->get_future();
-        asio::post(
-            io_context_,
-            [self = shared_from_this(), promise, client_session_id = std::move(client_session_id),
-             session_start_time = std::move(session_start_time),
-             evaluation_reference_time = std::move(evaluation_reference_time)]() mutable {
-                if (self->closing_.load()) {
-                    self->resolve_promise(promise,
-                                          failed_precondition("ai gateway session is closing"));
-                    return;
-                }
-                self->start_promise_ = promise;
-                self->DoResolve(std::move(client_session_id), std::move(session_start_time),
-                                std::move(evaluation_reference_time));
-            });
+        asio::post(io_context_, [self = shared_from_this(), promise, user_id = std::move(user_id),
+                                 client_session_id = std::move(client_session_id),
+                                 session_start_time = std::move(session_start_time),
+                                 evaluation_reference_time =
+                                     std::move(evaluation_reference_time)]() mutable {
+            if (self->closing_.load()) {
+                self->resolve_promise(promise,
+                                      failed_precondition("ai gateway session is closing"));
+                return;
+            }
+            self->start_promise_ = promise;
+            self->DoResolve(std::move(user_id), std::move(client_session_id),
+                            std::move(session_start_time), std::move(evaluation_reference_time));
+        });
 
         const absl::StatusOr<absl::Status> status =
             await_future(future, config_.operation_timeout, "ai gateway connect/start");
@@ -393,34 +396,36 @@ class AiGatewayClientSession::Impl
         return *status;
     }
 
-    void DoResolve(std::optional<std::string> client_session_id,
+    void DoResolve(std::string user_id, std::optional<std::string> client_session_id,
                    std::optional<std::string> session_start_time,
                    std::optional<std::string> evaluation_reference_time) {
-        resolver_->async_resolve(
-            config_.host, std::to_string(config_.port),
-            [self = shared_from_this(), client_session_id = std::move(client_session_id),
-             session_start_time = std::move(session_start_time),
-             evaluation_reference_time = std::move(evaluation_reference_time)](
-                const boost::system::error_code& error,
-                const tcp::resolver::results_type& results) mutable {
-                if (error) {
-                    self->HandleIoFailure(
-                        unavailable(format_error("ai gateway resolve failed", error)));
-                    return;
-                }
-                self->DoConnect(results, std::move(client_session_id),
-                                std::move(session_start_time),
-                                std::move(evaluation_reference_time));
-            });
+        resolver_->async_resolve(config_.host, std::to_string(config_.port),
+                                 [self = shared_from_this(), user_id = std::move(user_id),
+                                  client_session_id = std::move(client_session_id),
+                                  session_start_time = std::move(session_start_time),
+                                  evaluation_reference_time = std::move(evaluation_reference_time)](
+                                     const boost::system::error_code& error,
+                                     const tcp::resolver::results_type& results) mutable {
+                                     if (error) {
+                                         self->HandleIoFailure(unavailable(
+                                             format_error("ai gateway resolve failed", error)));
+                                         return;
+                                     }
+                                     self->DoConnect(results, std::move(user_id),
+                                                     std::move(client_session_id),
+                                                     std::move(session_start_time),
+                                                     std::move(evaluation_reference_time));
+                                 });
     }
 
-    void DoConnect(const tcp::resolver::results_type& results,
+    void DoConnect(const tcp::resolver::results_type& results, std::string user_id,
                    std::optional<std::string> client_session_id,
                    std::optional<std::string> session_start_time,
                    std::optional<std::string> evaluation_reference_time) {
         asio::async_connect(
             websocket_->next_layer(), results,
-            [self = shared_from_this(), client_session_id = std::move(client_session_id),
+            [self = shared_from_this(), user_id = std::move(user_id),
+             client_session_id = std::move(client_session_id),
              session_start_time = std::move(session_start_time),
              evaluation_reference_time = std::move(evaluation_reference_time)](
                 const boost::system::error_code& error, const tcp::endpoint& /*unused*/) mutable {
@@ -429,12 +434,13 @@ class AiGatewayClientSession::Impl
                         unavailable(format_error("ai gateway connect failed", error)));
                     return;
                 }
-                self->DoHandshake(std::move(client_session_id), std::move(session_start_time),
+                self->DoHandshake(std::move(user_id), std::move(client_session_id),
+                                  std::move(session_start_time),
                                   std::move(evaluation_reference_time));
             });
     }
 
-    void DoHandshake(std::optional<std::string> client_session_id,
+    void DoHandshake(std::string user_id, std::optional<std::string> client_session_id,
                      std::optional<std::string> session_start_time,
                      std::optional<std::string> evaluation_reference_time) {
         websocket_->set_option(
@@ -442,7 +448,8 @@ class AiGatewayClientSession::Impl
         websocket_->read_message_max(kMaxInboundWebSocketMessageBytes);
         websocket_->async_handshake(
             config_.host + ":" + std::to_string(config_.port), config_.path,
-            [self = shared_from_this(), client_session_id = std::move(client_session_id),
+            [self = shared_from_this(), user_id = std::move(user_id),
+             client_session_id = std::move(client_session_id),
              session_start_time = std::move(session_start_time),
              evaluation_reference_time = std::move(evaluation_reference_time)](
                 const boost::system::error_code& error) mutable {
@@ -458,6 +465,7 @@ class AiGatewayClientSession::Impl
                 self->StartRead();
                 self->QueueWrite(PendingWrite{
                     .frame = protocol::to_json_string(protocol::SessionStartMessage{
+                        .user_id = std::move(user_id),
                         .client_session_id = std::move(client_session_id),
                         .session_start_time = std::move(session_start_time),
                         .evaluation_reference_time = std::move(evaluation_reference_time),
@@ -734,10 +742,12 @@ AiGatewayClientSession::~AiGatewayClientSession() {
 }
 
 absl::Status
-AiGatewayClientSession::ConnectAndStart(std::optional<std::string> client_session_id,
+AiGatewayClientSession::ConnectAndStart(std::string user_id,
+                                        std::optional<std::string> client_session_id,
                                         std::optional<std::string> session_start_time,
                                         std::optional<std::string> evaluation_reference_time) {
-    return impl_->ConnectAndStart(std::move(client_session_id), std::move(session_start_time),
+    return impl_->ConnectAndStart(std::move(user_id), std::move(client_session_id),
+                                  std::move(session_start_time),
                                   std::move(evaluation_reference_time));
 }
 

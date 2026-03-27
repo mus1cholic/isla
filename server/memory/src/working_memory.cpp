@@ -5,7 +5,6 @@
 
 #include "absl/log/log.h"
 #include "isla/server/memory/conversation.hpp"
-#include "isla/server/memory/prompt_loader.hpp"
 #include "isla/server/memory/system_prompt.hpp"
 #include "isla/server/memory/working_memory_utils.hpp"
 
@@ -28,6 +27,9 @@ absl::Status ValidateCompletedEpisode(const Episode& episode) {
 WorkingMemory::WorkingMemory(WorkingMemoryState state) : state_(std::move(state)) {}
 
 absl::StatusOr<WorkingMemory> WorkingMemory::Create(const WorkingMemoryInit& init) {
+    if (init.user_id.empty()) {
+        return invalid_argument("working memory must include a user_id");
+    }
     absl::StatusOr<SystemPromptState> system_prompt = CreateSystemPromptState(init.system_prompt);
     if (!system_prompt.ok()) {
         return system_prompt.status();

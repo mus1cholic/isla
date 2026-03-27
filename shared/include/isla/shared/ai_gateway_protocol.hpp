@@ -26,6 +26,7 @@ enum class MessageType {
 };
 
 struct SessionStartMessage {
+    std::string user_id;
     std::optional<std::string> client_session_id;
     std::optional<std::string> session_start_time;
     std::optional<std::string> evaluation_reference_time;

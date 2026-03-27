@@ -38,6 +38,8 @@ namespace {
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
+constexpr std::string_view kSessionStartJson =
+    R"json({"type":"session.start","user_id":"integration_user"})json";
 namespace websocket = beast::websocket;
 namespace protocol = isla::shared::ai_gateway;
 using tcp = asio::ip::tcp;
@@ -533,7 +535,7 @@ TEST_F(GatewayServerTest, RealSocketTurnIngressReachesTypedApplicationSink) {
     {
         RealWebSocketClient client;
         ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-        ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+        ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
         const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
         ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -576,7 +578,7 @@ TEST_F(GatewayServerTest, RealSocketTurnIngressReachesTypedApplicationSink) {
     {
         RealWebSocketClient client;
         ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-        ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+        ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
         const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
         ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -625,7 +627,7 @@ TEST(AiGatewayServerIntegrationTest, RealSocketTurnIngressUsesConfiguredTelemetr
     {
         RealWebSocketClient client;
         ASSERT_TRUE(client.Connect(server.bound_port()).ok());
-        ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+        ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
         const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
         ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -671,7 +673,7 @@ TEST_F(GatewayServerTest, RejectsInvalidHandshakeWithoutRegisteringSession) {
 TEST_F(GatewayServerTest, RejectsBinaryFramesAfterSessionStartAndClosesTransport) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -697,7 +699,7 @@ TEST_F(GatewayServerTest, ProtocolErrorsOverRealSocketSendErrorAndKeepSessionOpe
     ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*error_frame));
     EXPECT_EQ(std::get<protocol::ErrorMessage>(*error_frame).code, "bad_request");
 
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
@@ -709,7 +711,7 @@ TEST_F(GatewayServerTest, ProtocolErrorsOverRealSocketSendErrorAndKeepSessionOpe
 TEST_F(GatewayServerTest, OversizedTextInputReturnsProtocolErrorAndKeepsSessionOpen) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -745,7 +747,7 @@ TEST_F(GatewayServerTest, OversizedTextInputReturnsProtocolErrorAndKeepsSessionO
 TEST_F(GatewayServerTest, OversizedWebSocketMessageClosesSessionAsTransportError) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -766,7 +768,7 @@ TEST_F(GatewayServerTest, OversizedWebSocketMessageClosesSessionAsTransportError
 TEST_F(GatewayServerTest, ServerOwnedWritesReachIdleClientWhileAsyncReadIsPending) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -809,7 +811,7 @@ TEST_F(GatewayServerTest, ServerOwnedWritesReachIdleClientWhileAsyncReadIsPendin
 TEST_F(GatewayServerTest, ServerOwnedEmitFailsCleanlyAfterTransportClose) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -842,7 +844,7 @@ TEST_F(GatewayServerTest, ServerOwnedEmitFailsCleanlyAfterTransportClose) {
 TEST_F(GatewayServerTest, ServerOwnedTurnCancelledReachesClientAfterAcceptedCancel) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -879,7 +881,7 @@ TEST_F(GatewayServerTest, StopClosesStartedSessionAndClearsRegistry) {
     {
         RealWebSocketClient client;
         ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-        ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+        ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
         const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
         ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -901,7 +903,7 @@ TEST_F(GatewayServerTest, StopClosesStartedSessionAndClearsRegistry) {
 TEST_F(GatewayServerShortShutdownGraceTest, StopReturnsPromptlyWhenPendingWriteDoesNotDrain) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -950,7 +952,7 @@ TEST_F(GatewayServerShortShutdownGraceTest, StopReturnsPromptlyWhenPendingWriteD
 TEST_F(GatewayStubResponderServerTest, StubResponderReturnsFinalTextAndCompletion) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1011,7 +1013,7 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
 
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1046,7 +1048,6 @@ TEST(AiGatewayServerIntegrationTest,
         .async_emit_timeout = 2s,
         .session_start_persistence_max_attempts = 3,
         .session_start_persistence_retry_delay = 0ms,
-        .memory_user_id = "gateway_user",
         .memory_store = store,
         .openai_client = MakeEchoOpenAiResponsesClient(),
     });
@@ -1059,7 +1060,7 @@ TEST(AiGatewayServerIntegrationTest,
 
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1117,7 +1118,7 @@ TEST(AiGatewayServerIntegrationTest,
 TEST_F(GatewayStubResponderServerTest, StubResponderTerminatesAcceptedCancellation) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1138,7 +1139,7 @@ TEST_F(GatewayStubResponderServerTest, StubResponderTerminatesAcceptedCancellati
 TEST_F(GatewayStubResponderServerTest, StubResponderSupportsSequentialTurnsOnOneSession) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1175,7 +1176,7 @@ TEST_F(GatewayStubResponderServerTest, StubResponderSupportsSequentialTurnsOnOne
 TEST_F(GatewayStubResponderServerTest, SessionEndSucceedsAfterStubTurnCompletes) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1210,7 +1211,7 @@ TEST_F(GatewayStubResponderServerTest, SessionEndSucceedsAfterStubTurnCompletes)
 TEST_F(GatewayStubResponderServerTest, StopEmitsServerStoppingErrorAndCompletionForAcceptedTurn) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1244,7 +1245,7 @@ TEST_F(GatewayStubResponderServerTest, StopEmitsServerStoppingErrorAndCompletion
 TEST_F(GatewayServerTest, ServerStopClosesIdleWebSocketWithGoingAway) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1291,7 +1292,7 @@ TEST_F(GatewayServerTest, DisconnectBeforeSessionStartDoesNotLeaveStaleRegistryS
 TEST_F(GatewayServerTest, ReapsSessionAfterProtocolEndedClose) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1318,7 +1319,7 @@ TEST_F(GatewayServerTest, ReapsSessionAfterProtocolEndedClose) {
 TEST_F(GatewayServerTest, ReapsSessionAfterTransportClose) {
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1337,7 +1338,7 @@ TEST_F(GatewayServerTest, ReapsManyShortLivedSessionsWithoutAccumulatingState) {
     for (int i = 0; i < kSessionCount; ++i) {
         RealWebSocketClient client;
         ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-        ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+        ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
         const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
         ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
@@ -1366,7 +1367,7 @@ TEST_F(GatewayServerTest, ReapsManyShortLivedSessionsWithoutAccumulatingState) {
 
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server_.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
@@ -1438,7 +1439,7 @@ TEST(AiGatewayServerIntegrationTest, ServerOperatesNormallyAfterOpenAiClientWarm
 
     RealWebSocketClient client;
     ASSERT_TRUE(client.Connect(server.bound_port()).ok());
-    ASSERT_TRUE(client.SendJson(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
     const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
     ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();

@@ -37,6 +37,7 @@ TEST(AiGatewayProtocolTest, ParsesAudioOutputMessage) {
 
 TEST(AiGatewayProtocolTest, RoundTripsSessionStartWithClientSessionId) {
     const GatewayMessage original = SessionStartMessage{
+        .user_id = "user_123",
         .client_session_id = "client_123",
         .session_start_time = "2026-03-14T09:59:00Z",
         .evaluation_reference_time = "2026-03-20T08:00:00Z",
@@ -48,6 +49,7 @@ TEST(AiGatewayProtocolTest, RoundTripsSessionStartWithClientSessionId) {
     ASSERT_TRUE(std::holds_alternative<SessionStartMessage>(*parsed));
 
     const auto& round_trip = std::get<SessionStartMessage>(*parsed);
+    EXPECT_EQ(round_trip.user_id, "user_123");
     ASSERT_TRUE(round_trip.client_session_id.has_value());
     EXPECT_EQ(*round_trip.client_session_id, "client_123");
     ASSERT_TRUE(round_trip.session_start_time.has_value());
@@ -213,6 +215,20 @@ TEST(AiGatewayProtocolTest, RejectsUnknownType) {
 
     EXPECT_FALSE(result.ok());
     EXPECT_NE(std::string(result.status().message()).find("unknown type"), std::string::npos);
+}
+
+TEST(AiGatewayProtocolTest, RejectsSessionStartWithoutUserId) {
+    const absl::StatusOr<GatewayMessage> result = parse_json_message(R"json(
+        {
+          "type": "session.start",
+          "client_session_id": "client_123"
+        }
+    )json");
+
+    EXPECT_FALSE(result.ok());
+    EXPECT_NE(
+        std::string(result.status().message()).find("session.start requires non-empty user_id"),
+        std::string::npos);
 }
 
 TEST(AiGatewayProtocolTest, RejectsAudioOutputWithoutPayload) {

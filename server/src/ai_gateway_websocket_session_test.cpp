@@ -23,6 +23,8 @@ namespace isla::server::ai_gateway {
 namespace {
 
 namespace protocol = isla::shared::ai_gateway;
+constexpr std::string_view kSessionStartJson =
+    R"json({"type":"session.start","user_id":"websocket_test_user"})json";
 using ::testing::_;
 using ::testing::NiceMock;
 
@@ -174,7 +176,7 @@ TEST(AiGatewayWebSocketSessionTest, SessionStartWritesSessionStartedFrame) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_EQ(connection.sent_frames.size(), 1U);
     ASSERT_EQ(sink.started_sessions.size(), 1U);
     EXPECT_EQ(sink.started_sessions.front().session_id, "srv_test");
@@ -191,7 +193,7 @@ TEST(AiGatewayWebSocketSessionTest, AcceptedTurnIsForwardedToEventSink) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -209,7 +211,7 @@ TEST(AiGatewayWebSocketSessionTest, AcceptedTurnCreatesTelemetryContextAtGateway
     auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink, telemetry_sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -231,7 +233,7 @@ TEST(AiGatewayWebSocketSessionTest, TranscriptSeedIsForwardedAndAcknowledged) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(
         session
             .HandleIncomingTextFrame(
@@ -261,7 +263,7 @@ TEST(AiGatewayWebSocketSessionTest, TranscriptSeedFailureReturnsErrorFrameAndKee
         return absl::InvalidArgumentError("seed rejected");
     });
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     const absl::Status status = session.HandleIncomingTextFrame(
         R"json({"type":"transcript.seed","turn_id":"turn_seed","role":"assistant","text":"seeded context"})json");
 
@@ -302,7 +304,7 @@ TEST(AiGatewayWebSocketSessionTest, RejectedClientFrameSendsErrorAndKeepsSession
     ASSERT_TRUE(error.turn_id.has_value());
     EXPECT_EQ(*error.turn_id, "turn_1");
 
-    EXPECT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    EXPECT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
 }
 
 TEST(AiGatewayWebSocketSessionTest, TurnCancelIsForwardedToEventSink) {
@@ -310,7 +312,7 @@ TEST(AiGatewayWebSocketSessionTest, TurnCancelIsForwardedToEventSink) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -330,7 +332,7 @@ TEST(AiGatewayWebSocketSessionTest, ServerOwnedEmitTextOutputAndCompletionPreser
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -360,7 +362,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTextOutputRejectsWithoutActiveTurn) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
 
     const absl::Status status = session.EmitTextOutput("turn_1", "stub reply");
 
@@ -377,7 +379,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTextOutputSendFailureClosesSession) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -404,7 +406,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendsFrameAfterTextOutput) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -428,7 +430,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputRejectsWithoutMatchingTurnSta
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -449,7 +451,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitAudioOutputSendFailureClosesSession) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -476,7 +478,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendsFrameAfterCancelReques
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -500,7 +502,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledRejectsWithoutCancelRequest
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -521,7 +523,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitTurnCancelledSendFailureClosesSession) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -549,7 +551,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitErrorSendsFrameWithTurnId) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -572,7 +574,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitErrorRejectsEmptyCode) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
 
     const absl::Status status = session.EmitError(std::nullopt, "", "socket failed");
 
@@ -589,7 +591,7 @@ TEST(AiGatewayWebSocketSessionTest, EmitErrorSendFailureClosesSession) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     connection.fail_next_send_ = true;
 
     const absl::Status status = session.EmitError(std::nullopt, "transport_error", "socket failed");
@@ -610,7 +612,7 @@ TEST(AiGatewayWebSocketSessionTest, SessionEndClosesTransportAfterReply) {
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(
         session.HandleIncomingTextFrame(R"json({"type":"session.end","session_id":"srv_test"})json")
             .ok());
@@ -638,7 +640,7 @@ TEST(AiGatewayWebSocketSessionTest, TransportErrorTerminatesActiveTurnBeforeClos
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -674,7 +676,7 @@ TEST(AiGatewayWebSocketSessionTest, TransportCloseNotifiesInflightTurnWithoutSen
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -698,8 +700,7 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureClosesConnectionAndReturnsError) 
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
     connection.fail_next_send_ = true;
 
-    const absl::Status status =
-        session.HandleIncomingTextFrame(R"json({"type":"session.start"})json");
+    const absl::Status status = session.HandleIncomingTextFrame(kSessionStartJson);
 
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(connection.close_calls, 1);
@@ -717,13 +718,12 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAft
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(
         session.HandleIncomingTextFrame(R"json({"type":"session.end","session_id":"srv_test"})json")
             .ok());
 
-    const absl::Status incoming =
-        session.HandleIncomingTextFrame(R"json({"type":"session.start"})json");
+    const absl::Status incoming = session.HandleIncomingTextFrame(kSessionStartJson);
     const absl::Status transport_error = session.HandleTransportError("late error");
 
     EXPECT_FALSE(incoming.ok());
@@ -753,15 +753,14 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAft
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
                     .ok());
     ASSERT_TRUE(session.HandleTransportError("upstream disconnected").ok());
 
-    const absl::Status incoming =
-        session.HandleIncomingTextFrame(R"json({"type":"session.start"})json");
+    const absl::Status incoming = session.HandleIncomingTextFrame(kSessionStartJson);
     const absl::Status second_error = session.HandleTransportError("late error");
     session.HandleTransportClosed();
 
@@ -797,7 +796,7 @@ TEST(AiGatewayWebSocketSessionTest,
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session.HandleTransportError("socket failed").ok());
 
     EXPECT_EQ(connection.close_calls, 1);
@@ -815,7 +814,7 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureDuringTransportErrorStopsFurtherF
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -840,7 +839,7 @@ TEST(AiGatewayWebSocketSessionTest, HandleSendFailureClosesSessionWithoutClosing
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
@@ -863,7 +862,7 @@ TEST(AiGatewayWebSocketSessionTest, ServerShutdownClosesSessionWithoutTransportW
     RecordingEventSink sink;
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
 
-    ASSERT_TRUE(session.HandleIncomingTextFrame(R"json({"type":"session.start"})json").ok());
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_TRUE(session
                     .HandleIncomingTextFrame(
                         R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json")
