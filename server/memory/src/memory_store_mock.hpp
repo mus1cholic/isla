@@ -10,6 +10,8 @@ class MockMemoryStore : public MemoryStore {
   public:
     MOCK_METHOD(absl::Status, WarmUp, (), (override));
     MOCK_METHOD(absl::Status, UpsertSession, (const MemorySessionRecord& record), (override));
+    MOCK_METHOD(absl::Status, UpsertUserWorkingMemory, (const UserWorkingMemoryRecord& record),
+                (override));
     MOCK_METHOD(absl::Status, AppendConversationMessage, (const ConversationMessageWrite& write),
                 (override));
     MOCK_METHOD(absl::Status, ReplaceConversationItemWithEpisodeStub,

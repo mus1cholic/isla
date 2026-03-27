@@ -142,8 +142,12 @@ class MemoryOrchestrator {
     // Guards persistence paths that require BeginSession to have succeeded first.
     [[nodiscard]] absl::Status ValidateSessionReadyForPersistence() const;
 
-    // Writes the session row once and becomes a no-op after the session is marked persisted.
+    // Writes the session row once, then persists the initial user working-memory snapshot so the
+    // user-scoped row never races ahead of the session row required by the store schema.
     [[nodiscard]] absl::Status PersistSessionIfNeeded(Timestamp create_time);
+
+    // Persists the current full working-memory snapshot keyed by user_id.
+    [[nodiscard]] absl::Status PersistUserWorkingMemorySnapshot(Timestamp updated_at);
 
     // Persists the most recently appended conversation message from the live tail episode.
     [[nodiscard]] absl::Status PersistConversationMessage(std::string_view turn_id,

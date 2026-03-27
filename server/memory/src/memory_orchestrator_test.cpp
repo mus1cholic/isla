@@ -41,6 +41,14 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
             session_records.push_back(record);
             return absl::OkStatus();
         });
+        ON_CALL(*this, UpsertUserWorkingMemory(_))
+            .WillByDefault([this](const UserWorkingMemoryRecord& record) {
+                if (!upsert_user_working_memory_status.ok()) {
+                    return upsert_user_working_memory_status;
+                }
+                user_working_memory_records.push_back(record);
+                return absl::OkStatus();
+            });
         ON_CALL(*this, AppendConversationMessage(_))
             .WillByDefault([this](const ConversationMessageWrite& write) {
                 if (!append_message_status.ok()) {
@@ -95,11 +103,13 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     }
 
     std::vector<MemorySessionRecord> session_records;
+    std::vector<UserWorkingMemoryRecord> user_working_memory_records;
     std::vector<ConversationMessageWrite> message_writes;
     std::vector<EpisodeStubWrite> stub_writes;
     std::vector<SplitEpisodeStubWrite> split_stub_writes;
     std::vector<MidTermEpisodeWrite> episode_writes;
     absl::Status upsert_session_status = absl::OkStatus();
+    absl::Status upsert_user_working_memory_status = absl::OkStatus();
     absl::Status append_message_status = absl::OkStatus();
     absl::Status replace_stub_status = absl::OkStatus();
     absl::Status split_stub_status = absl::OkStatus();
@@ -1210,6 +1220,24 @@ TEST_F(MemoryOrchestratorTest, HandleConversationMessagesPersistSessionAndTransc
     EXPECT_EQ(store->session_records[0].user_id, "user_001");
     EXPECT_EQ(store->session_records[0].created_at, Ts("2026-03-08T13:59:55Z"));
 
+    ASSERT_EQ(store->user_working_memory_records.size(), 3U);
+    EXPECT_EQ(store->user_working_memory_records[0].updated_at, Ts("2026-03-08T13:59:55Z"));
+    EXPECT_EQ(store->user_working_memory_records[1].updated_at, Ts("2026-03-08T14:00:00Z"));
+    EXPECT_EQ(store->user_working_memory_records[2].updated_at, Ts("2026-03-08T14:00:01Z"));
+    EXPECT_EQ(store->user_working_memory_records.back().user_id, "user_001");
+    EXPECT_EQ(store->user_working_memory_records.back().session_id, "srv_test");
+    ASSERT_EQ(store->user_working_memory_records.back().working_memory.conversation.items.size(),
+              1U);
+    ASSERT_TRUE(store->user_working_memory_records.back()
+                    .working_memory.conversation.items[0]
+                    .ongoing_episode.has_value());
+    ASSERT_EQ(store->user_working_memory_records.back()
+                  .working_memory.conversation.items[0]
+                  .ongoing_episode->messages.size(),
+              2U);
+    EXPECT_NE(store->user_working_memory_records.back().rendered_working_memory.find("hi there"),
+              std::string::npos);
+
     ASSERT_EQ(store->message_writes.size(), 2U);
     EXPECT_EQ(store->message_writes[0].conversation_item_index, 0);
     EXPECT_EQ(store->message_writes[0].message_index, 0);
@@ -1396,6 +1424,15 @@ TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPersistsEpisodeAndStubW
     EXPECT_EQ(store->stub_writes[0].conversation_item_index, 0);
     EXPECT_EQ(store->stub_writes[0].episode_id, "ep_001");
     EXPECT_EQ(store->stub_writes[0].episode_stub_content, "stub ref");
+
+    ASSERT_EQ(store->user_working_memory_records.size(), 2U);
+    EXPECT_EQ(store->user_working_memory_records.back().updated_at, Ts("2026-03-08T14:00:03Z"));
+    ASSERT_EQ(store->user_working_memory_records.back().working_memory.conversation.items.size(),
+              1U);
+    EXPECT_EQ(store->user_working_memory_records.back().working_memory.conversation.items[0].type,
+              ConversationItemType::EpisodeStub);
+    EXPECT_NE(store->user_working_memory_records.back().rendered_working_memory.find("stub ref"),
+              std::string::npos);
 }
 
 TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushRequiresBeginSessionWhenStoreConfigured) {

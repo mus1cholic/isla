@@ -529,6 +529,80 @@ TEST(SupabaseMemoryStoreTest, AppendConversationMessageCreatesConversationItemTh
     EXPECT_EQ(body[0]["content"], "hello");
 }
 
+TEST(SupabaseMemoryStoreTest, UpsertUserWorkingMemoryPersistsRenderedAndStructuredState) {
+    SequentialHttpServer server({
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    ASSERT_TRUE((*store)
+                    ->UpsertSession(MemorySessionRecord{
+                        .session_id = "session_001",
+                        .user_id = "user_001",
+                        .system_prompt = "You are Isla.",
+                        .created_at = Ts("2026-03-08T13:59:00Z"),
+                        .ended_at = std::nullopt,
+                    })
+                    .ok());
+
+    const absl::Status status = (*store)->UpsertUserWorkingMemory(UserWorkingMemoryRecord{
+        .user_id = "user_001",
+        .session_id = "session_001",
+        .working_memory =
+            WorkingMemoryState{
+                .system_prompt =
+                    SystemPromptState{
+                        .base_instructions = "You are Isla.",
+                        .persistent_memory_cache =
+                            PersistentMemoryCache{
+                                .active_models = { ActiveModel{
+                                    .entity_id = "entity_user",
+                                    .text = "Airi, the user.",
+                                } },
+                                .familiar_labels = {},
+                            },
+                    },
+                .mid_term_episodes = {},
+                .retrieved_memory = std::string("retrieved memory"),
+                .conversation =
+                    Conversation{
+                        .items = {},
+                        .user_id = "user_001",
+                    },
+            },
+        .rendered_working_memory = "full rendered prompt",
+        .updated_at = Ts("2026-03-08T14:00:00Z"),
+    });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequestCount(2U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 2U);
+    EXPECT_NE(requests[1].find("POST /rest/v1/user_working_memory?on_conflict=user_id HTTP/1.1"),
+              std::string::npos);
+    EXPECT_NE(requests[1].find("Content-Profile: public"), std::string::npos);
+
+    const std::size_t body_pos = requests[1].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[1].substr(body_pos + 4U));
+    ASSERT_TRUE(body.is_array());
+    EXPECT_EQ(body[0]["user_id"], "user_001");
+    EXPECT_EQ(body[0]["session_id"], "session_001");
+    EXPECT_EQ(body[0]["rendered_working_memory"], "full rendered prompt");
+    EXPECT_EQ(body[0]["updated_at"], "2026-03-08T14:00:00Z");
+    EXPECT_EQ(body[0]["working_memory"]["conversation"]["user_id"], "user_001");
+    EXPECT_EQ(body[0]["working_memory"]["retrieved_memory"], "retrieved memory");
+}
+
 TEST(SupabaseMemoryStoreTest,
      SplitConversationItemWithEpisodeStubInvokesSupabaseRpcWithRemainingMessages) {
     SequentialHttpServer server({

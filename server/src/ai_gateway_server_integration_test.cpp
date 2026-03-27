@@ -143,6 +143,12 @@ class FailingSessionStartMemoryStore final : public isla::server::memory::Memory
         return failure_status_;
     }
 
+    absl::Status
+    UpsertUserWorkingMemory(const isla::server::memory::UserWorkingMemoryRecord& record) override {
+        static_cast<void>(record);
+        return absl::OkStatus();
+    }
+
     absl::Status AppendConversationMessage(
         const isla::server::memory::ConversationMessageWrite& write) override {
         ++append_message_attempts_;

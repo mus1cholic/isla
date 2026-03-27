@@ -29,6 +29,33 @@ TEST(MemoryStoreTest, ConversationMessageWriteRejectsMissingIdentifiers) {
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(MemoryStoreTest, UserWorkingMemoryRecordRejectsMismatchedConversationUserId) {
+    const absl::Status status = ValidateUserWorkingMemoryRecord(UserWorkingMemoryRecord{
+        .user_id = "user_001",
+        .session_id = "session_001",
+        .working_memory =
+            WorkingMemoryState{
+                .system_prompt =
+                    SystemPromptState{
+                        .base_instructions = "You are Isla.",
+                        .persistent_memory_cache = {},
+                    },
+                .mid_term_episodes = {},
+                .retrieved_memory = std::nullopt,
+                .conversation =
+                    Conversation{
+                        .items = {},
+                        .user_id = "user_002",
+                    },
+            },
+        .rendered_working_memory = "rendered prompt",
+        .updated_at = Ts("2026-03-08T14:00:00Z"),
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(MemoryStoreTest, MidTermEpisodeWriteRejectsOutOfRangeSalience) {
     const absl::Status status = ValidateMidTermEpisodeWrite(MidTermEpisodeWrite{
         .session_id = "session_001",

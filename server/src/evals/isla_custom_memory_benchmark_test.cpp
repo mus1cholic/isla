@@ -288,6 +288,11 @@ class RecordingMemoryStore final : public MemoryStore {
         return absl::OkStatus();
     }
 
+    absl::Status UpsertUserWorkingMemory(
+        const isla::server::memory::UserWorkingMemoryRecord& /*record*/) override {
+        return absl::OkStatus();
+    }
+
     absl::Status AppendConversationMessage(const ConversationMessageWrite& write) override {
         message_writes.push_back(write);
         return absl::OkStatus();

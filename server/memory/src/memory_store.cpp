@@ -38,6 +38,32 @@ absl::Status ValidateMemorySessionRecord(const MemorySessionRecord& record) {
     return absl::OkStatus();
 }
 
+absl::Status ValidateUserWorkingMemoryRecord(const UserWorkingMemoryRecord& record) {
+    if (record.user_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateUserWorkingMemoryRecord requires user_id to be non-empty");
+    }
+    if (record.session_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateUserWorkingMemoryRecord requires session_id to be non-empty");
+    }
+    if (record.rendered_working_memory.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateUserWorkingMemoryRecord requires rendered_working_memory to be non-empty");
+    }
+    if (record.working_memory.conversation.user_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateUserWorkingMemoryRecord requires working_memory.conversation.user_id to be "
+            "non-empty");
+    }
+    if (record.working_memory.conversation.user_id != record.user_id) {
+        return absl::InvalidArgumentError(
+            "ValidateUserWorkingMemoryRecord requires working_memory.conversation.user_id to "
+            "match user_id");
+    }
+    return absl::OkStatus();
+}
+
 absl::Status ValidateConversationMessageWrite(const ConversationMessageWrite& write) {
     if (write.session_id.empty()) {
         return absl::InvalidArgumentError(

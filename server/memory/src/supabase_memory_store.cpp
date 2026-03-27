@@ -42,6 +42,16 @@ json BuildSessionJson(const MemorySessionRecord& record) {
     };
 }
 
+json BuildUserWorkingMemoryJson(const UserWorkingMemoryRecord& record) {
+    return json{
+        { "user_id", record.user_id },
+        { "session_id", record.session_id },
+        { "working_memory", record.working_memory },
+        { "rendered_working_memory", record.rendered_working_memory },
+        { "updated_at", record.updated_at },
+    };
+}
+
 json BuildConversationItemJson(std::string_view session_id, std::int64_t item_index,
                                ConversationItemType item_type,
                                std::optional<std::string> episode_id,
@@ -333,6 +343,26 @@ class SupabaseMemoryStore final : public MemoryStore {
         const HttpRequestSpec request =
             BuildUpsertRequest("memory_sessions", json::array({ BuildSessionJson(record) }),
                                "session_id", config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        latency.SetOutcome("ok");
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status
+    UpsertUserWorkingMemory(const UserWorkingMemoryRecord& record) override {
+        ScopedSupabaseOperationLatency latency(config_, "upsert_user_working_memory",
+                                               record.session_id);
+        if (absl::Status status = ValidateUserWorkingMemoryRecord(record); !status.ok()) {
+            latency.SetOutcome("validation_error");
+            return status;
+        }
+        const HttpRequestSpec request = BuildUpsertRequest(
+            "user_working_memory", json::array({ BuildUserWorkingMemoryJson(record) }), "user_id",
+            config_.schema, config_);
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(*client_, config_, request);
         if (!response.ok()) {

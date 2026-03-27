@@ -38,6 +38,7 @@ using isla::server::memory::MemoryStore;
 using isla::server::memory::MemoryStoreSnapshot;
 using isla::server::memory::MessageRole;
 using isla::server::memory::ParseTimestamp;
+using isla::server::memory::UserWorkingMemoryRecord;
 
 absl::Status EmitResponseText(std::string_view text, const OpenAiResponsesEventCallback& on_event,
                               std::string_view response_id = "resp_live_eval") {
@@ -83,6 +84,11 @@ class RecordingMemoryStore final : public MemoryStore {
         return absl::OkStatus();
     }
 
+    absl::Status UpsertUserWorkingMemory(const UserWorkingMemoryRecord& record) override {
+        user_working_memory_records.push_back(record);
+        return absl::OkStatus();
+    }
+
     absl::Status AppendConversationMessage(const ConversationMessageWrite& write) override {
         message_writes.push_back(write);
         return absl::OkStatus();
@@ -123,6 +129,7 @@ class RecordingMemoryStore final : public MemoryStore {
     }
 
     std::vector<MemorySessionRecord> session_records;
+    std::vector<UserWorkingMemoryRecord> user_working_memory_records;
     std::vector<ConversationMessageWrite> message_writes;
     std::vector<isla::server::memory::EpisodeStubWrite> stub_writes;
     std::vector<isla::server::memory::SplitEpisodeStubWrite> split_stub_writes;
