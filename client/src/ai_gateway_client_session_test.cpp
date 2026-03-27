@@ -58,6 +58,12 @@ class RecordingMemoryStore final : public MemoryStore {
         return absl::OkStatus();
     }
 
+    absl::Status
+    UpsertUserWorkingMemory(const isla::server::memory::UserWorkingMemoryRecord& record) override {
+        user_working_memory_records.push_back(record);
+        return absl::OkStatus();
+    }
+
     absl::Status AppendConversationMessage(const ConversationMessageWrite& write) override {
         message_writes.push_back(write);
         return absl::OkStatus();
@@ -95,6 +101,7 @@ class RecordingMemoryStore final : public MemoryStore {
     }
 
     std::vector<MemorySessionRecord> session_records;
+    std::vector<isla::server::memory::UserWorkingMemoryRecord> user_working_memory_records;
     std::vector<ConversationMessageWrite> message_writes;
 };
 

@@ -21,6 +21,14 @@ struct MemorySessionRecord {
     std::optional<Timestamp> ended_at;
 };
 
+struct UserWorkingMemoryRecord {
+    std::string user_id;
+    std::string session_id;
+    WorkingMemoryState working_memory;
+    std::string rendered_working_memory;
+    Timestamp updated_at;
+};
+
 struct ConversationMessageWrite {
     std::string session_id;
     std::int64_t conversation_item_index = 0;
@@ -71,6 +79,9 @@ struct MemoryStoreSnapshot {
 // Validates the top-level persisted session row before it is written to a store.
 [[nodiscard]] absl::Status ValidateMemorySessionRecord(const MemorySessionRecord& record);
 
+// Validates the current user-scoped working-memory snapshot before it is written to a store.
+[[nodiscard]] absl::Status ValidateUserWorkingMemoryRecord(const UserWorkingMemoryRecord& record);
+
 // Validates an appended conversation message write, including ordering indices and required ids.
 [[nodiscard]] absl::Status ValidateConversationMessageWrite(const ConversationMessageWrite& write);
 
@@ -101,6 +112,10 @@ class MemoryStore {
 
     // Creates or updates the persisted session row for the current session id.
     [[nodiscard]] virtual absl::Status UpsertSession(const MemorySessionRecord& record) = 0;
+
+    // Creates or updates the persisted current working-memory snapshot for one user.
+    [[nodiscard]] virtual absl::Status
+    UpsertUserWorkingMemory(const UserWorkingMemoryRecord& record) = 0;
 
     // Appends a single message into the persisted conversation timeline for an ongoing episode.
     [[nodiscard]] virtual absl::Status

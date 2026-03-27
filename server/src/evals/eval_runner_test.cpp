@@ -27,6 +27,7 @@ using isla::server::memory::MemoryStoreSnapshot;
 using isla::server::memory::MessageRole;
 using isla::server::memory::ParseTimestamp;
 using isla::server::memory::Timestamp;
+using isla::server::memory::UserWorkingMemoryRecord;
 using namespace std::chrono_literals;
 
 Timestamp Ts(std::string_view text) {
@@ -37,6 +38,11 @@ class RecordingMemoryStore final : public MemoryStore {
   public:
     absl::Status UpsertSession(const MemorySessionRecord& record) override {
         session_records.push_back(record);
+        return absl::OkStatus();
+    }
+
+    absl::Status UpsertUserWorkingMemory(const UserWorkingMemoryRecord& record) override {
+        user_working_memory_records.push_back(record);
         return absl::OkStatus();
     }
 
@@ -83,6 +89,7 @@ class RecordingMemoryStore final : public MemoryStore {
     }
 
     std::vector<MemorySessionRecord> session_records;
+    std::vector<UserWorkingMemoryRecord> user_working_memory_records;
     std::vector<ConversationMessageWrite> message_writes;
     std::vector<isla::server::memory::EpisodeStubWrite> stub_writes;
     std::vector<isla::server::memory::SplitEpisodeStubWrite> split_stub_writes;

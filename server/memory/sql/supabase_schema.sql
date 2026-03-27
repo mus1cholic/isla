@@ -6,6 +6,14 @@ create table if not exists public.memory_sessions (
     ended_at timestamptz
 );
 
+create table if not exists public.user_working_memory (
+    user_id text primary key,
+    session_id text not null,
+    working_memory jsonb not null,
+    rendered_working_memory text not null,
+    updated_at timestamptz not null
+);
+
 create table if not exists public.conversation_items (
     session_id text not null references public.memory_sessions(session_id) on delete cascade,
     item_index bigint not null,
@@ -215,3 +223,6 @@ create index if not exists conversation_messages_session_item_order_idx
 
 create index if not exists mid_term_episodes_session_created_at_idx
     on public.mid_term_episodes (session_id, created_at);
+
+create index if not exists user_working_memory_session_id_idx
+    on public.user_working_memory (session_id);

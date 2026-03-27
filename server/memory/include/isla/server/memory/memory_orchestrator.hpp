@@ -145,6 +145,9 @@ class MemoryOrchestrator {
     // Writes the session row once and becomes a no-op after the session is marked persisted.
     [[nodiscard]] absl::Status PersistSessionIfNeeded(Timestamp create_time);
 
+    // Persists the current full working-memory snapshot keyed by user_id.
+    [[nodiscard]] absl::Status PersistUserWorkingMemorySnapshot(Timestamp updated_at);
+
     // Persists the most recently appended conversation message from the live tail episode.
     [[nodiscard]] absl::Status PersistConversationMessage(std::string_view turn_id,
                                                           const Message& message);

@@ -248,7 +248,43 @@ absl::Status MemoryOrchestrator::PersistSessionIfNeeded(Timestamp create_time) {
             << SanitizeForLog(status.message()) << "'";
         return status;
     }
+    if (absl::Status status = PersistUserWorkingMemorySnapshot(create_time); !status.ok()) {
+        return status;
+    }
     session_persisted_ = true;
+    return absl::OkStatus();
+}
+
+absl::Status MemoryOrchestrator::PersistUserWorkingMemorySnapshot(Timestamp updated_at) {
+    if (!store_) {
+        return absl::OkStatus();
+    }
+
+    const WorkingMemoryState& state = memory_.snapshot();
+    absl::StatusOr<std::string> rendered_working_memory = memory_.RenderFullWorkingMemory();
+    if (!rendered_working_memory.ok()) {
+        return rendered_working_memory.status();
+    }
+
+    const UserWorkingMemoryRecord record{
+        .user_id = state.conversation.user_id,
+        .session_id = session_id_,
+        .working_memory = state,
+        .rendered_working_memory = std::move(*rendered_working_memory),
+        .updated_at = updated_at,
+    };
+    if (absl::Status status = ValidateUserWorkingMemoryRecord(record); !status.ok()) {
+        return status;
+    }
+    if (absl::Status status = store_->UpsertUserWorkingMemory(record); !status.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator store.UpsertUserWorkingMemory failed while "
+                        "persisting the current user working-memory snapshot"
+                     << " session_id=" << SanitizeForLog(session_id_)
+                     << " user_id=" << SanitizeForLog(state.conversation.user_id)
+                     << " updated_at=" << SanitizeForLog(FormatTimestamp(updated_at)) << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
+        return status;
+    }
     return absl::OkStatus();
 }
 
@@ -843,6 +879,10 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
             return post_status;
         }
     }
+    if (absl::Status snapshot_status = PersistUserWorkingMemorySnapshot(create_time);
+        !snapshot_status.ok()) {
+        return snapshot_status;
+    }
 
     VLOG(1) << "MemoryOrchestrator handled conversation message session_id="
             << SanitizeForLog(session_id_) << " turn_id=" << SanitizeForLog(turn_id)
@@ -912,7 +952,7 @@ MemoryOrchestrator::ApplyCompletedEpisodeFlush(const CompletedOngoingEpisodeFlus
             }
         }
     }
-    return absl::OkStatus();
+    return PersistUserWorkingMemorySnapshot(flush.stub_timestamp);
 }
 
 absl::StatusOr<std::string> MemoryOrchestrator::RenderFullWorkingMemory() const {
