@@ -1312,6 +1312,10 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         // the session and then have us recreate memory for an already-closed session. The store
         // upsert below runs after insertion so connect-time persistence does not block unrelated
         // lifecycle work behind this mutex.
+        // TODO: Derive memory user_id from authenticated server-side identity instead of trusting
+        // the client-provided session.start value. The current client-controlled user_id is
+        // acceptable for eval/test bring-up, but a real multi-user deployment must validate or
+        // map it before selecting a persisted memory namespace.
         std::lock_guard<std::mutex> lock(mutex_);
         absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
             isla::server::memory::MemoryOrchestrator::Create(

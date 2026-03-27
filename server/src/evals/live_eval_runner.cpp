@@ -15,8 +15,8 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "client/src/ai_gateway_client_session.hpp"
-#include "server/src/evals/eval_memory_user_id.hpp"
 #include "isla/server/memory/memory_timestamp_utils.hpp"
+#include "server/src/evals/eval_memory_user_id.hpp"
 
 namespace isla::server::evals {
 namespace {
@@ -385,10 +385,8 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
     });
 
     absl::Status connect_status = session.ConnectAndStart(
-        BuildBenchmarkMemoryUserId("live_eval_", "live_eval_session",
-                                   eval_case.benchmark_name),
-        eval_case.session_id,
-        FormatOptionalTimestamp(eval_case.session_start_time),
+        BuildBenchmarkMemoryUserId("live_eval_", "live_eval_session", eval_case.benchmark_name),
+        eval_case.session_id, FormatOptionalTimestamp(eval_case.session_start_time),
         FormatOptionalTimestamp(eval_case.evaluation_reference_time));
     if (!connect_status.ok()) {
         return connect_status;

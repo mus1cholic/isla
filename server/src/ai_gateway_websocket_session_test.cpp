@@ -700,8 +700,7 @@ TEST(AiGatewayWebSocketSessionTest, SendFailureClosesConnectionAndReturnsError) 
     GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
     connection.fail_next_send_ = true;
 
-    const absl::Status status =
-        session.HandleIncomingTextFrame(kSessionStartJson);
+    const absl::Status status = session.HandleIncomingTextFrame(kSessionStartJson);
 
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(connection.close_calls, 1);
@@ -724,8 +723,7 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAft
         session.HandleIncomingTextFrame(R"json({"type":"session.end","session_id":"srv_test"})json")
             .ok());
 
-    const absl::Status incoming =
-        session.HandleIncomingTextFrame(kSessionStartJson);
+    const absl::Status incoming = session.HandleIncomingTextFrame(kSessionStartJson);
     const absl::Status transport_error = session.HandleTransportError("late error");
 
     EXPECT_FALSE(incoming.ok());
@@ -762,8 +760,7 @@ TEST(AiGatewayWebSocketSessionTest, ClosedSessionRejectsFurtherIncomingFramesAft
                     .ok());
     ASSERT_TRUE(session.HandleTransportError("upstream disconnected").ok());
 
-    const absl::Status incoming =
-        session.HandleIncomingTextFrame(kSessionStartJson);
+    const absl::Status incoming = session.HandleIncomingTextFrame(kSessionStartJson);
     const absl::Status second_error = session.HandleTransportError("late error");
     session.HandleTransportClosed();
 
