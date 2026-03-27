@@ -532,6 +532,7 @@ TEST(SupabaseMemoryStoreTest, AppendConversationMessageCreatesConversationItemTh
 TEST(SupabaseMemoryStoreTest, UpsertUserWorkingMemoryPersistsRenderedAndStructuredState) {
     SequentialHttpServer server({
         "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
     });
     const absl::StatusOr<MemoryStorePtr> store =
         CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
@@ -542,6 +543,16 @@ TEST(SupabaseMemoryStoreTest, UpsertUserWorkingMemoryPersistsRenderedAndStructur
             .request_timeout = 2s,
         });
     ASSERT_TRUE(store.ok()) << store.status();
+
+    ASSERT_TRUE((*store)
+                    ->UpsertSession(MemorySessionRecord{
+                        .session_id = "session_001",
+                        .user_id = "user_001",
+                        .system_prompt = "You are Isla.",
+                        .created_at = Ts("2026-03-08T13:59:00Z"),
+                        .ended_at = std::nullopt,
+                    })
+                    .ok());
 
     const absl::Status status = (*store)->UpsertUserWorkingMemory(UserWorkingMemoryRecord{
         .user_id = "user_001",
@@ -573,16 +584,16 @@ TEST(SupabaseMemoryStoreTest, UpsertUserWorkingMemoryPersistsRenderedAndStructur
     });
 
     ASSERT_TRUE(status.ok()) << status;
-    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    ASSERT_TRUE(server.WaitForRequestCount(2U));
     const std::vector<std::string> requests = server.requests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_NE(requests[0].find("POST /rest/v1/user_working_memory?on_conflict=user_id HTTP/1.1"),
+    ASSERT_EQ(requests.size(), 2U);
+    EXPECT_NE(requests[1].find("POST /rest/v1/user_working_memory?on_conflict=user_id HTTP/1.1"),
               std::string::npos);
-    EXPECT_NE(requests[0].find("Content-Profile: public"), std::string::npos);
+    EXPECT_NE(requests[1].find("Content-Profile: public"), std::string::npos);
 
-    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    const std::size_t body_pos = requests[1].find("\r\n\r\n");
     ASSERT_NE(body_pos, std::string::npos);
-    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    const json body = json::parse(requests[1].substr(body_pos + 4U));
     ASSERT_TRUE(body.is_array());
     EXPECT_EQ(body[0]["user_id"], "user_001");
     EXPECT_EQ(body[0]["session_id"], "session_001");

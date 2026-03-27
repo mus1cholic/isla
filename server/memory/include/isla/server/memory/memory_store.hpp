@@ -114,6 +114,10 @@ class MemoryStore {
     [[nodiscard]] virtual absl::Status UpsertSession(const MemorySessionRecord& record) = 0;
 
     // Creates or updates the persisted current working-memory snapshot for one user.
+    // Callers must ensure the corresponding session row already exists (for example via
+    // UpsertSession or MemoryOrchestrator::BeginSession) before invoking this. The Supabase schema
+    // intentionally enforces that dependency with a foreign key from
+    // user_working_memory.session_id to memory_sessions.session_id.
     [[nodiscard]] virtual absl::Status
     UpsertUserWorkingMemory(const UserWorkingMemoryRecord& record) = 0;
 
