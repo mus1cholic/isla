@@ -19,6 +19,7 @@ namespace protocol = isla::shared::ai_gateway;
 constexpr std::string_view kSmokeHost = "127.0.0.1";
 constexpr std::uint16_t kSmokePort = 8080;
 constexpr std::string_view kSmokePath = "/";
+constexpr std::string_view kSmokeUserId = "smoke_user";
 constexpr std::string_view kSmokeTurnId = "turn_1";
 constexpr std::string_view kSmokeMessage = "hello!";
 constexpr auto kSmokeOperationTimeout = 20s;
@@ -115,7 +116,7 @@ int main() {
             },
     });
 
-    const absl::Status connect_status = session.ConnectAndStart();
+    const absl::Status connect_status = session.ConnectAndStart(std::string(kSmokeUserId));
     if (!connect_status.ok()) {
         LOG(ERROR) << "Smoke client: connect/start failed: " << connect_status;
         session.Close();

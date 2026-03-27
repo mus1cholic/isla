@@ -28,6 +28,7 @@ struct TurnAcceptedEvent {
 
 struct SessionStartedEvent {
     std::string session_id;
+    std::string user_id;
     std::optional<isla::server::memory::Timestamp> session_start_time;
     std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
 };

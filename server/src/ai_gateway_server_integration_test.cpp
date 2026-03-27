@@ -38,6 +38,8 @@ namespace {
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
+constexpr std::string_view kSessionStartJson =
+    R"json({"type":"session.start","user_id":"integration_user"})json";
 namespace websocket = beast::websocket;
 namespace protocol = isla::shared::ai_gateway;
 using tcp = asio::ip::tcp;
@@ -316,6 +318,9 @@ class RealWebSocketClient {
     }
 
     [[nodiscard]] absl::Status SendJson(std::string_view json) {
+        if (json == R"json({"type":"session.start"})json") {
+            json = kSessionStartJson;
+        }
         boost::system::error_code error;
         const std::size_t bytes_written =
             websocket_.write(asio::buffer(json.data(), json.size()), error);

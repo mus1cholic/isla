@@ -443,7 +443,10 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     ResponderRegistryAttachment registry_scope(responder);
     auto session = std::make_shared<RecordingLiveSession>(eval_case.session_id);
     registry_scope.registry().RegisterSession(session);
-    responder.OnSessionStarted(SessionStartedEvent{ .session_id = eval_case.session_id });
+    responder.OnSessionStarted(SessionStartedEvent{
+        .session_id = eval_case.session_id,
+        .user_id = BuildEvalMemoryUserId(eval_case.benchmark_name),
+    });
 
     for (const ReplayMessage& message : replay_plan->history_messages) {
         if (message.role == MessageRole::User) {

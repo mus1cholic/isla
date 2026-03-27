@@ -86,6 +86,7 @@ class ClientApp {
         bool connected = false;
         std::uint64_t next_turn_sequence = 1U;
         std::string canned_prompt = "hello!";
+        std::optional<std::string> user_id;
         std::optional<std::string> session_id;
         std::optional<std::string> inflight_turn_id;
         std::optional<std::string> last_reply_text;

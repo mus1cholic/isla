@@ -28,6 +28,9 @@ absl::Status ValidateCompletedEpisode(const Episode& episode) {
 WorkingMemory::WorkingMemory(WorkingMemoryState state) : state_(std::move(state)) {}
 
 absl::StatusOr<WorkingMemory> WorkingMemory::Create(const WorkingMemoryInit& init) {
+    if (init.user_id.empty()) {
+        return invalid_argument("working memory must include a user_id");
+    }
     absl::StatusOr<SystemPromptState> system_prompt = CreateSystemPromptState(init.system_prompt);
     if (!system_prompt.ok()) {
         return system_prompt.status();

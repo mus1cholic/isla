@@ -1,6 +1,7 @@
 #include "server/src/evals/live_eval_runner.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,32 @@ std::string BuildEventPayload(std::string_view code, std::string_view message) {
 
 std::string BuildTranscriptSeedKey(std::string_view turn_id, std::string_view role) {
     return absl::StrCat(turn_id, "|", role);
+}
+
+std::string BuildLiveEvalMemoryUserId(std::string_view benchmark_name) {
+    std::string benchmark_suffix;
+    benchmark_suffix.reserve(benchmark_name.size());
+
+    bool previous_was_separator = true;
+    for (const unsigned char ch : benchmark_name) {
+        if (std::isalnum(ch) != 0) {
+            benchmark_suffix.push_back(static_cast<char>(std::tolower(ch)));
+            previous_was_separator = false;
+            continue;
+        }
+        if (!previous_was_separator) {
+            benchmark_suffix.push_back('_');
+            previous_was_separator = true;
+        }
+    }
+    while (!benchmark_suffix.empty() && benchmark_suffix.back() == '_') {
+        benchmark_suffix.pop_back();
+    }
+    if (benchmark_suffix.empty()) {
+        return "live_eval_session";
+    }
+
+    return absl::StrCat("live_eval_", benchmark_suffix);
 }
 
 std::optional<std::string>
@@ -384,7 +411,8 @@ absl::StatusOr<EvalArtifacts> LiveEvalRunner::RunCase(const EvalCase& eval_case)
     });
 
     absl::Status connect_status = session.ConnectAndStart(
-        eval_case.session_id, FormatOptionalTimestamp(eval_case.session_start_time),
+        BuildLiveEvalMemoryUserId(eval_case.benchmark_name), eval_case.session_id,
+        FormatOptionalTimestamp(eval_case.session_start_time),
         FormatOptionalTimestamp(eval_case.evaluation_reference_time));
     if (!connect_status.ok()) {
         return connect_status;

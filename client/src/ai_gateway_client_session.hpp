@@ -34,7 +34,8 @@ class AiGatewayClientSession {
     AiGatewayClientSession& operator=(const AiGatewayClientSession&) = delete;
 
     [[nodiscard]] absl::Status
-    ConnectAndStart(std::optional<std::string> client_session_id = std::nullopt,
+    ConnectAndStart(std::string user_id,
+                    std::optional<std::string> client_session_id = std::nullopt,
                     std::optional<std::string> session_start_time = std::nullopt,
                     std::optional<std::string> evaluation_reference_time = std::nullopt);
     [[nodiscard]] absl::Status

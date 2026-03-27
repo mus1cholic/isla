@@ -87,7 +87,8 @@ json serialize_message(const GatewayMessage& message) {
     return std::visit(
         Overloaded{
             [](const SessionStartMessage& value) {
-                json object = { { "type", message_type_name(MessageType::SessionStart) } };
+                json object = { { "type", message_type_name(MessageType::SessionStart) },
+                                { "user_id", value.user_id } };
                 if (value.client_session_id.has_value() && !value.client_session_id->empty()) {
                     object["client_session_id"] = *value.client_session_id;
                 }
@@ -178,6 +179,10 @@ json serialize_message(const GatewayMessage& message) {
 absl::StatusOr<GatewayMessage> parse_message_object(const json& root, MessageType type) {
     switch (type) {
     case MessageType::SessionStart: {
+        auto user_id = read_required_string(root, "user_id");
+        if (!user_id.has_value()) {
+            return make_parse_error("session.start requires non-empty user_id");
+        }
         absl::StatusOr<std::optional<std::string>> session_start_time =
             read_optional_nonempty_string(root, "session_start_time");
         if (!session_start_time.ok()) {
@@ -189,6 +194,7 @@ absl::StatusOr<GatewayMessage> parse_message_object(const json& root, MessageTyp
             return evaluation_reference_time.status();
         }
         return SessionStartMessage{
+            .user_id = std::move(*user_id),
             .client_session_id = read_required_string(root, "client_session_id"),
             .session_start_time = std::move(*session_start_time),
             .evaluation_reference_time = std::move(*evaluation_reference_time),

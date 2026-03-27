@@ -84,6 +84,7 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
         result.ok = true;
         result.session_started = SessionStartedEvent{
             .session_id = session_id_,
+            .user_id = session_start.user_id,
             .session_start_time = *session_start_time,
             .evaluation_reference_time = *evaluation_reference_time,
         };

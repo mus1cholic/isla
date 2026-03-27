@@ -301,9 +301,9 @@ const absl::Status& GatewayStubResponder::MidTermMemoryInitializationStatus() co
 
 void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
     LOG(INFO) << "AI gateway stub observed session start session="
-              << SanitizeForLog(event.session_id);
+              << SanitizeForLog(event.session_id) << " user_id=" << SanitizeForLog(event.user_id);
     RecordSessionReplayClock(event.session_id, event.session_start_time);
-    const absl::Status status = InitializeSessionMemory(event.session_id);
+    const absl::Status status = InitializeSessionMemory(event.session_id, event.user_id);
     if (!status.ok()) {
         LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
                    << SanitizeForLog(event.session_id) << " detail='"
@@ -1300,7 +1300,11 @@ void GatewayStubResponder::RecordConversationReplayTime(
         ReplayTimestampKey(turn_id, role), *create_time);
 }
 
-absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view session_id) {
+absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view session_id,
+                                                           std::string_view user_id) {
+    if (user_id.empty()) {
+        return absl::InvalidArgumentError("session memory initialization requires user_id");
+    }
     std::shared_ptr<SessionMemoryState> session_memory;
     const Clock::time_point initialization_started_at = Clock::now();
     {
@@ -1312,7 +1316,7 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
             isla::server::memory::MemoryOrchestrator::Create(
                 std::string(session_id), isla::server::memory::MemoryOrchestratorInit{
-                                             .user_id = config_.memory_user_id,
+                                             .user_id = std::string(user_id),
                                              .store = config_.memory_store,
                                              .mid_term_flush_decider = mid_term_flush_decider_,
                                              .mid_term_compactor = mid_term_compactor_,

@@ -207,7 +207,8 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void RecordConversationReplayTime(std::string_view session_id, std::string_view turn_id,
                                       isla::server::memory::MessageRole role,
                                       std::optional<isla::server::memory::Timestamp> create_time);
-    [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id);
+    [[nodiscard]] absl::Status InitializeSessionMemory(std::string_view session_id,
+                                                       std::string_view user_id);
     [[nodiscard]] isla::server::memory::Timestamp
     ResolveSessionStartTime(std::string_view session_id) const;
     [[nodiscard]] isla::server::memory::Timestamp

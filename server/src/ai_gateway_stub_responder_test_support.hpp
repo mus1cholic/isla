@@ -450,7 +450,8 @@ class GatewayStubResponderTest : public ::testing::Test {
     }
 
     void SetUp() override {
-        responder_.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test" });
+        responder_.OnSessionStarted(SessionStartedEvent{ .session_id = "srv_test",
+                                                         .user_id = "test_user" });
     }
 
     GatewayStubResponder responder_;
@@ -556,7 +557,8 @@ class GatewayStubResponderStandaloneFixture : public ::testing::Test {
     }
 
     void StartSession() {
-        responder().OnSessionStarted(SessionStartedEvent{ .session_id = session_id_ });
+        responder().OnSessionStarted(SessionStartedEvent{ .session_id = session_id_,
+                                                          .user_id = "test_user" });
     }
 
     void AcceptTurn(std::string turn_id, std::string text) {

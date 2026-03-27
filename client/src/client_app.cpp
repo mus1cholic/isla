@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -70,6 +71,19 @@ const char* gateway_env_value_source_name(GatewayEnvValueSource source) {
         return "default";
     }
     return "unknown";
+}
+
+std::string GenerateRandomGatewayUserId() {
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    thread_local std::mt19937_64 engine(std::random_device{}());
+    std::uniform_int_distribution<int> nybble_dist(0, 15);
+
+    std::string user_id = "user_";
+    user_id.reserve(37);
+    for (int index = 0; index < 32; ++index) {
+        user_id.push_back(kHexDigits[nybble_dist(engine)]);
+    }
+    return user_id;
 }
 
 std::string trim_ascii(std::string_view text) {
@@ -726,8 +740,12 @@ absl::Status ClientApp::start_ai_gateway_session(AiGatewayClientConfig config,
         enqueue_gateway_transport_closed(std::move(status));
     };
 
+    if (!gateway_state_.user_id.has_value()) {
+        gateway_state_.user_id = GenerateRandomGatewayUserId();
+    }
+
     auto session = std::make_unique<AiGatewayClientSession>(std::move(config));
-    const absl::Status status = session->ConnectAndStart();
+    const absl::Status status = session->ConnectAndStart(*gateway_state_.user_id);
     if (!status.ok()) {
         session->Close();
         return status;
