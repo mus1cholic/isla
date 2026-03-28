@@ -973,6 +973,48 @@ TEST(SupabaseMemoryStoreTest, GetMidTermEpisodeRejectsMalformedEpisodeRows) {
     ASSERT_TRUE(server.WaitForRequestCount(1U));
 }
 
+TEST(SupabaseMemoryStoreTest, ClearSessionWorkingSetUsesRpc) {
+    RoutingHttpServer server({
+        { "/rest/v1/rpc/clear_session_working_set",
+          "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n" },
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::Status status = (*store)->ClearSessionWorkingSet("session_001");
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests.front().find("POST /rest/v1/rpc/clear_session_working_set"),
+              std::string::npos);
+}
+
+TEST(SupabaseMemoryStoreTest, ClearSessionWorkingSetRejectsMissingSessionId) {
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:1",
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::Status status = (*store)->ClearSessionWorkingSet("");
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes) {
     const std::string session_body =
         "[{\"session_id\":\"session_001\",\"user_id\":\"user_001\",\"system_prompt\":\"You are "

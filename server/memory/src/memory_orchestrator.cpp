@@ -256,12 +256,16 @@ absl::Status MemoryOrchestrator::PersistSessionIfNeeded(Timestamp create_time) {
 }
 
 absl::Status MemoryOrchestrator::PersistUserWorkingMemorySnapshot(Timestamp updated_at) {
+    return PersistUserWorkingMemorySnapshot(memory_.snapshot(), updated_at);
+}
+
+absl::Status MemoryOrchestrator::PersistUserWorkingMemorySnapshot(const WorkingMemoryState& state,
+                                                                  Timestamp updated_at) {
     if (!store_) {
         return absl::OkStatus();
     }
 
-    const WorkingMemoryState& state = memory_.snapshot();
-    absl::StatusOr<std::string> rendered_working_memory = memory_.RenderFullWorkingMemory();
+    absl::StatusOr<std::string> rendered_working_memory = RenderWorkingMemoryPrompt(state);
     if (!rendered_working_memory.ok()) {
         return rendered_working_memory.status();
     }
@@ -737,6 +741,56 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::AwaitAndDrainAllPendingMidTermCo
         }
     }
     return DrainCompletedMidTermCompactions();
+}
+
+absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cycle_time) {
+    if (absl::Status session_status = ValidateSessionReadyForPersistence(); !session_status.ok()) {
+        return session_status;
+    }
+
+    const absl::StatusOr<std::size_t> drained_pending_compactions =
+        AwaitAndDrainAllPendingMidTermCompactions();
+    if (!drained_pending_compactions.ok()) {
+        return drained_pending_compactions.status();
+    }
+
+    const WorkingMemoryState& state_before_clear = memory_.snapshot();
+    SleepCycleResult result{
+        .drained_pending_mid_term_compactions = *drained_pending_compactions,
+        .cleared_mid_term_episode_count = state_before_clear.mid_term_episodes.size(),
+        .cleared_conversation_item_count = state_before_clear.conversation.items.size(),
+    };
+
+    WorkingMemoryState cleared_state = state_before_clear;
+    cleared_state.mid_term_episodes.clear();
+    cleared_state.retrieved_memory.reset();
+    cleared_state.conversation.items.clear();
+
+    // Persist the post-sleep snapshot first so failures do not strand the live session after the
+    // tables and in-memory working set have already been cleared.
+    if (absl::Status status = PersistUserWorkingMemorySnapshot(cleared_state, cycle_time);
+        !status.ok()) {
+        return status;
+    }
+
+    if (store_ != nullptr) {
+        if (absl::Status status = store_->ClearSessionWorkingSet(session_id_); !status.ok()) {
+            LOG(WARNING) << "MemoryOrchestrator store.ClearSessionWorkingSet failed during sleep "
+                            "cycle"
+                         << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                         << SanitizeForLog(status.message()) << "'";
+            return status;
+        }
+    }
+
+    memory_.ClearForSleepCycle();
+
+    LOG(INFO) << "MemoryOrchestrator completed sleep cycle session_id="
+              << SanitizeForLog(session_id_) << " drained_pending_mid_term_compactions="
+              << result.drained_pending_mid_term_compactions
+              << " cleared_mid_term_episode_count=" << result.cleared_mid_term_episode_count
+              << " cleared_conversation_item_count=" << result.cleared_conversation_item_count;
+    return result;
 }
 
 bool MemoryOrchestrator::HasPendingMidTermCompactions() const {

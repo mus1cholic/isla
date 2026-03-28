@@ -211,6 +211,21 @@ WorkingMemory::ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFl
     return absl::OkStatus();
 }
 
+void WorkingMemory::ClearForSleepCycle() {
+    const std::size_t cleared_mid_term_episode_count = state_.mid_term_episodes.size();
+    const std::size_t cleared_conversation_item_count = state_.conversation.items.size();
+    const bool had_retrieved_memory = state_.retrieved_memory.has_value();
+
+    state_.mid_term_episodes.clear();
+    state_.retrieved_memory.reset();
+    state_.conversation.items.clear();
+
+    LOG(INFO) << "WorkingMemory cleared transient state for sleep cycle"
+              << " cleared_mid_term_episode_count=" << cleared_mid_term_episode_count
+              << " cleared_conversation_item_count=" << cleared_conversation_item_count
+              << " cleared_retrieved_memory=" << (had_retrieved_memory ? "true" : "false");
+}
+
 absl::StatusOr<RenderedWorkingMemory> WorkingMemory::RenderPromptBundle() const {
     return RenderWorkingMemoryBundle(state_);
 }

@@ -119,9 +119,17 @@ For split flushes, the store calls `split_conversation_item_with_episode_stub(..
 validation, item-index shifting, message move, and episode-stub rewrite
 happen transactionally inside Postgres.
 
+For a sleep-cycle reset, the store calls `clear_session_working_set(...)` so the persisted
+conversation timeline is deleted before the referenced `mid_term_episodes` rows are removed. Under
+the current schema, deleting `conversation_items` also deletes the matching
+`conversation_messages` rows via `ON DELETE CASCADE`, so a sleep-cycle reset currently drops the
+persisted transcript as well. The user-scoped `user_working_memory` row is then upserted with the
+now-empty live working set.
+
 This mirrors the current C++ architecture:
 
-- raw messages stay preserved as the full transcript
+- raw messages stay preserved across normal turn ingestion and mid-term flushes, but the current
+  sleep-cycle reset deletes them with the conversation timeline
 - the conversation timeline still reflects stub replacement
 - mid-term episodes remain queryable as an ordered list by `created_at`
 
@@ -144,9 +152,11 @@ That data maps directly to the new `MemoryStoreSnapshot` shape in C++.
 - Keep simple writes on direct PostgREST table upserts where possible.
 - Use RPC-backed SQL functions for multi-row memory mutations that need fewer round trips or
   transactional guarantees. The split-flush path now uses
-  `split_conversation_item_with_episode_stub(...)` for exactly that reason.
-- Preserve archived transcript rows in `conversation_messages`; working-memory hydration filters
-  them out at the PostgREST relationship layer instead of deleting them from storage.
+  `split_conversation_item_with_episode_stub(...)`, and the sleep-cycle reset uses
+  `clear_session_working_set(...)`, for exactly that reason.
+- The current schema does not preserve archived transcript rows across a sleep-cycle reset. If we
+  want transcript retention later, we will need to decouple `conversation_messages` from
+  `conversation_items` deletion or introduce a separate archival transcript table.
 
 ## Initial implementation recommendation
 
@@ -157,6 +167,7 @@ For the current serving path, implement:
 - episode upsert
 - full-flush stub replacement
 - split-flush RPC persistence
+- sleep-cycle reset RPC persistence
 - session hydration
 
 That is enough to persist complete chat history and mid-term memory without prematurely committing

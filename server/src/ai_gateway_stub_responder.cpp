@@ -1562,6 +1562,17 @@ absl::Status GatewayStubResponder::AwaitSessionMemorySettled(std::string_view se
     return absl::OkStatus();
 }
 
+absl::StatusOr<isla::server::memory::SleepCycleResult>
+GatewayStubResponder::RunSessionSleepCycle(std::string_view session_id,
+                                           isla::server::memory::Timestamp cycle_time) {
+    const std::shared_ptr<SessionMemoryState> session_memory = FindSessionMemory(session_id);
+    if (session_memory == nullptr) {
+        return absl::NotFoundError("memory orchestrator not found for session");
+    }
+    std::lock_guard<std::mutex> lock(session_memory->mutex);
+    return session_memory->orchestrator.RunSleepCycle(cycle_time);
+}
+
 bool GatewayStubResponder::WaitForAcceptedTurns(std::size_t expected_count) {
     std::unique_lock<std::mutex> lock(mutex_);
     return cv_.wait_for(lock, std::chrono::seconds(2),

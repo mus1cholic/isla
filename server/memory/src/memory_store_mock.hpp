@@ -19,6 +19,7 @@ class MockMemoryStore : public MemoryStore {
     MOCK_METHOD(absl::Status, UpsertMidTermEpisode, (const MidTermEpisodeWrite& write), (override));
     MOCK_METHOD(absl::Status, SplitConversationItemWithEpisodeStub,
                 (const SplitEpisodeStubWrite& write), (override));
+    MOCK_METHOD(absl::Status, ClearSessionWorkingSet, (std::string_view session_id), (override));
     MOCK_METHOD((absl::StatusOr<std::vector<Episode>>), ListMidTermEpisodes,
                 (std::string_view session_id), (const, override));
     MOCK_METHOD((absl::StatusOr<std::optional<Episode>>), GetMidTermEpisode,

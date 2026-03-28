@@ -135,6 +135,10 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     // Callers that need a settled memory snapshot should call this before
     // SnapshotSessionWorkingMemoryState.
     [[nodiscard]] absl::Status AwaitSessionMemorySettled(std::string_view session_id);
+    // Runs the blocking sleep-cycle boundary for the session. Today this drains pending mid-term
+    // work, clears the transient working set, and persists the reset snapshot.
+    [[nodiscard]] absl::StatusOr<isla::server::memory::SleepCycleResult>
+    RunSessionSleepCycle(std::string_view session_id, isla::server::memory::Timestamp cycle_time);
     [[nodiscard]] absl::StatusOr<GatewayAcceptedTurnResult>
     RunAcceptedTurnToCompletion(const TurnAcceptedEvent& event);
     [[nodiscard]] bool WaitForAcceptedTurns(std::size_t expected_count);

@@ -171,6 +171,11 @@ class FailingSessionStartMemoryStore final : public isla::server::memory::Memory
         return absl::OkStatus();
     }
 
+    absl::Status ClearSessionWorkingSet(std::string_view session_id) override {
+        static_cast<void>(session_id);
+        return absl::OkStatus();
+    }
+
     absl::Status
     UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
         static_cast<void>(write);

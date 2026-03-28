@@ -281,6 +281,63 @@ TEST_F(WorkingMemoryTest, WriteBackCoreEntityPromotesToActiveCache) {
 )json"));
 }
 
+TEST_F(WorkingMemoryTest, ClearForSleepCyclePreservesSystemPromptAndCache) {
+    absl::StatusOr<WorkingMemory> memory = MakeMemory();
+    ASSERT_TRUE(memory.ok()) << memory.status();
+    memory->UpsertActiveModel("entity_user", "Airi, the user.");
+    memory->UpsertFamiliarLabel("entity_mochi", "Airi's cat");
+    memory->SetRetrievedMemory("recent retrieval");
+    AppendUserMessage(memory->mutable_conversation(), "hello", Ts("2026-03-08T14:00:01Z"));
+    AppendAssistantMessage(memory->mutable_conversation(), "hi", Ts("2026-03-08T14:00:02Z"));
+    ASSERT_TRUE(memory
+                    ->ApplyCompletedOngoingEpisodeFlush(CompletedOngoingEpisodeFlush{
+                        .conversation_item_index = 0,
+                        .episode =
+                            Episode{
+                                .episode_id = "ep_001",
+                                .tier1_detail = std::nullopt,
+                                .tier2_summary = "summary",
+                                .tier3_ref = "ref",
+                                .tier3_keywords = { "memory" },
+                                .salience = 5,
+                                .embedding = {},
+                                .created_at = Ts("2026-03-08T14:00:03Z"),
+                            },
+                        .stub_timestamp = Ts("2026-03-08T14:00:04Z"),
+                    })
+                    .ok());
+
+    memory->ClearForSleepCycle();
+
+    ExpectWorkingMemoryJsonEq(*memory, json::parse(R"json(
+{
+  "system_prompt": {
+    "base_instructions": "You are Isla.",
+    "persistent_memory_cache": {
+      "active_models": [
+        {
+          "entity_id": "entity_user",
+          "text": "Airi, the user."
+        }
+      ],
+      "familiar_labels": [
+        {
+          "entity_id": "entity_mochi",
+          "text": "Airi's cat"
+        }
+      ]
+    }
+  },
+  "mid_term_episodes": [],
+  "retrieved_memory": null,
+  "conversation": {
+    "items": [],
+    "user_id": "user_001"
+  }
+}
+)json"));
+}
+
 TEST_F(WorkingMemoryTest, FlushOngoingEpisodeReplacesTargetEpisodeAndSortsMidTermEntries) {
     absl::StatusOr<WorkingMemory> memory = MakeMemory();
     ASSERT_TRUE(memory.ok()) << memory.status();
