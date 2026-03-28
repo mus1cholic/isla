@@ -73,6 +73,14 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
                 split_stub_writes.push_back(write);
                 return absl::OkStatus();
             });
+        ON_CALL(*this, ClearSessionWorkingSet(_))
+            .WillByDefault([this](std::string_view session_id) {
+                if (!clear_working_set_status.ok()) {
+                    return clear_working_set_status;
+                }
+                cleared_session_ids.push_back(std::string(session_id));
+                return absl::OkStatus();
+            });
         ON_CALL(*this, UpsertMidTermEpisode(_))
             .WillByDefault([this](const MidTermEpisodeWrite& write) {
                 if (!upsert_episode_status.ok()) {
@@ -107,12 +115,14 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     std::vector<ConversationMessageWrite> message_writes;
     std::vector<EpisodeStubWrite> stub_writes;
     std::vector<SplitEpisodeStubWrite> split_stub_writes;
+    std::vector<std::string> cleared_session_ids;
     std::vector<MidTermEpisodeWrite> episode_writes;
     absl::Status upsert_session_status = absl::OkStatus();
     absl::Status upsert_user_working_memory_status = absl::OkStatus();
     absl::Status append_message_status = absl::OkStatus();
     absl::Status replace_stub_status = absl::OkStatus();
     absl::Status split_stub_status = absl::OkStatus();
+    absl::Status clear_working_set_status = absl::OkStatus();
     absl::Status upsert_episode_status = absl::OkStatus();
 };
 
@@ -430,6 +440,71 @@ TEST_F(MemoryOrchestratorTest, AwaitAndDrainBlocksUntilPendingCompactionComplete
 
     const WorkingMemoryState& state = handler->memory().snapshot();
     EXPECT_EQ(state.mid_term_episodes.size(), 1U);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleDrainsPendingCompactionsAndClearsTransientState) {
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+    handler->mutable_memory().UpsertActiveModel("entity_user", "Airi, the user.");
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    handler->mutable_memory().SetRetrievedMemory("recent retrieval");
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    EXPECT_TRUE(handler->HasPendingMidTermCompactions());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->drained_pending_mid_term_compactions, 1U);
+    EXPECT_EQ(result->cleared_mid_term_episode_count, 1U);
+    EXPECT_EQ(result->cleared_conversation_item_count, 1U);
+    EXPECT_FALSE(handler->HasPendingMidTermCompactions());
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_TRUE(state.mid_term_episodes.empty());
+    EXPECT_FALSE(state.retrieved_memory.has_value());
+    EXPECT_TRUE(state.conversation.items.empty());
+    ASSERT_EQ(state.system_prompt.persistent_memory_cache.active_models.size(), 1U);
+    EXPECT_EQ(state.system_prompt.persistent_memory_cache.active_models.front().entity_id,
+              "entity_user");
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleClearsPersistedWorkingSetAndSnapshot) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->cleared_session_ids.size(), 1U);
+    EXPECT_EQ(store->cleared_session_ids.front(), "srv_test");
+    ASSERT_FALSE(store->user_working_memory_records.empty());
+    const UserWorkingMemoryRecord& latest_snapshot = store->user_working_memory_records.back();
+    EXPECT_EQ(latest_snapshot.updated_at, Ts("2026-03-09T04:00:00Z"));
+    EXPECT_TRUE(latest_snapshot.working_memory.mid_term_episodes.empty());
+    EXPECT_FALSE(latest_snapshot.working_memory.retrieved_memory.has_value());
+    EXPECT_TRUE(latest_snapshot.working_memory.conversation.items.empty());
 }
 
 TEST_F(MemoryOrchestratorTest, AwaitAndDrainPropagatesCompactorFailure) {
@@ -1092,9 +1167,8 @@ TEST_F(MemoryOrchestratorTest, AsyncDrainPropagatesMidTermPersistenceFailureWith
                     .ok());
     ASSERT_TRUE(compactor->WaitForRequestCount(1U));
 
-    const absl::StatusOr<std::size_t> drained = handler->DrainCompletedMidTermCompactions();
-    ASSERT_FALSE(drained.ok());
-    EXPECT_EQ(drained.status().code(), absl::StatusCode::kInternal);
+    const absl::Status status = WaitForDrainFailure(*handler, absl::StatusCode::kInternal);
+    ASSERT_TRUE(status.ok()) << status;
     EXPECT_TRUE(store->stub_writes.empty());
 
     const WorkingMemoryState& state = handler->memory().snapshot();

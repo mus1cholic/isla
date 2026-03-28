@@ -61,6 +61,12 @@ struct MemoryOrchestratorInit {
     MidTermCompactorPtr mid_term_compactor = nullptr;
 };
 
+struct SleepCycleResult {
+    std::size_t drained_pending_mid_term_compactions = 0;
+    std::size_t cleared_mid_term_episode_count = 0;
+    std::size_t cleared_conversation_item_count = 0;
+};
+
 // Central entry point for gateway-delivered user turns. The gateway only forwards the raw user
 // query; this handler is responsible for converting it into working-memory state changes and
 // coordinating future mid/long-term memory hooks.
@@ -102,6 +108,11 @@ class MemoryOrchestrator {
     // many flushes were committed. Unlike DrainCompletedMidTermCompactions, this does not poll;
     // it waits for every outstanding future to finish before processing results.
     [[nodiscard]] absl::StatusOr<std::size_t> AwaitAndDrainAllPendingMidTermCompactions();
+
+    // Executes the session sleep-cycle boundary. Today this drains all pending mid-term work,
+    // clears the transient working-memory state, and persists the reset so future consolidation
+    // stages can be added behind the same blocking lifecycle hook.
+    [[nodiscard]] absl::StatusOr<SleepCycleResult> RunSleepCycle(Timestamp cycle_time);
 
     // Returns whether any async mid-term analysis or compaction work is still pending.
     [[nodiscard]] bool HasPendingMidTermCompactions() const;

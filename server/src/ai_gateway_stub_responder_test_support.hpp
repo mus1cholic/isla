@@ -492,6 +492,14 @@ class RecordingGatewayMemoryStore final
                 static_cast<void>(write);
                 return absl::OkStatus();
             });
+        ON_CALL(*this, ClearSessionWorkingSet(_))
+            .WillByDefault([this](std::string_view session_id) {
+                if (!clear_working_set_status.ok()) {
+                    return clear_working_set_status;
+                }
+                cleared_session_ids.push_back(std::string(session_id));
+                return absl::OkStatus();
+            });
         ON_CALL(*this, UpsertMidTermEpisode(_))
             .WillByDefault([](const isla::server::memory::MidTermEpisodeWrite& write) {
                 static_cast<void>(write);
@@ -521,9 +529,11 @@ class RecordingGatewayMemoryStore final
 
     std::vector<isla::server::memory::MemorySessionRecord> session_records;
     std::vector<isla::server::memory::ConversationMessageWrite> message_writes;
+    std::vector<std::string> cleared_session_ids;
     std::vector<absl::Status> upsert_session_statuses;
     std::size_t next_upsert_session_status_index = 0;
     std::size_t upsert_session_attempts = 0;
+    absl::Status clear_working_set_status = absl::OkStatus();
 };
 
 class GatewayStubResponderStandaloneFixture : public ::testing::Test {

@@ -224,6 +224,21 @@ begin
 end;
 $$;
 
+create or replace function public.clear_session_working_set(
+    p_session_id text
+)
+returns void
+language plpgsql
+as $$
+begin
+    delete from public.conversation_items
+    where session_id = p_session_id;
+
+    delete from public.mid_term_episodes
+    where session_id = p_session_id;
+end;
+$$;
+
 create index if not exists conversation_items_session_order_idx
     on public.conversation_items (session_id, item_index);
 

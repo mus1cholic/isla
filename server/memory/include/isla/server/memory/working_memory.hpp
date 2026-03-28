@@ -94,6 +94,10 @@ class WorkingMemory {
     [[nodiscard]] absl::Status
     ApplyCompletedOngoingEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
 
+    // Clears the transient working-set state at the sleep-cycle boundary while preserving the
+    // system prompt and persistent-memory cache.
+    void ClearForSleepCycle();
+
     // Renders the system prompt, context section, and concatenated full prompt in one pass.
     [[nodiscard]] absl::StatusOr<RenderedWorkingMemory> RenderPromptBundle() const;
 

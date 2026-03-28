@@ -138,6 +138,11 @@ class MemoryStore {
     [[nodiscard]] virtual absl::Status
     SplitConversationItemWithEpisodeStub(const SplitEpisodeStubWrite& write) = 0;
 
+    // Clears the persisted working-set surfaces for one session so the next wake cycle starts with
+    // an empty live conversation and no mid-term staging data. The session row and the
+    // user-scoped working-memory snapshot are preserved separately.
+    [[nodiscard]] virtual absl::Status ClearSessionWorkingSet(std::string_view session_id) = 0;
+
     // Lists all persisted mid-term episodes for the session.
     [[nodiscard]] virtual absl::StatusOr<std::vector<Episode>>
     ListMidTermEpisodes(std::string_view session_id) const = 0;

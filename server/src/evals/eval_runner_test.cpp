@@ -69,6 +69,11 @@ class RecordingMemoryStore final : public MemoryStore {
         return absl::OkStatus();
     }
 
+    absl::Status ClearSessionWorkingSet(std::string_view session_id) override {
+        static_cast<void>(session_id);
+        return absl::OkStatus();
+    }
+
     absl::StatusOr<std::vector<Episode>>
     ListMidTermEpisodes(std::string_view session_id) const override {
         static_cast<void>(session_id);

@@ -463,6 +463,26 @@ class SupabaseMemoryStore final : public MemoryStore {
         return absl::OkStatus();
     }
 
+    [[nodiscard]] absl::Status ClearSessionWorkingSet(std::string_view session_id) override {
+        ScopedSupabaseOperationLatency latency(config_, "clear_session_working_set", session_id);
+        if (session_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "ClearSessionWorkingSet requires session_id to be non-empty");
+        }
+
+        const HttpRequestSpec request = BuildRpcRequest(
+            "clear_session_working_set", json{ { "p_session_id", std::string(session_id) } },
+            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        latency.SetOutcome("ok");
+        return absl::OkStatus();
+    }
+
     [[nodiscard]] absl::Status UpsertMidTermEpisode(const MidTermEpisodeWrite& write) override {
         ScopedSupabaseOperationLatency latency(config_, "upsert_mid_term_episode",
                                                write.session_id);
