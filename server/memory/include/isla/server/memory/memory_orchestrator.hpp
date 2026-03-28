@@ -157,6 +157,11 @@ class MemoryOrchestrator {
     // user-scoped row never races ahead of the session row required by the store schema.
     [[nodiscard]] absl::Status PersistSessionIfNeeded(Timestamp create_time);
 
+    // Persists an arbitrary user working-memory snapshot keyed by user_id. This allows the sleep
+    // cycle to stage a cleared snapshot before mutating live in-memory state.
+    [[nodiscard]] absl::Status PersistUserWorkingMemorySnapshot(const WorkingMemoryState& state,
+                                                                Timestamp updated_at);
+
     // Persists the current full working-memory snapshot keyed by user_id.
     [[nodiscard]] absl::Status PersistUserWorkingMemorySnapshot(Timestamp updated_at);
 

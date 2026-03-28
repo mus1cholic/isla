@@ -507,6 +507,72 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleClearsPersistedWorkingSetAndSnapshot
     EXPECT_TRUE(latest_snapshot.working_memory.conversation.items.empty());
 }
 
+TEST_F(MemoryOrchestratorTest,
+       RunSleepCycleDoesNotMutateLiveOrPersistedWorkingSetWhenSnapshotPersistenceFails) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    store->upsert_user_working_memory_status = absl::InternalError("snapshot write failed");
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
+    EXPECT_TRUE(store->cleared_session_ids.empty());
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_EQ(state.mid_term_episodes.size(), 1U);
+    ASSERT_EQ(state.conversation.items.size(), 1U);
+    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
+}
+
+TEST_F(MemoryOrchestratorTest,
+       RunSleepCycleDoesNotMutateLiveWorkingSetWhenClearingPersistedTablesFails) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    store->clear_working_set_status = absl::InternalError("clear working set failed");
+    const std::size_t snapshot_count_before_sleep = store->user_working_memory_records.size();
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
+    ASSERT_GE(store->user_working_memory_records.size(), snapshot_count_before_sleep + 1U);
+    const UserWorkingMemoryRecord& latest_snapshot = store->user_working_memory_records.back();
+    EXPECT_TRUE(latest_snapshot.working_memory.mid_term_episodes.empty());
+    EXPECT_TRUE(latest_snapshot.working_memory.conversation.items.empty());
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_EQ(state.mid_term_episodes.size(), 1U);
+    ASSERT_EQ(state.conversation.items.size(), 1U);
+    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
+}
+
 TEST_F(MemoryOrchestratorTest, AwaitAndDrainPropagatesCompactorFailure) {
     auto compactor =
         std::make_shared<RecordingMidTermCompactor>(absl::InternalError("compaction failed"));

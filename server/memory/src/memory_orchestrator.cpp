@@ -256,12 +256,16 @@ absl::Status MemoryOrchestrator::PersistSessionIfNeeded(Timestamp create_time) {
 }
 
 absl::Status MemoryOrchestrator::PersistUserWorkingMemorySnapshot(Timestamp updated_at) {
+    return PersistUserWorkingMemorySnapshot(memory_.snapshot(), updated_at);
+}
+
+absl::Status MemoryOrchestrator::PersistUserWorkingMemorySnapshot(const WorkingMemoryState& state,
+                                                                  Timestamp updated_at) {
     if (!store_) {
         return absl::OkStatus();
     }
 
-    const WorkingMemoryState& state = memory_.snapshot();
-    absl::StatusOr<std::string> rendered_working_memory = memory_.RenderFullWorkingMemory();
+    absl::StatusOr<std::string> rendered_working_memory = RenderWorkingMemoryPrompt(state);
     if (!rendered_working_memory.ok()) {
         return rendered_working_memory.status();
     }
@@ -757,6 +761,18 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
         .cleared_conversation_item_count = state_before_clear.conversation.items.size(),
     };
 
+    WorkingMemoryState cleared_state = state_before_clear;
+    cleared_state.mid_term_episodes.clear();
+    cleared_state.retrieved_memory.reset();
+    cleared_state.conversation.items.clear();
+
+    // Persist the post-sleep snapshot first so failures do not strand the live session after the
+    // tables and in-memory working set have already been cleared.
+    if (absl::Status status = PersistUserWorkingMemorySnapshot(cleared_state, cycle_time);
+        !status.ok()) {
+        return status;
+    }
+
     if (store_ != nullptr) {
         if (absl::Status status = store_->ClearSessionWorkingSet(session_id_); !status.ok()) {
             LOG(WARNING) << "MemoryOrchestrator store.ClearSessionWorkingSet failed during sleep "
@@ -768,9 +784,6 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
     }
 
     memory_.ClearForSleepCycle();
-    if (absl::Status status = PersistUserWorkingMemorySnapshot(cycle_time); !status.ok()) {
-        return status;
-    }
 
     LOG(INFO) << "MemoryOrchestrator completed sleep cycle session_id="
               << SanitizeForLog(session_id_) << " drained_pending_mid_term_compactions="

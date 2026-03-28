@@ -231,6 +231,9 @@ returns void
 language plpgsql
 as $$
 begin
+    -- NOTICE: This is a full working-set reset. Deleting conversation_items also deletes the
+    -- matching conversation_messages rows via the ON DELETE CASCADE foreign key, so the persisted
+    -- raw transcript for the session is removed here as well.
     delete from public.conversation_items
     where session_id = p_session_id;
 
