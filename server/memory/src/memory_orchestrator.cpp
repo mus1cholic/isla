@@ -450,6 +450,61 @@ std::string MemoryOrchestrator::NextEpisodeId() {
     return "ep_" + session_id_ + "_" + std::to_string(next_episode_sequence_++);
 }
 
+absl::StatusOr<MemoryOrchestrator::CompletedFlushBuildInput>
+MemoryOrchestrator::CompactFlushCandidate(const MidTermCompactorPtr& compactor,
+                                          std::string_view session_id,
+                                          const OngoingEpisodeFlushCandidate& flush_candidate,
+                                          std::optional<std::size_t> split_at_message_index,
+                                          std::string_view failure_context) {
+    const absl::StatusOr<CompactedMidTermEpisode> compacted =
+        compactor->Compact(MidTermCompactionRequest{
+            .session_id = std::string(session_id),
+            .flush_candidate = flush_candidate,
+        });
+    if (!compacted.ok()) {
+        return compacted.status();
+    }
+    if (compacted->tier2_summary.empty() || compacted->tier3_ref.empty()) {
+        LOG(WARNING) << "MemoryOrchestrator rejected invalid " << failure_context
+                     << " compactor "
+                        "output"
+                     << " session_id=" << SanitizeForLog(session_id)
+                     << " detail='mid-term compactor must produce non-empty tier2 and tier3 "
+                        "content'";
+        return absl::InvalidArgumentError(
+            "mid-term compactor must produce non-empty tier2 and tier3 content");
+    }
+
+    const Timestamp episode_time = flush_candidate.ongoing_episode.messages.back().create_time;
+    return CompletedFlushBuildInput{
+        .compacted = std::move(*compacted),
+        .episode_created_at = episode_time,
+        .stub_timestamp = episode_time,
+        .split_at_message_index = split_at_message_index,
+    };
+}
+
+CompletedOngoingEpisodeFlush
+MemoryOrchestrator::BuildCompletedEpisodeFlush(std::size_t conversation_item_index,
+                                               CompletedFlushBuildInput build_input) {
+    return CompletedOngoingEpisodeFlush{
+        .conversation_item_index = conversation_item_index,
+        .episode =
+            Episode{
+                .episode_id = NextEpisodeId(),
+                .tier1_detail = std::move(build_input.compacted.tier1_detail),
+                .tier2_summary = std::move(build_input.compacted.tier2_summary),
+                .tier3_ref = std::move(build_input.compacted.tier3_ref),
+                .tier3_keywords = std::move(build_input.compacted.tier3_keywords),
+                .salience = build_input.compacted.salience,
+                .embedding = std::move(build_input.compacted.embedding),
+                .created_at = build_input.episode_created_at,
+            },
+        .stub_timestamp = build_input.stub_timestamp,
+        .split_at_message_index = build_input.split_at_message_index,
+    };
+}
+
 absl::Status MemoryOrchestrator::QueueMidTermAnalysis(const Conversation& conversation_snapshot) {
     if (mid_term_compactor_ == nullptr || mid_term_flush_decider_ == nullptr) {
         return absl::OkStatus();
@@ -491,34 +546,15 @@ absl::Status MemoryOrchestrator::QueueMidTermAnalysis(const Conversation& conver
                     return candidate.status();
                 }
 
-                const absl::StatusOr<CompactedMidTermEpisode> compacted =
-                    compactor->Compact(MidTermCompactionRequest{
-                        .session_id = session_id,
-                        .flush_candidate = *candidate,
-                    });
-                if (!compacted.ok()) {
-                    return compacted.status();
-                }
-                if (compacted->tier2_summary.empty() || compacted->tier3_ref.empty()) {
-                    LOG(WARNING) << "MemoryOrchestrator rejected invalid mid-term compactor "
-                                    "output"
-                                 << " session_id=" << SanitizeForLog(session_id)
-                                 << " detail='mid-term compactor must produce non-empty "
-                                    "tier2 and tier3 content'";
-                    return absl::InvalidArgumentError(
-                        "mid-term compactor must produce non-empty tier2 and tier3 "
-                        "content");
+                absl::StatusOr<CompletedFlushBuildInput> build_input =
+                    MemoryOrchestrator::CompactFlushCandidate(compactor, session_id, *candidate,
+                                                              chosen.split_at_message_index,
+                                                              "mid-term");
+                if (!build_input.ok()) {
+                    return build_input.status();
                 }
                 return AsyncMidTermFlushResult{
-                    .completed_flush =
-                        CompletedFlushBuildInput{
-                            .compacted = std::move(*compacted),
-                            .episode_created_at =
-                                candidate->ongoing_episode.messages.back().create_time,
-                            .stub_timestamp =
-                                candidate->ongoing_episode.messages.back().create_time,
-                            .split_at_message_index = chosen.split_at_message_index,
-                        },
+                    .completed_flush = std::move(*build_input),
                     .captured_message_count = candidate->ongoing_episode.messages.size(),
                     .resolved_conversation_item_index = chosen.conversation_item_index,
                 };
@@ -540,51 +576,76 @@ MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_
 
     const std::string session_id = session_id_;
     MidTermCompactorPtr compactor = mid_term_compactor_;
-    pending_mid_term_flushes_.push_back(
-        PendingMidTermFlush{
-            .conversation_item_index = flush_candidate.conversation_item_index,
-            .future = std::async(
-                std::launch::async,
-                [compactor = std::move(compactor), session_id, split_at_message_index,
-                 flush_candidate = OngoingEpisodeFlushCandidate(
-                     flush_candidate)]() -> absl::StatusOr<AsyncMidTermFlushResult> {
-                    const absl::StatusOr<CompactedMidTermEpisode> compacted =
-                        compactor->Compact(MidTermCompactionRequest{
-                            .session_id = session_id,
-                            .flush_candidate = flush_candidate,
-                        });
-                    if (!compacted.ok()) {
-                        return compacted.status();
-                    }
-                    if (compacted->tier2_summary.empty() || compacted->tier3_ref.empty()) {
-                        LOG(WARNING)
-                            << "MemoryOrchestrator rejected invalid mid-term compactor output"
-                            << " session_id=" << SanitizeForLog(session_id)
-                            << " detail='mid-term compactor must produce non-empty tier2 and tier3 "
-                               "content'";
-                        return absl::InvalidArgumentError(
-                            "mid-term compactor must produce non-empty tier2 and tier3 content");
-                    }
-                    return AsyncMidTermFlushResult{
-                        .completed_flush =
-                            CompletedFlushBuildInput{
-                                .compacted = std::move(*compacted),
-                                .episode_created_at =
-                                    flush_candidate.ongoing_episode.messages.back().create_time,
-                                .stub_timestamp =
-                                    flush_candidate.ongoing_episode.messages.back().create_time,
-                                .split_at_message_index = split_at_message_index,
-                            },
-                        .captured_message_count = flush_candidate.ongoing_episode.messages.size(),
-                    };
-                }),
-            .freeze_tail_before_append = !split_at_message_index.has_value(),
-        });
+    pending_mid_term_flushes_.push_back(PendingMidTermFlush{
+        .conversation_item_index = flush_candidate.conversation_item_index,
+        .future = std::async(std::launch::async,
+                             [compactor = std::move(compactor), session_id, split_at_message_index,
+                              flush_candidate = OngoingEpisodeFlushCandidate(
+                                  flush_candidate)]() -> absl::StatusOr<AsyncMidTermFlushResult> {
+                                 absl::StatusOr<CompletedFlushBuildInput> build_input =
+                                     MemoryOrchestrator::CompactFlushCandidate(
+                                         compactor, session_id, flush_candidate,
+                                         split_at_message_index, "mid-term");
+                                 if (!build_input.ok()) {
+                                     return build_input.status();
+                                 }
+                                 return AsyncMidTermFlushResult{
+                                     .completed_flush = std::move(*build_input),
+                                     .captured_message_count =
+                                         flush_candidate.ongoing_episode.messages.size(),
+                                 };
+                             }),
+        .freeze_tail_before_append = !split_at_message_index.has_value(),
+    });
     VLOG(1) << "MemoryOrchestrator queued async mid-term flush session_id="
             << SanitizeForLog(session_id_)
             << " conversation_item_index=" << flush_candidate.conversation_item_index
             << " was_split=" << (split_at_message_index.has_value() ? "true" : "false");
     return absl::OkStatus();
+}
+
+absl::StatusOr<bool> MemoryOrchestrator::FlushLiveTailForSleepCycle() {
+    const Conversation& conversation = memory_.conversation();
+    if (conversation.items.empty()) {
+        return false;
+    }
+
+    const std::size_t tail_index = conversation.items.size() - 1U;
+    const ConversationItem& tail_item = conversation.items.back();
+    if (tail_item.type != ConversationItemType::OngoingEpisode) {
+        return false;
+    }
+    if (!tail_item.ongoing_episode.has_value() || tail_item.ongoing_episode->messages.empty()) {
+        return false;
+    }
+    if (mid_term_compactor_ == nullptr) {
+        return absl::FailedPreconditionError(
+            "sleep cycle requires a mid-term compactor to flush the live conversation tail");
+    }
+
+    absl::StatusOr<OngoingEpisodeFlushCandidate> candidate =
+        memory_.CaptureOngoingEpisodeForFlush(tail_index);
+    if (!candidate.ok()) {
+        return candidate.status();
+    }
+
+    absl::StatusOr<CompletedFlushBuildInput> build_input = CompactFlushCandidate(
+        mid_term_compactor_, session_id_, *candidate, std::nullopt, "synchronous sleep-cycle");
+    if (!build_input.ok()) {
+        return build_input.status();
+    }
+    const CompletedOngoingEpisodeFlush completed_flush =
+        BuildCompletedEpisodeFlush(candidate->conversation_item_index, std::move(*build_input));
+
+    if (absl::Status status = ApplyCompletedEpisodeFlush(completed_flush); !status.ok()) {
+        return status;
+    }
+
+    VLOG(1) << "MemoryOrchestrator synchronously flushed live tail for sleep cycle session_id="
+            << SanitizeForLog(session_id_) << " conversation_item_index=" << tail_index
+            << " episode_id=" << SanitizeForLog(completed_flush.episode.episode_id)
+            << " message_count=" << candidate->ongoing_episode.messages.size();
+    return true;
 }
 
 absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions() {
@@ -618,25 +679,8 @@ absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions
         }
 
         CompletedFlushBuildInput build_input = std::move(*result->completed_flush);
-        CompletedOngoingEpisodeFlush completed_flush{
-            .conversation_item_index = adjusted_conversation_item_index.value_or(0U),
-            .episode =
-                Episode{
-                    .episode_id = NextEpisodeId(),
-                    .tier1_detail = std::move(build_input.compacted.tier1_detail),
-                    .tier2_summary = std::move(build_input.compacted.tier2_summary),
-                    .tier3_ref = std::move(build_input.compacted.tier3_ref),
-                    .tier3_keywords = std::move(build_input.compacted.tier3_keywords),
-                    .salience = build_input.compacted.salience,
-                    .embedding = std::move(build_input.compacted.embedding),
-                    .created_at = build_input.episode_created_at,
-                },
-            .stub_timestamp = build_input.stub_timestamp,
-            .split_at_message_index = build_input.split_at_message_index,
-        };
-        if (adjusted_conversation_item_index.has_value()) {
-            completed_flush.conversation_item_index = *adjusted_conversation_item_index;
-        }
+        CompletedOngoingEpisodeFlush completed_flush = BuildCompletedEpisodeFlush(
+            adjusted_conversation_item_index.value_or(0U), std::move(build_input));
 
         if (absl::Status status = ValidateMidTermEpisodeWrite(MidTermEpisodeWrite{
                 .session_id = session_id_,
@@ -754,9 +798,15 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
         return drained_pending_compactions.status();
     }
 
+    const absl::StatusOr<bool> flushed_live_tail = FlushLiveTailForSleepCycle();
+    if (!flushed_live_tail.ok()) {
+        return flushed_live_tail.status();
+    }
+
     const WorkingMemoryState& state_before_clear = memory_.snapshot();
     SleepCycleResult result{
         .drained_pending_mid_term_compactions = *drained_pending_compactions,
+        .synchronously_flushed_live_episodes = *flushed_live_tail ? 1U : 0U,
         .cleared_mid_term_episode_count = state_before_clear.mid_term_episodes.size(),
         .cleared_conversation_item_count = state_before_clear.conversation.items.size(),
     };
@@ -788,6 +838,8 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
     LOG(INFO) << "MemoryOrchestrator completed sleep cycle session_id="
               << SanitizeForLog(session_id_) << " drained_pending_mid_term_compactions="
               << result.drained_pending_mid_term_compactions
+              << " synchronously_flushed_live_episodes="
+              << result.synchronously_flushed_live_episodes
               << " cleared_mid_term_episode_count=" << result.cleared_mid_term_episode_count
               << " cleared_conversation_item_count=" << result.cleared_conversation_item_count;
     return result;

@@ -63,6 +63,7 @@ struct MemoryOrchestratorInit {
 
 struct SleepCycleResult {
     std::size_t drained_pending_mid_term_compactions = 0;
+    std::size_t synchronously_flushed_live_episodes = 0;
     std::size_t cleared_mid_term_episode_count = 0;
     std::size_t cleared_conversation_item_count = 0;
 };
@@ -206,6 +207,10 @@ class MemoryOrchestrator {
     QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate,
                       std::optional<std::size_t> split_at_message_index = std::nullopt);
 
+    // Compacts and flushes the live tail synchronously for the sleep-cycle boundary when any
+    // unflushed ongoing episode remains after pending async work has drained.
+    [[nodiscard]] absl::StatusOr<bool> FlushLiveTailForSleepCycle();
+
     // Produces stable per-session episode ids in the order completed flushes are applied.
     [[nodiscard]] std::string NextEpisodeId();
 
@@ -233,6 +238,16 @@ class MemoryOrchestrator {
         std::future<absl::StatusOr<AsyncMidTermFlushResult>> future;
         bool freeze_tail_before_append = false;
     };
+
+    [[nodiscard]] static absl::StatusOr<CompletedFlushBuildInput>
+    CompactFlushCandidate(const MidTermCompactorPtr& compactor, std::string_view session_id,
+                          const OngoingEpisodeFlushCandidate& flush_candidate,
+                          std::optional<std::size_t> split_at_message_index,
+                          std::string_view failure_context);
+
+    [[nodiscard]] CompletedOngoingEpisodeFlush
+    BuildCompletedEpisodeFlush(std::size_t conversation_item_index,
+                               CompletedFlushBuildInput build_input);
 
     std::string session_id_;
     WorkingMemory memory_;
