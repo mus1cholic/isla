@@ -208,6 +208,140 @@ TEST(MemoryStoreTest, SplitEpisodeStubWriteAcceptsValidInput) {
     EXPECT_TRUE(status.ok()) << status;
 }
 
+// --- ValidateEntityWrite ---
+
+TEST(MemoryStoreTest, EntityWriteRejectsOutOfRangeActiveness) {
+    const absl::Status status = ValidateEntityWrite(EntityWrite{
+        .entity =
+            Entity{
+                .entity_id = "ent_001",
+                .user_id = "user_001",
+                .label = "Alice",
+                .category = "person",
+                .activeness = 0,
+                .name_embedding = {},
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+                .updated_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, EntityWriteAcceptsValidInput) {
+    const absl::Status status = ValidateEntityWrite(EntityWrite{
+        .entity =
+            Entity{
+                .entity_id = "ent_001",
+                .user_id = "user_001",
+                .label = "Alice",
+                .category = "person",
+                .activeness = 5,
+                .name_embedding = {},
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+                .updated_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    EXPECT_TRUE(status.ok()) << status;
+}
+
+// --- ValidateRelationshipWrite ---
+
+TEST(MemoryStoreTest, RelationshipWriteRejectsEmptyPredicate) {
+    const absl::Status status = ValidateRelationshipWrite(RelationshipWrite{
+        .relationship =
+            Relationship{
+                .relationship_id = "rel_001",
+                .user_id = "user_001",
+                .from_entity_id = "ent_001",
+                .predicate = "",
+                .to_entity_id = "ent_002",
+                .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+                .embedding = {},
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, RelationshipWriteAcceptsValidInput) {
+    const absl::Status status = ValidateRelationshipWrite(RelationshipWrite{
+        .relationship =
+            Relationship{
+                .relationship_id = "rel_001",
+                .user_id = "user_001",
+                .from_entity_id = "ent_001",
+                .predicate = "knows",
+                .to_entity_id = "ent_002",
+                .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+                .embedding = {},
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    EXPECT_TRUE(status.ok()) << status;
+}
+
+// --- ValidateLongTermEpisodeWrite ---
+
+TEST(MemoryStoreTest, LongTermEpisodeWriteRejectsOutOfRangeComplexity) {
+    const absl::Status status = ValidateLongTermEpisodeWrite(LongTermEpisodeWrite{
+        .episode =
+            LongTermEpisode{
+                .lte_id = "lte_001",
+                .user_id = "user_001",
+                .summary_compressed = "compressed summary",
+                .complexity = 11,
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, LongTermEpisodeWriteAcceptsValidInput) {
+    const absl::Status status = ValidateLongTermEpisodeWrite(LongTermEpisodeWrite{
+        .episode =
+            LongTermEpisode{
+                .lte_id = "lte_001",
+                .user_id = "user_001",
+                .summary_compressed = "compressed summary",
+                .complexity = 5,
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    EXPECT_TRUE(status.ok()) << status;
+}
+
+// --- ValidateLongTermEpisodeEntityLink ---
+
+TEST(MemoryStoreTest, LongTermEpisodeEntityLinkRejectsDuplicateEntityIds) {
+    const absl::Status status = ValidateLongTermEpisodeEntityLink(LongTermEpisodeEntityLink{
+        .lte_id = "lte_001",
+        .entity_ids = { "ent_001", "ent_002", "ent_001" },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MemoryStoreTest, LongTermEpisodeEntityLinkAcceptsValidInput) {
+    const absl::Status status = ValidateLongTermEpisodeEntityLink(LongTermEpisodeEntityLink{
+        .lte_id = "lte_001",
+        .entity_ids = { "ent_001", "ent_002" },
+    });
+
+    EXPECT_TRUE(status.ok()) << status;
+}
+
+// --- ValidateMemoryStoreSnapshot ---
+
 TEST(MemoryStoreTest, SnapshotValidationRequiresContiguousConversationItemIndexes) {
     const absl::Status status = ValidateMemoryStoreSnapshot(MemoryStoreSnapshot{
         .session =

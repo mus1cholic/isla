@@ -104,7 +104,7 @@ struct Entity {
     std::string user_id;
     std::string label;
     std::string category;
-    int activeness = 0;
+    int activeness = 1;
     std::optional<std::string> active_model_text;
     std::optional<std::string> familiar_label_text;
     Embedding name_embedding;
@@ -138,7 +138,7 @@ struct LongTermEpisode {
     Embedding embedding;
     std::vector<std::string> related_entities;
     LongTermEpisodeOutcome outcome = LongTermEpisodeOutcome::Informational;
-    int complexity = 0;
+    int complexity = 1;
     Timestamp created_at;
     std::vector<std::string> original_episode_ids;
     std::optional<std::string> caused_by;

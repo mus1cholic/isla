@@ -352,8 +352,7 @@ class RecordingMemoryStore final : public MemoryStore {
     ListEntitiesByUser(std::string_view /*user_id*/) const override {
         return std::vector<Entity>{};
     }
-    absl::StatusOr<std::optional<Entity>>
-    GetEntity(std::string_view /*entity_id*/) const override {
+    absl::StatusOr<std::optional<Entity>> GetEntity(std::string_view /*entity_id*/) const override {
         return std::nullopt;
     }
     absl::StatusOr<std::vector<Relationship>>

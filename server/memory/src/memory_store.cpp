@@ -1,5 +1,7 @@
 #include "isla/server/memory/memory_store.hpp"
 
+#include <unordered_set>
+
 #include "absl/status/status.h"
 
 namespace isla::server::memory {
@@ -287,10 +289,15 @@ absl::Status ValidateLongTermEpisodeEntityLink(const LongTermEpisodeEntityLink& 
         return absl::InvalidArgumentError(
             "ValidateLongTermEpisodeEntityLink requires at least one entity_id");
     }
+    std::unordered_set<std::string> seen;
     for (const std::string& entity_id : link.entity_ids) {
         if (entity_id.empty()) {
             return absl::InvalidArgumentError(
                 "ValidateLongTermEpisodeEntityLink requires all entity_ids to be non-empty");
+        }
+        if (!seen.insert(entity_id).second) {
+            return absl::InvalidArgumentError(
+                "ValidateLongTermEpisodeEntityLink requires all entity_ids to be unique");
         }
     }
     return absl::OkStatus();
