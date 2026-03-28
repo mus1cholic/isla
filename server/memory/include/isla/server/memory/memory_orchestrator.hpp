@@ -239,6 +239,16 @@ class MemoryOrchestrator {
         bool freeze_tail_before_append = false;
     };
 
+    [[nodiscard]] static absl::StatusOr<CompletedFlushBuildInput>
+    CompactFlushCandidate(const MidTermCompactorPtr& compactor, std::string_view session_id,
+                          const OngoingEpisodeFlushCandidate& flush_candidate,
+                          std::optional<std::size_t> split_at_message_index,
+                          std::string_view failure_context);
+
+    [[nodiscard]] CompletedOngoingEpisodeFlush
+    BuildCompletedEpisodeFlush(std::size_t conversation_item_index,
+                               CompletedFlushBuildInput build_input);
+
     std::string session_id_;
     WorkingMemory memory_;
     MemoryStorePtr store_;
