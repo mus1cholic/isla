@@ -464,6 +464,7 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleDrainsPendingCompactionsAndClearsTra
 
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_EQ(result->drained_pending_mid_term_compactions, 1U);
+    EXPECT_EQ(result->synchronously_flushed_live_episodes, 0U);
     EXPECT_EQ(result->cleared_mid_term_episode_count, 1U);
     EXPECT_EQ(result->cleared_conversation_item_count, 1U);
     EXPECT_FALSE(handler->HasPendingMidTermCompactions());
@@ -505,6 +506,65 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleClearsPersistedWorkingSetAndSnapshot
     EXPECT_TRUE(latest_snapshot.working_memory.mid_term_episodes.empty());
     EXPECT_FALSE(latest_snapshot.working_memory.retrieved_memory.has_value());
     EXPECT_TRUE(latest_snapshot.working_memory.conversation.items.empty());
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleSynchronouslyFlushesRemainingLiveTail) {
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->drained_pending_mid_term_compactions, 0U);
+    EXPECT_EQ(result->synchronously_flushed_live_episodes, 1U);
+    EXPECT_EQ(result->cleared_mid_term_episode_count, 1U);
+    EXPECT_EQ(result->cleared_conversation_item_count, 1U);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleSynchronouslyFlushesRemainingLiveTailIntoStore) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->synchronously_flushed_live_episodes, 1U);
+    ASSERT_EQ(store->episode_writes.size(), 1U);
+    EXPECT_EQ(store->episode_writes.front().session_id, "srv_test");
+    ASSERT_EQ(store->stub_writes.size(), 1U);
+    EXPECT_EQ(store->stub_writes.front().session_id, "srv_test");
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleRejectsLiveTailWhenNoCompactorConfigured) {
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandler();
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 
 TEST_F(MemoryOrchestratorTest,
