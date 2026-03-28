@@ -1,12 +1,12 @@
-# Supabase Schema For Working + Mid-Term Memory
+# Supabase Schema For Memory Persistence
 
 This document maps the current memory runtime model onto a Supabase/Postgres schema intended for:
 
 - Full conversation history storage across a session
 - Mid-term episode storage for always-present Tier 2 recall
 - Future hydration of in-memory working state from SQL
-
-It intentionally stops short of the long-term Knowledge Graph and long-term episodic vector store. Those are separate concerns in the memory plan.
+- Long-term Knowledge Graph storage (entities, relationships) with pgvector
+- Long-term episodic memory storage with vector similarity search
 
 ## Scope
 
