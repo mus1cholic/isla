@@ -10,15 +10,17 @@ This document maps the current memory runtime model onto a Supabase/Postgres sch
 
 ## Scope
 
-The current C++ runtime distinguishes two related but different persisted surfaces:
+The schema covers three persisted surfaces:
 
 - `Conversation`: raw ordered chat history, stored as `ConversationItem`s containing either messages or an episode stub
 - `Episode`: compacted mid-term memory rows created when an ongoing episode is flushed
+- `Long-term memory`: entities and relationships (Knowledge Graph) plus consolidated episodic memories (vector store), written during the sleep cycle
 
-That means the SQL layer should preserve both:
+The SQL layer preserves:
 
 1. The exact chat log
 2. The compacted mid-term representation produced from the chat log
+3. The long-term Knowledge Graph (entities + relationships) and consolidated episodic memories
 
 ## Recommended tables
 
@@ -102,6 +104,78 @@ Notes:
 - `embedding` can start as `jsonb` if we want the simplest path first.
 - If we later want similarity search inside Postgres, migrate `embedding` to `vector(n)` once the model dimension is fixed.
 
+### `entities`
+
+First-class nodes in the Knowledge Graph. Represents any concept: people, tools, languages,
+projects, preferences, etc. Written during the sleep cycle when mid-term episodes are consolidated.
+
+Suggested columns:
+
+- `entity_id text primary key`
+- `user_id text not null`
+- `label text not null`
+- `category text not null` — lightweight disambiguation tag (e.g., "person", "tool")
+- `activeness integer not null default 1 check (activeness between 1 and 10)` — determines persistent cache tier (7-10 Active, 3-6 Familiar, 1-2 Stored)
+- `active_model_text text null` — rich 2-3 sentence summary, populated for Active tier entities
+- `familiar_label_text text null` — name + relationship one-liner, populated for Familiar tier entities
+- `name_embedding extensions.vector(1536)` — for entity lexicon matching
+- `created_at timestamptz not null`
+- `updated_at timestamptz not null`
+- `unique (entity_id, user_id)` — enables composite FK enforcement on relationships
+
+### `relationships`
+
+Enriched edges connecting two entities in the Knowledge Graph. Written during the sleep cycle.
+
+Suggested columns:
+
+- `relationship_id text primary key`
+- `user_id text not null`
+- `from_entity_id text not null`
+- `predicate text not null`
+- `to_entity_id text not null`
+- `foreign key (from_entity_id, user_id) references entities(entity_id, user_id)` — composite FK enforces same-user constraint
+- `foreign key (to_entity_id, user_id) references entities(entity_id, user_id)`
+- `weight double precision not null default 0.0` — accumulated evidence score
+- `observation_count integer not null default 0`
+- `last_observed_at timestamptz not null`
+- `source_episode_ids text[] not null default '{}'` — provenance (historical, not FK'd since mid-term episodes are wiped)
+- `embedding extensions.vector(1536)` — pre-computed from rendered text for spreading activation
+- `is_archived boolean not null default false` — archived edges kept for history, excluded from active retrieval
+- `archived_at timestamptz null`
+- `superseded_by text null references relationships(relationship_id)`
+- `created_at timestamptz not null`
+
+### `long_term_episodes`
+
+Consolidated episodic memories. Created during the sleep cycle when mid-term episodes are merged
+into long-term storage.
+
+Suggested columns:
+
+- `lte_id text primary key`
+- `user_id text not null`
+- `summary_full text null` — full narrative; dropped at 30+ days during decay lifecycle
+- `summary_compressed text not null` — single sentence with outcome
+- `keywords text[] not null default '{}'`
+- `embedding extensions.vector(1536)`
+- `outcome text not null default 'informational' check (outcome in ('resolved', 'abandoned', 'ongoing', 'informational'))`
+- `complexity integer not null default 1 check (complexity between 1 and 10)`
+- `original_episode_ids text[] not null default '{}'` — provenance (historical, not FK'd)
+- `caused_by text null references long_term_episodes(lte_id)` — causal chain link
+- `led_to text null references long_term_episodes(lte_id)`
+- `created_at timestamptz not null`
+
+### `long_term_episode_entities`
+
+Junction table for bidirectional cross-links between long-term episodes and entities.
+
+Suggested columns:
+
+- `lte_id text not null references long_term_episodes(lte_id) on delete cascade`
+- `entity_id text not null references entities(entity_id) on delete cascade`
+- `primary key (lte_id, entity_id)`
+
 ## Write flow mapping
 
 The intended runtime write sequence is:
@@ -126,12 +200,21 @@ the current schema, deleting `conversation_items` also deletes the matching
 persisted transcript as well. The user-scoped `user_working_memory` row is then upserted with the
 now-empty live working set.
 
+For the sleep cycle, long-term consolidation happens before the working-set clear:
+
+1. The sleep cycle captures the current mid-term episodes
+2. Consolidated episodes are upserted into `long_term_episodes`
+3. Extracted entities and relationships are upserted into `entities` and `relationships`
+4. Entity-episode cross-links are written to `long_term_episode_entities`
+5. The store calls `clear_session_working_set(...)` to wipe mid-term episodes and conversation
+
 This mirrors the current C++ architecture:
 
 - raw messages stay preserved across normal turn ingestion and mid-term flushes, but the current
   sleep-cycle reset deletes them with the conversation timeline
 - the conversation timeline still reflects stub replacement
 - mid-term episodes remain queryable as an ordered list by `created_at`
+- long-term memory persists across sleep cycles and sessions
 
 ## Hydration shape
 
@@ -142,8 +225,11 @@ To rebuild working memory for a session:
 3. Load `conversation_messages` ordered by `item_index,message_index`, but filter that query to
    rows whose parent `conversation_items` row is still `ongoing_episode`
 4. Load `mid_term_episodes` ordered by `created_at`
+5. Load `entities` for the user filtered by activeness tier to populate the persistent memory cache
+   (activeness 7-10 for Active Models, 3-6 for Familiar Labels)
 
-That data maps directly to the new `MemoryStoreSnapshot` shape in C++.
+Steps 1-4 map directly to the `MemoryStoreSnapshot` shape in C++. Step 5 populates the
+`PersistentMemoryCache` from long-term storage.
 
 ## Supabase-specific notes
 
@@ -158,9 +244,9 @@ That data maps directly to the new `MemoryStoreSnapshot` shape in C++.
   want transcript retention later, we will need to decouple `conversation_messages` from
   `conversation_items` deletion or introduce a separate archival transcript table.
 
-## Initial implementation recommendation
+## Implementation status
 
-For the current serving path, implement:
+Working memory and mid-term memory store methods are implemented:
 
 - session upsert
 - conversation message append
@@ -170,5 +256,5 @@ For the current serving path, implement:
 - sleep-cycle reset RPC persistence
 - session hydration
 
-That is enough to persist complete chat history and mid-term memory without prematurely committing
-to the long-term graph/vector architecture.
+Long-term memory store methods (entity CRUD, relationship CRUD, long-term episode CRUD, episode-entity
+linking) are defined in the schema but not yet implemented in the Supabase store layer.

@@ -273,7 +273,10 @@ create index if not exists user_working_memory_session_id_idx
 -- Long-Term Memory: Knowledge Graph + Episodic Vector Store
 -- =============================================================================
 
-create extension if not exists vector;
+-- Embedding model: gemini-embedding-2-preview with output_dimensionality=1536.
+-- Native output is 3072 dims but pgvector HNSW indexes cap at 2000 for the vector type,
+-- so we request half-dimensionality from the API.
+create extension if not exists vector with schema extensions;
 
 -- Entities: first-class nodes in the Knowledge Graph.
 create table if not exists public.entities (
@@ -285,23 +288,26 @@ create table if not exists public.entities (
                         check (activeness between 1 and 10),
     active_model_text   text,
     familiar_label_text text,
-    name_embedding      vector(3072),
+    name_embedding      extensions.vector(1536),
     created_at          timestamptz not null,
-    updated_at          timestamptz not null
+    updated_at          timestamptz not null,
+    unique (entity_id, user_id)
 );
 
 -- Relationships: enriched edges connecting two entities.
 create table if not exists public.relationships (
     relationship_id     text primary key,
     user_id             text not null,
-    from_entity_id      text not null references public.entities(entity_id),
+    from_entity_id      text not null,
     predicate           text not null,
-    to_entity_id        text not null references public.entities(entity_id),
+    to_entity_id        text not null,
+    foreign key (from_entity_id, user_id) references public.entities(entity_id, user_id),
+    foreign key (to_entity_id, user_id) references public.entities(entity_id, user_id),
     weight              double precision not null default 0.0,
     observation_count   integer not null default 0,
     last_observed_at    timestamptz not null,
     source_episode_ids  text[] not null default '{}',
-    embedding           vector(3072),
+    embedding           extensions.vector(1536),
     is_archived         boolean not null default false,
     archived_at         timestamptz,
     superseded_by       text references public.relationships(relationship_id),
@@ -315,7 +321,7 @@ create table if not exists public.long_term_episodes (
     summary_full            text,
     summary_compressed      text not null,
     keywords                text[] not null default '{}',
-    embedding               vector(3072),
+    embedding               extensions.vector(1536),
     outcome                 text not null default 'informational'
                             check (outcome in ('resolved', 'abandoned', 'ongoing', 'informational')),
     complexity              integer not null default 1
@@ -339,6 +345,9 @@ create index if not exists entities_user_id_idx
 create index if not exists entities_user_activeness_idx
     on public.entities (user_id, activeness);
 
+create index if not exists relationships_user_id_idx
+    on public.relationships (user_id);
+
 -- Relationship indexes (partial: exclude archived edges from active lookups).
 create index if not exists relationships_from_entity_active_idx
     on public.relationships (from_entity_id) where not is_archived;
@@ -347,11 +356,11 @@ create index if not exists relationships_to_entity_active_idx
 
 -- Vector similarity indexes (HNSW for better recall).
 create index if not exists entities_name_embedding_idx
-    on public.entities using hnsw (name_embedding vector_cosine_ops);
+    on public.entities using hnsw (name_embedding extensions.vector_cosine_ops);
 create index if not exists relationships_embedding_idx
-    on public.relationships using hnsw (embedding vector_cosine_ops);
+    on public.relationships using hnsw (embedding extensions.vector_cosine_ops);
 create index if not exists long_term_episodes_embedding_idx
-    on public.long_term_episodes using hnsw (embedding vector_cosine_ops);
+    on public.long_term_episodes using hnsw (embedding extensions.vector_cosine_ops);
 
 -- Episode-entity cross-link reverse index.
 create index if not exists long_term_episode_entities_entity_idx
