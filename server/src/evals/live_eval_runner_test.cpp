@@ -32,12 +32,19 @@ using isla::server::ai_gateway::SequentialSessionIdGenerator;
 using isla::server::ai_gateway::test::ExtractLatestPromptLine;
 using isla::server::ai_gateway::test::MakeFakeOpenAiResponsesClient;
 using isla::server::memory::ConversationMessageWrite;
+using isla::server::memory::Entity;
+using isla::server::memory::EntityWrite;
 using isla::server::memory::Episode;
+using isla::server::memory::LongTermEpisode;
+using isla::server::memory::LongTermEpisodeEntityLink;
+using isla::server::memory::LongTermEpisodeWrite;
 using isla::server::memory::MemorySessionRecord;
 using isla::server::memory::MemoryStore;
 using isla::server::memory::MemoryStoreSnapshot;
 using isla::server::memory::MessageRole;
 using isla::server::memory::ParseTimestamp;
+using isla::server::memory::Relationship;
+using isla::server::memory::RelationshipWrite;
 using isla::server::memory::UserWorkingMemoryRecord;
 
 absl::Status EmitResponseText(std::string_view text, const OpenAiResponsesEventCallback& on_event,

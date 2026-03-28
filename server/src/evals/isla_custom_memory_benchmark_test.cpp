@@ -32,12 +32,19 @@ using isla::server::ai_gateway::OpenAiResponsesEventCallback;
 using isla::server::ai_gateway::OpenAiResponsesRequest;
 using isla::server::ai_gateway::OpenAiResponsesTextDeltaEvent;
 using isla::server::memory::ConversationMessageWrite;
+using isla::server::memory::Entity;
+using isla::server::memory::EntityWrite;
 using isla::server::memory::Episode;
 using isla::server::memory::LoadPrompt;
+using isla::server::memory::LongTermEpisode;
+using isla::server::memory::LongTermEpisodeEntityLink;
+using isla::server::memory::LongTermEpisodeWrite;
 using isla::server::memory::MemorySessionRecord;
 using isla::server::memory::MemoryStore;
 using isla::server::memory::MemoryStoreSnapshot;
 using isla::server::memory::PromptAsset;
+using isla::server::memory::Relationship;
+using isla::server::memory::RelationshipWrite;
 
 std::string BuildBenchmarkReply(std::string_view user_text) {
     if (user_text.find("tea") != std::string_view::npos) {
