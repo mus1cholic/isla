@@ -107,7 +107,7 @@ struct Entity {
     int activeness = 1;
     std::optional<std::string> active_model_text;
     std::optional<std::string> familiar_label_text;
-    Embedding name_embedding;
+    std::optional<Embedding> name_embedding;
     Timestamp created_at;
     Timestamp updated_at;
 };

@@ -344,31 +344,31 @@ class RecordingMemoryStore final : public MemoryStore {
     }
 
     absl::Status UpsertEntity(const EntityWrite& /*write*/) override {
-        return absl::OkStatus();
+        return absl::UnimplementedError("long-term memory not implemented");
     }
     absl::Status UpsertRelationship(const RelationshipWrite& /*write*/) override {
-        return absl::OkStatus();
+        return absl::UnimplementedError("long-term memory not implemented");
     }
     absl::Status UpsertLongTermEpisode(const LongTermEpisodeWrite& /*write*/) override {
-        return absl::OkStatus();
+        return absl::UnimplementedError("long-term memory not implemented");
     }
     absl::Status LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& /*link*/) override {
-        return absl::OkStatus();
+        return absl::UnimplementedError("long-term memory not implemented");
     }
     absl::StatusOr<std::vector<Entity>>
     ListEntitiesByUser(std::string_view /*user_id*/) const override {
-        return std::vector<Entity>{};
+        return absl::UnimplementedError("long-term memory not implemented");
     }
     absl::StatusOr<std::optional<Entity>> GetEntity(std::string_view /*entity_id*/) const override {
-        return std::nullopt;
+        return absl::UnimplementedError("long-term memory not implemented");
     }
     absl::StatusOr<std::vector<Relationship>>
     ListRelationshipsForEntity(std::string_view /*entity_id*/) const override {
-        return std::vector<Relationship>{};
+        return absl::UnimplementedError("long-term memory not implemented");
     }
     absl::StatusOr<std::vector<LongTermEpisode>>
     ListLongTermEpisodesForEntity(std::string_view /*entity_id*/) const override {
-        return std::vector<LongTermEpisode>{};
+        return absl::UnimplementedError("long-term memory not implemented");
     }
 
     std::vector<MemorySessionRecord> session_records;
