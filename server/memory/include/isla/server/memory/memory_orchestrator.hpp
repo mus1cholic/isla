@@ -63,6 +63,7 @@ struct MemoryOrchestratorInit {
 
 struct SleepCycleResult {
     std::size_t drained_pending_mid_term_compactions = 0;
+    std::size_t synchronously_flushed_live_episodes = 0;
     std::size_t cleared_mid_term_episode_count = 0;
     std::size_t cleared_conversation_item_count = 0;
 };
@@ -205,6 +206,10 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::Status
     QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate,
                       std::optional<std::size_t> split_at_message_index = std::nullopt);
+
+    // Compacts and flushes the live tail synchronously for the sleep-cycle boundary when any
+    // unflushed ongoing episode remains after pending async work has drained.
+    [[nodiscard]] absl::StatusOr<bool> FlushLiveTailForSleepCycle();
 
     // Produces stable per-session episode ids in the order completed flushes are applied.
     [[nodiscard]] std::string NextEpisodeId();

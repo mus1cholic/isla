@@ -587,6 +587,78 @@ MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_
     return absl::OkStatus();
 }
 
+absl::StatusOr<bool> MemoryOrchestrator::FlushLiveTailForSleepCycle() {
+    const Conversation& conversation = memory_.conversation();
+    if (conversation.items.empty()) {
+        return false;
+    }
+
+    const std::size_t tail_index = conversation.items.size() - 1U;
+    const ConversationItem& tail_item = conversation.items.back();
+    if (tail_item.type != ConversationItemType::OngoingEpisode) {
+        return false;
+    }
+    if (!tail_item.ongoing_episode.has_value() || tail_item.ongoing_episode->messages.empty()) {
+        return false;
+    }
+    if (mid_term_compactor_ == nullptr) {
+        return absl::FailedPreconditionError(
+            "sleep cycle requires a mid-term compactor to flush the live conversation tail");
+    }
+
+    absl::StatusOr<OngoingEpisodeFlushCandidate> candidate =
+        memory_.CaptureOngoingEpisodeForFlush(tail_index);
+    if (!candidate.ok()) {
+        return candidate.status();
+    }
+
+    const absl::StatusOr<CompactedMidTermEpisode> compacted =
+        mid_term_compactor_->Compact(MidTermCompactionRequest{
+            .session_id = session_id_,
+            .flush_candidate = *candidate,
+        });
+    if (!compacted.ok()) {
+        return compacted.status();
+    }
+    if (compacted->tier2_summary.empty() || compacted->tier3_ref.empty()) {
+        LOG(WARNING) << "MemoryOrchestrator rejected invalid synchronous sleep-cycle compactor "
+                        "output"
+                     << " session_id=" << SanitizeForLog(session_id_)
+                     << " detail='mid-term compactor must produce non-empty tier2 and tier3 "
+                        "content'";
+        return absl::InvalidArgumentError(
+            "mid-term compactor must produce non-empty tier2 and tier3 content");
+    }
+
+    const Timestamp episode_time = candidate->ongoing_episode.messages.back().create_time;
+    const CompletedOngoingEpisodeFlush completed_flush{
+        .conversation_item_index = candidate->conversation_item_index,
+        .episode =
+            Episode{
+                .episode_id = NextEpisodeId(),
+                .tier1_detail = compacted->tier1_detail,
+                .tier2_summary = compacted->tier2_summary,
+                .tier3_ref = compacted->tier3_ref,
+                .tier3_keywords = compacted->tier3_keywords,
+                .salience = compacted->salience,
+                .embedding = compacted->embedding,
+                .created_at = episode_time,
+            },
+        .stub_timestamp = episode_time,
+        .split_at_message_index = std::nullopt,
+    };
+
+    if (absl::Status status = ApplyCompletedEpisodeFlush(completed_flush); !status.ok()) {
+        return status;
+    }
+
+    VLOG(1) << "MemoryOrchestrator synchronously flushed live tail for sleep cycle session_id="
+            << SanitizeForLog(session_id_) << " conversation_item_index=" << tail_index
+            << " episode_id=" << SanitizeForLog(completed_flush.episode.episode_id)
+            << " message_count=" << candidate->ongoing_episode.messages.size();
+    return true;
+}
+
 absl::StatusOr<std::size_t> MemoryOrchestrator::DrainCompletedMidTermCompactions() {
     std::size_t drained_count = 0;
     for (auto it = pending_mid_term_flushes_.begin(); it != pending_mid_term_flushes_.end();) {
@@ -754,9 +826,15 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
         return drained_pending_compactions.status();
     }
 
+    const absl::StatusOr<bool> flushed_live_tail = FlushLiveTailForSleepCycle();
+    if (!flushed_live_tail.ok()) {
+        return flushed_live_tail.status();
+    }
+
     const WorkingMemoryState& state_before_clear = memory_.snapshot();
     SleepCycleResult result{
         .drained_pending_mid_term_compactions = *drained_pending_compactions,
+        .synchronously_flushed_live_episodes = *flushed_live_tail ? 1U : 0U,
         .cleared_mid_term_episode_count = state_before_clear.mid_term_episodes.size(),
         .cleared_conversation_item_count = state_before_clear.conversation.items.size(),
     };
@@ -788,6 +866,8 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
     LOG(INFO) << "MemoryOrchestrator completed sleep cycle session_id="
               << SanitizeForLog(session_id_) << " drained_pending_mid_term_compactions="
               << result.drained_pending_mid_term_compactions
+              << " synchronously_flushed_live_episodes="
+              << result.synchronously_flushed_live_episodes
               << " cleared_mid_term_episode_count=" << result.cleared_mid_term_episode_count
               << " cleared_conversation_item_count=" << result.cleared_conversation_item_count;
     return result;
