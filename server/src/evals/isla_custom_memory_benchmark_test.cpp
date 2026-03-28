@@ -336,6 +336,35 @@ class RecordingMemoryStore final : public MemoryStore {
         return std::nullopt;
     }
 
+    absl::Status UpsertEntity(const EntityWrite& /*write*/) override {
+        return absl::OkStatus();
+    }
+    absl::Status UpsertRelationship(const RelationshipWrite& /*write*/) override {
+        return absl::OkStatus();
+    }
+    absl::Status UpsertLongTermEpisode(const LongTermEpisodeWrite& /*write*/) override {
+        return absl::OkStatus();
+    }
+    absl::Status LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& /*link*/) override {
+        return absl::OkStatus();
+    }
+    absl::StatusOr<std::vector<Entity>>
+    ListEntitiesByUser(std::string_view /*user_id*/) const override {
+        return std::vector<Entity>{};
+    }
+    absl::StatusOr<std::optional<Entity>>
+    GetEntity(std::string_view /*entity_id*/) const override {
+        return std::nullopt;
+    }
+    absl::StatusOr<std::vector<Relationship>>
+    ListRelationshipsForEntity(std::string_view /*entity_id*/) const override {
+        return std::vector<Relationship>{};
+    }
+    absl::StatusOr<std::vector<LongTermEpisode>>
+    ListLongTermEpisodesForEntity(std::string_view /*entity_id*/) const override {
+        return std::vector<LongTermEpisode>{};
+    }
+
     std::vector<MemorySessionRecord> session_records;
     std::vector<ConversationMessageWrite> message_writes;
     std::vector<isla::server::memory::EpisodeStubWrite> stub_writes;
