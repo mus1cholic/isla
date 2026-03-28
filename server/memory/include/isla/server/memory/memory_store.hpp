@@ -62,6 +62,23 @@ struct SplitEpisodeStubWrite {
     OngoingEpisode remaining_ongoing_episode;
 };
 
+struct EntityWrite {
+    Entity entity;
+};
+
+struct RelationshipWrite {
+    Relationship relationship;
+};
+
+struct LongTermEpisodeWrite {
+    LongTermEpisode episode;
+};
+
+struct LongTermEpisodeEntityLink {
+    std::string lte_id;
+    std::vector<std::string> entity_ids;
+};
+
 struct PersistedConversationItem {
     std::int64_t conversation_item_index = 0;
     ConversationItemType type = ConversationItemType::OngoingEpisode;
@@ -97,6 +114,18 @@ struct MemoryStoreSnapshot {
 
 // Validates a fully loaded snapshot before it is rehydrated into working-memory state.
 [[nodiscard]] absl::Status ValidateMemoryStoreSnapshot(const MemoryStoreSnapshot& snapshot);
+
+// Validates an entity write before it is persisted to the long-term Knowledge Graph.
+[[nodiscard]] absl::Status ValidateEntityWrite(const EntityWrite& write);
+
+// Validates a relationship write before it is persisted to the long-term Knowledge Graph.
+[[nodiscard]] absl::Status ValidateRelationshipWrite(const RelationshipWrite& write);
+
+// Validates a long-term episode write before it is persisted to episodic memory.
+[[nodiscard]] absl::Status ValidateLongTermEpisodeWrite(const LongTermEpisodeWrite& write);
+
+// Validates a long-term episode entity link before it is persisted to the junction table.
+[[nodiscard]] absl::Status ValidateLongTermEpisodeEntityLink(const LongTermEpisodeEntityLink& link);
 
 class MemoryStore {
   public:
@@ -154,6 +183,39 @@ class MemoryStore {
     // Loads the persisted session, conversation items, and mid-term episodes as one snapshot.
     [[nodiscard]] virtual absl::StatusOr<std::optional<MemoryStoreSnapshot>>
     LoadSnapshot(std::string_view session_id) const = 0;
+
+    // -------------------------------------------------------------------------
+    // Long-term memory (Knowledge Graph + Episodic Vector Store)
+    // -------------------------------------------------------------------------
+
+    // Creates or updates a persisted entity in the Knowledge Graph.
+    [[nodiscard]] virtual absl::Status UpsertEntity(const EntityWrite& write) = 0;
+
+    // Creates or updates a persisted relationship in the Knowledge Graph.
+    [[nodiscard]] virtual absl::Status UpsertRelationship(const RelationshipWrite& write) = 0;
+
+    // Creates or updates a persisted long-term episode in the episodic vector store.
+    [[nodiscard]] virtual absl::Status UpsertLongTermEpisode(const LongTermEpisodeWrite& write) = 0;
+
+    // Writes the entity cross-links for a long-term episode into the junction table.
+    [[nodiscard]] virtual absl::Status
+    LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& link) = 0;
+
+    // Lists all persisted entities for a user.
+    [[nodiscard]] virtual absl::StatusOr<std::vector<Entity>>
+    ListEntitiesByUser(std::string_view user_id) const = 0;
+
+    // Returns one persisted entity when present.
+    [[nodiscard]] virtual absl::StatusOr<std::optional<Entity>>
+    GetEntity(std::string_view entity_id) const = 0;
+
+    // Lists all non-archived relationships originating from an entity.
+    [[nodiscard]] virtual absl::StatusOr<std::vector<Relationship>>
+    ListRelationshipsForEntity(std::string_view entity_id) const = 0;
+
+    // Lists all long-term episodes cross-linked to an entity via the junction table.
+    [[nodiscard]] virtual absl::StatusOr<std::vector<LongTermEpisode>>
+    ListLongTermEpisodesForEntity(std::string_view entity_id) const = 0;
 };
 
 using MemoryStorePtr = std::shared_ptr<MemoryStore>;

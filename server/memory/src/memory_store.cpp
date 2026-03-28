@@ -1,7 +1,5 @@
 #include "isla/server/memory/memory_store.hpp"
 
-#include <string_view>
-
 #include "absl/status/status.h"
 
 namespace isla::server::memory {
@@ -210,6 +208,91 @@ absl::Status ValidateMemoryStoreSnapshot(const MemoryStoreSnapshot& snapshot) {
         previous_episode_time = episode.created_at;
     }
 
+    return absl::OkStatus();
+}
+
+absl::Status ValidateEntityWrite(const EntityWrite& write) {
+    const Entity& entity = write.entity;
+    if (entity.entity_id.empty()) {
+        return absl::InvalidArgumentError("ValidateEntityWrite requires entity_id to be non-empty");
+    }
+    if (entity.user_id.empty()) {
+        return absl::InvalidArgumentError("ValidateEntityWrite requires user_id to be non-empty");
+    }
+    if (entity.label.empty()) {
+        return absl::InvalidArgumentError("ValidateEntityWrite requires label to be non-empty");
+    }
+    if (entity.category.empty()) {
+        return absl::InvalidArgumentError("ValidateEntityWrite requires category to be non-empty");
+    }
+    if (entity.activeness < 1 || entity.activeness > 10) {
+        return absl::InvalidArgumentError(
+            "ValidateEntityWrite requires activeness to be in the range 1-10");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateRelationshipWrite(const RelationshipWrite& write) {
+    const Relationship& rel = write.relationship;
+    if (rel.relationship_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateRelationshipWrite requires relationship_id to be non-empty");
+    }
+    if (rel.user_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateRelationshipWrite requires user_id to be non-empty");
+    }
+    if (rel.from_entity_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateRelationshipWrite requires from_entity_id to be non-empty");
+    }
+    if (rel.predicate.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateRelationshipWrite requires predicate to be non-empty");
+    }
+    if (rel.to_entity_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateRelationshipWrite requires to_entity_id to be non-empty");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateLongTermEpisodeWrite(const LongTermEpisodeWrite& write) {
+    const LongTermEpisode& episode = write.episode;
+    if (episode.lte_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateLongTermEpisodeWrite requires lte_id to be non-empty");
+    }
+    if (episode.user_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateLongTermEpisodeWrite requires user_id to be non-empty");
+    }
+    if (episode.summary_compressed.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateLongTermEpisodeWrite requires summary_compressed to be non-empty");
+    }
+    if (episode.complexity < 1 || episode.complexity > 10) {
+        return absl::InvalidArgumentError(
+            "ValidateLongTermEpisodeWrite requires complexity to be in the range 1-10");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateLongTermEpisodeEntityLink(const LongTermEpisodeEntityLink& link) {
+    if (link.lte_id.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateLongTermEpisodeEntityLink requires lte_id to be non-empty");
+    }
+    if (link.entity_ids.empty()) {
+        return absl::InvalidArgumentError(
+            "ValidateLongTermEpisodeEntityLink requires at least one entity_id");
+    }
+    for (const std::string& entity_id : link.entity_ids) {
+        if (entity_id.empty()) {
+            return absl::InvalidArgumentError(
+                "ValidateLongTermEpisodeEntityLink requires all entity_ids to be non-empty");
+        }
+    }
     return absl::OkStatus();
 }
 

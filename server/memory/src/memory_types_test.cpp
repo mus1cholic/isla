@@ -107,7 +107,8 @@ TEST(MemoryTypesTest, ParsesSessionJsonUsingDocumentShape) {
 TEST(MemoryTypesTest, SerializesLongTermEpisodeEnumsAndOptionalLinks) {
     const LongTermEpisode episode{
         .lte_id = "lte_UUID",
-        .summary_full = "Full story",
+        .user_id = "user_test",
+        .summary_full = std::string("Full story"),
         .summary_compressed = "Compressed story",
         .keywords = { "memory", "kg" },
         .embedding = { 0.11, 0.22 },
