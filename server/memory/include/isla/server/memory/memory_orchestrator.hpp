@@ -193,8 +193,11 @@ class MemoryOrchestrator {
     // user/assistant exchange exists.
     [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
 
-    // Retrieves extra memory to inject for the next prompt render. Today this is a placeholder and
-    // may legitimately return no extra memory.
+    // Loads entities from long-term storage and populates the persistent-memory cache (active
+    // models and familiar labels) so the system prompt reflects prior knowledge from session start.
+    [[nodiscard]] absl::Status HydratePersistentMemoryCache();
+
+    // Retrieves long-term episode context relevant to the user message for prompt injection.
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
 

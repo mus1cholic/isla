@@ -97,6 +97,26 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
                 long_term_episode_writes.push_back(write);
                 return absl::OkStatus();
             });
+        ON_CALL(*this, ListEntitiesByUser(_))
+            .WillByDefault([this](std::string_view user_id) -> absl::StatusOr<std::vector<Entity>> {
+                static_cast<void>(user_id);
+                if (!list_entities_status.ok()) {
+                    return list_entities_status;
+                }
+                return entities;
+            });
+        ON_CALL(*this, ListRelationshipsForEntity(_))
+            .WillByDefault(
+                [this](std::string_view entity_id) -> absl::StatusOr<std::vector<Relationship>> {
+                    static_cast<void>(entity_id);
+                    return relationships;
+                });
+        ON_CALL(*this, ListLongTermEpisodesForEntity(_))
+            .WillByDefault(
+                [this](std::string_view entity_id) -> absl::StatusOr<std::vector<LongTermEpisode>> {
+                    static_cast<void>(entity_id);
+                    return long_term_episodes;
+                });
         ON_CALL(*this, ListMidTermEpisodes(_))
             .WillByDefault([](std::string_view session_id) -> absl::StatusOr<std::vector<Episode>> {
                 static_cast<void>(session_id);
@@ -126,6 +146,9 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     std::vector<std::string> cleared_session_ids;
     std::vector<MidTermEpisodeWrite> episode_writes;
     std::vector<LongTermEpisodeWrite> long_term_episode_writes;
+    std::vector<Entity> entities;
+    std::vector<Relationship> relationships;
+    std::vector<LongTermEpisode> long_term_episodes;
     absl::Status upsert_session_status = absl::OkStatus();
     absl::Status upsert_user_working_memory_status = absl::OkStatus();
     absl::Status append_message_status = absl::OkStatus();
@@ -134,6 +157,7 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     absl::Status clear_working_set_status = absl::OkStatus();
     absl::Status upsert_episode_status = absl::OkStatus();
     absl::Status upsert_long_term_episode_status = absl::OkStatus();
+    absl::Status list_entities_status = absl::OkStatus();
 };
 
 std::shared_future<void> MakeReadyFuture() {
@@ -2406,6 +2430,185 @@ TEST_F(MemoryOrchestratorTest, ApplyCompletedEpisodeFlushPropagatesSplitStubPers
     ASSERT_EQ(state.mid_term_episodes.size(), 0U);
     ASSERT_EQ(state.conversation.items.size(), 1U);
     EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::OngoingEpisode);
+}
+
+// --- HydratePersistentMemoryCache ---
+
+TEST_F(MemoryOrchestratorTest, BeginSessionHydratesActiveModelsFromEntities) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_mochi",
+            .user_id = "user_001",
+            .label = "Mochi",
+            .category = "pet",
+            .familiar_label_text = std::string("Airi's cat"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+
+    const PersistentMemoryCache& cache =
+        handler->memory().snapshot().system_prompt.persistent_memory_cache;
+    ASSERT_EQ(cache.active_models.size(), 1U);
+    EXPECT_EQ(cache.active_models.front().entity_id, "entity_user");
+    EXPECT_EQ(cache.active_models.front().text, "Airi, the user.");
+    ASSERT_EQ(cache.familiar_labels.size(), 1U);
+    EXPECT_EQ(cache.familiar_labels.front().entity_id, "entity_mochi");
+    EXPECT_EQ(cache.familiar_labels.front().text, "Airi's cat");
+}
+
+TEST_F(MemoryOrchestratorTest, BeginSessionSkipsHydrationWithoutStore) {
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandler();
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+
+    const PersistentMemoryCache& cache =
+        handler->memory().snapshot().system_prompt.persistent_memory_cache;
+    EXPECT_TRUE(cache.active_models.empty());
+    EXPECT_TRUE(cache.familiar_labels.empty());
+}
+
+TEST_F(MemoryOrchestratorTest, BeginSessionSkipsEntitiesWithoutCacheText) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_bare",
+            .user_id = "user_001",
+            .label = "Unknown",
+            .category = "person",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+
+    const PersistentMemoryCache& cache =
+        handler->memory().snapshot().system_prompt.persistent_memory_cache;
+    EXPECT_TRUE(cache.active_models.empty());
+    EXPECT_TRUE(cache.familiar_labels.empty());
+}
+
+TEST_F(MemoryOrchestratorTest, BeginSessionPropagatesEntityLoadFailure) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->list_entities_status = absl::InternalError("entity load failed");
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    const absl::Status status = handler->BeginSession(Ts("2026-03-08T13:59:59Z"));
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
+}
+
+// --- RetrieveRelevantMemories ---
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryRetrievesLongTermContext) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_001",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "owns",
+            .to_entity_id = "entity_mochi",
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->long_term_episodes = {
+        LongTermEpisode{
+            .lte_id = "lte_001",
+            .user_id = "user_001",
+            .summary_compressed = "User discussed their cat Mochi",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "hello", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("entity_user owns entity_mochi"), std::string::npos);
+    EXPECT_NE(state.retrieved_memory->find("User discussed their cat Mochi"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsNulloptWhenNoCacheEntries) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "hello", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_FALSE(state.retrieved_memory.has_value());
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsNulloptWhenNoRelationshipsOrEpisodes) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "hello", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_FALSE(state.retrieved_memory.has_value());
 }
 
 } // namespace

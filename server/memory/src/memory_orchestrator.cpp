@@ -192,7 +192,40 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
 }
 
 absl::Status MemoryOrchestrator::BeginSession(Timestamp create_time) {
-    return PersistSessionIfNeeded(create_time);
+    if (absl::Status status = PersistSessionIfNeeded(create_time); !status.ok()) {
+        return status;
+    }
+    return HydratePersistentMemoryCache();
+}
+
+absl::Status MemoryOrchestrator::HydratePersistentMemoryCache() {
+    if (!store_) {
+        return absl::OkStatus();
+    }
+
+    const std::string& user_id = memory_.snapshot().conversation.user_id;
+    const absl::StatusOr<std::vector<Entity>> entities = store_->ListEntitiesByUser(user_id);
+    if (!entities.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to load entities for cache hydration"
+                     << " session_id=" << SanitizeForLog(session_id_)
+                     << " user_id=" << SanitizeForLog(user_id) << " detail='"
+                     << SanitizeForLog(entities.status().message()) << "'";
+        return entities.status();
+    }
+
+    for (const Entity& entity : *entities) {
+        if (entity.active_model_text.has_value()) {
+            memory_.UpsertActiveModel(entity.entity_id, *entity.active_model_text);
+        } else if (entity.familiar_label_text.has_value()) {
+            memory_.UpsertFamiliarLabel(entity.entity_id, *entity.familiar_label_text);
+        }
+    }
+
+    LOG(INFO) << "MemoryOrchestrator hydrated persistent memory cache"
+              << " session_id=" << SanitizeForLog(session_id_)
+              << " entity_count=" << entities->size();
+
+    return absl::OkStatus();
 }
 
 absl::Status MemoryOrchestrator::ValidateTurnText(std::string_view session_id,
@@ -442,8 +475,69 @@ MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFl
 absl::StatusOr<std::optional<RetrievedMemory>>
 MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
     static_cast<void>(user_message);
-    // TODO: Query mid-term and long-term memory systems here before prompt rendering.
-    return std::nullopt;
+    if (!store_) {
+        return std::nullopt;
+    }
+
+    const PersistentMemoryCache& cache = memory_.snapshot().system_prompt.persistent_memory_cache;
+    if (cache.active_models.empty() && cache.familiar_labels.empty()) {
+        return std::nullopt;
+    }
+
+    // Collect entity ids from the persistent cache to query relationships and episodes.
+    std::vector<std::string> entity_ids;
+    entity_ids.reserve(cache.active_models.size() + cache.familiar_labels.size());
+    for (const ActiveModel& model : cache.active_models) {
+        entity_ids.push_back(model.entity_id);
+    }
+    for (const FamiliarLabel& label : cache.familiar_labels) {
+        entity_ids.push_back(label.entity_id);
+    }
+
+    std::string context;
+
+    for (const std::string& entity_id : entity_ids) {
+        const absl::StatusOr<std::vector<Relationship>> relationships =
+            store_->ListRelationshipsForEntity(entity_id);
+        if (!relationships.ok()) {
+            LOG(WARNING) << "MemoryOrchestrator failed to retrieve relationships for entity"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
+                         << SanitizeForLog(relationships.status().message()) << "'";
+            continue;
+        }
+
+        for (const Relationship& rel : *relationships) {
+            context.append("- ");
+            context.append(rel.from_entity_id);
+            context.append(" ");
+            context.append(rel.predicate);
+            context.append(" ");
+            context.append(rel.to_entity_id);
+            context.push_back('\n');
+        }
+
+        const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+            store_->ListLongTermEpisodesForEntity(entity_id);
+        if (!episodes.ok()) {
+            LOG(WARNING) << "MemoryOrchestrator failed to retrieve long-term episodes for entity"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
+                         << SanitizeForLog(episodes.status().message()) << "'";
+            continue;
+        }
+
+        for (const LongTermEpisode& episode : *episodes) {
+            context.append("- [episode] ");
+            context.append(episode.summary_compressed);
+            context.push_back('\n');
+        }
+    }
+
+    if (context.empty()) {
+        return std::nullopt;
+    }
+    return context;
 }
 
 std::string MemoryOrchestrator::NextEpisodeId() {
