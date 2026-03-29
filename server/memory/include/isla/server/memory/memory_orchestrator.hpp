@@ -197,7 +197,9 @@ class MemoryOrchestrator {
     // models and familiar labels) so the system prompt reflects prior knowledge from session start.
     [[nodiscard]] absl::Status HydratePersistentMemoryCache();
 
-    // Retrieves long-term episode context relevant to the user message for prompt injection.
+    // Retrieves long-term context (relationships and episodes) for entities in the persistent
+    // cache. Today this returns all known context without filtering by user_message content;
+    // semantic relevance ranking will be added in a future iteration.
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
 

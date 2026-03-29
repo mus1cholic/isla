@@ -192,10 +192,12 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
 }
 
 absl::Status MemoryOrchestrator::BeginSession(Timestamp create_time) {
-    if (absl::Status status = PersistSessionIfNeeded(create_time); !status.ok()) {
+    // Hydrate the persistent cache before persisting so the initial snapshot includes long-term
+    // entity data, and hydration failure does not leave a persisted-but-uninitialized session.
+    if (absl::Status status = HydratePersistentMemoryCache(); !status.ok()) {
         return status;
     }
-    return HydratePersistentMemoryCache();
+    return PersistSessionIfNeeded(create_time);
 }
 
 absl::Status MemoryOrchestrator::HydratePersistentMemoryCache() {
@@ -217,9 +219,9 @@ absl::Status MemoryOrchestrator::HydratePersistentMemoryCache() {
     }
 
     for (const Entity& entity : *entities) {
-        if (entity.active_model_text.has_value()) {
+        if (entity.active_model_text.has_value() && !entity.active_model_text->empty()) {
             memory_.UpsertActiveModel(entity.entity_id, *entity.active_model_text);
-        } else if (entity.familiar_label_text.has_value()) {
+        } else if (entity.familiar_label_text.has_value() && !entity.familiar_label_text->empty()) {
             memory_.UpsertFamiliarLabel(entity.entity_id, *entity.familiar_label_text);
         }
     }
@@ -476,8 +478,7 @@ MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFl
 }
 
 absl::StatusOr<std::optional<RetrievedMemory>>
-MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
-    static_cast<void>(user_message);
+MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
     if (!store_) {
         return std::nullopt;
     }
