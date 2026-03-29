@@ -175,7 +175,7 @@ absl::Status ValidateLlmRateLimitConfig(const LlmRateLimitConfig& config) {
         return absl::OkStatus();
     }
     if (config.max_requests_per_minute != 0U && config.burst_size == 0U) {
-        return invalid_argument("llm rate limit burst_size must be greater than zero");
+        return invalid_argument("llm-rate-limit-burst-size must be greater than zero");
     }
     return absl::OkStatus();
 }

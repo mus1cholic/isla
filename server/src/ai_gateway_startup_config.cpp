@@ -328,9 +328,9 @@ void ApplyLlmRateLimitEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvL
                    "value='"
                 << SanitizeForLog(*requests_per_minute) << "' detail='"
                 << SanitizeForLog(parsed_value.status().message()) << "'";
-        } else if (*parsed_value <= 0) {
+        } else if (*parsed_value < 0) {
             LOG(WARNING)
-                << "AI gateway ignored non-positive AI_GATEWAY_LLM_RATE_LIMIT_REQUESTS_PER_MINUTE "
+                << "AI gateway ignored negative AI_GATEWAY_LLM_RATE_LIMIT_REQUESTS_PER_MINUTE "
                    "value='"
                 << SanitizeForLog(*requests_per_minute) << "'";
         } else {
@@ -348,8 +348,8 @@ void ApplyLlmRateLimitEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvL
                             "value='"
                          << SanitizeForLog(*burst_size) << "' detail='"
                          << SanitizeForLog(parsed_value.status().message()) << "'";
-        } else if (*parsed_value <= 0) {
-            LOG(WARNING) << "AI gateway ignored non-positive AI_GATEWAY_LLM_RATE_LIMIT_BURST_SIZE "
+        } else if (*parsed_value < 0) {
+            LOG(WARNING) << "AI gateway ignored negative AI_GATEWAY_LLM_RATE_LIMIT_BURST_SIZE "
                             "value='"
                          << SanitizeForLog(*burst_size) << "'";
         } else {
@@ -366,8 +366,8 @@ void ApplyLlmRateLimitEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvL
                             "AI_GATEWAY_LLM_RATE_LIMIT_MAX_CONCURRENT_REQUESTS value='"
                          << SanitizeForLog(*max_concurrent) << "' detail='"
                          << SanitizeForLog(parsed_value.status().message()) << "'";
-        } else if (*parsed_value <= 0) {
-            LOG(WARNING) << "AI gateway ignored non-positive "
+        } else if (*parsed_value < 0) {
+            LOG(WARNING) << "AI gateway ignored negative "
                             "AI_GATEWAY_LLM_RATE_LIMIT_MAX_CONCURRENT_REQUESTS value='"
                          << SanitizeForLog(*max_concurrent) << "'";
         } else {
@@ -778,9 +778,9 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                 argument,
                 "--llm-rate-limit-requests-per-minute=", "llm-rate-limit-requests-per-minute",
                 [&parsed](int requests_per_minute) -> absl::Status {
-                    if (requests_per_minute <= 0) {
+                    if (requests_per_minute < 0) {
                         return absl::InvalidArgumentError(
-                            "llm-rate-limit-requests-per-minute must be greater than zero");
+                            "llm-rate-limit-requests-per-minute must be non-negative");
                     }
                     parsed.llm_rate_limit_config.max_requests_per_minute =
                         static_cast<std::size_t>(requests_per_minute);
@@ -794,9 +794,9 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         if (const absl::StatusOr<bool> handled = TryParseIntFlag(
                 argument, "--llm-rate-limit-burst-size=", "llm-rate-limit-burst-size",
                 [&parsed](int burst_size) -> absl::Status {
-                    if (burst_size <= 0) {
+                    if (burst_size < 0) {
                         return absl::InvalidArgumentError(
-                            "llm-rate-limit-burst-size must be greater than zero");
+                            "llm-rate-limit-burst-size must be non-negative");
                     }
                     parsed.llm_rate_limit_config.burst_size = static_cast<std::size_t>(burst_size);
                     return absl::OkStatus();
@@ -810,9 +810,9 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                 argument, "--llm-rate-limit-max-concurrent-requests=",
                 "llm-rate-limit-max-concurrent-requests",
                 [&parsed](int max_concurrent) -> absl::Status {
-                    if (max_concurrent <= 0) {
+                    if (max_concurrent < 0) {
                         return absl::InvalidArgumentError(
-                            "llm-rate-limit-max-concurrent-requests must be greater than zero");
+                            "llm-rate-limit-max-concurrent-requests must be non-negative");
                     }
                     parsed.llm_rate_limit_config.max_concurrent_requests =
                         static_cast<std::size_t>(max_concurrent);

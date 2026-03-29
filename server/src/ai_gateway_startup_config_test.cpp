@@ -322,6 +322,23 @@ TEST(AiGatewayStartupConfigTest, AppliesDefaultLlmRateLimitWhenNotOverridden) {
     EXPECT_EQ(parsed->llm_rate_limit_config.max_concurrent_requests, 0U);
 }
 
+TEST(AiGatewayStartupConfigTest, AllowsDisablingLlmRateLimitsViaCliWithZeroValues) {
+    auto kZeroRequestsPerMinute = std::to_array("--llm-rate-limit-requests-per-minute=0");
+    auto kZeroBurstSize = std::to_array("--llm-rate-limit-burst-size=0");
+    auto kZeroMaxConcurrent = std::to_array("--llm-rate-limit-max-concurrent-requests=0");
+    std::array<char*, 5> argv = { kArg0.data(), kApiKey.data(), kZeroRequestsPerMinute.data(),
+                                  kZeroBurstSize.data(), kZeroMaxConcurrent.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_EQ(parsed->llm_rate_limit_config.max_requests_per_minute, 0U);
+    EXPECT_EQ(parsed->llm_rate_limit_config.burst_size, 0U);
+    EXPECT_EQ(parsed->llm_rate_limit_config.max_concurrent_requests, 0U);
+}
+
 TEST(AiGatewayStartupConfigTest, AllowsOllamaOnlyConfigurationFromCli) {
     std::array<char*, 5> argv = { kArg0.data(), kOllamaBaseUrl.data(), kOllamaApiKey.data(),
                                   kOllamaTimeout.data(), kMainLlmModel.data() };
