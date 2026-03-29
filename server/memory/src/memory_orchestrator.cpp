@@ -454,8 +454,8 @@ std::string MemoryOrchestrator::NextLongTermEpisodeId() {
     return "lte_" + session_id_ + "_" + std::to_string(next_lte_sequence_++);
 }
 
-std::size_t MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes,
-                                                      Timestamp cycle_time) {
+std::size_t
+MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes) {
     if (store_ == nullptr || mid_term_episodes.empty()) {
         return 0;
     }
@@ -857,8 +857,7 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
 
     const WorkingMemoryState& state_before_clear = memory_.snapshot();
 
-    const std::size_t consolidated =
-        ConsolidateToLongTerm(state_before_clear.mid_term_episodes, cycle_time);
+    const std::size_t consolidated = ConsolidateToLongTerm(state_before_clear.mid_term_episodes);
 
     SleepCycleResult result{
         .drained_pending_mid_term_compactions = *drained_pending_compactions,

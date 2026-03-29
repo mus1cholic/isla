@@ -221,8 +221,7 @@ class MemoryOrchestrator {
     // Consolidates mid-term episodes into long-term storage. Individual upsert failures are
     // logged as warnings and do not abort the cycle. Returns the number of episodes successfully
     // consolidated.
-    [[nodiscard]] std::size_t ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes,
-                                                    Timestamp cycle_time);
+    [[nodiscard]] std::size_t ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes);
 
     struct CompletedFlushBuildInput {
         CompactedMidTermEpisode compacted;
