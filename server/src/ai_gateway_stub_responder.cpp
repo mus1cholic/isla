@@ -1,5 +1,6 @@
 #include "isla/server/ai_gateway_stub_responder.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -1023,7 +1024,7 @@ void GatewayStubResponder::AsyncFinishServerStoppingTurn(const PendingTurn& turn
             }
             live_session->AsyncEmitTurnCompleted(
                 turn_id, [session_id = std::string(session_id),
-                          turn_id = std::string(turn_id)](absl::Status completion_status) {
+                          turn_id = std::string(turn_id)](const absl::Status& completion_status) {
                     if (!completion_status.ok()) {
                         LOG(WARNING)
                             << "AI gateway stub failed async shutdown completion session="
