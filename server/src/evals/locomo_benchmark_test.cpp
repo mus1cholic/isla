@@ -219,7 +219,10 @@ std::shared_ptr<FakeOpenAiResponsesClient> MakeMidTermAwareFakeClient(std::strin
 TEST(LoCoMoBenchmarkTest, LoadsAndExpandsConversationIntoPerQuestionCases) {
     ScopedTempPath temp_dir("locomo_load_test_");
     const std::filesystem::path dataset_path = temp_dir.path() / "locomo10.json";
-    ASSERT_TRUE(WriteDatasetFile(dataset_path, json::array({ MakeConversationEntry() })).ok());
+    json entry = MakeConversationEntry();
+    entry["conversation"]["session_1"][2]["img_url"] =
+        json::array({ "https://example.test/bowl.png" });
+    ASSERT_TRUE(WriteDatasetFile(dataset_path, json::array({ std::move(entry) })).ok());
 
     const absl::StatusOr<MemoryBenchmarkSuite> suite =
         LoadLoCoMoBenchmarkSuite(LoCoMoBenchmarkLoadConfig{
@@ -258,6 +261,7 @@ TEST(LoCoMoBenchmarkTest, LoadsAndExpandsConversationIntoPerQuestionCases) {
     EXPECT_EQ(recall_case.metadata["evidence_dia_ids"][0], "D2:2");
     ASSERT_EQ(recall_case.metadata["evidence_turn_locations"].size(), 1U);
     EXPECT_EQ(recall_case.metadata["evidence_turn_locations"][0]["flattened_turn_index"], 4);
+    ASSERT_TRUE(recall_case.metadata["evidence_turn_locations"][0].is_object());
 
     const MemoryBenchmarkCase& adversarial_case = suite->cases[1];
     EXPECT_EQ(adversarial_case.eval_case.case_id, "conv-26_q2");

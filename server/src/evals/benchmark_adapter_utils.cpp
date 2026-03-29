@@ -1,6 +1,7 @@
 #include "isla/server/evals/benchmark_adapter_utils.hpp"
 
 #include <cctype>
+#include <charconv>
 #include <exception>
 #include <fstream>
 #include <optional>
@@ -76,6 +77,19 @@ std::optional<unsigned> ParseLoCoMoMonth(std::string_view month_text) {
     return std::nullopt;
 }
 
+absl::StatusOr<int> ParseIntegerText(std::string_view text, std::string_view field_description,
+                                     std::string_view error_suffix) {
+    int value = 0;
+    const char* const begin = text.data();
+    const char* const end = text.data() + text.size();
+    const std::from_chars_result parse_result = std::from_chars(begin, end, value);
+    if (parse_result.ec != std::errc() || parse_result.ptr != end) {
+        return invalid_argument(
+            absl::StrCat(field_description, " is not a supported timestamp: ", error_suffix));
+    }
+    return value;
+}
+
 absl::StatusOr<std::string> NormalizeLoCoMoTimestamp(std::string_view text,
                                                      std::string_view field_description) {
     const std::size_t on_pos = text.find(" on ");
@@ -102,14 +116,19 @@ absl::StatusOr<std::string> NormalizeLoCoMoTimestamp(std::string_view text,
 
     int hour = 0;
     int minute = 0;
-    try {
-        hour = std::stoi(std::string(time_part.substr(0, colon_pos)));
-        minute =
-            std::stoi(std::string(time_part.substr(colon_pos + 1U, space_pos - colon_pos - 1U)));
-    } catch (const std::exception&) {
-        return invalid_argument(
-            absl::StrCat(field_description, " is not a supported timestamp: invalid time digits"));
+    const absl::StatusOr<int> parsed_hour =
+        ParseIntegerText(time_part.substr(0, colon_pos), field_description, "invalid time digits");
+    if (!parsed_hour.ok()) {
+        return parsed_hour.status();
     }
+    const absl::StatusOr<int> parsed_minute =
+        ParseIntegerText(time_part.substr(colon_pos + 1U, space_pos - colon_pos - 1U),
+                         field_description, "invalid time digits");
+    if (!parsed_minute.ok()) {
+        return parsed_minute.status();
+    }
+    hour = *parsed_hour;
+    minute = *parsed_minute;
     const std::string_view meridiem = time_part.substr(space_pos + 1U);
     if (meridiem != "am" && meridiem != "pm") {
         return invalid_argument(
@@ -137,13 +156,18 @@ absl::StatusOr<std::string> NormalizeLoCoMoTimestamp(std::string_view text,
 
     int day = 0;
     int year = 0;
-    try {
-        day = std::stoi(std::string(date_part.substr(0, first_space)));
-        year = std::stoi(std::string(date_part.substr(comma_pos + 2U)));
-    } catch (const std::exception&) {
-        return invalid_argument(
-            absl::StrCat(field_description, " is not a supported timestamp: invalid date digits"));
+    const absl::StatusOr<int> parsed_day = ParseIntegerText(
+        date_part.substr(0, first_space), field_description, "invalid date digits");
+    if (!parsed_day.ok()) {
+        return parsed_day.status();
     }
+    const absl::StatusOr<int> parsed_year = ParseIntegerText(
+        date_part.substr(comma_pos + 2U), field_description, "invalid date digits");
+    if (!parsed_year.ok()) {
+        return parsed_year.status();
+    }
+    day = *parsed_day;
+    year = *parsed_year;
 
     const std::string_view month_text =
         date_part.substr(first_space + 1U, comma_pos - first_space - 1U);

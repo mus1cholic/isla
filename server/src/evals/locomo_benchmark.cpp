@@ -1,6 +1,7 @@
 #include "isla/server/evals/locomo_benchmark.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstddef>
 #include <filesystem>
 #include <optional>
@@ -77,6 +78,29 @@ GetOptionalNormalizedStringOrIntegerField(const json& object, std::string_view f
     return *normalized;
 }
 
+absl::StatusOr<std::optional<json>> GetOptionalStringOrStringArrayField(const json& object,
+                                                                        std::string_view field_name,
+                                                                        std::string_view context) {
+    const auto it = object.find(std::string(field_name));
+    if (it == object.end() || it->is_null()) {
+        return std::nullopt;
+    }
+    if (it->is_string()) {
+        return json(*it);
+    }
+    if (it->is_array()) {
+        for (std::size_t index = 0; index < it->size(); ++index) {
+            if (!(*it)[index].is_string()) {
+                return invalid_argument(
+                    absl::StrCat(context, " field '", field_name, "' must contain only strings"));
+            }
+        }
+        return json(*it);
+    }
+    return invalid_argument(
+        absl::StrCat(context, " field '", field_name, "' must be a string or string array"));
+}
+
 struct SessionTurns {
     int session_number = 0;
     Timestamp session_time;
@@ -97,17 +121,14 @@ absl::StatusOr<std::vector<int>> ExtractSessionNumbers(const json& conversation,
         if (suffix.empty()) {
             continue;
         }
-        bool is_digits = true;
-        for (const char ch : suffix) {
-            if (ch < '0' || ch > '9') {
-                is_digits = false;
-                break;
-            }
-        }
-        if (!is_digits) {
+        int session_number = 0;
+        const char* const begin = suffix.data();
+        const char* const end = suffix.data() + suffix.size();
+        const std::from_chars_result parse_result = std::from_chars(begin, end, session_number);
+        if (parse_result.ec != std::errc() || parse_result.ptr != end) {
             continue;
         }
-        session_numbers.push_back(std::stoi(std::string(suffix)));
+        session_numbers.push_back(session_number);
     }
 
     std::sort(session_numbers.begin(), session_numbers.end());
@@ -218,13 +239,13 @@ absl::StatusOr<SessionTurns> ParseSessionTurns(const json& conversation, int ses
             { "speaker", *speaker },
             { "role", role == MessageRole::User ? "user" : "assistant" },
         };
-        const auto img_it = turn.find("img_url");
-        if (img_it != turn.end() && !img_it->is_null()) {
-            if (!img_it->is_string()) {
-                return invalid_argument(
-                    absl::StrCat(turn_context, " field 'img_url' must be a string when present"));
-            }
-            location["img_url"] = img_it->get<std::string>();
+        const absl::StatusOr<std::optional<json>> img_url =
+            GetOptionalStringOrStringArrayField(turn, "img_url", turn_context);
+        if (!img_url.ok()) {
+            return img_url.status();
+        }
+        if (img_url->has_value()) {
+            location["img_url"] = **img_url;
         }
         if (caption_it != turn.end() && !caption_it->is_null()) {
             location["blip_caption"] = caption_it->get<std::string>();
@@ -442,10 +463,32 @@ absl::Status ValidateLoadConfig(const LoCoMoBenchmarkLoadConfig& config) {
     return absl::OkStatus();
 }
 
+absl::StatusOr<std::size_t> CountBenchmarkCases(const json& dataset) {
+    std::size_t total_case_count = 0U;
+    for (std::size_t entry_index = 0; entry_index < dataset.size(); ++entry_index) {
+        const json& entry = dataset[entry_index];
+        if (!entry.is_object()) {
+            return invalid_argument(
+                absl::StrCat("LoCoMo entry ", entry_index, " must be a JSON object"));
+        }
+
+        const std::string entry_context = absl::StrCat("LoCoMo entry ", entry_index);
+        const absl::StatusOr<const json*> qa_field = GetRequiredField(entry, "qa", entry_context);
+        if (!qa_field.ok()) {
+            return qa_field.status();
+        }
+        if (!(**qa_field).is_array()) {
+            return invalid_argument(absl::StrCat(entry_context, " field 'qa' must be an array"));
+        }
+        total_case_count += (**qa_field).size();
+    }
+    return total_case_count;
+}
+
 } // namespace
 
 absl::StatusOr<MemoryBenchmarkSuite> LoadLoCoMoBenchmarkSuite(LoCoMoBenchmarkLoadConfig config) {
-    if (const absl::Status status = ValidateLoadConfig(config); !status.ok()) {
+    if (absl::Status status = ValidateLoadConfig(config); !status.ok()) {
         return status;
     }
 
@@ -459,6 +502,11 @@ absl::StatusOr<MemoryBenchmarkSuite> LoadLoCoMoBenchmarkSuite(LoCoMoBenchmarkLoa
 
     MemoryBenchmarkSuite suite;
     suite.benchmark_name = std::string(kBenchmarkName);
+    const absl::StatusOr<std::size_t> total_case_count = CountBenchmarkCases(*dataset);
+    if (!total_case_count.ok()) {
+        return total_case_count.status();
+    }
+    suite.cases.reserve(*total_case_count);
 
     for (std::size_t entry_index = 0; entry_index < dataset->size(); ++entry_index) {
         absl::StatusOr<std::vector<MemoryBenchmarkCase>> parsed_cases =
