@@ -629,6 +629,13 @@ class GatewaySessionRegistry::Impl {
         return sessions_.size();
     }
 
+    [[nodiscard]] absl::Status ForwardSessionStart(const SessionStartRequestEvent& event) {
+        if (application_sink_ == nullptr) {
+            return absl::OkStatus();
+        }
+        return application_sink_->HandleSessionStart(event);
+    }
+
     void ForwardSessionStarted(const SessionStartedEvent& event) {
         if (application_sink_ != nullptr) {
             application_sink_->OnSessionStarted(event);
@@ -704,6 +711,10 @@ std::size_t GatewaySessionRegistry::SessionCount() const {
 
 void GatewaySessionRegistry::NotifyServerStopping() {
     impl_->NotifyServerStopping(*this);
+}
+
+absl::Status GatewaySessionRegistry::HandleSessionStart(const SessionStartRequestEvent& event) {
+    return impl_->ForwardSessionStart(event);
 }
 
 void GatewaySessionRegistry::OnSessionStarted(const SessionStartedEvent& event) {

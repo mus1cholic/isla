@@ -58,6 +58,11 @@ class RecordingWebSocketConnection final : public NiceMock<test::MockGatewayWebS
 class RecordingEventSink final : public NiceMock<test::MockGatewaySessionEventSink> {
   public:
     RecordingEventSink() {
+        ON_CALL(*this, HandleSessionStart(_))
+            .WillByDefault([this](const SessionStartRequestEvent& event) {
+                startup_requests.push_back(event);
+                return absl::OkStatus();
+            });
         ON_CALL(*this, OnSessionStarted(_)).WillByDefault([this](const SessionStartedEvent& event) {
             started_sessions.push_back(event);
         });
@@ -78,6 +83,7 @@ class RecordingEventSink final : public NiceMock<test::MockGatewaySessionEventSi
         });
     }
 
+    std::vector<SessionStartRequestEvent> startup_requests;
     std::vector<SessionStartedEvent> started_sessions;
     std::vector<TranscriptSeedEvent> transcript_seeds;
     std::vector<TurnAcceptedEvent> accepted_turns;
@@ -178,6 +184,7 @@ TEST(AiGatewayWebSocketSessionTest, SessionStartWritesSessionStartedFrame) {
 
     ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
     ASSERT_EQ(connection.sent_frames.size(), 1U);
+    ASSERT_EQ(sink.startup_requests.size(), 1U);
     ASSERT_EQ(sink.started_sessions.size(), 1U);
     EXPECT_EQ(sink.started_sessions.front().session_id, "srv_test");
 
@@ -186,6 +193,36 @@ TEST(AiGatewayWebSocketSessionTest, SessionStartWritesSessionStartedFrame) {
     ASSERT_TRUE(frame.ok()) << frame.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*frame));
     EXPECT_EQ(std::get<protocol::SessionStartedMessage>(*frame).session_id, "srv_test");
+}
+
+TEST(AiGatewayWebSocketSessionTest, RejectedSessionStartReturnsErrorWithoutStartingSession) {
+    RecordingWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ON_CALL(sink, HandleSessionStart(_))
+        .WillByDefault([&sink](const SessionStartRequestEvent& event) {
+            sink.startup_requests.push_back(event);
+            return absl::UnavailableError("startup unavailable");
+        });
+
+    const absl::Status status = session.HandleIncomingTextFrame(kSessionStartJson);
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_FALSE(session.is_closed());
+    EXPECT_EQ(connection.close_calls, 0);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    ASSERT_EQ(sink.startup_requests.size(), 1U);
+    EXPECT_TRUE(sink.started_sessions.empty());
+    EXPECT_EQ(session.snapshot().status, protocol::SessionStatus::NotStarted);
+
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(connection.sent_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_EQ(error.code, "service_unavailable");
+    EXPECT_EQ(error.message, "startup unavailable");
 }
 
 TEST(AiGatewayWebSocketSessionTest, AcceptedTurnIsForwardedToEventSink) {

@@ -77,18 +77,17 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
             return RejectIncoming(std::nullopt, "bad_request",
                                   evaluation_reference_time.status().message());
         }
-        const absl::Status status = session_state_.start(session_id_);
-        if (!status.ok()) {
-            return RejectIncoming(std::nullopt, "bad_request", status.message());
+        if (session_state_.snapshot().status != protocol::SessionStatus::NotStarted) {
+            return RejectIncoming(std::nullopt, "bad_request",
+                                  "session is already started or ended");
         }
         result.ok = true;
-        result.session_started = SessionStartedEvent{
+        result.session_start_requested = SessionStartRequestEvent{
             .session_id = session_id_,
             .user_id = session_start.user_id,
             .session_start_time = *session_start_time,
             .evaluation_reference_time = *evaluation_reference_time,
         };
-        result.outgoing_frames.push_back(encode(protocol::SessionStartedMessage{ session_id_ }));
         return result;
     }
     case protocol::MessageType::SessionEnd: {
@@ -204,6 +203,17 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
     }
 
     return RejectIncoming(std::nullopt, "bad_request", "unsupported incoming message");
+}
+
+absl::StatusOr<EmitResult> GatewaySessionHandler::AcceptSessionStart() {
+    const absl::Status status = session_state_.start(session_id_);
+    if (!status.ok()) {
+        return status;
+    }
+
+    EmitResult result{};
+    result.outgoing_frames.push_back(encode(protocol::SessionStartedMessage{ session_id_ }));
+    return result;
 }
 
 absl::StatusOr<EmitResult> GatewaySessionHandler::EmitTextOutput(std::string_view turn_id,

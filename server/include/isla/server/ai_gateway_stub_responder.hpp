@@ -115,6 +115,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
     void AttachSessionRegistry(GatewaySessionRegistry* session_registry);
 
+    [[nodiscard]] absl::Status HandleSessionStart(const SessionStartRequestEvent& event) override;
     void OnSessionStarted(const SessionStartedEvent& event) override;
     [[nodiscard]] absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;
@@ -195,8 +196,6 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void FinishProcessingExceptionTurn(const PendingTurn& turn, std::string_view detail) noexcept;
     void FinishSuccessfulTurn(const PendingTurn& turn);
     void FinishCancelledTurn(const PendingTurn& turn);
-    void BestEffortEmitSessionStartFailure(std::string_view session_id,
-                                           const absl::Status& status) noexcept;
     void FinishServerStoppingTurn(GatewaySessionRegistry& session_registry,
                                   const PendingTurn& turn);
     [[nodiscard]] GatewaySessionRegistry* session_registry() const;

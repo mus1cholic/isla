@@ -255,6 +255,10 @@ Session open:
 { "type": "session.start", "client_session_id": "optional-client-id" }
 ```
 
+The server validates `session.start` with the application layer before acknowledging it. A client
+must treat `session.started` as the point where startup has been accepted and the session is active.
+If startup is rejected, the server sends `error` instead and the session remains unstarted.
+
 ```json
 { "type": "session.started", "session_id": "srv_123" }
 ```

@@ -30,6 +30,11 @@ class GatewayApplicationEventSink {
   public:
     virtual ~GatewayApplicationEventSink() = default;
 
+    [[nodiscard]] virtual absl::Status
+    HandleSessionStart(const SessionStartRequestEvent& event) {
+        static_cast<void>(event);
+        return absl::OkStatus();
+    }
     virtual void OnSessionStarted(const SessionStartedEvent& event) = 0;
     [[nodiscard]] virtual absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) {
         static_cast<void>(event);
@@ -77,6 +82,7 @@ class GatewaySessionRegistry final : public GatewaySessionEventSink {
     [[nodiscard]] std::size_t SessionCount() const;
     void NotifyServerStopping();
 
+    [[nodiscard]] absl::Status HandleSessionStart(const SessionStartRequestEvent& event) override;
     void OnSessionStarted(const SessionStartedEvent& event) override;
     [[nodiscard]] absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;

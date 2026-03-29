@@ -71,15 +71,15 @@ TEST_F(GatewayStubResponderStandaloneFixture, SessionStartDoesNotRetryNonRetryab
     config.session_start_persistence_retry_delay = 0ms;
     InitializeResponder(std::move(config));
 
-    StartSession();
+    const absl::Status start_status =
+        responder().HandleSessionStart(
+            SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
 
-    const std::vector<EmittedEvent> events = WaitForEvents(1U);
+    EXPECT_FALSE(start_status.ok());
+    EXPECT_EQ(start_status.code(), absl::StatusCode::kPermissionDenied);
     EXPECT_EQ(store->upsert_session_attempts, 1U);
     ASSERT_TRUE(store->session_records.empty());
-    ASSERT_EQ(events.size(), 1U);
-    EXPECT_EQ(events[0].op, "error");
-    EXPECT_EQ(events[0].turn_id, "");
-    EXPECT_EQ(events[0].payload, "internal_error:failed to initialize session memory");
+    EXPECT_TRUE(session().events().empty());
 }
 
 TEST_F(GatewayStubResponderStandaloneFixture, DuplicateSessionStartDoesNotPoisonHealthySession) {
@@ -87,28 +87,26 @@ TEST_F(GatewayStubResponderStandaloneFixture, DuplicateSessionStartDoesNotPoison
     InitializeResponder(MakeStoreEchoConfig(store));
 
     StartSession();
-    StartSession();
-
-    {
-        const std::vector<EmittedEvent> startup_events = WaitForEvents(1U);
-        ASSERT_EQ(startup_events.size(), 1U);
-        EXPECT_EQ(startup_events[0].op, "error");
-        EXPECT_EQ(startup_events[0].payload, "internal_error:failed to initialize session memory");
-    }
+    const absl::Status second_start_status =
+        responder().HandleSessionStart(
+            SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
+    EXPECT_FALSE(second_start_status.ok());
+    EXPECT_EQ(second_start_status.code(), absl::StatusCode::kAlreadyExists);
+    EXPECT_TRUE(session().events().empty());
 
     AcceptTurn("turn_1", "hello");
 
-    const std::vector<EmittedEvent> events = WaitForEvents(3U);
-    ASSERT_EQ(events.size(), 3U);
-    EXPECT_EQ(events[1].op, "text.output");
+    const std::vector<EmittedEvent> events = WaitForEvents(2U);
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].op, "text.output");
+    EXPECT_EQ(events[0].turn_id, "turn_1");
+    EXPECT_EQ(events[0].payload, "stub echo: hello");
+    EXPECT_EQ(events[1].op, "turn.completed");
     EXPECT_EQ(events[1].turn_id, "turn_1");
-    EXPECT_EQ(events[1].payload, "stub echo: hello");
-    EXPECT_EQ(events[2].op, "turn.completed");
-    EXPECT_EQ(events[2].turn_id, "turn_1");
 }
 
 TEST_F(GatewayStubResponderStandaloneFixture,
-       SessionStartExhaustedRetriesEmitsErrorAndDoesNotRetryOnFirstTurn) {
+       SessionStartExhaustedRetriesReturnsFailureAndDoesNotRetryOnFirstTurn) {
     auto store = std::make_shared<RecordingGatewayMemoryStore>();
     store->upsert_session_statuses = {
         absl::UnavailableError("supabase unavailable"),
@@ -120,23 +118,24 @@ TEST_F(GatewayStubResponderStandaloneFixture,
     config.session_start_persistence_retry_delay = 0ms;
     InitializeResponder(std::move(config));
 
-    StartSession();
-    ASSERT_TRUE(session().WaitForEventCount(1U));
+    const absl::Status start_status =
+        responder().HandleSessionStart(
+            SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
+    EXPECT_FALSE(start_status.ok());
+    EXPECT_EQ(start_status.code(), absl::StatusCode::kUnavailable);
     EXPECT_EQ(store->upsert_session_attempts, 3U);
     ASSERT_EQ(store->session_records.size(), 0U);
+    EXPECT_TRUE(session().events().empty());
 
     AcceptTurn("turn_1", "hello");
 
-    const std::vector<EmittedEvent> events = WaitForEvents(3U);
-    ASSERT_EQ(events.size(), 3U);
+    const std::vector<EmittedEvent> events = WaitForEvents(2U);
+    ASSERT_EQ(events.size(), 2U);
     EXPECT_EQ(events[0].op, "error");
-    EXPECT_EQ(events[0].turn_id, "");
-    EXPECT_EQ(events[0].payload, "service_unavailable:failed to initialize session memory");
-    EXPECT_EQ(events[1].op, "error");
+    EXPECT_EQ(events[0].turn_id, "turn_1");
+    EXPECT_EQ(events[0].payload, "internal_error:stub responder failed to update memory");
+    EXPECT_EQ(events[1].op, "turn.completed");
     EXPECT_EQ(events[1].turn_id, "turn_1");
-    EXPECT_EQ(events[1].payload, "internal_error:stub responder failed to update memory");
-    EXPECT_EQ(events[2].op, "turn.completed");
-    EXPECT_EQ(events[2].turn_id, "turn_1");
     EXPECT_EQ(store->upsert_session_attempts, 3U);
 }
 
@@ -160,6 +159,10 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
+    ASSERT_TRUE(responder.HandleSessionStart(
+                    SessionStartRequestEvent{ .session_id = "srv_test",
+                                              .user_id = "test_user" })
+                    .ok());
     responder.OnSessionStarted(
         SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
     const std::shared_ptr<const TurnTelemetryContext> telemetry_context =
@@ -218,6 +221,10 @@ TEST_F(GatewayStubResponderTest,
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
+    ASSERT_TRUE(responder.HandleSessionStart(
+                    SessionStartRequestEvent{ .session_id = "srv_test",
+                                              .user_id = "test_user" })
+                    .ok());
     responder.OnSessionStarted(
         SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
 

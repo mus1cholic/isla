@@ -102,6 +102,10 @@ TEST(GatewayStubResponderStandaloneTest,
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
+    ASSERT_TRUE(responder
+                    .HandleSessionStart(SessionStartRequestEvent{ .session_id = "srv_test",
+                                                                  .user_id = "test_user" })
+                    .ok());
     responder.OnSessionStarted(
         SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
 

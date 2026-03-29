@@ -26,12 +26,17 @@ struct TurnAcceptedEvent {
     std::shared_ptr<const TurnTelemetryContext> telemetry_context;
 };
 
-struct SessionStartedEvent {
+// The same startup payload is used both for pre-start application acceptance and the
+// post-start notification after `session.started` is emitted.
+struct SessionStartInfo {
     std::string session_id;
     std::string user_id;
     std::optional<isla::server::memory::Timestamp> session_start_time;
     std::optional<isla::server::memory::Timestamp> evaluation_reference_time;
 };
+
+using SessionStartRequestEvent = SessionStartInfo;
+using SessionStartedEvent = SessionStartInfo;
 
 struct TurnCancelRequestedEvent {
     std::string session_id;
@@ -49,7 +54,7 @@ struct TranscriptSeedEvent {
 struct HandleIncomingResult {
     bool ok = false;
     std::vector<std::string> outgoing_frames;
-    std::optional<SessionStartedEvent> session_started;
+    std::optional<SessionStartRequestEvent> session_start_requested;
     std::optional<TranscriptSeedEvent> transcript_seed;
     std::optional<TurnAcceptedEvent> accepted_turn;
     std::optional<TurnCancelRequestedEvent> cancel_requested;
@@ -68,6 +73,7 @@ class GatewaySessionHandler {
         std::shared_ptr<const TelemetrySink> telemetry_sink = CreateNoOpTelemetrySink());
 
     [[nodiscard]] HandleIncomingResult HandleIncomingJson(std::string_view json_text);
+    [[nodiscard]] absl::StatusOr<EmitResult> AcceptSessionStart();
     [[nodiscard]] absl::StatusOr<EmitResult> EmitTextOutput(std::string_view turn_id,
                                                             std::string_view text);
     [[nodiscard]] absl::StatusOr<EmitResult> EmitAudioOutput(std::string_view turn_id,

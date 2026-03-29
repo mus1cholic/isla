@@ -1051,7 +1051,7 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
 }
 
 TEST(AiGatewayServerIntegrationTest,
-     SessionStartPersistenceFailureSendsStartedThenErrorAndDoesNotRetryOnTurnIngress) {
+     SessionStartPersistenceFailureRejectsStartupBeforeSessionStartedAndDoesNotRetryOnTurnIngress) {
     auto store =
         std::make_shared<FailingSessionStartMemoryStore>(absl::UnavailableError("supabase down"));
     GatewayStubResponder responder(GatewayStubResponderConfig{
@@ -1073,24 +1073,18 @@ TEST(AiGatewayServerIntegrationTest,
     ASSERT_TRUE(client.Connect(server.bound_port()).ok());
     ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
 
-    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
-    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
-    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
-    const std::string session_id =
-        std::get<protocol::SessionStartedMessage>(*started_frame).session_id;
-
     const absl::StatusOr<protocol::GatewayMessage> startup_error = client.ReadJsonFrame();
     ASSERT_TRUE(startup_error.ok()) << startup_error.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*startup_error));
     const auto& startup_error_message = std::get<protocol::ErrorMessage>(*startup_error);
-    EXPECT_EQ(startup_error_message.session_id, session_id);
+    EXPECT_FALSE(startup_error_message.session_id.has_value());
     EXPECT_FALSE(startup_error_message.turn_id.has_value());
     EXPECT_EQ(startup_error_message.code, "service_unavailable");
     EXPECT_EQ(startup_error_message.message, "failed to initialize session memory");
 
     EXPECT_EQ(store->upsert_session_attempts(), 3U);
     EXPECT_EQ(store->append_message_attempts(), 0U);
-    EXPECT_EQ(store->last_session_id(), session_id);
+    EXPECT_EQ(store->last_session_id(), "srv_startfail_1");
 
     ASSERT_TRUE(
         client
@@ -1101,26 +1095,14 @@ TEST(AiGatewayServerIntegrationTest,
     ASSERT_TRUE(turn_error.ok()) << turn_error.status().ToString();
     ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*turn_error));
     const auto& turn_error_message = std::get<protocol::ErrorMessage>(*turn_error);
-    EXPECT_EQ(turn_error_message.session_id, session_id);
+    EXPECT_FALSE(turn_error_message.session_id.has_value());
     ASSERT_TRUE(turn_error_message.turn_id.has_value());
     EXPECT_EQ(*turn_error_message.turn_id, "turn_1");
-    EXPECT_EQ(turn_error_message.code, "internal_error");
-    EXPECT_EQ(turn_error_message.message, "stub responder failed to update memory");
-
-    const absl::StatusOr<protocol::GatewayMessage> turn_completed = client.ReadJsonFrame();
-    ASSERT_TRUE(turn_completed.ok()) << turn_completed.status().ToString();
-    ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*turn_completed));
-    EXPECT_EQ(std::get<protocol::TurnCompletedMessage>(*turn_completed).turn_id, "turn_1");
+    EXPECT_EQ(turn_error_message.code, "bad_request");
+    EXPECT_EQ(turn_error_message.message, "session is not active");
 
     EXPECT_EQ(store->upsert_session_attempts(), 3U);
     EXPECT_EQ(store->append_message_attempts(), 0U);
-
-    const std::string end_message =
-        std::string("{\"type\":\"session.end\",\"session_id\":\"") + session_id + "\"}";
-    ASSERT_TRUE(client.SendJson(end_message).ok());
-    const absl::StatusOr<protocol::GatewayMessage> ended_frame = client.ReadJsonFrame();
-    ASSERT_TRUE(ended_frame.ok()) << ended_frame.status().ToString();
-    ASSERT_TRUE(std::holds_alternative<protocol::SessionEndedMessage>(*ended_frame));
 
     client.CloseTransport();
     server.Stop();

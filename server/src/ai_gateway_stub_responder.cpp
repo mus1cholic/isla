@@ -165,16 +165,6 @@ bool IsRetryableSessionStartStatus(const absl::Status& status) {
     }
 }
 
-std::string SessionStartErrorCode(const absl::Status& status) {
-    switch (status.code()) {
-    case absl::StatusCode::kDeadlineExceeded:
-    case absl::StatusCode::kUnavailable:
-        return "service_unavailable";
-    default:
-        return "internal_error";
-    }
-}
-
 struct MidTermMemoryComponents {
     isla::server::memory::MidTermFlushDeciderPtr flush_decider;
     isla::server::memory::MidTermCompactorPtr compactor;
@@ -299,8 +289,8 @@ const absl::Status& GatewayStubResponder::MidTermMemoryInitializationStatus() co
     return mid_term_memory_initialization_status_;
 }
 
-void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
-    LOG(INFO) << "AI gateway stub observed session start session="
+absl::Status GatewayStubResponder::HandleSessionStart(const SessionStartRequestEvent& event) {
+    LOG(INFO) << "AI gateway stub handling session start session="
               << SanitizeForLog(event.session_id) << " user_id=" << SanitizeForLog(event.user_id);
     RecordSessionReplayClock(event.session_id, event.session_start_time);
     const absl::Status status = InitializeSessionMemory(event.session_id, event.user_id);
@@ -308,8 +298,14 @@ void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
         LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
                    << SanitizeForLog(event.session_id) << " detail='"
                    << SanitizeForLog(status.message()) << "'";
-        BestEffortEmitSessionStartFailure(event.session_id, status);
+        return absl::Status(status.code(), "failed to initialize session memory");
     }
+    return status;
+}
+
+void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
+    VLOG(1) << "AI gateway stub observed confirmed session start session="
+            << SanitizeForLog(event.session_id) << " user_id=" << SanitizeForLog(event.user_id);
 }
 
 absl::Status GatewayStubResponder::HandleTranscriptSeed(const TranscriptSeedEvent& event) {
@@ -877,45 +873,6 @@ void GatewayStubResponder::BestEffortTerminateAcceptedTurn(const PendingTurn& tu
         LOG(ERROR) << "AI gateway stub follow-up terminalization failed during " << log_context
                    << " session=" << SanitizeForLog(turn.session_id)
                    << " turn_id=" << SanitizeForLog(turn.turn_id) << " detail='unknown exception'";
-    }
-}
-
-void GatewayStubResponder::BestEffortEmitSessionStartFailure(std::string_view session_id,
-                                                             const absl::Status& status) noexcept {
-    try {
-        GatewaySessionRegistry* registry = session_registry();
-        if (registry == nullptr) {
-            LOG(WARNING) << "AI gateway stub missing session registry during session start failure"
-                         << " session=" << SanitizeForLog(session_id);
-            return;
-        }
-
-        const std::shared_ptr<GatewayLiveSession> live_session = registry->FindSession(session_id);
-        if (live_session == nullptr) {
-            LOG(WARNING) << "AI gateway stub lost live session during session start failure"
-                         << " session=" << SanitizeForLog(session_id);
-            return;
-        }
-
-        const absl::Status emit_status =
-            await_emit(config_.async_emit_timeout, [&](GatewayEmitCallback on_complete) {
-                live_session->AsyncEmitError(std::nullopt, SessionStartErrorCode(status),
-                                             "failed to initialize session memory",
-                                             std::move(on_complete));
-            });
-        if (!emit_status.ok()) {
-            LOG(WARNING) << "AI gateway stub failed to emit session start error session="
-                         << SanitizeForLog(session_id) << " detail='"
-                         << SanitizeForLog(emit_status.message()) << "'";
-        }
-    } catch (const std::exception& error) {
-        LOG(WARNING) << "AI gateway stub threw while emitting session start error session="
-                     << SanitizeForLog(session_id) << " detail='" << SanitizeForLog(error.what())
-                     << "'";
-    } catch (...) {
-        LOG(WARNING) << "AI gateway stub threw unknown exception while emitting session start "
-                        "error session="
-                     << SanitizeForLog(session_id);
     }
 }
 
