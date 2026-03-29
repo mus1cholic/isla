@@ -1152,8 +1152,9 @@ TEST(AiGatewayServerIntegrationTest, MultiDeltaProviderStillProducesSingleFinalT
     server.Stop();
 }
 
-TEST(AiGatewayServerIntegrationTest,
-     SessionStartPersistenceFailureRejectsStartupBeforeSessionStartedAndDoesNotRetryOnTurnIngress) {
+TEST(
+    AiGatewayServerIntegrationTest,
+    SessionStartPersistenceFailureStrictModeRejectsStartupBeforeSessionStartedAndDoesNotRetryOnTurnIngress) {
     auto store =
         std::make_shared<FailingSessionStartMemoryStore>(absl::UnavailableError("supabase down"));
     GatewayStubResponder responder(GatewayStubResponderConfig{
