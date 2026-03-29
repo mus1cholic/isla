@@ -130,13 +130,17 @@ TEST(BenchmarkAdapterUtilsTest, ParseBenchmarkTimestampSupportsDateOnlyAndIso860
         ParseBenchmarkTimestamp("2026-03-20T09:30:00Z", "question_date");
     const absl::StatusOr<Timestamp> longmemeval_timestamp =
         ParseBenchmarkTimestamp("2023/05/30 (Tue) 23:40", "question_date");
+    const absl::StatusOr<Timestamp> locomo_timestamp =
+        ParseBenchmarkTimestamp("1:56 pm on 8 May, 2023", "question_date");
 
     ASSERT_TRUE(date_only.ok()) << date_only.status();
     ASSERT_TRUE(full_timestamp.ok()) << full_timestamp.status();
     ASSERT_TRUE(longmemeval_timestamp.ok()) << longmemeval_timestamp.status();
+    ASSERT_TRUE(locomo_timestamp.ok()) << locomo_timestamp.status();
     EXPECT_EQ(*date_only, Ts("2026-03-20T00:00:00Z"));
     EXPECT_EQ(*full_timestamp, Ts("2026-03-20T09:30:00Z"));
     EXPECT_EQ(*longmemeval_timestamp, Ts("2023-05-30T23:40:00Z"));
+    EXPECT_EQ(*locomo_timestamp, Ts("2023-05-08T13:56:00Z"));
 }
 
 TEST(BenchmarkAdapterUtilsTest, ParseBenchmarkConversationRoleParsesKnownRoles) {

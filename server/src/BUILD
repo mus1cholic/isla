@@ -502,6 +502,53 @@ cc_binary(
 )
 
 cc_library(
+    name = "locomo_benchmark",
+    srcs = ["evals/locomo_benchmark.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
+        ":benchmark_adapter_utils",
+        ":eval_runner",
+        ":memory_benchmark_runner",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_binary(
+    name = "locomo_eval",
+    srcs = ["evals/locomo_main.cpp"],
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":benchmark_cli_utils",
+        ":locomo_benchmark",
+        "@abseil-cpp//absl/log:initialize",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "locomo_benchmark_test",
+    srcs = ["evals/locomo_benchmark_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "//server/memory/src:memory_types",
+        ":locomo_benchmark",
+        ":ai_gateway_server",
+        ":ai_gateway_stub_responder",
+        ":openai_responses_test_utils",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
     name = "longmemeval_benchmark",
     srcs = ["evals/longmemeval_benchmark.cpp"],
     visibility = ["//visibility:public"],
