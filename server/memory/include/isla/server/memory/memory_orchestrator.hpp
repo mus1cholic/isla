@@ -64,6 +64,7 @@ struct MemoryOrchestratorInit {
 struct SleepCycleResult {
     std::size_t drained_pending_mid_term_compactions = 0;
     std::size_t synchronously_flushed_live_episodes = 0;
+    std::size_t consolidated_long_term_episode_count = 0;
     std::size_t cleared_mid_term_episode_count = 0;
     std::size_t cleared_conversation_item_count = 0;
 };
@@ -213,6 +214,12 @@ class MemoryOrchestrator {
 
     // Produces stable per-session episode ids in the order completed flushes are applied.
     [[nodiscard]] std::string NextEpisodeId();
+
+    // Consolidates mid-term episodes into long-term storage. Returns the number of episodes
+    // successfully consolidated, or an error if any upsert fails (the sleep cycle should not
+    // proceed to clear mid-term data when consolidation is incomplete).
+    [[nodiscard]] absl::StatusOr<std::size_t>
+    ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes);
 
     struct CompletedFlushBuildInput {
         CompactedMidTermEpisode compacted;

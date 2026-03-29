@@ -89,6 +89,14 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
                 episode_writes.push_back(write);
                 return absl::OkStatus();
             });
+        ON_CALL(*this, UpsertLongTermEpisode(_))
+            .WillByDefault([this](const LongTermEpisodeWrite& write) {
+                if (!upsert_long_term_episode_status.ok()) {
+                    return upsert_long_term_episode_status;
+                }
+                long_term_episode_writes.push_back(write);
+                return absl::OkStatus();
+            });
         ON_CALL(*this, ListMidTermEpisodes(_))
             .WillByDefault([](std::string_view session_id) -> absl::StatusOr<std::vector<Episode>> {
                 static_cast<void>(session_id);
@@ -117,6 +125,7 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     std::vector<SplitEpisodeStubWrite> split_stub_writes;
     std::vector<std::string> cleared_session_ids;
     std::vector<MidTermEpisodeWrite> episode_writes;
+    std::vector<LongTermEpisodeWrite> long_term_episode_writes;
     absl::Status upsert_session_status = absl::OkStatus();
     absl::Status upsert_user_working_memory_status = absl::OkStatus();
     absl::Status append_message_status = absl::OkStatus();
@@ -124,6 +133,7 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     absl::Status split_stub_status = absl::OkStatus();
     absl::Status clear_working_set_status = absl::OkStatus();
     absl::Status upsert_episode_status = absl::OkStatus();
+    absl::Status upsert_long_term_episode_status = absl::OkStatus();
 };
 
 std::shared_future<void> MakeReadyFuture() {
@@ -631,6 +641,119 @@ TEST_F(MemoryOrchestratorTest,
     ASSERT_EQ(state.mid_term_episodes.size(), 1U);
     ASSERT_EQ(state.conversation.items.size(), 1U);
     EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleConsolidatesMidTermEpisodesToLongTerm) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+    EXPECT_TRUE(handler->HasPendingMidTermCompactions());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->consolidated_long_term_episode_count, 1U);
+    ASSERT_EQ(store->long_term_episode_writes.size(), 1U);
+
+    const LongTermEpisode& lte = store->long_term_episode_writes.front().episode;
+    EXPECT_EQ(lte.lte_id, "lte_" + lte.original_episode_ids.front());
+    EXPECT_EQ(lte.user_id, "user_001");
+    EXPECT_EQ(lte.summary_compressed, "summary");
+    EXPECT_EQ(lte.keywords, std::vector<std::string>{ "memory" });
+    EXPECT_EQ(lte.original_episode_ids.size(), 1U);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleAbortsWhenConsolidationFails) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    store->upsert_long_term_episode_status = absl::InternalError("long-term upsert failed");
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
+
+    // Mid-term data is preserved — nothing was cleared.
+    EXPECT_TRUE(store->cleared_session_ids.empty());
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_EQ(state.mid_term_episodes.size(), 1U);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleSkipsConsolidationWithoutStore) {
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->consolidated_long_term_episode_count, 0U);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleConsolidationMapsEmptyEmbeddingToNullopt) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "memory" },
+        .salience = kExpandableEpisodeSalienceThreshold,
+        .embedding = {},
+    });
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->long_term_episode_writes.size(), 1U);
+    EXPECT_FALSE(store->long_term_episode_writes.front().episode.embedding.has_value());
 }
 
 TEST_F(MemoryOrchestratorTest, AwaitAndDrainPropagatesCompactorFailure) {
