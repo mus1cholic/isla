@@ -167,6 +167,10 @@ json MakeEmbeddingValuesJson(std::size_t dimensions, double value) {
     return values;
 }
 
+std::string ExpectedRequestedDimensionText() {
+    return "expected " + std::to_string(memory::kEmbeddingDimensions);
+}
+
 TEST(GeminiApiEmbeddingClientTest, ValidateRejectsMissingApiKey) {
     const absl::Status status =
         ValidateGeminiApiEmbeddingClientConfig(GeminiApiEmbeddingClientConfig{
@@ -241,7 +245,8 @@ TEST(GeminiApiEmbeddingClientTest, EmbedRejectsUnexpectedOutputDimension) {
 
     ASSERT_FALSE(embedding.ok());
     EXPECT_EQ(embedding.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(embedding.status().message()).find("expected 1536"), std::string::npos);
+    EXPECT_NE(std::string(embedding.status().message()).find(ExpectedRequestedDimensionText()),
+              std::string::npos);
 }
 
 TEST(GeminiApiEmbeddingClientTest, EmbedRejectsZeroNormEmbeddingDuringNormalization) {

@@ -18,6 +18,10 @@ Embedding MakeEmbedding(std::size_t dimensions = kEmbeddingDimensions) {
     return Embedding(dimensions, 0.25);
 }
 
+std::string ExpectedEmbeddingDimensionText() {
+    return "exactly " + std::to_string(kEmbeddingDimensions);
+}
+
 TEST(MemoryStoreTest, ConversationMessageWriteRejectsMissingIdentifiers) {
     const absl::Status status = ValidateConversationMessageWrite(ConversationMessageWrite{
         .session_id = "",
@@ -250,7 +254,8 @@ TEST(MemoryStoreTest, EntityWriteRejectsWrongEmbeddingDimension) {
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(status.message()).find("exactly 1536"), std::string::npos);
+    EXPECT_NE(std::string(status.message()).find(ExpectedEmbeddingDimensionText()),
+              std::string::npos);
 }
 
 TEST(MemoryStoreTest, EntityWriteAcceptsValidInput) {
@@ -309,7 +314,8 @@ TEST(MemoryStoreTest, RelationshipWriteRejectsWrongEmbeddingDimension) {
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(status.message()).find("exactly 1536"), std::string::npos);
+    EXPECT_NE(std::string(status.message()).find(ExpectedEmbeddingDimensionText()),
+              std::string::npos);
 }
 
 TEST(MemoryStoreTest, RelationshipWriteAcceptsValidInput) {
@@ -363,7 +369,8 @@ TEST(MemoryStoreTest, LongTermEpisodeWriteRejectsWrongEmbeddingDimension) {
 
     ASSERT_FALSE(status.ok());
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(status.message()).find("exactly 1536"), std::string::npos);
+    EXPECT_NE(std::string(status.message()).find(ExpectedEmbeddingDimensionText()),
+              std::string::npos);
 }
 
 TEST(MemoryStoreTest, LongTermEpisodeWriteAcceptsValidInput) {

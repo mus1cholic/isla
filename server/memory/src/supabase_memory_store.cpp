@@ -75,7 +75,13 @@ Embedding ParseEmbeddingJsonValueOrThrow(const json& value, std::string_view fie
     if (value.is_array()) {
         embedding = value.get<Embedding>();
     } else if (value.is_string()) {
-        json parsed = json::parse(value.get<std::string>());
+        json parsed;
+        try {
+            parsed = json::parse(value.get<std::string>());
+        } catch (const json::parse_error& error) {
+            throw std::invalid_argument(std::string(field_name) +
+                                        " vector text contained invalid JSON: " + error.what());
+        }
         if (!parsed.is_array()) {
             throw std::invalid_argument(std::string(field_name) +
                                         " vector text must decode to a JSON array");

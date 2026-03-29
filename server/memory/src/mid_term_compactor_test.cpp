@@ -32,6 +32,10 @@ Embedding MakeEmbedding(double value = 0.25) {
     return Embedding(kEmbeddingDimensions, value);
 }
 
+std::string ExpectedEmbeddingDimensionText() {
+    return "exactly " + std::to_string(kEmbeddingDimensions);
+}
+
 struct CompactorWithFake {
     std::shared_ptr<isla::server::test::MockLlmClient> fake_client;
     std::shared_ptr<isla::server::test::MockEmbeddingClient> fake_embedding_client;
@@ -525,7 +529,8 @@ TEST(LlmMidTermCompactorTest, CompactRejectsUnexpectedEmbeddingDimension) {
 
     ASSERT_FALSE(compacted.ok());
     EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
-    EXPECT_NE(std::string(compacted.status().message()).find("exactly 1536"), std::string::npos);
+    EXPECT_NE(std::string(compacted.status().message()).find(ExpectedEmbeddingDimensionText()),
+              std::string::npos);
 }
 
 TEST(LlmMidTermCompactorTest, CompactPropagatesEmbeddingFailure) {

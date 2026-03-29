@@ -1580,6 +1580,44 @@ TEST(SupabaseMemoryStoreTest, GetEntityParsesStringEncodedEmbeddingVectors) {
     EXPECT_DOUBLE_EQ((*entity)->name_embedding->front(), 0.1);
 }
 
+TEST(SupabaseMemoryStoreTest, GetEntityReportsFieldNameForMalformedStringEncodedEmbedding) {
+    const json response_rows = json::array({
+        json{
+            { "entity_id", "ent_001" },
+            { "user_id", "user_001" },
+            { "label", "Alice" },
+            { "category", "person" },
+            { "activeness", 7 },
+            { "active_model_text", "Alice is the user's friend." },
+            { "familiar_label_text", nullptr },
+            { "name_embedding", "[0.1, not-json]" },
+            { "created_at", "2026-03-08T14:00:00Z" },
+            { "updated_at", "2026-03-08T14:01:00Z" },
+        },
+    });
+    const std::string response_body = response_rows.dump();
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::optional<Entity>> entity = (*store)->GetEntity("ent_001");
+
+    ASSERT_FALSE(entity.ok());
+    EXPECT_EQ(entity.status().code(), absl::StatusCode::kInternal);
+    EXPECT_NE(std::string(entity.status().message()).find("name_embedding"), std::string::npos);
+    EXPECT_NE(std::string(entity.status().message()).find("invalid JSON"), std::string::npos);
+}
+
 TEST(SupabaseMemoryStoreTest, GetEntityReturnsNulloptWhenNotFound) {
     const std::string response_body = "[]";
     SequentialHttpServer server({
