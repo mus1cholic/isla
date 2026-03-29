@@ -169,7 +169,7 @@ MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory mem
     : session_id_(std::move(session_id)), memory_(std::move(memory)), store_(std::move(store)),
       mid_term_flush_decider_(std::move(mid_term_flush_decider)),
       mid_term_compactor_(std::move(mid_term_compactor)), pending_mid_term_flushes_(),
-      next_episode_sequence_(1), next_lte_sequence_(1), session_persisted_(false) {}
+      next_episode_sequence_(1), session_persisted_(false) {}
 
 absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
                                                               const MemoryOrchestratorInit& init) {
@@ -450,11 +450,7 @@ std::string MemoryOrchestrator::NextEpisodeId() {
     return "ep_" + session_id_ + "_" + std::to_string(next_episode_sequence_++);
 }
 
-std::string MemoryOrchestrator::NextLongTermEpisodeId() {
-    return "lte_" + session_id_ + "_" + std::to_string(next_lte_sequence_++);
-}
-
-std::size_t
+absl::StatusOr<std::size_t>
 MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes) {
     if (store_ == nullptr || mid_term_episodes.empty()) {
         return 0;
@@ -465,7 +461,7 @@ MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_e
 
     for (const Episode& episode : mid_term_episodes) {
         LongTermEpisode lte{
-            .lte_id = NextLongTermEpisodeId(),
+            .lte_id = "lte_" + episode.episode_id,
             .user_id = user_id,
             .summary_full = episode.tier1_detail,
             .summary_compressed = episode.tier2_summary,
@@ -479,7 +475,7 @@ MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_e
 
         // TODO: Entity and relationship extraction will be added in a future PR.
 
-        const absl::Status status = store_->UpsertLongTermEpisode(LongTermEpisodeWrite{
+        absl::Status status = store_->UpsertLongTermEpisode(LongTermEpisodeWrite{
             .episode = std::move(lte),
         });
         if (!status.ok()) {
@@ -488,16 +484,15 @@ MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_e
                          << " session_id=" << SanitizeForLog(session_id_)
                          << " episode_id=" << SanitizeForLog(episode.episode_id) << " detail='"
                          << SanitizeForLog(status.message()) << "'";
-            continue;
+            return status;
         }
         ++consolidated;
     }
 
-    if (consolidated > 0) {
-        LOG(INFO) << "MemoryOrchestrator consolidated " << consolidated << " of "
-                  << mid_term_episodes.size() << " mid-term episodes to long-term storage"
-                  << " session_id=" << SanitizeForLog(session_id_);
-    }
+    LOG(INFO) << "MemoryOrchestrator consolidated " << consolidated
+              << " mid-term episodes to "
+                 "long-term storage"
+              << " session_id=" << SanitizeForLog(session_id_);
 
     return consolidated;
 }
@@ -857,12 +852,20 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
 
     const WorkingMemoryState& state_before_clear = memory_.snapshot();
 
-    const std::size_t consolidated = ConsolidateToLongTerm(state_before_clear.mid_term_episodes);
+    // Consolidate mid-term episodes to long-term storage before clearing. If any upsert fails,
+    // abort the sleep cycle to avoid dropping unconsolidated episodes.
+    // TODO: The caller that invokes RunSleepCycle should implement retry with backoff so that
+    // transient store failures do not leave a user's session permanently clogged.
+    const absl::StatusOr<std::size_t> consolidated =
+        ConsolidateToLongTerm(state_before_clear.mid_term_episodes);
+    if (!consolidated.ok()) {
+        return consolidated.status();
+    }
 
     SleepCycleResult result{
         .drained_pending_mid_term_compactions = *drained_pending_compactions,
         .synchronously_flushed_live_episodes = *flushed_live_tail ? 1U : 0U,
-        .consolidated_long_term_episode_count = consolidated,
+        .consolidated_long_term_episode_count = *consolidated,
         .cleared_mid_term_episode_count = state_before_clear.mid_term_episodes.size(),
         .cleared_conversation_item_count = state_before_clear.conversation.items.size(),
     };

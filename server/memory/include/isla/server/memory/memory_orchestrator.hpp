@@ -215,13 +215,11 @@ class MemoryOrchestrator {
     // Produces stable per-session episode ids in the order completed flushes are applied.
     [[nodiscard]] std::string NextEpisodeId();
 
-    // Produces stable per-session long-term episode ids.
-    [[nodiscard]] std::string NextLongTermEpisodeId();
-
-    // Consolidates mid-term episodes into long-term storage. Individual upsert failures are
-    // logged as warnings and do not abort the cycle. Returns the number of episodes successfully
-    // consolidated.
-    [[nodiscard]] std::size_t ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes);
+    // Consolidates mid-term episodes into long-term storage. Returns the number of episodes
+    // successfully consolidated, or an error if any upsert fails (the sleep cycle should not
+    // proceed to clear mid-term data when consolidation is incomplete).
+    [[nodiscard]] absl::StatusOr<std::size_t>
+    ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes);
 
     struct CompletedFlushBuildInput {
         CompactedMidTermEpisode compacted;
@@ -265,7 +263,6 @@ class MemoryOrchestrator {
     MidTermCompactorPtr mid_term_compactor_;
     std::vector<PendingMidTermFlush> pending_mid_term_flushes_;
     std::size_t next_episode_sequence_ = 1;
-    std::size_t next_lte_sequence_ = 1;
     bool session_persisted_ = false;
 };
 

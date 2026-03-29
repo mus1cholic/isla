@@ -668,14 +668,14 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleConsolidatesMidTermEpisodesToLongTer
     ASSERT_EQ(store->long_term_episode_writes.size(), 1U);
 
     const LongTermEpisode& lte = store->long_term_episode_writes.front().episode;
-    EXPECT_FALSE(lte.lte_id.empty());
+    EXPECT_EQ(lte.lte_id, "lte_" + lte.original_episode_ids.front());
     EXPECT_EQ(lte.user_id, "user_001");
     EXPECT_EQ(lte.summary_compressed, "summary");
     EXPECT_EQ(lte.keywords, std::vector<std::string>{ "memory" });
     EXPECT_EQ(lte.original_episode_ids.size(), 1U);
 }
 
-TEST_F(MemoryOrchestratorTest, RunSleepCycleConsolidationFailureIsNonFatal) {
+TEST_F(MemoryOrchestratorTest, RunSleepCycleAbortsWhenConsolidationFails) {
     auto store = std::make_shared<RecordingMemoryStore>();
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
@@ -695,10 +695,13 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleConsolidationFailureIsNonFatal) {
     const absl::StatusOr<SleepCycleResult> result =
         handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
 
-    ASSERT_TRUE(result.ok()) << result.status();
-    EXPECT_EQ(result->consolidated_long_term_episode_count, 0U);
-    EXPECT_EQ(result->cleared_mid_term_episode_count, 1U);
-    EXPECT_TRUE(store->long_term_episode_writes.empty());
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInternal);
+
+    // Mid-term data is preserved — nothing was cleared.
+    EXPECT_TRUE(store->cleared_session_ids.empty());
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    EXPECT_EQ(state.mid_term_episodes.size(), 1U);
 }
 
 TEST_F(MemoryOrchestratorTest, RunSleepCycleSkipsConsolidationWithoutStore) {
