@@ -285,8 +285,7 @@ TEST(AiGatewayWebSocketSessionTest, PendingSessionStartDefersSessionStartedUntil
     ON_CALL(sink, HandleSessionStart(_))
         .WillByDefault([&sink](const SessionStartRequestEvent& event) {
             sink.startup_requests.push_back(event);
-            return absl::StatusOr<SessionStartHandlingResult>(
-                SessionStartHandlingResult::Pending);
+            return absl::StatusOr<SessionStartHandlingResult>(SessionStartHandlingResult::Pending);
         });
 
     ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
@@ -315,8 +314,7 @@ TEST(AiGatewayWebSocketSessionTest, PendingSessionStartRejectsIngressUntilComple
     ON_CALL(sink, HandleSessionStart(_))
         .WillByDefault([&sink](const SessionStartRequestEvent& event) {
             sink.startup_requests.push_back(event);
-            return absl::StatusOr<SessionStartHandlingResult>(
-                SessionStartHandlingResult::Pending);
+            return absl::StatusOr<SessionStartHandlingResult>(SessionStartHandlingResult::Pending);
         });
 
     ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
@@ -346,8 +344,7 @@ TEST(AiGatewayWebSocketSessionTest, PendingSessionStartCloseDoesNotReportStarted
     ON_CALL(sink, HandleSessionStart(_))
         .WillByDefault([&sink](const SessionStartRequestEvent& event) {
             sink.startup_requests.push_back(event);
-            return absl::StatusOr<SessionStartHandlingResult>(
-                SessionStartHandlingResult::Pending);
+            return absl::StatusOr<SessionStartHandlingResult>(SessionStartHandlingResult::Pending);
         });
 
     ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
