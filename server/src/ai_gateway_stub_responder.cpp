@@ -729,17 +729,12 @@ void GatewayStubResponder::SchedulePendingSessionStart(PendingSessionStart sessi
             std::lock_guard<std::mutex> lock(mutex_);
             const bool session_tracked =
                 live_replay_clock_by_session_.contains(std::string(session_id));
-            if (!session_tracked) {
+            if (!session_tracked || stopping_ || worker_stop_requested_) {
                 memory_by_session_.erase(session_id);
                 failed_session_starts_.erase(session_id);
                 session_strands_.erase(session_id);
-                completion_status = absl::CancelledError("session closed");
-                on_complete = std::move(session_start.on_complete);
-            } else if (stopping_ || worker_stop_requested_) {
-                memory_by_session_.erase(session_id);
-                failed_session_starts_.erase(session_id);
-                session_strands_.erase(session_id);
-                completion_status = absl::AbortedError("server stopping");
+                completion_status = !session_tracked ? absl::CancelledError("session closed")
+                                                     : absl::AbortedError("server stopping");
                 on_complete = std::move(session_start.on_complete);
             } else if (status.ok()) {
                 failed_session_starts_.erase(session_id);
@@ -826,13 +821,6 @@ void GatewayStubResponder::ScheduleAcceptedTurn(PendingTurn turn) {
             FinishProcessingExceptionTurn(turn, "unknown exception");
         }
         ForgetInProgressTurn(turn.session_id, turn.turn_id);
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!live_replay_clock_by_session_.contains(turn.session_id) &&
-            !pending_session_starts_.contains(turn.session_id) &&
-            !pending_turns_.contains(turn.session_id) &&
-            !in_progress_turns_.contains(turn.session_id)) {
-            session_strands_.erase(turn.session_id);
-        }
     });
 }
 
