@@ -10,6 +10,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include <nlohmann/json.hpp>
 
 #include "isla/server/memory/memory_timestamp_utils.hpp"
@@ -177,9 +178,7 @@ absl::StatusOr<std::string> NormalizeLoCoMoTimestamp(std::string_view text,
             absl::StrCat(field_description, " is not a supported timestamp: invalid month"));
     }
 
-    return absl::StrCat(year, month.value() < 10U ? "-0" : "-", month.value(),
-                        day < 10 ? "-0" : "-", day, "T", hour < 10 ? "0" : "", hour, ":",
-                        minute < 10 ? "0" : "", minute, ":00Z");
+    return absl::StrFormat("%d-%02u-%02dT%02d:%02d:00Z", year, *month, day, hour, minute);
 }
 
 } // namespace

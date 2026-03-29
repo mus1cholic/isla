@@ -134,6 +134,7 @@ cc_library(
     deps = [
         "//server/include/isla/server:server_headers",
         "//server/memory/src:memory_types",
+        "@abseil-cpp//absl/strings:str_format",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
@@ -511,6 +512,7 @@ cc_library(
         ":benchmark_adapter_utils",
         ":eval_runner",
         ":memory_benchmark_runner",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",

@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -342,6 +343,18 @@ absl::StatusOr<std::vector<MemoryBenchmarkCase>> ParseConversationCases(const js
         }
     }
 
+    absl::flat_hash_map<std::string_view, const json*> location_by_dia_id;
+    location_by_dia_id.reserve(turn_locations.size());
+    for (const json& location : turn_locations) {
+        const auto dia_id_it = location.find("dia_id");
+        if (dia_id_it == location.end() || !dia_id_it->is_string()) {
+            return invalid_argument(
+                absl::StrCat(case_context, " turn_locations entry must include string dia_id"));
+        }
+        const std::string& dia_id = dia_id_it->get_ref<const std::string&>();
+        location_by_dia_id.insert_or_assign(std::string_view(dia_id), &location);
+    }
+
     const absl::StatusOr<const json*> qa_field = GetRequiredField(entry, "qa", case_context);
     if (!qa_field.ok()) {
         return qa_field.status();
@@ -408,19 +421,15 @@ absl::StatusOr<std::vector<MemoryBenchmarkCase>> ParseConversationCases(const js
 
         json evidence_locations = json::array();
         for (const std::string& evidence_id : *evidence) {
-            bool found = false;
-            for (const json& location : turn_locations) {
-                if (location["dia_id"] == evidence_id) {
-                    evidence_locations.push_back(location);
-                    found = true;
-                }
-            }
-            if (!found) {
+            const auto location_it = location_by_dia_id.find(evidence_id);
+            if (location_it == location_by_dia_id.end()) {
                 evidence_locations.push_back(json{
                     { "dia_id", evidence_id },
                     { "missing_from_transcript", true },
                 });
+                continue;
             }
+            evidence_locations.push_back(*location_it->second);
         }
 
         json metadata{
