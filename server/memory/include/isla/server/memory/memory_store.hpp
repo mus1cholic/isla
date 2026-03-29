@@ -189,33 +189,50 @@ class MemoryStore {
     // -------------------------------------------------------------------------
 
     // Creates or updates a persisted entity in the Knowledge Graph.
-    [[nodiscard]] virtual absl::Status UpsertEntity(const EntityWrite& write) = 0;
+    [[nodiscard]] virtual absl::Status UpsertEntity(const EntityWrite& /*write*/) {
+        return absl::UnimplementedError("UpsertEntity not implemented");
+    }
 
     // Creates or updates a persisted relationship in the Knowledge Graph.
-    [[nodiscard]] virtual absl::Status UpsertRelationship(const RelationshipWrite& write) = 0;
+    [[nodiscard]] virtual absl::Status UpsertRelationship(const RelationshipWrite& /*write*/) {
+        return absl::UnimplementedError("UpsertRelationship not implemented");
+    }
 
     // Creates or updates a persisted long-term episode in the episodic vector store.
-    [[nodiscard]] virtual absl::Status UpsertLongTermEpisode(const LongTermEpisodeWrite& write) = 0;
+    [[nodiscard]] virtual absl::Status
+    UpsertLongTermEpisode(const LongTermEpisodeWrite& /*write*/) {
+        return absl::UnimplementedError("UpsertLongTermEpisode not implemented");
+    }
 
     // Writes the entity cross-links for a long-term episode into the junction table.
     [[nodiscard]] virtual absl::Status
-    LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& link) = 0;
+    LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& /*link*/) {
+        return absl::UnimplementedError("LinkLongTermEpisodeEntities not implemented");
+    }
 
     // Lists all persisted entities for a user.
     [[nodiscard]] virtual absl::StatusOr<std::vector<Entity>>
-    ListEntitiesByUser(std::string_view user_id) const = 0;
+    ListEntitiesByUser(std::string_view /*user_id*/) const {
+        return absl::UnimplementedError("ListEntitiesByUser not implemented");
+    }
 
     // Returns one persisted entity when present.
     [[nodiscard]] virtual absl::StatusOr<std::optional<Entity>>
-    GetEntity(std::string_view entity_id) const = 0;
+    GetEntity(std::string_view /*entity_id*/) const {
+        return absl::UnimplementedError("GetEntity not implemented");
+    }
 
     // Lists all non-archived relationships originating from an entity.
     [[nodiscard]] virtual absl::StatusOr<std::vector<Relationship>>
-    ListRelationshipsForEntity(std::string_view entity_id) const = 0;
+    ListRelationshipsForEntity(std::string_view /*entity_id*/) const {
+        return absl::UnimplementedError("ListRelationshipsForEntity not implemented");
+    }
 
     // Lists all long-term episodes cross-linked to an entity via the junction table.
     [[nodiscard]] virtual absl::StatusOr<std::vector<LongTermEpisode>>
-    ListLongTermEpisodesForEntity(std::string_view entity_id) const = 0;
+    ListLongTermEpisodesForEntity(std::string_view /*entity_id*/) const {
+        return absl::UnimplementedError("ListLongTermEpisodesForEntity not implemented");
+    }
 };
 
 using MemoryStorePtr = std::shared_ptr<MemoryStore>;

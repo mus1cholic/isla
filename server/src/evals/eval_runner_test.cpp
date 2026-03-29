@@ -20,19 +20,12 @@ using isla::server::ai_gateway::OpenAiResponsesEventCallback;
 using isla::server::ai_gateway::OpenAiResponsesRequest;
 using isla::server::ai_gateway::test::MakeFakeOpenAiResponsesClient;
 using isla::server::memory::ConversationMessageWrite;
-using isla::server::memory::Entity;
-using isla::server::memory::EntityWrite;
 using isla::server::memory::Episode;
-using isla::server::memory::LongTermEpisode;
-using isla::server::memory::LongTermEpisodeEntityLink;
-using isla::server::memory::LongTermEpisodeWrite;
 using isla::server::memory::MemorySessionRecord;
 using isla::server::memory::MemoryStore;
 using isla::server::memory::MemoryStoreSnapshot;
 using isla::server::memory::MessageRole;
 using isla::server::memory::ParseTimestamp;
-using isla::server::memory::Relationship;
-using isla::server::memory::RelationshipWrite;
 using isla::server::memory::Timestamp;
 using isla::server::memory::UserWorkingMemoryRecord;
 using namespace std::chrono_literals;
@@ -98,34 +91,6 @@ class RecordingMemoryStore final : public MemoryStore {
     LoadSnapshot(std::string_view session_id) const override {
         static_cast<void>(session_id);
         return std::nullopt;
-    }
-
-    absl::Status UpsertEntity(const EntityWrite& /*write*/) override {
-        return absl::UnimplementedError("long-term memory not implemented");
-    }
-    absl::Status UpsertRelationship(const RelationshipWrite& /*write*/) override {
-        return absl::UnimplementedError("long-term memory not implemented");
-    }
-    absl::Status UpsertLongTermEpisode(const LongTermEpisodeWrite& /*write*/) override {
-        return absl::UnimplementedError("long-term memory not implemented");
-    }
-    absl::Status LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& /*link*/) override {
-        return absl::UnimplementedError("long-term memory not implemented");
-    }
-    absl::StatusOr<std::vector<Entity>>
-    ListEntitiesByUser(std::string_view /*user_id*/) const override {
-        return absl::UnimplementedError("long-term memory not implemented");
-    }
-    absl::StatusOr<std::optional<Entity>> GetEntity(std::string_view /*entity_id*/) const override {
-        return absl::UnimplementedError("long-term memory not implemented");
-    }
-    absl::StatusOr<std::vector<Relationship>>
-    ListRelationshipsForEntity(std::string_view /*entity_id*/) const override {
-        return absl::UnimplementedError("long-term memory not implemented");
-    }
-    absl::StatusOr<std::vector<LongTermEpisode>>
-    ListLongTermEpisodesForEntity(std::string_view /*entity_id*/) const override {
-        return absl::UnimplementedError("long-term memory not implemented");
     }
 
     std::vector<MemorySessionRecord> session_records;
