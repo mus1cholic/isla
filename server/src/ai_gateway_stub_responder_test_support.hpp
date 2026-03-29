@@ -528,6 +528,25 @@ class RecordingGatewayMemoryStore final
                 static_cast<void>(write);
                 return absl::OkStatus();
             });
+        ON_CALL(*this, ListEntitiesByUser(_))
+            .WillByDefault([](std::string_view user_id)
+                               -> absl::StatusOr<std::vector<isla::server::memory::Entity>> {
+                static_cast<void>(user_id);
+                return std::vector<isla::server::memory::Entity>{};
+            });
+        ON_CALL(*this, ListRelationshipsForEntity(_))
+            .WillByDefault([](std::string_view entity_id)
+                               -> absl::StatusOr<std::vector<isla::server::memory::Relationship>> {
+                static_cast<void>(entity_id);
+                return std::vector<isla::server::memory::Relationship>{};
+            });
+        ON_CALL(*this, ListLongTermEpisodesForEntity(_))
+            .WillByDefault(
+                [](std::string_view entity_id)
+                    -> absl::StatusOr<std::vector<isla::server::memory::LongTermEpisode>> {
+                    static_cast<void>(entity_id);
+                    return std::vector<isla::server::memory::LongTermEpisode>{};
+                });
         ON_CALL(*this, ListMidTermEpisodes(_))
             .WillByDefault([](std::string_view session_id)
                                -> absl::StatusOr<std::vector<isla::server::memory::Episode>> {
