@@ -274,6 +274,18 @@ class LlmMidTermCompactor final : public MidTermCompactor {
                              << SanitizeForLog(embedding.status().message()) << "'";
                 return embedding.status();
             }
+            if (embedding->size() != kEmbeddingDimensions) {
+                const absl::Status status =
+                    invalid_argument("mid-term compactor embedding must contain exactly " +
+                                     std::to_string(kEmbeddingDimensions) + " values");
+                LOG(WARNING) << "LlmMidTermCompactor embedding dimension mismatch session_id="
+                             << SanitizeForLog(request.session_id) << " conversation_item_index="
+                             << request.flush_candidate.conversation_item_index
+                             << " model=" << SanitizeForLog(embedding_model_)
+                             << " returned_dimensions=" << embedding->size() << " detail='"
+                             << SanitizeForLog(status.message()) << "'";
+                return status;
+            }
             compacted->embedding = std::move(*embedding);
         }
 

@@ -28,6 +28,10 @@ Timestamp Ts(std::string_view text) {
     return json(text).get<Timestamp>();
 }
 
+Embedding MakeEmbedding(double value = 0.25) {
+    return Embedding(kEmbeddingDimensions, value);
+}
+
 struct CompactorWithFake {
     std::shared_ptr<isla::server::test::MockLlmClient> fake_client;
     std::shared_ptr<isla::server::test::MockEmbeddingClient> fake_embedding_client;
@@ -88,7 +92,7 @@ CompactorWithFake MakeCompactor(
             .WillRepeatedly([last_embedding_request](
                                 const EmbeddingRequest& request) -> absl::StatusOr<Embedding> {
                 *last_embedding_request = request;
-                return Embedding{ 0.1, 0.2, 0.3 };
+                return MakeEmbedding(0.1);
             });
     }
     absl::StatusOr<MidTermCompactorPtr> compactor =
@@ -485,11 +489,43 @@ TEST(LlmMidTermCompactorTest, CompactGeneratesEmbeddingWhenEmbeddingClientConfig
         built.compactor->Compact(MakeCompactionRequest());
 
     ASSERT_TRUE(compacted.ok()) << compacted.status();
-    EXPECT_EQ(compacted->embedding, (Embedding{ 0.1, 0.2, 0.3 }));
+    EXPECT_EQ(compacted->embedding.size(), kEmbeddingDimensions);
+    EXPECT_DOUBLE_EQ(compacted->embedding.front(), 0.1);
     EXPECT_EQ(built.last_embedding_request->model, "gemini-embedding-2-preview");
     EXPECT_EQ(built.last_embedding_request->output_dimensionality, kEmbeddingDimensions);
     EXPECT_EQ(built.last_embedding_request->text,
               "The discussion focused on debugging an export crash.");
+}
+
+TEST(LlmMidTermCompactorTest, CompactRejectsUnexpectedEmbeddingDimension) {
+    const std::string response = R"({
+        "tier1_detail": null,
+        "tier2_summary": "The discussion focused on debugging an export crash.",
+        "tier3_ref": "Debugged an export crash.",
+        "tier3_keywords": ["export", "crash", "debug", "summary", "memory"],
+        "salience": 6
+    })";
+    auto fake = std::make_shared<isla::server::test::MockLlmClient>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*fake, Validate()).Times(0);
+    EXPECT_CALL(*embedding_client, Validate()).Times(0);
+    EXPECT_CALL(*fake, StreamResponse(_, _))
+        .WillOnce(
+            [response](const LlmRequest& request, const isla::server::LlmEventCallback& on_event) {
+                static_cast<void>(request);
+                return isla::server::test::EmitLlmResponse(response, on_event);
+            });
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
+    absl::StatusOr<MidTermCompactorPtr> compactor = CreateLlmMidTermCompactor(
+        fake, "test-model", embedding_client, "gemini-embedding-2-preview");
+    ASSERT_TRUE(compactor.ok()) << compactor.status();
+
+    const absl::StatusOr<CompactedMidTermEpisode> compacted =
+        (*compactor)->Compact(MakeCompactionRequest());
+
+    ASSERT_FALSE(compacted.ok());
+    EXPECT_EQ(compacted.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(compacted.status().message()).find("exactly 1536"), std::string::npos);
 }
 
 TEST(LlmMidTermCompactorTest, CompactPropagatesEmbeddingFailure) {
