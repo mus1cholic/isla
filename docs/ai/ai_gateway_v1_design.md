@@ -259,6 +259,11 @@ The server validates `session.start` with the application layer before acknowled
 must treat `session.started` as the point where startup has been accepted and the session is active.
 If startup is rejected, the server sends `error` instead and the session remains unstarted.
 
+Phase 4 policy is currently strict-only: the server does not silently downgrade failed persistent
+startup into an ephemeral or non-persistent session. In other words, `session.started` means the
+configured persistent startup path succeeded. A future product extension may add an explicit
+ephemeral fallback, but that would be opt-in and protocol-visible rather than implicit.
+
 ```json
 { "type": "session.started", "session_id": "srv_123" }
 ```

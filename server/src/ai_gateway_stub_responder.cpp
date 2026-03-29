@@ -307,6 +307,10 @@ absl::Status GatewayStubResponder::HandleSessionStart(const SessionStartRequestE
     LOG(INFO) << "AI gateway stub handling session start session="
               << SanitizeForLog(event.session_id) << " user_id=" << SanitizeForLog(event.user_id);
     RecordSessionReplayClock(event.session_id, event.session_start_time);
+    // NOTICE: Phase 4 currently keeps session startup strict-only. If persistent memory startup
+    // cannot be established after the configured retries, we reject `session.start` rather than
+    // silently falling back to an ephemeral/non-persistent mode. This preserves the invariant that
+    // `session.started` means durable startup succeeded.
     const std::size_t max_attempts = config_.session_start_persistence_max_attempts == 0U
                                          ? 1U
                                          : config_.session_start_persistence_max_attempts;
