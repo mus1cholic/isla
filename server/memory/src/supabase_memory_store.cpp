@@ -779,6 +779,48 @@ class SupabaseMemoryStore final : public MemoryStore {
         return snapshot;
     }
 
+    // -------------------------------------------------------------------------
+    // Long-term memory stubs (implementations coming in a follow-up PR).
+    // -------------------------------------------------------------------------
+
+    [[nodiscard]] absl::Status UpsertEntity(const EntityWrite& /*write*/) override {
+        return absl::UnimplementedError("UpsertEntity not yet implemented");
+    }
+
+    [[nodiscard]] absl::Status UpsertRelationship(const RelationshipWrite& /*write*/) override {
+        return absl::UnimplementedError("UpsertRelationship not yet implemented");
+    }
+
+    [[nodiscard]] absl::Status
+    UpsertLongTermEpisode(const LongTermEpisodeWrite& /*write*/) override {
+        return absl::UnimplementedError("UpsertLongTermEpisode not yet implemented");
+    }
+
+    [[nodiscard]] absl::Status
+    LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& /*link*/) override {
+        return absl::UnimplementedError("LinkLongTermEpisodeEntities not yet implemented");
+    }
+
+    [[nodiscard]] absl::StatusOr<std::vector<Entity>>
+    ListEntitiesByUser(std::string_view /*user_id*/) const override {
+        return absl::UnimplementedError("ListEntitiesByUser not yet implemented");
+    }
+
+    [[nodiscard]] absl::StatusOr<std::optional<Entity>>
+    GetEntity(std::string_view /*entity_id*/) const override {
+        return absl::UnimplementedError("GetEntity not yet implemented");
+    }
+
+    [[nodiscard]] absl::StatusOr<std::vector<Relationship>>
+    ListRelationshipsForEntity(std::string_view /*entity_id*/) const override {
+        return absl::UnimplementedError("ListRelationshipsForEntity not yet implemented");
+    }
+
+    [[nodiscard]] absl::StatusOr<std::vector<LongTermEpisode>>
+    ListLongTermEpisodesForEntity(std::string_view /*entity_id*/) const override {
+        return absl::UnimplementedError("ListLongTermEpisodesForEntity not yet implemented");
+    }
+
   private:
     SupabaseMemoryStoreConfig config_;
     std::unique_ptr<PersistentHttpClient> client_;

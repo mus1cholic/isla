@@ -26,6 +26,20 @@ class MockMemoryStore : public MemoryStore {
                 (std::string_view session_id, std::string_view episode_id), (const, override));
     MOCK_METHOD((absl::StatusOr<std::optional<MemoryStoreSnapshot>>), LoadSnapshot,
                 (std::string_view session_id), (const, override));
+    MOCK_METHOD(absl::Status, UpsertEntity, (const EntityWrite& write), (override));
+    MOCK_METHOD(absl::Status, UpsertRelationship, (const RelationshipWrite& write), (override));
+    MOCK_METHOD(absl::Status, UpsertLongTermEpisode, (const LongTermEpisodeWrite& write),
+                (override));
+    MOCK_METHOD(absl::Status, LinkLongTermEpisodeEntities, (const LongTermEpisodeEntityLink& link),
+                (override));
+    MOCK_METHOD((absl::StatusOr<std::vector<Entity>>), ListEntitiesByUser,
+                (std::string_view user_id), (const, override));
+    MOCK_METHOD((absl::StatusOr<std::optional<Entity>>), GetEntity, (std::string_view entity_id),
+                (const, override));
+    MOCK_METHOD((absl::StatusOr<std::vector<Relationship>>), ListRelationshipsForEntity,
+                (std::string_view entity_id), (const, override));
+    MOCK_METHOD((absl::StatusOr<std::vector<LongTermEpisode>>), ListLongTermEpisodesForEntity,
+                (std::string_view entity_id), (const, override));
 };
 
 } // namespace isla::server::memory::test

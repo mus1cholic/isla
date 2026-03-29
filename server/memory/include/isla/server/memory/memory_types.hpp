@@ -101,34 +101,43 @@ struct WorkingMemoryState {
 
 struct Entity {
     std::string entity_id;
+    std::string user_id;
     std::string label;
     std::string category;
-    int activeness = 0;
+    int activeness = 1;
+    std::optional<std::string> active_model_text;
+    std::optional<std::string> familiar_label_text;
+    std::optional<Embedding> name_embedding;
     Timestamp created_at;
     Timestamp updated_at;
 };
 
 struct Relationship {
     std::string relationship_id;
-    std::string from;
+    std::string user_id;
+    std::string from_entity_id;
     std::string predicate;
-    std::string to;
+    std::string to_entity_id;
     double weight = 0.0;
     int observation_count = 0;
     Timestamp last_observed_at;
     std::vector<std::string> source_episode_ids;
     Embedding embedding;
+    bool is_archived = false;
+    std::optional<Timestamp> archived_at;
+    std::optional<std::string> superseded_by;
+    Timestamp created_at;
 };
 
 struct LongTermEpisode {
     std::string lte_id;
-    std::string summary_full;
+    std::string user_id;
+    std::optional<std::string> summary_full;
     std::string summary_compressed;
     std::vector<std::string> keywords;
     Embedding embedding;
-    std::vector<std::string> related_entities;
     LongTermEpisodeOutcome outcome = LongTermEpisodeOutcome::Informational;
-    int complexity = 0;
+    int complexity = 1;
     Timestamp created_at;
     std::vector<std::string> original_episode_ids;
     std::optional<std::string> caused_by;
@@ -180,15 +189,18 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Episode, episode_id, tier1_detai
                                                 tier3_ref, tier3_keywords, salience, embedding,
                                                 created_at)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(EpisodeStub, content, create_time)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Entity, entity_id, label, category, activeness,
-                                                created_at, updated_at)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Relationship, relationship_id, from, predicate, to,
-                                                weight, observation_count, last_observed_at,
-                                                source_episode_ids, embedding)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LongTermEpisode, lte_id, summary_full,
-                                                summary_compressed, keywords, embedding,
-                                                related_entities, outcome, complexity, created_at,
-                                                original_episode_ids, caused_by, led_to)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Entity, entity_id, user_id, label, category,
+                                                activeness, active_model_text, familiar_label_text,
+                                                name_embedding, created_at, updated_at)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Relationship, relationship_id, user_id,
+                                                from_entity_id, predicate, to_entity_id, weight,
+                                                observation_count, last_observed_at,
+                                                source_episode_ids, embedding, is_archived,
+                                                archived_at, superseded_by, created_at)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LongTermEpisode, lte_id, user_id, summary_full,
+                                                summary_compressed, keywords, embedding, outcome,
+                                                complexity, created_at, original_episode_ids,
+                                                caused_by, led_to)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Session, session_id, working_memory, created_at,
                                                 ended_at)
 

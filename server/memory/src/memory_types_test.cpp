@@ -107,11 +107,11 @@ TEST(MemoryTypesTest, ParsesSessionJsonUsingDocumentShape) {
 TEST(MemoryTypesTest, SerializesLongTermEpisodeEnumsAndOptionalLinks) {
     const LongTermEpisode episode{
         .lte_id = "lte_UUID",
-        .summary_full = "Full story",
+        .user_id = "user_test",
+        .summary_full = std::string("Full story"),
         .summary_compressed = "Compressed story",
         .keywords = { "memory", "kg" },
         .embedding = { 0.11, 0.22 },
-        .related_entities = { "entity_user", "entity_isla" },
         .outcome = LongTermEpisodeOutcome::Resolved,
         .complexity = 7,
         .created_at = json("2026-03-08T15:00:00Z").get<Timestamp>(),
