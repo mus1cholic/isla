@@ -169,7 +169,7 @@ MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory mem
     : session_id_(std::move(session_id)), memory_(std::move(memory)), store_(std::move(store)),
       mid_term_flush_decider_(std::move(mid_term_flush_decider)),
       mid_term_compactor_(std::move(mid_term_compactor)), pending_mid_term_flushes_(),
-      next_episode_sequence_(1), session_persisted_(false) {}
+      next_episode_sequence_(1), next_lte_sequence_(1), session_persisted_(false) {}
 
 absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
                                                               const MemoryOrchestratorInit& init) {
@@ -448,6 +448,58 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
 
 std::string MemoryOrchestrator::NextEpisodeId() {
     return "ep_" + session_id_ + "_" + std::to_string(next_episode_sequence_++);
+}
+
+std::string MemoryOrchestrator::NextLongTermEpisodeId() {
+    return "lte_" + session_id_ + "_" + std::to_string(next_lte_sequence_++);
+}
+
+std::size_t MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes,
+                                                      Timestamp cycle_time) {
+    if (store_ == nullptr || mid_term_episodes.empty()) {
+        return 0;
+    }
+
+    const std::string& user_id = memory_.snapshot().conversation.user_id;
+    std::size_t consolidated = 0;
+
+    for (const Episode& episode : mid_term_episodes) {
+        LongTermEpisode lte{
+            .lte_id = NextLongTermEpisodeId(),
+            .user_id = user_id,
+            .summary_full = episode.tier1_detail,
+            .summary_compressed = episode.tier2_summary,
+            .keywords = episode.tier3_keywords,
+            .embedding = episode.embedding.empty() ? std::nullopt
+                                                   : std::optional<Embedding>(episode.embedding),
+            .complexity = episode.salience,
+            .created_at = episode.created_at,
+            .original_episode_ids = { episode.episode_id },
+        };
+
+        // TODO: Entity and relationship extraction will be added in a future PR.
+
+        const absl::Status status = store_->UpsertLongTermEpisode(LongTermEpisodeWrite{
+            .episode = std::move(lte),
+        });
+        if (!status.ok()) {
+            LOG(WARNING) << "MemoryOrchestrator failed to consolidate mid-term episode to "
+                            "long-term storage"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " episode_id=" << SanitizeForLog(episode.episode_id) << " detail='"
+                         << SanitizeForLog(status.message()) << "'";
+            continue;
+        }
+        ++consolidated;
+    }
+
+    if (consolidated > 0) {
+        LOG(INFO) << "MemoryOrchestrator consolidated " << consolidated << " of "
+                  << mid_term_episodes.size() << " mid-term episodes to long-term storage"
+                  << " session_id=" << SanitizeForLog(session_id_);
+    }
+
+    return consolidated;
 }
 
 absl::StatusOr<MemoryOrchestrator::CompletedFlushBuildInput>
@@ -804,9 +856,14 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
     }
 
     const WorkingMemoryState& state_before_clear = memory_.snapshot();
+
+    const std::size_t consolidated =
+        ConsolidateToLongTerm(state_before_clear.mid_term_episodes, cycle_time);
+
     SleepCycleResult result{
         .drained_pending_mid_term_compactions = *drained_pending_compactions,
         .synchronously_flushed_live_episodes = *flushed_live_tail ? 1U : 0U,
+        .consolidated_long_term_episode_count = consolidated,
         .cleared_mid_term_episode_count = state_before_clear.mid_term_episodes.size(),
         .cleared_conversation_item_count = state_before_clear.conversation.items.size(),
     };
@@ -835,13 +892,13 @@ absl::StatusOr<SleepCycleResult> MemoryOrchestrator::RunSleepCycle(Timestamp cyc
 
     memory_.ClearForSleepCycle();
 
-    LOG(INFO) << "MemoryOrchestrator completed sleep cycle session_id="
-              << SanitizeForLog(session_id_) << " drained_pending_mid_term_compactions="
-              << result.drained_pending_mid_term_compactions
-              << " synchronously_flushed_live_episodes="
-              << result.synchronously_flushed_live_episodes
-              << " cleared_mid_term_episode_count=" << result.cleared_mid_term_episode_count
-              << " cleared_conversation_item_count=" << result.cleared_conversation_item_count;
+    LOG(INFO)
+        << "MemoryOrchestrator completed sleep cycle session_id=" << SanitizeForLog(session_id_)
+        << " drained_pending_mid_term_compactions=" << result.drained_pending_mid_term_compactions
+        << " synchronously_flushed_live_episodes=" << result.synchronously_flushed_live_episodes
+        << " consolidated_long_term_episode_count=" << result.consolidated_long_term_episode_count
+        << " cleared_mid_term_episode_count=" << result.cleared_mid_term_episode_count
+        << " cleared_conversation_item_count=" << result.cleared_conversation_item_count;
     return result;
 }
 
