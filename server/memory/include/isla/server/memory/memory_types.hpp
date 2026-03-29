@@ -136,7 +136,6 @@ struct LongTermEpisode {
     std::string summary_compressed;
     std::vector<std::string> keywords;
     Embedding embedding;
-    std::vector<std::string> related_entities;
     LongTermEpisodeOutcome outcome = LongTermEpisodeOutcome::Informational;
     int complexity = 1;
     Timestamp created_at;
@@ -199,9 +198,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Relationship, relationship_id, u
                                                 source_episode_ids, embedding, is_archived,
                                                 archived_at, superseded_by, created_at)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LongTermEpisode, lte_id, user_id, summary_full,
-                                                summary_compressed, keywords, embedding,
-                                                related_entities, outcome, complexity, created_at,
-                                                original_episode_ids, caused_by, led_to)
+                                                summary_compressed, keywords, embedding, outcome,
+                                                complexity, created_at, original_episode_ids,
+                                                caused_by, led_to)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Session, session_id, working_memory, created_at,
                                                 ended_at)
 
