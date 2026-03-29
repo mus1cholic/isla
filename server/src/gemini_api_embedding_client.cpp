@@ -1,5 +1,6 @@
 #include "isla/server/gemini_api_embedding_client.hpp"
 
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
@@ -40,13 +41,62 @@ std::string BuildTargetPath(std::string_view model) {
     return "/v1beta/models/" + std::string(model) + ":embedContent";
 }
 
-json BuildEmbeddingRequestBody(std::string_view text) {
-    return json{
+json BuildEmbeddingRequestBody(std::string_view text,
+                               std::optional<std::size_t> output_dimensionality) {
+    json body = json{
         { "content",
           json{
               { "parts", json::array({ json{ { "text", std::string(text) } } }) },
           } },
     };
+    if (output_dimensionality.has_value()) {
+        body["output_dimensionality"] = *output_dimensionality;
+    }
+    return body;
+}
+
+absl::StatusOr<Embedding> NormalizeEmbedding(Embedding embedding) {
+    double squared_norm = 0.0;
+    for (const double value : embedding) {
+        if (!std::isfinite(value)) {
+            return invalid_argument(
+                "gemini api embedding response returned a non-finite embedding value");
+        }
+        squared_norm += value * value;
+    }
+    if (!std::isfinite(squared_norm)) {
+        return invalid_argument(
+            "gemini api embedding response returned a non-finite embedding norm");
+    }
+    if (squared_norm <= 0.0) {
+        return invalid_argument("gemini api embedding response returned a zero-norm embedding");
+    }
+    const double inverse_norm = 1.0 / std::sqrt(squared_norm);
+    if (!std::isfinite(inverse_norm)) {
+        return invalid_argument(
+            "gemini api embedding response returned a non-finite normalization factor");
+    }
+    for (double& value : embedding) {
+        value *= inverse_norm;
+        if (!std::isfinite(value)) {
+            return invalid_argument(
+                "gemini api embedding response returned a non-finite normalized embedding");
+        }
+    }
+    return embedding;
+}
+
+absl::Status ValidateReturnedEmbeddingDimensions(const Embedding& embedding,
+                                                 const EmbeddingRequest& request) {
+    if (!request.output_dimensionality.has_value()) {
+        return absl::OkStatus();
+    }
+    if (embedding.size() != *request.output_dimensionality) {
+        return invalid_argument("gemini api embedding response returned " +
+                                std::to_string(embedding.size()) + " values; expected " +
+                                std::to_string(*request.output_dimensionality));
+    }
+    return absl::OkStatus();
 }
 
 std::string ExtractGeminiApiErrorDetail(std::string_view body) {
@@ -156,6 +206,15 @@ class GeminiApiEmbeddingClient final : public EmbeddingClient {
         if (request.text.empty()) {
             return invalid_argument("embedding request text must not be empty");
         }
+        if (request.output_dimensionality.has_value()) {
+            if (*request.output_dimensionality == 0U) {
+                return invalid_argument("embedding request output_dimensionality must be positive");
+            }
+            if (*request.output_dimensionality > memory::kNativeGeminiEmbeddingDimensions) {
+                return invalid_argument(
+                    "embedding request output_dimensionality exceeds model maximum");
+            }
+        }
 
         const HttpRequestSpec http_request{
             .method = boost::beast::http::verb::post,
@@ -165,7 +224,7 @@ class GeminiApiEmbeddingClient final : public EmbeddingClient {
                     { "x-goog-api-key", config_.api_key },
                     { "Accept", "application/json" },
                 },
-            .body = BuildEmbeddingRequestBody(request.text).dump(),
+            .body = BuildEmbeddingRequestBody(request.text, request.output_dimensionality).dump(),
         };
 
         VLOG(1) << "GeminiApiEmbeddingClient dispatching host='" << SanitizeForLog(config_.host)
@@ -180,8 +239,7 @@ class GeminiApiEmbeddingClient final : public EmbeddingClient {
             return response.status();
         }
         if (response->status_code < 200U || response->status_code >= 300U) {
-            const absl::Status status =
-                MapGeminiApiHttpError(response->status_code, response->body);
+            absl::Status status = MapGeminiApiHttpError(response->status_code, response->body);
             LOG(WARNING) << "GeminiApiEmbeddingClient request failed host='"
                          << SanitizeForLog(config_.host) << "' model='"
                          << SanitizeForLog(request.model)
@@ -190,7 +248,19 @@ class GeminiApiEmbeddingClient final : public EmbeddingClient {
             return status;
         }
 
-        return ParseEmbeddingResponse(response->body);
+        absl::StatusOr<Embedding> embedding = ParseEmbeddingResponse(response->body);
+        if (!embedding.ok()) {
+            return embedding.status();
+        }
+        if (absl::Status status = ValidateReturnedEmbeddingDimensions(*embedding, request);
+            !status.ok()) {
+            return status;
+        }
+        if (request.output_dimensionality.has_value() &&
+            *request.output_dimensionality != memory::kNativeGeminiEmbeddingDimensions) {
+            return NormalizeEmbedding(std::move(*embedding));
+        }
+        return embedding;
     }
 
   private:

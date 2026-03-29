@@ -5,6 +5,7 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -46,6 +47,71 @@ constexpr std::string_view kRelationshipColumns =
 constexpr std::string_view kLongTermEpisodeColumns =
     "lte_id,user_id,summary_full,summary_compressed,keywords,embedding,"
     "outcome,complexity,original_episode_ids,caused_by,led_to,created_at";
+
+json SerializeEmbeddingForVectorColumn(const Embedding& embedding) {
+    if (embedding.empty()) {
+        return nullptr;
+    }
+    return embedding;
+}
+
+json SerializeOptionalEmbeddingForVectorColumn(const std::optional<Embedding>& embedding) {
+    if (!embedding.has_value() || embedding->empty()) {
+        return nullptr;
+    }
+    return *embedding;
+}
+
+Embedding ParseEmbeddingJsonValueOrThrow(const json& value, std::string_view field_name,
+                                         bool allow_null_as_empty) {
+    if (value.is_null()) {
+        if (allow_null_as_empty) {
+            return {};
+        }
+        throw std::invalid_argument(std::string(field_name) + " must not be null");
+    }
+
+    Embedding embedding;
+    if (value.is_array()) {
+        embedding = value.get<Embedding>();
+    } else if (value.is_string()) {
+        json parsed;
+        try {
+            parsed = json::parse(value.get<std::string>());
+        } catch (const json::parse_error& error) {
+            throw std::invalid_argument(std::string(field_name) +
+                                        " vector text contained invalid JSON: " + error.what());
+        }
+        if (!parsed.is_array()) {
+            throw std::invalid_argument(std::string(field_name) +
+                                        " vector text must decode to a JSON array");
+        }
+        embedding = parsed.get<Embedding>();
+    } else {
+        throw std::invalid_argument(std::string(field_name) +
+                                    " must be a vector-compatible JSON array or string");
+    }
+
+    if (embedding.empty()) {
+        if (allow_null_as_empty) {
+            return {};
+        }
+        throw std::invalid_argument(std::string(field_name) + " must not be empty when set");
+    }
+    if (embedding.size() != kEmbeddingDimensions) {
+        throw std::invalid_argument(std::string(field_name) + " must contain exactly " +
+                                    std::to_string(kEmbeddingDimensions) + " elements");
+    }
+    return embedding;
+}
+
+std::optional<Embedding> ParseOptionalEmbeddingJsonValueOrThrow(const json& value,
+                                                                std::string_view field_name) {
+    if (value.is_null()) {
+        return std::nullopt;
+    }
+    return ParseEmbeddingJsonValueOrThrow(value, field_name, /*allow_null_as_empty=*/false);
+}
 
 json BuildSessionJson(const MemorySessionRecord& record) {
     return json{
@@ -102,7 +168,10 @@ json BuildMidTermEpisodeJson(const MidTermEpisodeWrite& write) {
         { "tier3_ref", write.episode.tier3_ref },
         { "tier3_keywords", write.episode.tier3_keywords },
         { "salience", write.episode.salience },
-        { "embedding", write.episode.embedding },
+        // NOTICE: Mid-term episodes now persist embeddings in pgvector. Keep in-memory
+        // `Episode.embedding` empty when embeddings are disabled, but write SQL NULL so Postgres
+        // does not receive an invalid zero-length vector literal.
+        { "embedding", SerializeEmbeddingForVectorColumn(write.episode.embedding) },
         { "created_at", write.episode.created_at },
     };
 }
@@ -116,7 +185,8 @@ json BuildEntityJson(const EntityWrite& write) {
         { "activeness", write.entity.activeness },
         { "active_model_text", write.entity.active_model_text },
         { "familiar_label_text", write.entity.familiar_label_text },
-        { "name_embedding", write.entity.name_embedding },
+        { "name_embedding",
+          SerializeOptionalEmbeddingForVectorColumn(write.entity.name_embedding) },
         { "created_at", write.entity.created_at },
         { "updated_at", write.entity.updated_at },
     };
@@ -133,7 +203,7 @@ json BuildRelationshipJson(const RelationshipWrite& write) {
         { "observation_count", write.relationship.observation_count },
         { "last_observed_at", write.relationship.last_observed_at },
         { "source_episode_ids", write.relationship.source_episode_ids },
-        { "embedding", write.relationship.embedding },
+        { "embedding", SerializeOptionalEmbeddingForVectorColumn(write.relationship.embedding) },
         { "is_archived", write.relationship.is_archived },
         { "archived_at", write.relationship.archived_at },
         { "superseded_by", write.relationship.superseded_by },
@@ -148,7 +218,7 @@ json BuildLongTermEpisodeJson(const LongTermEpisodeWrite& write) {
         { "summary_full", write.episode.summary_full },
         { "summary_compressed", write.episode.summary_compressed },
         { "keywords", write.episode.keywords },
-        { "embedding", write.episode.embedding },
+        { "embedding", SerializeOptionalEmbeddingForVectorColumn(write.episode.embedding) },
         { "outcome", write.episode.outcome },
         { "complexity", write.episode.complexity },
         { "original_episode_ids", write.episode.original_episode_ids },
@@ -168,7 +238,8 @@ absl::StatusOr<Entity> ParseEntityRow(const json& row) {
             .activeness = row.at("activeness").get<int>(),
             .active_model_text = row.at("active_model_text").get<std::optional<std::string>>(),
             .familiar_label_text = row.at("familiar_label_text").get<std::optional<std::string>>(),
-            .name_embedding = row.at("name_embedding").get<std::optional<Embedding>>(),
+            .name_embedding =
+                ParseOptionalEmbeddingJsonValueOrThrow(row.at("name_embedding"), "name_embedding"),
             .created_at = row.at("created_at").get<Timestamp>(),
             .updated_at = row.at("updated_at").get<Timestamp>(),
         };
@@ -190,7 +261,7 @@ absl::StatusOr<Relationship> ParseRelationshipRow(const json& row) {
             .observation_count = row.at("observation_count").get<int>(),
             .last_observed_at = row.at("last_observed_at").get<Timestamp>(),
             .source_episode_ids = row.at("source_episode_ids").get<std::vector<std::string>>(),
-            .embedding = row.at("embedding").get<std::optional<Embedding>>(),
+            .embedding = ParseOptionalEmbeddingJsonValueOrThrow(row.at("embedding"), "embedding"),
             .is_archived = row.at("is_archived").get<bool>(),
             .archived_at = row.at("archived_at").get<std::optional<Timestamp>>(),
             .superseded_by = row.at("superseded_by").get<std::optional<std::string>>(),
@@ -210,7 +281,7 @@ absl::StatusOr<LongTermEpisode> ParseLongTermEpisodeRow(const json& row) {
             .summary_full = row.at("summary_full").get<std::optional<std::string>>(),
             .summary_compressed = row.at("summary_compressed").get<std::string>(),
             .keywords = row.at("keywords").get<std::vector<std::string>>(),
-            .embedding = row.at("embedding").get<std::optional<Embedding>>(),
+            .embedding = ParseOptionalEmbeddingJsonValueOrThrow(row.at("embedding"), "embedding"),
             .outcome = row.at("outcome").get<LongTermEpisodeOutcome>(),
             .complexity = row.at("complexity").get<int>(),
             .created_at = row.at("created_at").get<Timestamp>(),
@@ -445,7 +516,8 @@ absl::StatusOr<Episode> ParseEpisodeRow(const json& episode_json) {
             .tier3_ref = episode_json.at("tier3_ref").get<std::string>(),
             .tier3_keywords = episode_json.at("tier3_keywords").get<std::vector<std::string>>(),
             .salience = episode_json.at("salience").get<int>(),
-            .embedding = episode_json.at("embedding").get<Embedding>(),
+            .embedding =
+                ParseEmbeddingJsonValueOrThrow(episode_json.at("embedding"), "embedding", true),
             .created_at = episode_json.at("created_at").get<Timestamp>(),
         };
     } catch (const std::exception& error) {

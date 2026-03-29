@@ -263,6 +263,7 @@ class LlmMidTermCompactor final : public MidTermCompactor {
             absl::StatusOr<Embedding> embedding = embedding_client_->Embed(EmbeddingRequest{
                 .model = embedding_model_,
                 .text = compacted->tier2_summary,
+                .output_dimensionality = kEmbeddingDimensions,
                 .telemetry_context = nullptr,
             });
             if (!embedding.ok()) {
@@ -272,6 +273,18 @@ class LlmMidTermCompactor final : public MidTermCompactor {
                              << " model=" << SanitizeForLog(embedding_model_) << " detail='"
                              << SanitizeForLog(embedding.status().message()) << "'";
                 return embedding.status();
+            }
+            if (embedding->size() != kEmbeddingDimensions) {
+                const absl::Status status =
+                    invalid_argument("mid-term compactor embedding must contain exactly " +
+                                     std::to_string(kEmbeddingDimensions) + " values");
+                LOG(WARNING) << "LlmMidTermCompactor embedding dimension mismatch session_id="
+                             << SanitizeForLog(request.session_id) << " conversation_item_index="
+                             << request.flush_candidate.conversation_item_index
+                             << " model=" << SanitizeForLog(embedding_model_)
+                             << " returned_dimensions=" << embedding->size() << " detail='"
+                             << SanitizeForLog(status.message()) << "'";
+                return status;
             }
             compacted->embedding = std::move(*embedding);
         }
