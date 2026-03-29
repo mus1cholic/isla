@@ -893,6 +893,46 @@ TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesReturnsOrderedEpisodesForSessio
     EXPECT_TRUE((*episodes)[1].tier1_detail.has_value());
 }
 
+TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesParsesStringEncodedEmbeddingVectors) {
+    const std::string episodes_body =
+        json::array({
+                        json{
+                            { "episode_id", "ep_001" },
+                            { "tier1_detail", nullptr },
+                            { "tier2_summary", "summary" },
+                            { "tier3_ref", "ref" },
+                            { "tier3_keywords", json::array({ "memory" }) },
+                            { "salience", 8 },
+                            { "embedding", MakeEmbeddingJson(0.75).dump() },
+                            { "created_at", "2026-03-08T14:00:02Z" },
+                        },
+                    })
+            .dump();
+    RoutingHttpServer server({
+        { "/rest/v1/mid_term_episodes",
+          "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+              std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body },
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<Episode>> episodes =
+        (*store)->ListMidTermEpisodes("session_001");
+
+    ASSERT_TRUE(episodes.ok()) << episodes.status();
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    ASSERT_EQ(episodes->size(), 1U);
+    EXPECT_EQ((*episodes)[0].embedding.size(), kEmbeddingDimensions);
+    EXPECT_DOUBLE_EQ((*episodes)[0].embedding.front(), 0.75);
+}
+
 TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesRejectsEmptySessionId) {
     const absl::StatusOr<MemoryStorePtr> store =
         CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
@@ -1499,6 +1539,45 @@ TEST(SupabaseMemoryStoreTest, GetEntityReturnsEntityWhenFound) {
     EXPECT_EQ((*entity)->activeness, 7);
     ASSERT_TRUE((*entity)->name_embedding.has_value());
     EXPECT_EQ((*entity)->name_embedding->size(), kEmbeddingDimensions);
+}
+
+TEST(SupabaseMemoryStoreTest, GetEntityParsesStringEncodedEmbeddingVectors) {
+    const json response_rows = json::array({
+        json{
+            { "entity_id", "ent_001" },
+            { "user_id", "user_001" },
+            { "label", "Alice" },
+            { "category", "person" },
+            { "activeness", 7 },
+            { "active_model_text", "Alice is the user's friend." },
+            { "familiar_label_text", nullptr },
+            { "name_embedding", MakeEmbeddingJson(0.1).dump() },
+            { "created_at", "2026-03-08T14:00:00Z" },
+            { "updated_at", "2026-03-08T14:01:00Z" },
+        },
+    });
+    const std::string response_body = response_rows.dump();
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::optional<Entity>> entity = (*store)->GetEntity("ent_001");
+
+    ASSERT_TRUE(entity.ok()) << entity.status();
+    ASSERT_TRUE(entity->has_value());
+    ASSERT_TRUE((*entity)->name_embedding.has_value());
+    EXPECT_EQ((*entity)->name_embedding->size(), kEmbeddingDimensions);
+    EXPECT_DOUBLE_EQ((*entity)->name_embedding->front(), 0.1);
 }
 
 TEST(SupabaseMemoryStoreTest, GetEntityReturnsNulloptWhenNotFound) {
