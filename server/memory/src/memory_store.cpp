@@ -231,6 +231,9 @@ absl::Status ValidateEntityWrite(const EntityWrite& write) {
         return absl::InvalidArgumentError(
             "ValidateEntityWrite requires activeness to be in the range 1-10");
     }
+    // TODO: Validate that name_embedding, when present, has exactly kEmbeddingDimension
+    // elements. Deferred until a shared embedding-dimension constant is introduced across
+    // all embedding paths (mid-term, long-term, entity, relationship).
     return absl::OkStatus();
 }
 
@@ -256,6 +259,9 @@ absl::Status ValidateRelationshipWrite(const RelationshipWrite& write) {
         return absl::InvalidArgumentError(
             "ValidateRelationshipWrite requires to_entity_id to be non-empty");
     }
+    // TODO: Validate that embedding, when present, has exactly kEmbeddingDimension
+    // elements. Deferred until a shared embedding-dimension constant is introduced across
+    // all embedding paths (mid-term, long-term, entity, relationship).
     return absl::OkStatus();
 }
 
@@ -277,6 +283,9 @@ absl::Status ValidateLongTermEpisodeWrite(const LongTermEpisodeWrite& write) {
         return absl::InvalidArgumentError(
             "ValidateLongTermEpisodeWrite requires complexity to be in the range 1-10");
     }
+    // TODO: Validate that embedding, when present, has exactly kEmbeddingDimension
+    // elements. Deferred until a shared embedding-dimension constant is introduced across
+    // all embedding paths (mid-term, long-term, entity, relationship).
     return absl::OkStatus();
 }
 

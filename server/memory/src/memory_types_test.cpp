@@ -111,7 +111,7 @@ TEST(MemoryTypesTest, SerializesLongTermEpisodeEnumsAndOptionalLinks) {
         .summary_full = std::string("Full story"),
         .summary_compressed = "Compressed story",
         .keywords = { "memory", "kg" },
-        .embedding = { 0.11, 0.22 },
+        .embedding = Embedding{ 0.11, 0.22 },
         .outcome = LongTermEpisodeOutcome::Resolved,
         .complexity = 7,
         .created_at = json("2026-03-08T15:00:00Z").get<Timestamp>(),

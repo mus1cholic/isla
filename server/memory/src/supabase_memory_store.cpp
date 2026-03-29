@@ -34,6 +34,19 @@ using nlohmann::json;
 
 using Clock = std::chrono::steady_clock;
 
+constexpr std::string_view kEntityColumns =
+    "entity_id,user_id,label,category,activeness,active_model_text,"
+    "familiar_label_text,name_embedding,created_at,updated_at";
+
+constexpr std::string_view kRelationshipColumns =
+    "relationship_id,user_id,from_entity_id,predicate,to_entity_id,"
+    "weight,observation_count,last_observed_at,source_episode_ids,"
+    "embedding,is_archived,archived_at,superseded_by,created_at";
+
+constexpr std::string_view kLongTermEpisodeColumns =
+    "lte_id,user_id,summary_full,summary_compressed,keywords,embedding,"
+    "outcome,complexity,original_episode_ids,caused_by,led_to,created_at";
+
 json BuildSessionJson(const MemorySessionRecord& record) {
     return json{
         { "session_id", record.session_id },       { "user_id", record.user_id },
@@ -92,6 +105,123 @@ json BuildMidTermEpisodeJson(const MidTermEpisodeWrite& write) {
         { "embedding", write.episode.embedding },
         { "created_at", write.episode.created_at },
     };
+}
+
+json BuildEntityJson(const EntityWrite& write) {
+    return json{
+        { "entity_id", write.entity.entity_id },
+        { "user_id", write.entity.user_id },
+        { "label", write.entity.label },
+        { "category", write.entity.category },
+        { "activeness", write.entity.activeness },
+        { "active_model_text", write.entity.active_model_text },
+        { "familiar_label_text", write.entity.familiar_label_text },
+        { "name_embedding", write.entity.name_embedding },
+        { "created_at", write.entity.created_at },
+        { "updated_at", write.entity.updated_at },
+    };
+}
+
+json BuildRelationshipJson(const RelationshipWrite& write) {
+    return json{
+        { "relationship_id", write.relationship.relationship_id },
+        { "user_id", write.relationship.user_id },
+        { "from_entity_id", write.relationship.from_entity_id },
+        { "predicate", write.relationship.predicate },
+        { "to_entity_id", write.relationship.to_entity_id },
+        { "weight", write.relationship.weight },
+        { "observation_count", write.relationship.observation_count },
+        { "last_observed_at", write.relationship.last_observed_at },
+        { "source_episode_ids", write.relationship.source_episode_ids },
+        { "embedding", write.relationship.embedding },
+        { "is_archived", write.relationship.is_archived },
+        { "archived_at", write.relationship.archived_at },
+        { "superseded_by", write.relationship.superseded_by },
+        { "created_at", write.relationship.created_at },
+    };
+}
+
+json BuildLongTermEpisodeJson(const LongTermEpisodeWrite& write) {
+    return json{
+        { "lte_id", write.episode.lte_id },
+        { "user_id", write.episode.user_id },
+        { "summary_full", write.episode.summary_full },
+        { "summary_compressed", write.episode.summary_compressed },
+        { "keywords", write.episode.keywords },
+        { "embedding", write.episode.embedding },
+        { "outcome", write.episode.outcome },
+        { "complexity", write.episode.complexity },
+        { "original_episode_ids", write.episode.original_episode_ids },
+        { "caused_by", write.episode.caused_by },
+        { "led_to", write.episode.led_to },
+        { "created_at", write.episode.created_at },
+    };
+}
+
+absl::StatusOr<Entity> ParseEntityRow(const json& row) {
+    try {
+        return Entity{
+            .entity_id = row.at("entity_id").get<std::string>(),
+            .user_id = row.at("user_id").get<std::string>(),
+            .label = row.at("label").get<std::string>(),
+            .category = row.at("category").get<std::string>(),
+            .activeness = row.at("activeness").get<int>(),
+            .active_model_text = row.at("active_model_text").get<std::optional<std::string>>(),
+            .familiar_label_text = row.at("familiar_label_text").get<std::optional<std::string>>(),
+            .name_embedding = row.at("name_embedding").get<std::optional<Embedding>>(),
+            .created_at = row.at("created_at").get<Timestamp>(),
+            .updated_at = row.at("updated_at").get<Timestamp>(),
+        };
+    } catch (const std::exception& error) {
+        return absl::InternalError(std::string("supabase entities row was malformed: ") +
+                                   error.what());
+    }
+}
+
+absl::StatusOr<Relationship> ParseRelationshipRow(const json& row) {
+    try {
+        return Relationship{
+            .relationship_id = row.at("relationship_id").get<std::string>(),
+            .user_id = row.at("user_id").get<std::string>(),
+            .from_entity_id = row.at("from_entity_id").get<std::string>(),
+            .predicate = row.at("predicate").get<std::string>(),
+            .to_entity_id = row.at("to_entity_id").get<std::string>(),
+            .weight = row.at("weight").get<double>(),
+            .observation_count = row.at("observation_count").get<int>(),
+            .last_observed_at = row.at("last_observed_at").get<Timestamp>(),
+            .source_episode_ids = row.at("source_episode_ids").get<std::vector<std::string>>(),
+            .embedding = row.at("embedding").get<std::optional<Embedding>>(),
+            .is_archived = row.at("is_archived").get<bool>(),
+            .archived_at = row.at("archived_at").get<std::optional<Timestamp>>(),
+            .superseded_by = row.at("superseded_by").get<std::optional<std::string>>(),
+            .created_at = row.at("created_at").get<Timestamp>(),
+        };
+    } catch (const std::exception& error) {
+        return absl::InternalError(std::string("supabase relationships row was malformed: ") +
+                                   error.what());
+    }
+}
+
+absl::StatusOr<LongTermEpisode> ParseLongTermEpisodeRow(const json& row) {
+    try {
+        return LongTermEpisode{
+            .lte_id = row.at("lte_id").get<std::string>(),
+            .user_id = row.at("user_id").get<std::string>(),
+            .summary_full = row.at("summary_full").get<std::optional<std::string>>(),
+            .summary_compressed = row.at("summary_compressed").get<std::string>(),
+            .keywords = row.at("keywords").get<std::vector<std::string>>(),
+            .embedding = row.at("embedding").get<std::optional<Embedding>>(),
+            .outcome = row.at("outcome").get<LongTermEpisodeOutcome>(),
+            .complexity = row.at("complexity").get<int>(),
+            .created_at = row.at("created_at").get<Timestamp>(),
+            .original_episode_ids = row.at("original_episode_ids").get<std::vector<std::string>>(),
+            .caused_by = row.at("caused_by").get<std::optional<std::string>>(),
+            .led_to = row.at("led_to").get<std::optional<std::string>>(),
+        };
+    } catch (const std::exception& error) {
+        return absl::InternalError(std::string("supabase long_term_episodes row was malformed: ") +
+                                   error.what());
+    }
 }
 
 json BuildRemainingMessagesJson(const OngoingEpisode& episode) {
@@ -780,45 +910,263 @@ class SupabaseMemoryStore final : public MemoryStore {
     }
 
     // -------------------------------------------------------------------------
-    // Long-term memory stubs (implementations coming in a follow-up PR).
+    // Long-term memory (Knowledge Graph + Episodic Vector Store)
     // -------------------------------------------------------------------------
 
-    [[nodiscard]] absl::Status UpsertEntity(const EntityWrite& /*write*/) override {
-        return absl::UnimplementedError("UpsertEntity not yet implemented");
+    [[nodiscard]] absl::Status UpsertEntity(const EntityWrite& write) override {
+        ScopedSupabaseOperationLatency latency(config_, "upsert_entity", std::nullopt);
+        if (absl::Status status = ValidateEntityWrite(write); !status.ok()) {
+            latency.SetOutcome("validation_error");
+            return status;
+        }
+        const HttpRequestSpec request =
+            BuildUpsertRequest("entities", json::array({ BuildEntityJson(write) }), "entity_id",
+                               config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        latency.SetOutcome("ok");
+        return absl::OkStatus();
     }
 
-    [[nodiscard]] absl::Status UpsertRelationship(const RelationshipWrite& /*write*/) override {
-        return absl::UnimplementedError("UpsertRelationship not yet implemented");
+    [[nodiscard]] absl::Status UpsertRelationship(const RelationshipWrite& write) override {
+        ScopedSupabaseOperationLatency latency(config_, "upsert_relationship", std::nullopt);
+        if (absl::Status status = ValidateRelationshipWrite(write); !status.ok()) {
+            latency.SetOutcome("validation_error");
+            return status;
+        }
+        const HttpRequestSpec request =
+            BuildUpsertRequest("relationships", json::array({ BuildRelationshipJson(write) }),
+                               "relationship_id", config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        latency.SetOutcome("ok");
+        return absl::OkStatus();
+    }
+
+    [[nodiscard]] absl::Status UpsertLongTermEpisode(const LongTermEpisodeWrite& write) override {
+        ScopedSupabaseOperationLatency latency(config_, "upsert_long_term_episode", std::nullopt);
+        if (absl::Status status = ValidateLongTermEpisodeWrite(write); !status.ok()) {
+            latency.SetOutcome("validation_error");
+            return status;
+        }
+        const HttpRequestSpec request = BuildUpsertRequest(
+            "long_term_episodes", json::array({ BuildLongTermEpisodeJson(write) }), "lte_id",
+            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        latency.SetOutcome("ok");
+        return absl::OkStatus();
     }
 
     [[nodiscard]] absl::Status
-    UpsertLongTermEpisode(const LongTermEpisodeWrite& /*write*/) override {
-        return absl::UnimplementedError("UpsertLongTermEpisode not yet implemented");
-    }
-
-    [[nodiscard]] absl::Status
-    LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& /*link*/) override {
-        return absl::UnimplementedError("LinkLongTermEpisodeEntities not yet implemented");
+    LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& link) override {
+        ScopedSupabaseOperationLatency latency(config_, "link_long_term_episode_entities",
+                                               std::nullopt);
+        if (absl::Status status = ValidateLongTermEpisodeEntityLink(link); !status.ok()) {
+            latency.SetOutcome("validation_error");
+            return status;
+        }
+        json rows = json::array();
+        for (const std::string& entity_id : link.entity_ids) {
+            rows.push_back(json{
+                { "lte_id", link.lte_id },
+                { "entity_id", entity_id },
+            });
+        }
+        const HttpRequestSpec request = BuildUpsertRequest(
+            "long_term_episode_entities", rows, "lte_id,entity_id", config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        latency.SetOutcome("ok");
+        return absl::OkStatus();
     }
 
     [[nodiscard]] absl::StatusOr<std::vector<Entity>>
-    ListEntitiesByUser(std::string_view /*user_id*/) const override {
-        return absl::UnimplementedError("ListEntitiesByUser not yet implemented");
+    ListEntitiesByUser(std::string_view user_id) const override {
+        ScopedSupabaseOperationLatency latency(config_, "list_entities_by_user", std::nullopt);
+        if (user_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "ListEntitiesByUser requires user_id to be non-empty");
+        }
+
+        const HttpRequestSpec request =
+            BuildGetRequest("/rest/v1/entities",
+                            {
+                                { "select", std::string(kEntityColumns) },
+                                { "user_id", "eq." + std::string(user_id) },
+                                { "order", "created_at.asc" },
+                            },
+                            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        const absl::StatusOr<json> rows = ParseJsonArrayResponse(*response, "supabase entities");
+        if (!rows.ok()) {
+            return rows.status();
+        }
+
+        std::vector<Entity> entities;
+        entities.reserve(rows->size());
+        for (const json& row : *rows) {
+            absl::StatusOr<Entity> entity = ParseEntityRow(row);
+            if (!entity.ok()) {
+                return entity.status();
+            }
+            entities.push_back(std::move(*entity));
+        }
+        latency.SetOutcome("ok");
+        return entities;
     }
 
     [[nodiscard]] absl::StatusOr<std::optional<Entity>>
-    GetEntity(std::string_view /*entity_id*/) const override {
-        return absl::UnimplementedError("GetEntity not yet implemented");
+    GetEntity(std::string_view entity_id) const override {
+        ScopedSupabaseOperationLatency latency(config_, "get_entity", std::nullopt);
+        if (entity_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError("GetEntity requires entity_id to be non-empty");
+        }
+
+        const HttpRequestSpec request =
+            BuildGetRequest("/rest/v1/entities",
+                            {
+                                { "select", std::string(kEntityColumns) },
+                                { "entity_id", "eq." + std::string(entity_id) },
+                                { "limit", "2" },
+                            },
+                            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        const absl::StatusOr<json> rows = ParseJsonArrayResponse(*response, "supabase entities");
+        if (!rows.ok()) {
+            return rows.status();
+        }
+        if (rows->empty()) {
+            latency.SetOutcome("not_found");
+            return std::nullopt;
+        }
+        if (rows->size() != 1U) {
+            return absl::InternalError(
+                "supabase entities response returned multiple rows for one entity");
+        }
+
+        absl::StatusOr<Entity> entity = ParseEntityRow(rows->front());
+        if (!entity.ok()) {
+            return entity.status();
+        }
+        latency.SetOutcome("ok");
+        return std::optional<Entity>(std::move(*entity));
     }
 
     [[nodiscard]] absl::StatusOr<std::vector<Relationship>>
-    ListRelationshipsForEntity(std::string_view /*entity_id*/) const override {
-        return absl::UnimplementedError("ListRelationshipsForEntity not yet implemented");
+    ListRelationshipsForEntity(std::string_view entity_id) const override {
+        ScopedSupabaseOperationLatency latency(config_, "list_relationships_for_entity",
+                                               std::nullopt);
+        if (entity_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "ListRelationshipsForEntity requires entity_id to be non-empty");
+        }
+
+        const HttpRequestSpec request =
+            BuildGetRequest("/rest/v1/relationships",
+                            {
+                                { "select", std::string(kRelationshipColumns) },
+                                { "from_entity_id", "eq." + std::string(entity_id) },
+                                { "is_archived", "eq.false" },
+                                { "order", "weight.desc" },
+                            },
+                            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        const absl::StatusOr<json> rows =
+            ParseJsonArrayResponse(*response, "supabase relationships");
+        if (!rows.ok()) {
+            return rows.status();
+        }
+
+        std::vector<Relationship> relationships;
+        relationships.reserve(rows->size());
+        for (const json& row : *rows) {
+            absl::StatusOr<Relationship> rel = ParseRelationshipRow(row);
+            if (!rel.ok()) {
+                return rel.status();
+            }
+            relationships.push_back(std::move(*rel));
+        }
+        latency.SetOutcome("ok");
+        return relationships;
     }
 
     [[nodiscard]] absl::StatusOr<std::vector<LongTermEpisode>>
-    ListLongTermEpisodesForEntity(std::string_view /*entity_id*/) const override {
-        return absl::UnimplementedError("ListLongTermEpisodesForEntity not yet implemented");
+    ListLongTermEpisodesForEntity(std::string_view entity_id) const override {
+        ScopedSupabaseOperationLatency latency(config_, "list_long_term_episodes_for_entity",
+                                               std::nullopt);
+        if (entity_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "ListLongTermEpisodesForEntity requires entity_id to be non-empty");
+        }
+
+        // Use resource embedding to fetch episodes in a single request.
+        const HttpRequestSpec request = BuildGetRequest(
+            "/rest/v1/long_term_episode_entities",
+            {
+                { "select", "long_term_episodes(" + std::string(kLongTermEpisodeColumns) + ")" },
+                { "entity_id", "eq." + std::string(entity_id) },
+                { "order", "long_term_episodes.created_at.asc" },
+            },
+            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        const absl::StatusOr<json> junction_rows =
+            ParseJsonArrayResponse(*response, "supabase long_term_episode_entities");
+        if (!junction_rows.ok()) {
+            return junction_rows.status();
+        }
+        if (junction_rows->empty()) {
+            latency.SetOutcome("ok");
+            return std::vector<LongTermEpisode>{};
+        }
+
+        std::vector<LongTermEpisode> episodes;
+        episodes.reserve(junction_rows->size());
+        for (const json& row : *junction_rows) {
+            if (!row.contains("long_term_episodes") || row.at("long_term_episodes").is_null()) {
+                continue;
+            }
+            absl::StatusOr<LongTermEpisode> episode =
+                ParseLongTermEpisodeRow(row.at("long_term_episodes"));
+            if (!episode.ok()) {
+                return episode.status();
+            }
+            episodes.push_back(std::move(*episode));
+        }
+        latency.SetOutcome("ok");
+        return episodes;
     }
 
   private:

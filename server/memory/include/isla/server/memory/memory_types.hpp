@@ -122,7 +122,7 @@ struct Relationship {
     int observation_count = 0;
     Timestamp last_observed_at;
     std::vector<std::string> source_episode_ids;
-    Embedding embedding;
+    std::optional<Embedding> embedding;
     bool is_archived = false;
     std::optional<Timestamp> archived_at;
     std::optional<std::string> superseded_by;
@@ -135,7 +135,7 @@ struct LongTermEpisode {
     std::optional<std::string> summary_full;
     std::string summary_compressed;
     std::vector<std::string> keywords;
-    Embedding embedding;
+    std::optional<Embedding> embedding;
     LongTermEpisodeOutcome outcome = LongTermEpisodeOutcome::Informational;
     int complexity = 1;
     Timestamp created_at;
