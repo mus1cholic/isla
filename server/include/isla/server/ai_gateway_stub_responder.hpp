@@ -10,6 +10,9 @@
 #include <string>
 #include <thread>
 
+#include <boost/asio/strand.hpp>
+#include <boost/asio/thread_pool.hpp>
+
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -66,6 +69,9 @@ class GatewaySessionClock {
 struct GatewayStubResponderConfig {
     std::chrono::milliseconds response_delay{ 50 };
     std::chrono::milliseconds async_emit_timeout{ std::chrono::seconds(2) };
+    // Number of shared worker threads used for session startup and accepted-turn execution.
+    // A value of 0 uses an implementation-defined default.
+    std::size_t worker_pool_size = 0;
     // Total number of attempts to persist a session on startup. A value of 0 is
     // treated as 1. At least one attempt is always made if a memory store is configured.
     std::size_t session_start_persistence_max_attempts = 3;
@@ -151,6 +157,9 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
   private:
     using Clock = std::chrono::steady_clock;
+    using WorkerPool = boost::asio::thread_pool;
+    using WorkerExecutor = WorkerPool::executor_type;
+    using SessionStrand = boost::asio::strand<WorkerExecutor>;
 
     struct SessionMemoryState {
         explicit SessionMemoryState(isla::server::memory::MemoryOrchestrator orchestrator_in)
@@ -186,6 +195,10 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
     void StopWorker();
     void WorkerLoop();
+    [[nodiscard]] std::shared_ptr<SessionStrand>
+    FindOrCreateSessionStrandLocked(std::string_view session_id);
+    void SchedulePendingSessionStart(PendingSessionStart session_start);
+    void ScheduleAcceptedTurn(PendingTurn turn);
     void CompleteSessionStartCallback(GatewayEmitCallback on_complete, absl::Status status) const;
     void RecordDequeueTelemetry(const PendingTurn& turn, Clock::time_point dequeued_at) const;
     [[nodiscard]] bool TryMarkTrackedTurnCancelled(std::string_view session_id,
@@ -238,6 +251,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
     GatewayStubResponderConfig config_;
     GatewayPlanExecutor executor_;
+    WorkerPool worker_pool_;
     isla::server::memory::MidTermFlushDeciderPtr mid_term_flush_decider_;
     isla::server::memory::MidTermCompactorPtr mid_term_compactor_;
     bool mid_term_memory_configured_ = false;
@@ -246,6 +260,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     std::condition_variable cv_;
     std::thread worker_;
     GatewaySessionRegistry* session_registry_ = nullptr;
+    absl::flat_hash_map<std::string, std::shared_ptr<SessionStrand>> session_strands_;
     absl::flat_hash_map<std::string, PendingSessionStart> pending_session_starts_;
     absl::flat_hash_map<std::string, PendingTurn> pending_turns_;
     absl::flat_hash_map<std::string, PendingTurn> in_progress_turns_;
@@ -254,6 +269,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     absl::flat_hash_map<std::string, absl::Status> failed_session_starts_;
     bool stopping_ = false;
     bool worker_stop_requested_ = false;
+    bool worker_pool_joined_ = false;
     std::size_t accepted_turns_count_ = 0;
 };
 
