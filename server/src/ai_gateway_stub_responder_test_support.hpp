@@ -450,6 +450,10 @@ class GatewayStubResponderTest : public ::testing::Test {
     }
 
     void SetUp() override {
+        ASSERT_TRUE(responder_
+                        .HandleSessionStart(SessionStartRequestEvent{ .session_id = "srv_test",
+                                                                      .user_id = "test_user" })
+                        .ok());
         responder_.OnSessionStarted(
             SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
     }
@@ -566,6 +570,10 @@ class GatewayStubResponderStandaloneFixture : public ::testing::Test {
     }
 
     void StartSession() {
+        ASSERT_TRUE(responder()
+                        .HandleSessionStart(SessionStartRequestEvent{ .session_id = session_id_,
+                                                                      .user_id = "test_user" })
+                        .ok());
         responder().OnSessionStarted(
             SessionStartedEvent{ .session_id = session_id_, .user_id = "test_user" });
     }

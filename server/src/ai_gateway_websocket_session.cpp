@@ -34,6 +34,29 @@ std::string TranscriptSeedErrorCode(const absl::Status& status) {
     }
 }
 
+std::string SessionStartErrorCode(const absl::Status& status) {
+    switch (status.code()) {
+    case absl::StatusCode::kInvalidArgument:
+    case absl::StatusCode::kFailedPrecondition:
+    case absl::StatusCode::kAlreadyExists:
+    case absl::StatusCode::kNotFound:
+    case absl::StatusCode::kUnimplemented:
+        return "bad_request";
+    case absl::StatusCode::kUnauthenticated:
+        return "authentication_error";
+    case absl::StatusCode::kPermissionDenied:
+        return "permission_denied";
+    case absl::StatusCode::kResourceExhausted:
+        return "response_too_large";
+    case absl::StatusCode::kDeadlineExceeded:
+        return "upstream_timeout";
+    case absl::StatusCode::kUnavailable:
+        return "service_unavailable";
+    default:
+        return "internal_error";
+    }
+}
+
 const char* close_reason_name(SessionCloseReason reason) {
     switch (reason) {
     case SessionCloseReason::ProtocolEnded:
@@ -77,6 +100,32 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
     }
 
     HandleIncomingResult result = handler_.HandleIncomingJson(frame);
+    if (result.session_start_requested.has_value()) {
+        absl::Status startup_status =
+            event_sink_ != nullptr
+                ? event_sink_->HandleSessionStart(*result.session_start_requested)
+                : absl::OkStatus();
+        if (!startup_status.ok()) {
+            const absl::StatusOr<EmitResult> emit = handler_.EmitError(
+                std::nullopt, SessionStartErrorCode(startup_status), startup_status.message());
+            if (!emit.ok()) {
+                return emit.status();
+            }
+            result.outgoing_frames.insert(result.outgoing_frames.end(),
+                                          emit->outgoing_frames.begin(),
+                                          emit->outgoing_frames.end());
+            result.ok = false;
+            result.error_message = std::string(startup_status.message());
+        } else {
+            const absl::StatusOr<EmitResult> emit = handler_.AcceptSessionStart();
+            if (!emit.ok()) {
+                return emit.status();
+            }
+            result.outgoing_frames.insert(result.outgoing_frames.end(),
+                                          emit->outgoing_frames.begin(),
+                                          emit->outgoing_frames.end());
+        }
+    }
     if (result.transcript_seed.has_value()) {
         absl::Status seed_status = event_sink_ != nullptr
                                        ? event_sink_->HandleTranscriptSeed(*result.transcript_seed)
@@ -104,17 +153,13 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
                                           emit->outgoing_frames.end());
         }
     }
-    // NOTICE: `session.started` is encoded inside HandleIncomingJson(), so the transport sends the
-    // frame before the application sink can begin startup side effects like session persistence.
-    // TODO: Rework session.start so the application sink can accept or reject startup before
-    // `session.started` is emitted; until then, startup failures are surfaced as a follow-up error.
     absl::Status send_status = SendFrames(result.outgoing_frames);
     if (!send_status.ok()) {
         return send_status;
     }
 
-    if (result.session_started.has_value() && event_sink_ != nullptr) {
-        event_sink_->OnSessionStarted(*result.session_started);
+    if (result.session_start_requested.has_value() && event_sink_ != nullptr && result.ok) {
+        event_sink_->OnSessionStarted(*result.session_start_requested);
     }
     if (result.accepted_turn.has_value() && event_sink_ != nullptr) {
         event_sink_->OnTurnAccepted(*result.accepted_turn);
@@ -148,7 +193,7 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
         return failed_precondition(result.error_message);
     }
 
-    if (result.session_started.has_value()) {
+    if (result.session_start_requested.has_value() && result.ok) {
         VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " started";
     }
     return absl::OkStatus();

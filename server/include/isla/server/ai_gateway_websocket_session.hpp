@@ -48,6 +48,10 @@ class GatewaySessionEventSink {
   public:
     virtual ~GatewaySessionEventSink() = default;
 
+    [[nodiscard]] virtual absl::Status HandleSessionStart(const SessionStartRequestEvent& event) {
+        static_cast<void>(event);
+        return absl::OkStatus();
+    }
     virtual void OnSessionStarted(const SessionStartedEvent& event) = 0;
     [[nodiscard]] virtual absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) {
         static_cast<void>(event);
