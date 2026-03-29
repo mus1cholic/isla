@@ -301,13 +301,17 @@ absl::Status GatewayStubResponder::HandleSessionStart(const SessionStartRequestE
         if (status.ok()) {
             return absl::OkStatus();
         }
-        LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
-                   << SanitizeForLog(event.session_id) << " attempt=" << attempt
-                   << " max_attempts=" << max_attempts << " detail='"
-                   << SanitizeForLog(status.message()) << "'";
         if (!IsRetryableSessionStartStatus(status) || attempt == max_attempts) {
+            LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
+                       << SanitizeForLog(event.session_id) << " attempt=" << attempt
+                       << " max_attempts=" << max_attempts << " detail='"
+                       << SanitizeForLog(status.message()) << "'";
             return absl::Status(status.code(), "failed to initialize session memory");
         }
+        LOG(WARNING) << "AI gateway stub retrying session memory initialization session="
+                     << SanitizeForLog(event.session_id) << " attempt=" << attempt
+                     << " max_attempts=" << max_attempts << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
         if (config_.session_start_persistence_retry_delay.count() > 0) {
             std::this_thread::sleep_for(config_.session_start_persistence_retry_delay);
         }

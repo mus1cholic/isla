@@ -42,29 +42,6 @@ absl::Status failed_precondition(std::string_view message) {
     return absl::FailedPreconditionError(std::string(message));
 }
 
-std::string SessionStartErrorCode(const absl::Status& status) {
-    switch (status.code()) {
-    case absl::StatusCode::kInvalidArgument:
-    case absl::StatusCode::kFailedPrecondition:
-    case absl::StatusCode::kAlreadyExists:
-    case absl::StatusCode::kNotFound:
-    case absl::StatusCode::kUnimplemented:
-        return "bad_request";
-    case absl::StatusCode::kUnauthenticated:
-        return "authentication_error";
-    case absl::StatusCode::kPermissionDenied:
-        return "permission_denied";
-    case absl::StatusCode::kResourceExhausted:
-        return "response_too_large";
-    case absl::StatusCode::kDeadlineExceeded:
-        return "upstream_timeout";
-    case absl::StatusCode::kUnavailable:
-        return "service_unavailable";
-    default:
-        return "internal_error";
-    }
-}
-
 std::string format_error(std::string_view context, const boost::system::error_code& error) {
     return std::string(context) + ": " + error.message();
 }
