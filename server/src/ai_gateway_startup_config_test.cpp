@@ -1,6 +1,5 @@
 #include "ai_gateway_startup_config.hpp"
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -44,6 +43,9 @@ auto kTimeout = std::to_array("--openai-timeout-ms=1500");
 auto kOllamaBaseUrl = std::to_array("--ollama-base-url=http://127.0.0.1:11434");
 auto kOllamaApiKey = std::to_array("--ollama-api-key=ollama_key");
 auto kOllamaTimeout = std::to_array("--ollama-timeout-ms=1800");
+auto kRateLimitRequestsPerMinute = std::to_array("--llm-rate-limit-requests-per-minute=120");
+auto kRateLimitBurstSize = std::to_array("--llm-rate-limit-burst-size=3");
+auto kRateLimitMaxConcurrent = std::to_array("--llm-rate-limit-max-concurrent-requests=2");
 auto kMainLlmModel = std::to_array("--main-llm-model=gpt-4.1-mini");
 auto kMidTermFlushDeciderModel = std::to_array("--mid-term-flush-decider-model=gpt-4.1-mini");
 auto kMidTermCompactorModel = std::to_array("--mid-term-compactor-model=gpt-4.1-nano");
@@ -168,7 +170,7 @@ TEST(AiGatewayStartupConfigTest, LooksLikeOpenAiProjectIdRecognizesExpectedPrefi
 }
 
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
-    std::array<char*, 23> argv = { kArg0.data(),
+    std::array<char*, 26> argv = { kArg0.data(),
                                    kHost.data(),
                                    kPort.data(),
                                    kBacklog.data(),
@@ -180,6 +182,9 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
                                    kOrg.data(),
                                    kProject.data(),
                                    kTimeout.data(),
+                                   kRateLimitRequestsPerMinute.data(),
+                                   kRateLimitBurstSize.data(),
+                                   kRateLimitMaxConcurrent.data(),
                                    kMainLlmModel.data(),
                                    kMidTermFlushDeciderModel.data(),
                                    kMidTermCompactorModel.data(),
@@ -214,6 +219,9 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     ASSERT_TRUE(parsed->openai_config.project.has_value());
     EXPECT_EQ(*parsed->openai_config.project, "proj_123");
     EXPECT_EQ(parsed->openai_config.request_timeout, std::chrono::milliseconds(1500));
+    EXPECT_EQ(parsed->llm_rate_limit_config.max_requests_per_minute, 120U);
+    EXPECT_EQ(parsed->llm_rate_limit_config.burst_size, 3U);
+    EXPECT_EQ(parsed->llm_rate_limit_config.max_concurrent_requests, 2U);
     EXPECT_EQ(parsed->llm_runtime_config.main_model, "gpt-4.1-mini");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1-mini");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
@@ -246,29 +254,38 @@ TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFlagsFromCli) {
 TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     std::array<char*, 1> argv = { kArg0.data() };
 
-    const absl::StatusOr<ParsedStartupConfig> parsed =
-        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
-                                  [](std::string_view name) -> std::optional<std::string> {
-                                      if (name == "OPENAI_API_KEY") {
-                                          return "env_key";
-                                      }
-                                      if (name == "OPENAI_HOST") {
-                                          return "env.host";
-                                      }
-                                      if (name == "OPENAI_PORT") {
-                                          return "4444";
-                                      }
-                                      if (name == "OPENAI_TARGET") {
-                                          return "/env-target";
-                                      }
-                                      if (name == "OPENAI_TIMEOUT_MS") {
-                                          return "2500";
-                                      }
-                                      if (name == "OPENAI_PROJECT_ID") {
-                                          return "proj_env_123";
-                                      }
-                                      return std::nullopt;
-                                  });
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view name) -> std::optional<std::string> {
+            if (name == "OPENAI_API_KEY") {
+                return "env_key";
+            }
+            if (name == "OPENAI_HOST") {
+                return "env.host";
+            }
+            if (name == "OPENAI_PORT") {
+                return "4444";
+            }
+            if (name == "OPENAI_TARGET") {
+                return "/env-target";
+            }
+            if (name == "OPENAI_TIMEOUT_MS") {
+                return "2500";
+            }
+            if (name == "OPENAI_PROJECT_ID") {
+                return "proj_env_123";
+            }
+            if (name == "AI_GATEWAY_LLM_RATE_LIMIT_REQUESTS_PER_MINUTE") {
+                return "90";
+            }
+            if (name == "AI_GATEWAY_LLM_RATE_LIMIT_BURST_SIZE") {
+                return "4";
+            }
+            if (name == "AI_GATEWAY_LLM_RATE_LIMIT_MAX_CONCURRENT_REQUESTS") {
+                return "2";
+            }
+            return std::nullopt;
+        });
 
     ASSERT_TRUE(parsed.ok()) << parsed.status();
     EXPECT_EQ(parsed->openai_config.api_key, "env_key");
@@ -278,10 +295,31 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     EXPECT_EQ(parsed->openai_config.request_timeout, std::chrono::milliseconds(2500));
     ASSERT_TRUE(parsed->openai_config.project.has_value());
     EXPECT_EQ(*parsed->openai_config.project, "proj_env_123");
+    EXPECT_EQ(parsed->llm_rate_limit_config.max_requests_per_minute, 90U);
+    EXPECT_EQ(parsed->llm_rate_limit_config.burst_size, 4U);
+    EXPECT_EQ(parsed->llm_rate_limit_config.max_concurrent_requests, 2U);
     EXPECT_TRUE(parsed->llm_runtime_config.main_model.empty());
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_flush_decider_model.empty());
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_compactor_model.empty());
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_embedding_model.empty());
+}
+
+TEST(AiGatewayStartupConfigTest, AppliesDefaultLlmRateLimitWhenNotOverridden) {
+    std::array<char*, 1> argv = { kArg0.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "OPENAI_API_KEY") {
+                                          return "env_key";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_TRUE(parsed.ok()) << parsed.status();
+    EXPECT_EQ(parsed->llm_rate_limit_config.max_requests_per_minute, 30U);
+    EXPECT_EQ(parsed->llm_rate_limit_config.burst_size, 30U);
+    EXPECT_EQ(parsed->llm_rate_limit_config.max_concurrent_requests, 0U);
 }
 
 TEST(AiGatewayStartupConfigTest, AllowsOllamaOnlyConfigurationFromCli) {
@@ -585,6 +623,19 @@ TEST(AiGatewayStartupConfigTest, RejectsInvalidOpenAiPort) {
     ASSERT_FALSE(parsed.ok());
     EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_EQ(parsed.status().message(), "openai-port must be between 0 and 65535");
+}
+
+TEST(AiGatewayStartupConfigTest, RejectsInvalidLlmRateLimitBurstSize) {
+    auto kBadBurstSize = std::to_array("--llm-rate-limit-burst-size=0");
+    std::array<char*, 3> argv = { kArg0.data(), kApiKey.data(), kBadBurstSize.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed = ParseGatewayStartupConfig(
+        static_cast<int>(argv.size()), argv.data(),
+        [](std::string_view) -> std::optional<std::string> { return std::nullopt; });
+
+    ASSERT_FALSE(parsed.ok());
+    EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(parsed.status().message()).find("burst-size"), std::string::npos);
 }
 
 TEST(AiGatewayStartupConfigTest, BuildStartupLogContextReportsCliOnlySource) {

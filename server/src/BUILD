@@ -23,8 +23,20 @@ cc_library(
         ":ai_gateway_string_utils",
         ":gemini_api_embedding_client",
         ":ollama_llm_client",
+        ":rate_limited_llm_client",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "rate_limited_llm_client",
+    srcs = ["rate_limited_llm_client.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
     ],
@@ -480,6 +492,7 @@ cc_binary(
         ":ai_gateway_server",
         ":ai_gateway_stub_responder",
         ":ollama_llm_client",
+        ":rate_limited_llm_client",
         "//server/memory/src:supabase_memory_store",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:initialize",
@@ -680,6 +693,17 @@ cc_test(
         "//server/include/isla/server:server_headers",
         ":ai_gateway_logging_telemetry_sink",
         "@abseil-cpp//absl/log:log_sink_registry",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "rate_limited_llm_client_test",
+    srcs = ["rate_limited_llm_client_test.cpp"],
+    deps = [
+        ":rate_limited_llm_client",
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
         "@googletest//:gtest_main",
     ],
 )

@@ -23,6 +23,7 @@
 #include "ai_gateway_string_utils.hpp"
 #include "isla/server/ai_gateway_logging_telemetry_sink.hpp"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/rate_limited_llm_client.hpp"
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -315,6 +316,67 @@ void ApplyTelemetryEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLook
     }
 }
 
+void ApplyLlmRateLimitEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> requests_per_minute =
+            env_lookup("AI_GATEWAY_LLM_RATE_LIMIT_REQUESTS_PER_MINUTE");
+        requests_per_minute.has_value()) {
+        const absl::StatusOr<int> parsed_value =
+            ParseIntArgument(*requests_per_minute, "AI_GATEWAY_LLM_RATE_LIMIT_REQUESTS_PER_MINUTE");
+        if (!parsed_value.ok()) {
+            LOG(WARNING)
+                << "AI gateway ignored invalid AI_GATEWAY_LLM_RATE_LIMIT_REQUESTS_PER_MINUTE "
+                   "value='"
+                << SanitizeForLog(*requests_per_minute) << "' detail='"
+                << SanitizeForLog(parsed_value.status().message()) << "'";
+        } else if (*parsed_value <= 0) {
+            LOG(WARNING)
+                << "AI gateway ignored non-positive AI_GATEWAY_LLM_RATE_LIMIT_REQUESTS_PER_MINUTE "
+                   "value='"
+                << SanitizeForLog(*requests_per_minute) << "'";
+        } else {
+            parsed->llm_rate_limit_config.max_requests_per_minute =
+                static_cast<std::size_t>(*parsed_value);
+        }
+    }
+    if (const std::optional<std::string> burst_size =
+            env_lookup("AI_GATEWAY_LLM_RATE_LIMIT_BURST_SIZE");
+        burst_size.has_value()) {
+        const absl::StatusOr<int> parsed_value =
+            ParseIntArgument(*burst_size, "AI_GATEWAY_LLM_RATE_LIMIT_BURST_SIZE");
+        if (!parsed_value.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid AI_GATEWAY_LLM_RATE_LIMIT_BURST_SIZE "
+                            "value='"
+                         << SanitizeForLog(*burst_size) << "' detail='"
+                         << SanitizeForLog(parsed_value.status().message()) << "'";
+        } else if (*parsed_value <= 0) {
+            LOG(WARNING) << "AI gateway ignored non-positive AI_GATEWAY_LLM_RATE_LIMIT_BURST_SIZE "
+                            "value='"
+                         << SanitizeForLog(*burst_size) << "'";
+        } else {
+            parsed->llm_rate_limit_config.burst_size = static_cast<std::size_t>(*parsed_value);
+        }
+    }
+    if (const std::optional<std::string> max_concurrent =
+            env_lookup("AI_GATEWAY_LLM_RATE_LIMIT_MAX_CONCURRENT_REQUESTS");
+        max_concurrent.has_value()) {
+        const absl::StatusOr<int> parsed_value =
+            ParseIntArgument(*max_concurrent, "AI_GATEWAY_LLM_RATE_LIMIT_MAX_CONCURRENT_REQUESTS");
+        if (!parsed_value.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid "
+                            "AI_GATEWAY_LLM_RATE_LIMIT_MAX_CONCURRENT_REQUESTS value='"
+                         << SanitizeForLog(*max_concurrent) << "' detail='"
+                         << SanitizeForLog(parsed_value.status().message()) << "'";
+        } else if (*parsed_value <= 0) {
+            LOG(WARNING) << "AI gateway ignored non-positive "
+                            "AI_GATEWAY_LLM_RATE_LIMIT_MAX_CONCURRENT_REQUESTS value='"
+                         << SanitizeForLog(*max_concurrent) << "'";
+        } else {
+            parsed->llm_rate_limit_config.max_concurrent_requests =
+                static_cast<std::size_t>(*parsed_value);
+        }
+    }
+}
+
 void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLookup& env_lookup) {
     if (const std::optional<std::string> main_model = env_lookup("AI_GATEWAY_MAIN_LLM_MODEL");
         main_model.has_value()) {
@@ -567,6 +629,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
     ApplyGeminiApiEmbeddingEnvDefaults(&parsed.gemini_api_embedding_config, env_lookup);
     ApplyTelemetryEnvDefaults(&parsed, env_lookup);
+    ApplyLlmRateLimitEnvDefaults(&parsed, env_lookup);
     ApplyLlmRuntimeEnvDefaults(&parsed, env_lookup);
     const auto mark_openai_configured = [&parsed]() { parsed.openai_config.enabled = true; };
     const auto mark_ollama_configured = [&parsed]() { parsed.ollama_config.enabled = true; };
@@ -709,6 +772,55 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             return handled.status();
         } else if (*handled) {
             mark_ollama_configured();
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
+                argument,
+                "--llm-rate-limit-requests-per-minute=", "llm-rate-limit-requests-per-minute",
+                [&parsed](int requests_per_minute) -> absl::Status {
+                    if (requests_per_minute <= 0) {
+                        return absl::InvalidArgumentError(
+                            "llm-rate-limit-requests-per-minute must be greater than zero");
+                    }
+                    parsed.llm_rate_limit_config.max_requests_per_minute =
+                        static_cast<std::size_t>(requests_per_minute);
+                    return absl::OkStatus();
+                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
+                argument, "--llm-rate-limit-burst-size=", "llm-rate-limit-burst-size",
+                [&parsed](int burst_size) -> absl::Status {
+                    if (burst_size <= 0) {
+                        return absl::InvalidArgumentError(
+                            "llm-rate-limit-burst-size must be greater than zero");
+                    }
+                    parsed.llm_rate_limit_config.burst_size = static_cast<std::size_t>(burst_size);
+                    return absl::OkStatus();
+                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled = TryParseIntFlag(
+                argument, "--llm-rate-limit-max-concurrent-requests=",
+                "llm-rate-limit-max-concurrent-requests",
+                [&parsed](int max_concurrent) -> absl::Status {
+                    if (max_concurrent <= 0) {
+                        return absl::InvalidArgumentError(
+                            "llm-rate-limit-max-concurrent-requests must be greater than zero");
+                    }
+                    parsed.llm_rate_limit_config.max_concurrent_requests =
+                        static_cast<std::size_t>(max_concurrent);
+                    return absl::OkStatus();
+                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
             continue;
         }
         constexpr std::string_view kMainLlmModelPrefix = "--main-llm-model=";
@@ -882,6 +994,11 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     if (const absl::Status llm_runtime_status = ValidateLlmRuntimeConfig(parsed.llm_runtime_config);
         !llm_runtime_status.ok()) {
         return llm_runtime_status;
+    }
+    if (const absl::Status llm_rate_limit_status =
+            isla::server::ValidateLlmRateLimitConfig(parsed.llm_rate_limit_config);
+        !llm_rate_limit_status.ok()) {
+        return llm_rate_limit_status;
     }
     if (parsed.gemini_api_embedding_config.enabled) {
         const absl::Status gemini_embedding_status =

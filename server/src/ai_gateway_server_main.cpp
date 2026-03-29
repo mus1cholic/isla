@@ -15,6 +15,7 @@
 #include "isla/server/ollama_llm_client.hpp"
 #include "isla/server/openai_llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
+#include "isla/server/rate_limited_llm_client.hpp"
 
 namespace {
 
@@ -145,6 +146,19 @@ int main(int argc, char** argv) {
         }
         llm_client = std::move(*created_openai_llm_client);
     }
+    if (llm_client != nullptr) {
+        absl::StatusOr<std::shared_ptr<const isla::server::LlmClient>> rate_limited_llm_client =
+            isla::server::CreateRateLimitedLlmClient(llm_client,
+                                                     startup_config->llm_rate_limit_config);
+        if (!rate_limited_llm_client.ok()) {
+            LOG(ERROR) << "AI gateway failed to configure llm rate limiter detail='"
+                       << isla::server::ai_gateway::SanitizeForLog(
+                              rate_limited_llm_client.status().message())
+                       << "'";
+            return 1;
+        }
+        llm_client = std::move(*rate_limited_llm_client);
+    }
 
     if (startup_config->gemini_api_embedding_config.enabled) {
         absl::StatusOr<std::shared_ptr<const isla::server::EmbeddingClient>>
@@ -256,6 +270,13 @@ int main(int argc, char** argv) {
               << isla::server::ai_gateway::TryOpenAiReasoningEffortToString(
                      startup_config->llm_runtime_config.reasoning_effort)
                      .value_or("unknown");
+    LOG(INFO) << "AI gateway llm rate limiting enabled="
+              << (startup_config->llm_rate_limit_config.enabled() ? "true" : "false")
+              << " requests_per_minute="
+              << startup_config->llm_rate_limit_config.max_requests_per_minute
+              << " burst_size=" << startup_config->llm_rate_limit_config.burst_size
+              << " max_concurrent_requests="
+              << startup_config->llm_rate_limit_config.max_concurrent_requests;
     LOG(INFO) << "AI gateway generic llm provider="
               << (startup_config->ollama_config.enabled ? "ollama"
                   : (llm_client != nullptr)             ? "openai"
