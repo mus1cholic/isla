@@ -13,6 +13,38 @@ TEST(AiGatewaySessionTest, RequiresSessionBeforeTurn) {
     EXPECT_EQ(status.message(), "session is not active");
 }
 
+TEST(AiGatewaySessionTest, TracksPendingSessionStartLifecycle) {
+    SessionState state;
+
+    ASSERT_TRUE(state.begin_start("srv_123").ok());
+    EXPECT_EQ(state.snapshot().status, SessionStatus::Starting);
+    EXPECT_EQ(state.snapshot().session_id, "srv_123");
+
+    ASSERT_TRUE(state.complete_start().ok());
+    EXPECT_EQ(state.snapshot().status, SessionStatus::Active);
+}
+
+TEST(AiGatewaySessionTest, FailedPendingSessionStartResetsToNotStarted) {
+    SessionState state;
+
+    ASSERT_TRUE(state.begin_start("srv_123").ok());
+    ASSERT_TRUE(state.fail_start().ok());
+
+    EXPECT_EQ(state.snapshot().status, SessionStatus::NotStarted);
+    EXPECT_TRUE(state.snapshot().session_id.empty());
+    EXPECT_FALSE(state.snapshot().active_turn.has_value());
+}
+
+TEST(AiGatewaySessionTest, RejectsDuplicatePendingSessionStart) {
+    SessionState state;
+
+    ASSERT_TRUE(state.begin_start("srv_123").ok());
+
+    const absl::Status status = state.begin_start("srv_456");
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.message(), "session start is already pending");
+}
+
 TEST(AiGatewaySessionTest, EnforcesSingleInFlightTurn) {
     SessionState state;
     ASSERT_TRUE(state.start("srv_123").ok());

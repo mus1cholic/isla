@@ -54,6 +54,25 @@ class RecordingLiveSession final : public GatewayLiveSession {
         return false;
     }
 
+    void AsyncAcceptSessionStart(SessionStartedEvent event,
+                                 GatewayEmitCallback on_complete) override {
+        RecordEvent({
+            .op = "session.started",
+            .turn_id = "",
+            .payload = std::move(event.session_id),
+        });
+        on_complete(absl::OkStatus());
+    }
+
+    void AsyncRejectSessionStart(absl::Status status, GatewayEmitCallback on_complete) override {
+        RecordEvent({
+            .op = "session.start.error",
+            .turn_id = "",
+            .payload = std::string(status.message()),
+        });
+        on_complete(std::move(status));
+    }
+
     void AsyncEmitTextOutput(std::string turn_id, std::string text,
                              GatewayEmitCallback on_complete) override {
         RecordEvent({

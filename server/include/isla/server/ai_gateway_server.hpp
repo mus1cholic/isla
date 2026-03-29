@@ -17,6 +17,10 @@ namespace isla::server::ai_gateway {
 
 class GatewaySessionRegistry;
 inline constexpr std::size_t kMaxInboundWebSocketMessageBytes = 64U * 1024U;
+using GatewayEmitCallback = std::function<void(absl::Status)>;
+// Async emit completion reports that the operation ran on the session transport executor and was
+// accepted or rejected by the transport boundary; it does not mean bytes have flushed to the
+// remote client socket.
 
 struct GatewayServerConfig {
     std::string bind_host = "127.0.0.1";
@@ -34,6 +38,13 @@ class GatewayApplicationEventSink {
         static_cast<void>(event);
         return absl::OkStatus();
     }
+    virtual void HandleSessionStartAsync(const SessionStartRequestEvent& event,
+                                         GatewayEmitCallback on_complete) {
+        if (!on_complete) {
+            return;
+        }
+        on_complete(HandleSessionStart(event));
+    }
     virtual void OnSessionStarted(const SessionStartedEvent& event) = 0;
     [[nodiscard]] virtual absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) {
         static_cast<void>(event);
@@ -45,17 +56,15 @@ class GatewayApplicationEventSink {
     virtual void OnServerStopping(GatewaySessionRegistry& session_registry) {}
 };
 
-using GatewayEmitCallback = std::function<void(absl::Status)>;
-// Async emit completion reports that the operation ran on the session transport executor and was
-// accepted or rejected by the transport boundary; it does not mean bytes have flushed to the
-// remote client socket.
-
 class GatewayLiveSession {
   public:
     virtual ~GatewayLiveSession() = default;
 
     [[nodiscard]] virtual const std::string& session_id() const = 0;
     [[nodiscard]] virtual bool is_closed() const = 0;
+    virtual void AsyncAcceptSessionStart(SessionStartedEvent event,
+                                         GatewayEmitCallback on_complete) = 0;
+    virtual void AsyncRejectSessionStart(absl::Status status, GatewayEmitCallback on_complete) = 0;
     virtual void AsyncEmitTextOutput(std::string turn_id, std::string text,
                                      GatewayEmitCallback on_complete) = 0;
     virtual void AsyncEmitAudioOutput(std::string turn_id, std::string mime_type,
@@ -81,7 +90,8 @@ class GatewaySessionRegistry final : public GatewaySessionEventSink {
     [[nodiscard]] std::size_t SessionCount() const;
     void NotifyServerStopping();
 
-    [[nodiscard]] absl::Status HandleSessionStart(const SessionStartRequestEvent& event) override;
+    [[nodiscard]] absl::StatusOr<SessionStartHandlingResult>
+    HandleSessionStart(const SessionStartRequestEvent& event) override;
     void OnSessionStarted(const SessionStartedEvent& event) override;
     [[nodiscard]] absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;

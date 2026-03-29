@@ -10,6 +10,7 @@ namespace isla::shared::ai_gateway {
 
 enum class SessionStatus {
     NotStarted = 0,
+    Starting,
     Active,
     Ended,
 };
@@ -34,6 +35,9 @@ struct SessionSnapshot {
 
 class SessionState {
   public:
+    [[nodiscard]] absl::Status begin_start(std::string_view session_id);
+    [[nodiscard]] absl::Status complete_start();
+    [[nodiscard]] absl::Status fail_start();
     [[nodiscard]] absl::Status start(std::string_view session_id);
     [[nodiscard]] absl::Status begin_turn(std::string_view turn_id);
     [[nodiscard]] absl::Status mark_text_output(std::string_view turn_id);

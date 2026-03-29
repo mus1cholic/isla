@@ -1,6 +1,7 @@
 #include "ai_gateway_stub_responder_test_support.hpp"
 
 #include <array>
+#include <future>
 
 namespace isla::server::ai_gateway {
 namespace {
@@ -58,6 +59,33 @@ TEST_F(GatewayStubResponderStandaloneFixture, SessionStartRetriesTransientPersis
     EXPECT_EQ(store->upsert_session_attempts, 3U);
     ASSERT_EQ(store->session_records.size(), 1U);
     EXPECT_TRUE(session().events().empty());
+}
+
+TEST_F(GatewayStubResponderStandaloneFixture,
+       AsyncSessionStartRetriesTransientPersistenceFailuresBeforeCompleting) {
+    auto store = std::make_shared<RecordingGatewayMemoryStore>();
+    store->upsert_session_statuses = {
+        absl::UnavailableError("supabase unavailable"),
+        absl::DeadlineExceededError("supabase timeout"),
+    };
+    GatewayStubResponderConfig config = MakeStoreEchoConfig(store);
+    config.session_start_persistence_max_attempts = 3;
+    config.session_start_persistence_retry_delay = 0ms;
+    InitializeResponder(std::move(config));
+
+    std::promise<absl::Status> start_promise;
+    std::future<absl::Status> start_future = start_promise.get_future();
+
+    responder().HandleSessionStartAsync(
+        SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" },
+        [&start_promise](absl::Status status) mutable {
+            start_promise.set_value(std::move(status));
+        });
+
+    ASSERT_EQ(start_future.wait_for(2s), std::future_status::ready);
+    EXPECT_TRUE(start_future.get().ok());
+    EXPECT_EQ(store->upsert_session_attempts, 3U);
+    ASSERT_EQ(store->session_records.size(), 1U);
 }
 
 TEST_F(GatewayStubResponderStandaloneFixture, SessionStartDoesNotRetryNonRetryableFailures) {

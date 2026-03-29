@@ -293,19 +293,78 @@ absl::Status GatewayStubResponder::HandleSessionStart(const SessionStartRequestE
     LOG(INFO) << "AI gateway stub handling session start session="
               << SanitizeForLog(event.session_id) << " user_id=" << SanitizeForLog(event.user_id);
     RecordSessionReplayClock(event.session_id, event.session_start_time);
-    const absl::Status status = InitializeSessionMemory(event.session_id, event.user_id);
-    if (!status.ok()) {
-        LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
-                   << SanitizeForLog(event.session_id) << " detail='"
-                   << SanitizeForLog(status.message()) << "'";
-        return absl::Status(status.code(), "failed to initialize session memory");
+    const std::size_t max_attempts = config_.session_start_persistence_max_attempts == 0U
+                                         ? 1U
+                                         : config_.session_start_persistence_max_attempts;
+    for (std::size_t attempt = 1; attempt <= max_attempts; ++attempt) {
+        const absl::Status status = InitializeSessionMemory(event.session_id, event.user_id);
+        if (status.ok()) {
+            return absl::OkStatus();
+        }
+        if (!IsRetryableSessionStartStatus(status) || attempt == max_attempts) {
+            LOG(ERROR) << "AI gateway stub failed to initialize session memory session="
+                       << SanitizeForLog(event.session_id) << " attempt=" << attempt
+                       << " max_attempts=" << max_attempts << " detail='"
+                       << SanitizeForLog(status.message()) << "'";
+            return absl::Status(status.code(), "failed to initialize session memory");
+        }
+        LOG(WARNING) << "AI gateway stub retrying session memory initialization session="
+                     << SanitizeForLog(event.session_id) << " attempt=" << attempt
+                     << " max_attempts=" << max_attempts << " detail='"
+                     << SanitizeForLog(status.message()) << "'";
+        if (config_.session_start_persistence_retry_delay.count() > 0) {
+            std::this_thread::sleep_for(config_.session_start_persistence_retry_delay);
+        }
     }
-    return status;
+    return absl::InternalError("session start retry loop exited unexpectedly");
+}
+
+void GatewayStubResponder::HandleSessionStartAsync(const SessionStartRequestEvent& event,
+                                                   GatewayEmitCallback on_complete) {
+    LOG(INFO) << "AI gateway stub queueing async session start session="
+              << SanitizeForLog(event.session_id) << " user_id=" << SanitizeForLog(event.user_id);
+    RecordSessionReplayClock(event.session_id, event.session_start_time);
+    std::optional<absl::Status> callback_status;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_ || worker_stop_requested_) {
+            callback_status = absl::AbortedError("server stopping");
+        } else {
+            pending_session_starts_.insert_or_assign(event.session_id,
+                                                     PendingSessionStart{
+                                                         .event = event,
+                                                         .on_complete = std::move(on_complete),
+                                                         .ready_at = Clock::now(),
+                                                         .attempts_used = 0,
+                                                     });
+            failed_session_starts_.erase(event.session_id);
+        }
+    }
+    if (callback_status.has_value()) {
+        CompleteSessionStartCallback(std::move(on_complete), *callback_status);
+        return;
+    }
+    cv_.notify_all();
 }
 
 void GatewayStubResponder::OnSessionStarted(const SessionStartedEvent& event) {
     VLOG(1) << "AI gateway stub observed confirmed session start session="
             << SanitizeForLog(event.session_id) << " user_id=" << SanitizeForLog(event.user_id);
+}
+
+void GatewayStubResponder::CompleteSessionStartCallback(GatewayEmitCallback on_complete,
+                                                        absl::Status status) const {
+    if (!on_complete) {
+        return;
+    }
+    try {
+        on_complete(std::move(status));
+    } catch (const std::exception& error) {
+        LOG(ERROR) << "AI gateway stub session start callback threw detail='"
+                   << SanitizeForLog(error.what()) << "'";
+    } catch (...) {
+        LOG(ERROR) << "AI gateway stub session start callback threw unknown exception";
+    }
 }
 
 absl::Status GatewayStubResponder::HandleTranscriptSeed(const TranscriptSeedEvent& event) {
@@ -437,25 +496,42 @@ void GatewayStubResponder::OnSessionClosed(const SessionClosedEvent& event) {
               << SanitizeForLog(event.session_id) << " detail='" << SanitizeForLog(event.detail)
               << "'";
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto pending_erased = pending_turns_.erase(event.session_id);
-    const auto in_progress_erased = in_progress_turns_.erase(event.session_id);
-    memory_by_session_.erase(event.session_id);
-    live_replay_clock_by_session_.erase(event.session_id);
-    failed_session_starts_.erase(event.session_id);
-    if (pending_erased > 0U || in_progress_erased > 0U) {
-        VLOG(1) << "AI gateway stub dropped pending turn for closed session session="
-                << SanitizeForLog(event.session_id);
+    std::optional<PendingSessionStart> pending_session_start;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (auto pending_start = pending_session_starts_.find(event.session_id);
+            pending_start != pending_session_starts_.end()) {
+            pending_session_start = std::move(pending_start->second);
+            pending_session_starts_.erase(pending_start);
+        }
+        const auto pending_erased = pending_turns_.erase(event.session_id);
+        const auto in_progress_erased = in_progress_turns_.erase(event.session_id);
+        memory_by_session_.erase(event.session_id);
+        live_replay_clock_by_session_.erase(event.session_id);
+        failed_session_starts_.erase(event.session_id);
+        if (pending_erased > 0U || in_progress_erased > 0U) {
+            VLOG(1) << "AI gateway stub dropped pending turn for closed session session="
+                    << SanitizeForLog(event.session_id);
+        }
+    }
+    if (pending_session_start.has_value()) {
+        CompleteSessionStartCallback(std::move(pending_session_start->on_complete),
+                                     absl::CancelledError("session closed"));
     }
 }
 
 void GatewayStubResponder::OnServerStopping(GatewaySessionRegistry& session_registry) {
     AttachSessionRegistry(&session_registry);
 
+    std::vector<PendingSessionStart> session_starts_to_fail;
     std::vector<PendingTurn> turns_to_finalize;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stopping_ = true;
+        session_starts_to_fail.reserve(pending_session_starts_.size());
+        for (auto& entry : pending_session_starts_) {
+            session_starts_to_fail.push_back(std::move(entry.second));
+        }
         turns_to_finalize.reserve(pending_turns_.size() + in_progress_turns_.size());
         for (const auto& entry : pending_turns_) {
             turns_to_finalize.push_back(entry.second);
@@ -463,6 +539,7 @@ void GatewayStubResponder::OnServerStopping(GatewaySessionRegistry& session_regi
         for (const auto& entry : in_progress_turns_) {
             turns_to_finalize.push_back(entry.second);
         }
+        pending_session_starts_.clear();
         pending_turns_.clear();
         in_progress_turns_.clear();
         memory_by_session_.clear();
@@ -473,6 +550,11 @@ void GatewayStubResponder::OnServerStopping(GatewaySessionRegistry& session_regi
     VLOG(1) << "AI gateway stub stopping pending_turns=" << turns_to_finalize.size();
 
     StopWorker();
+
+    for (PendingSessionStart& session_start : session_starts_to_fail) {
+        CompleteSessionStartCallback(std::move(session_start.on_complete),
+                                     absl::AbortedError("server stopping"));
+    }
 
     for (const PendingTurn& turn : turns_to_finalize) {
         FinishServerStoppingTurn(session_registry, turn);
@@ -607,6 +689,7 @@ void GatewayStubResponder::RecordDequeueTelemetry(const PendingTurn& turn,
 
 void GatewayStubResponder::WorkerLoop() {
     for (;;) {
+        std::optional<PendingSessionStart> next_session_start;
         std::optional<PendingTurn> next_turn;
         std::optional<Clock::time_point> next_deadline;
         std::optional<PendingTurn> dequeued_turn;
@@ -620,36 +703,54 @@ void GatewayStubResponder::WorkerLoop() {
                 }
 
                 const Clock::time_point now = Clock::now();
-                for (auto it = pending_turns_.begin(); it != pending_turns_.end(); ++it) {
-                    PendingTurn& turn = it->second;
-                    if (turn.cancel_requested) {
-                        next_turn = turn;
-                        dequeued_turn = turn;
-                        dequeued_at = now;
-                        VLOG(1) << "AI gateway stub dequeued cancellation session="
+                for (auto it = pending_session_starts_.begin(); it != pending_session_starts_.end();
+                     ++it) {
+                    PendingSessionStart& session_start = it->second;
+                    if (session_start.ready_at <= now) {
+                        next_session_start = std::move(session_start);
+                        VLOG(1) << "AI gateway stub dequeued pending session start session="
                                 << SanitizeForLog(it->first)
-                                << " turn_id=" << SanitizeForLog(turn.turn_id);
-                        in_progress_turns_.insert_or_assign(it->first, turn);
-                        pending_turns_.erase(it);
+                                << " attempt=" << (next_session_start->attempts_used + 1U);
+                        pending_session_starts_.erase(it);
                         break;
                     }
-                    if (turn.ready_at <= now) {
-                        next_turn = turn;
-                        dequeued_turn = turn;
-                        dequeued_at = now;
-                        VLOG(1) << "AI gateway stub dequeued ready turn session="
-                                << SanitizeForLog(it->first)
-                                << " turn_id=" << SanitizeForLog(turn.turn_id);
-                        in_progress_turns_.insert_or_assign(it->first, turn);
-                        pending_turns_.erase(it);
-                        break;
-                    }
-                    if (!next_deadline.has_value() || turn.ready_at < *next_deadline) {
-                        next_deadline = turn.ready_at;
+                    if (!next_deadline.has_value() || session_start.ready_at < *next_deadline) {
+                        next_deadline = session_start.ready_at;
                     }
                 }
 
-                if (next_turn.has_value()) {
+                if (!next_session_start.has_value()) {
+                    for (auto it = pending_turns_.begin(); it != pending_turns_.end(); ++it) {
+                        PendingTurn& turn = it->second;
+                        if (turn.cancel_requested) {
+                            next_turn = turn;
+                            dequeued_turn = turn;
+                            dequeued_at = now;
+                            VLOG(1) << "AI gateway stub dequeued cancellation session="
+                                    << SanitizeForLog(it->first)
+                                    << " turn_id=" << SanitizeForLog(turn.turn_id);
+                            in_progress_turns_.insert_or_assign(it->first, turn);
+                            pending_turns_.erase(it);
+                            break;
+                        }
+                        if (turn.ready_at <= now) {
+                            next_turn = turn;
+                            dequeued_turn = turn;
+                            dequeued_at = now;
+                            VLOG(1) << "AI gateway stub dequeued ready turn session="
+                                    << SanitizeForLog(it->first)
+                                    << " turn_id=" << SanitizeForLog(turn.turn_id);
+                            in_progress_turns_.insert_or_assign(it->first, turn);
+                            pending_turns_.erase(it);
+                            break;
+                        }
+                        if (!next_deadline.has_value() || turn.ready_at < *next_deadline) {
+                            next_deadline = turn.ready_at;
+                        }
+                    }
+                }
+
+                if (next_session_start.has_value() || next_turn.has_value()) {
                     break;
                 }
 
@@ -660,6 +761,91 @@ void GatewayStubResponder::WorkerLoop() {
                 }
                 next_deadline.reset();
             }
+        }
+
+        if (next_session_start.has_value()) {
+            const std::string session_id = next_session_start->event.session_id;
+            const std::size_t attempt = next_session_start->attempts_used + 1U;
+            const std::size_t max_attempts = config_.session_start_persistence_max_attempts == 0U
+                                                 ? 1U
+                                                 : config_.session_start_persistence_max_attempts;
+            const absl::Status status = InitializeSessionMemory(
+                next_session_start->event.session_id, next_session_start->event.user_id);
+            std::optional<absl::Status> completion_status;
+            GatewayEmitCallback on_complete;
+            bool notify_waiters = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const bool session_tracked =
+                    live_replay_clock_by_session_.contains(std::string(session_id));
+                if (!session_tracked) {
+                    memory_by_session_.erase(session_id);
+                    failed_session_starts_.erase(session_id);
+                    completion_status = absl::CancelledError("session closed");
+                    on_complete = std::move(next_session_start->on_complete);
+                } else if (stopping_ || worker_stop_requested_) {
+                    memory_by_session_.erase(session_id);
+                    failed_session_starts_.erase(session_id);
+                    completion_status = absl::AbortedError("server stopping");
+                    on_complete = std::move(next_session_start->on_complete);
+                } else if (status.ok()) {
+                    failed_session_starts_.erase(session_id);
+                    completion_status = absl::OkStatus();
+                    on_complete = std::move(next_session_start->on_complete);
+                } else if (IsRetryableSessionStartStatus(status) && attempt < max_attempts) {
+                    next_session_start->attempts_used = attempt;
+                    next_session_start->ready_at =
+                        Clock::now() + config_.session_start_persistence_retry_delay;
+                    pending_session_starts_.insert_or_assign(session_id,
+                                                             std::move(*next_session_start));
+                    notify_waiters = true;
+                } else {
+                    failed_session_starts_.insert_or_assign(session_id, status);
+                    completion_status =
+                        absl::Status(status.code(), "failed to initialize session memory");
+                    on_complete = std::move(next_session_start->on_complete);
+                }
+            }
+
+            if (notify_waiters) {
+                LOG(WARNING) << "AI gateway stub retrying async session memory initialization "
+                             << "session=" << SanitizeForLog(session_id) << " attempt=" << attempt
+                             << " max_attempts=" << max_attempts << " detail='"
+                             << SanitizeForLog(status.message()) << "'";
+                cv_.notify_all();
+                continue;
+            }
+
+            if (completion_status.has_value()) {
+                if (completion_status->ok()) {
+                    if (attempt == 1U) {
+                        VLOG(1) << "AI gateway stub initialized session memory session="
+                                << SanitizeForLog(session_id);
+                    } else {
+                        LOG(INFO) << "AI gateway stub initialized async session memory after retry "
+                                  << "session=" << SanitizeForLog(session_id)
+                                  << " attempts=" << attempt << " max_attempts=" << max_attempts;
+                    }
+                } else if (completion_status->code() == absl::StatusCode::kCancelled ||
+                           completion_status->code() == absl::StatusCode::kAborted) {
+                    VLOG(1) << "AI gateway stub dropped async session start session="
+                            << SanitizeForLog(session_id) << " detail='"
+                            << SanitizeForLog(completion_status->message()) << "'";
+                } else if (IsRetryableSessionStartStatus(status)) {
+                    LOG(ERROR) << "AI gateway stub exhausted async session memory initialization "
+                               << "retries session=" << SanitizeForLog(session_id)
+                               << " attempts=" << attempt << " max_attempts=" << max_attempts
+                               << " detail='" << SanitizeForLog(status.message()) << "'";
+                } else {
+                    LOG(ERROR) << "AI gateway stub hit non-retryable async session memory "
+                                  "initialization failure session="
+                               << SanitizeForLog(session_id) << " attempts=" << attempt
+                               << " max_attempts=" << max_attempts << " detail='"
+                               << SanitizeForLog(status.message()) << "'";
+                }
+                CompleteSessionStartCallback(std::move(on_complete), *completion_status);
+            }
+            continue;
         }
 
         if (dequeued_turn.has_value()) {
@@ -1263,7 +1449,6 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         return absl::InvalidArgumentError("session memory initialization requires user_id");
     }
     std::shared_ptr<SessionMemoryState> session_memory;
-    const Clock::time_point initialization_started_at = Clock::now();
     {
         // Hold the lifecycle mutex across construction/insertion so OnSessionClosed cannot erase
         // the session and then have us recreate memory for an already-closed session. The store
@@ -1274,6 +1459,9 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         // acceptable for eval/test bring-up, but a real multi-user deployment must validate or
         // map it before selecting a persisted memory namespace.
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!live_replay_clock_by_session_.contains(std::string(session_id))) {
+            return absl::CancelledError("session closed");
+        }
         absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
             isla::server::memory::MemoryOrchestrator::Create(
                 std::string(session_id), isla::server::memory::MemoryOrchestratorInit{
@@ -1300,69 +1488,22 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
     }
 
     const isla::server::memory::Timestamp session_start_time = ResolveSessionStartTime(session_id);
-    const std::size_t max_attempts = config_.session_start_persistence_max_attempts == 0U
-                                         ? 1U
-                                         : config_.session_start_persistence_max_attempts;
-    absl::Status final_status = absl::OkStatus();
-    std::size_t attempts_used = 0;
-    for (std::size_t attempt = 1; attempt <= max_attempts; ++attempt) {
-        attempts_used = attempt;
-        {
-            std::lock_guard<std::mutex> session_lock(session_memory->mutex);
-            final_status = session_memory->orchestrator.BeginSession(session_start_time);
-        }
-        if (final_status.ok()) {
-            const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                         Clock::now() - initialization_started_at)
-                                         .count();
-            if (attempts_used == 1U) {
-                VLOG(1) << "AI gateway stub initialized session memory session="
-                        << SanitizeForLog(session_id);
-            } else {
-                LOG(INFO) << "AI gateway stub initialized session memory after retry session="
-                          << SanitizeForLog(session_id) << " attempts=" << attempts_used
-                          << " max_attempts=" << max_attempts << " duration_ms=" << duration_ms;
-            }
-            return absl::OkStatus();
-        }
-        if (!IsRetryableSessionStartStatus(final_status) || attempt == max_attempts) {
-            break;
-        }
-        LOG(WARNING) << "AI gateway stub retrying session memory initialization session="
-                     << SanitizeForLog(session_id) << " attempt=" << attempt
-                     << " max_attempts=" << max_attempts << " detail='"
-                     << SanitizeForLog(final_status.message()) << "'";
-        if (config_.session_start_persistence_retry_delay.count() > 0) {
-            // NOTICE: This blocks the shared gateway event thread between retries. We keep the
-            // startup path synchronous for now so session persistence either succeeds or fails
-            // before later turns rely on it. Replace this with an async timer-based retry once
-            // session.start supports app-level accept/reject without emitting `session.started`
-            // first.
-            std::this_thread::sleep_for(config_.session_start_persistence_retry_delay);
-        }
+    absl::Status status;
+    {
+        std::lock_guard<std::mutex> session_lock(session_memory->mutex);
+        status = session_memory->orchestrator.BeginSession(session_start_time);
+    }
+    if (status.ok()) {
+        VLOG(1) << "AI gateway stub initialized session memory session="
+                << SanitizeForLog(session_id);
+        return absl::OkStatus();
     }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         memory_by_session_.erase(std::string(session_id));
-        failed_session_starts_.insert_or_assign(std::string(session_id), final_status);
     }
-    const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 Clock::now() - initialization_started_at)
-                                 .count();
-    if (IsRetryableSessionStartStatus(final_status)) {
-        LOG(ERROR) << "AI gateway stub exhausted session memory initialization retries session="
-                   << SanitizeForLog(session_id) << " attempts=" << max_attempts
-                   << " duration_ms=" << duration_ms << " detail='"
-                   << SanitizeForLog(final_status.message()) << "'";
-    } else {
-        LOG(ERROR) << "AI gateway stub hit non-retryable session memory initialization failure "
-                      "session="
-                   << SanitizeForLog(session_id) << " attempts=" << attempts_used
-                   << " duration_ms=" << duration_ms << " detail='"
-                   << SanitizeForLog(final_status.message()) << "'";
-    }
-    return final_status;
+    return status;
 }
 
 isla::server::memory::Timestamp

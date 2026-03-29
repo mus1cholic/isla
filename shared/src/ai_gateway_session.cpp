@@ -21,15 +21,45 @@ bool matches_active_turn(const SessionSnapshot& snapshot, std::string_view turn_
 } // namespace
 
 absl::Status SessionState::start(std::string_view session_id) {
+    if (absl::Status status = begin_start(session_id); !status.ok()) {
+        return status;
+    }
+    return complete_start();
+}
+
+absl::Status SessionState::begin_start(std::string_view session_id) {
     if (session_id.empty()) {
         return invalid_argument("session_id must be non-empty");
     }
     if (snapshot_.status != SessionStatus::NotStarted) {
+        if (snapshot_.status == SessionStatus::Starting) {
+            return failed_precondition("session start is already pending");
+        }
         return failed_precondition("session is already started or ended");
     }
 
-    snapshot_.status = SessionStatus::Active;
+    snapshot_.status = SessionStatus::Starting;
     snapshot_.session_id = std::string(session_id);
+    snapshot_.active_turn.reset();
+    return absl::OkStatus();
+}
+
+absl::Status SessionState::complete_start() {
+    if (snapshot_.status != SessionStatus::Starting) {
+        return failed_precondition("session start is not pending");
+    }
+
+    snapshot_.status = SessionStatus::Active;
+    return absl::OkStatus();
+}
+
+absl::Status SessionState::fail_start() {
+    if (snapshot_.status != SessionStatus::Starting) {
+        return failed_precondition("session start is not pending");
+    }
+
+    snapshot_.status = SessionStatus::NotStarted;
+    snapshot_.session_id.clear();
     snapshot_.active_turn.reset();
     return absl::OkStatus();
 }

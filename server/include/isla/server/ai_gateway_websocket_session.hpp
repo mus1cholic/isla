@@ -36,6 +36,11 @@ struct SessionClosedEvent {
     std::string detail;
 };
 
+enum class SessionStartHandlingResult {
+    Accepted = 0,
+    Pending,
+};
+
 class GatewayWebSocketConnection {
   public:
     virtual ~GatewayWebSocketConnection() = default;
@@ -48,9 +53,10 @@ class GatewaySessionEventSink {
   public:
     virtual ~GatewaySessionEventSink() = default;
 
-    [[nodiscard]] virtual absl::Status HandleSessionStart(const SessionStartRequestEvent& event) {
+    [[nodiscard]] virtual absl::StatusOr<SessionStartHandlingResult>
+    HandleSessionStart(const SessionStartRequestEvent& event) {
         static_cast<void>(event);
-        return absl::OkStatus();
+        return SessionStartHandlingResult::Accepted;
     }
     virtual void OnSessionStarted(const SessionStartedEvent& event) = 0;
     [[nodiscard]] virtual absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) {
@@ -94,6 +100,8 @@ class GatewayWebSocketSessionAdapter {
         std::shared_ptr<const TelemetrySink> telemetry_sink = CreateNoOpTelemetrySink());
 
     [[nodiscard]] absl::Status HandleIncomingTextFrame(std::string_view frame);
+    [[nodiscard]] absl::Status AcceptPendingSessionStart(const SessionStartedEvent& event);
+    [[nodiscard]] absl::Status RejectPendingSessionStart(const absl::Status& status);
     [[nodiscard]] absl::Status EmitTextOutput(std::string_view turn_id, std::string_view text);
     [[nodiscard]] absl::Status EmitAudioOutput(std::string_view turn_id, std::string_view mime_type,
                                                std::string_view audio_base64);
