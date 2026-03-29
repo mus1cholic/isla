@@ -74,6 +74,8 @@ class GatewaySessionHandler {
 
     [[nodiscard]] HandleIncomingResult HandleIncomingJson(std::string_view json_text);
     [[nodiscard]] absl::StatusOr<EmitResult> AcceptSessionStart();
+    [[nodiscard]] absl::StatusOr<EmitResult> RejectSessionStart(std::string_view code,
+                                                                std::string_view message);
     [[nodiscard]] absl::StatusOr<EmitResult> EmitTextOutput(std::string_view turn_id,
                                                             std::string_view text);
     [[nodiscard]] absl::StatusOr<EmitResult> EmitAudioOutput(std::string_view turn_id,

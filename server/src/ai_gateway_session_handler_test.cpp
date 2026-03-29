@@ -78,7 +78,7 @@ TEST(AiGatewaySessionHandlerTest, SessionStartSurfacesApplicationStartRequest) {
     EXPECT_EQ(result.session_start_requested->session_id, "srv_test");
     EXPECT_EQ(result.session_start_requested->user_id, kRequiredUserId);
     ASSERT_FALSE(result.accepted_turn.has_value());
-    EXPECT_EQ(handler.snapshot().status, protocol::SessionStatus::NotStarted);
+    EXPECT_EQ(handler.snapshot().status, protocol::SessionStatus::Starting);
 }
 
 TEST(AiGatewaySessionHandlerTest, AcceptSessionStartEmitsSessionStarted) {
@@ -132,6 +132,54 @@ TEST(AiGatewaySessionHandlerTest, RejectsDuplicateSessionStart) {
     const auto& error = std::get<protocol::ErrorMessage>(*frame);
     ASSERT_TRUE(error.session_id.has_value());
     EXPECT_EQ(*error.session_id, "srv_test");
+}
+
+TEST(AiGatewaySessionHandlerTest, RejectsTurnIngressWhileSessionStartPending) {
+    GatewaySessionHandler handler("srv_test");
+
+    const HandleIncomingResult start = handler.HandleIncomingJson(kSessionStartJson);
+    ASSERT_TRUE(start.ok);
+    ASSERT_TRUE(start.session_start_requested.has_value());
+    EXPECT_EQ(handler.snapshot().status, protocol::SessionStatus::Starting);
+
+    const HandleIncomingResult result = handler.HandleIncomingJson(
+        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json");
+
+    EXPECT_FALSE(result.ok);
+    ASSERT_EQ(result.outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(result.outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_FALSE(error.session_id.has_value());
+    ASSERT_TRUE(error.turn_id.has_value());
+    EXPECT_EQ(*error.turn_id, "turn_1");
+    EXPECT_EQ(error.code, "service_unavailable");
+    EXPECT_EQ(error.message, "session.start is still pending");
+}
+
+TEST(AiGatewaySessionHandlerTest, RejectSessionStartResetsHandlerToNotStarted) {
+    GatewaySessionHandler handler("srv_test");
+
+    const HandleIncomingResult start = handler.HandleIncomingJson(kSessionStartJson);
+    ASSERT_TRUE(start.ok);
+    ASSERT_TRUE(start.session_start_requested.has_value());
+
+    const absl::StatusOr<EmitResult> rejected =
+        handler.RejectSessionStart("service_unavailable", "startup unavailable");
+
+    ASSERT_TRUE(rejected.ok()) << rejected.status().ToString();
+    EXPECT_EQ(handler.snapshot().status, protocol::SessionStatus::NotStarted);
+    ASSERT_EQ(rejected->outgoing_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(rejected->outgoing_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_FALSE(error.session_id.has_value());
+    EXPECT_EQ(error.code, "service_unavailable");
+    EXPECT_EQ(error.message, "startup unavailable");
 }
 
 TEST(AiGatewaySessionHandlerTest, RejectsTextInputBeforeSessionStart) {

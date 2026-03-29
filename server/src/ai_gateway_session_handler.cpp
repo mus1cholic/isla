@@ -31,6 +31,10 @@ bool IsSupportedTranscriptSeedRole(std::string_view role) {
     return role == "user" || role == "assistant";
 }
 
+bool IsSessionStarting(protocol::SessionStatus status) {
+    return status == protocol::SessionStatus::Starting;
+}
+
 absl::StatusOr<std::optional<isla::server::memory::Timestamp>>
 ParseOptionalTimestamp(std::optional<std::string> value, std::string_view field_name) {
     if (!value.has_value()) {
@@ -77,9 +81,9 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
             return RejectIncoming(std::nullopt, "bad_request",
                                   evaluation_reference_time.status().message());
         }
-        if (session_state_.snapshot().status != protocol::SessionStatus::NotStarted) {
-            return RejectIncoming(std::nullopt, "bad_request",
-                                  "session is already started or ended");
+        const absl::Status status = session_state_.begin_start(session_id_);
+        if (!status.ok()) {
+            return RejectIncoming(std::nullopt, "bad_request", status.message());
         }
         result.ok = true;
         result.session_start_requested = SessionStartRequestEvent{
@@ -95,6 +99,10 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
         if (session_end.session_id != current_session_id()) {
             return RejectIncoming(std::nullopt, "bad_request",
                                   "session.end session_id does not match active session");
+        }
+        if (IsSessionStarting(session_state_.snapshot().status)) {
+            return RejectIncoming(std::nullopt, "service_unavailable",
+                                  "session.start is still pending");
         }
 
         const absl::Status status = session_state_.end();
@@ -115,6 +123,10 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
         if (!create_time.ok()) {
             return RejectIncoming(transcript_seed.turn_id, "bad_request",
                                   create_time.status().message());
+        }
+        if (IsSessionStarting(session_state_.snapshot().status)) {
+            return RejectIncoming(transcript_seed.turn_id, "service_unavailable",
+                                  "session.start is still pending");
         }
         if (session_state_.snapshot().status != protocol::SessionStatus::Active) {
             return RejectIncoming(transcript_seed.turn_id, "bad_request",
@@ -154,6 +166,10 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
         if (text_input.text.size() > kMaxTextInputBytes) {
             return RejectIncoming(text_input.turn_id, "bad_request",
                                   "text.input text exceeds maximum length");
+        }
+        if (IsSessionStarting(session_state_.snapshot().status)) {
+            return RejectIncoming(text_input.turn_id, "service_unavailable",
+                                  "session.start is still pending");
         }
         const absl::Status status = session_state_.begin_turn(text_input.turn_id);
         if (!status.ok()) {
@@ -206,7 +222,7 @@ HandleIncomingResult GatewaySessionHandler::HandleIncomingJson(std::string_view 
 }
 
 absl::StatusOr<EmitResult> GatewaySessionHandler::AcceptSessionStart() {
-    const absl::Status status = session_state_.start(session_id_);
+    const absl::Status status = session_state_.complete_start();
     if (!status.ok()) {
         return status;
     }
@@ -214,6 +230,15 @@ absl::StatusOr<EmitResult> GatewaySessionHandler::AcceptSessionStart() {
     EmitResult result{};
     result.outgoing_frames.push_back(encode(protocol::SessionStartedMessage{ session_id_ }));
     return result;
+}
+
+absl::StatusOr<EmitResult> GatewaySessionHandler::RejectSessionStart(std::string_view code,
+                                                                     std::string_view message) {
+    const absl::Status status = session_state_.fail_start();
+    if (!status.ok()) {
+        return status;
+    }
+    return EmitError(std::nullopt, code, message);
 }
 
 absl::StatusOr<EmitResult> GatewaySessionHandler::EmitTextOutput(std::string_view turn_id,
@@ -305,8 +330,12 @@ absl::StatusOr<EmitResult> GatewaySessionHandler::EmitError(std::optional<std::s
 
     EmitResult result{};
     const std::string& session_id_value = current_session_id();
+    const protocol::SessionStatus status = session_state_.snapshot().status;
     const std::optional<std::string> session_id =
-        session_id_value.empty() ? std::nullopt : std::optional<std::string>(session_id_value);
+        session_id_value.empty() || status == protocol::SessionStatus::NotStarted ||
+                status == protocol::SessionStatus::Starting
+            ? std::nullopt
+            : std::optional<std::string>(session_id_value);
     result.outgoing_frames.push_back(encode(protocol::ErrorMessage{
         .session_id = session_id,
         .turn_id = optional_string(turn_id),

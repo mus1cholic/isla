@@ -57,6 +57,11 @@ std::string SessionStartErrorCode(const absl::Status& status) {
     }
 }
 
+bool HasConfirmedSessionStarted(isla::shared::ai_gateway::SessionStatus status) {
+    return status == isla::shared::ai_gateway::SessionStatus::Active ||
+           status == isla::shared::ai_gateway::SessionStatus::Ended;
+}
+
 const char* close_reason_name(SessionCloseReason reason) {
     switch (reason) {
     case SessionCloseReason::ProtocolEnded:
@@ -101,30 +106,22 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
 
     HandleIncomingResult result = handler_.HandleIncomingJson(frame);
     if (result.session_start_requested.has_value()) {
-        absl::Status startup_status =
+        const absl::StatusOr<SessionStartHandlingResult> startup_result =
             event_sink_ != nullptr
                 ? event_sink_->HandleSessionStart(*result.session_start_requested)
-                : absl::OkStatus();
-        if (!startup_status.ok()) {
-            const absl::StatusOr<EmitResult> emit = handler_.EmitError(
-                std::nullopt, SessionStartErrorCode(startup_status), startup_status.message());
-            if (!emit.ok()) {
-                return emit.status();
+                : absl::StatusOr<SessionStartHandlingResult>(SessionStartHandlingResult::Accepted);
+        if (!startup_result.ok()) {
+            const absl::Status reject_status = RejectPendingSessionStart(startup_result.status());
+            if (!reject_status.ok()) {
+                return reject_status;
             }
-            result.outgoing_frames.insert(result.outgoing_frames.end(),
-                                          emit->outgoing_frames.begin(),
-                                          emit->outgoing_frames.end());
-            result.ok = false;
-            result.error_message = std::string(startup_status.message());
-        } else {
-            const absl::StatusOr<EmitResult> emit = handler_.AcceptSessionStart();
-            if (!emit.ok()) {
-                return emit.status();
-            }
-            result.outgoing_frames.insert(result.outgoing_frames.end(),
-                                          emit->outgoing_frames.begin(),
-                                          emit->outgoing_frames.end());
+            return failed_precondition(startup_result.status().message());
         }
+        if (*startup_result == SessionStartHandlingResult::Pending) {
+            VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " startup pending";
+            return absl::OkStatus();
+        }
+        return AcceptPendingSessionStart(*result.session_start_requested);
     }
     if (result.transcript_seed.has_value()) {
         absl::Status seed_status = event_sink_ != nullptr
@@ -196,6 +193,46 @@ absl::Status GatewayWebSocketSessionAdapter::HandleIncomingTextFrame(std::string
     if (result.session_start_requested.has_value() && result.ok) {
         VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " started";
     }
+    return absl::OkStatus();
+}
+
+absl::Status
+GatewayWebSocketSessionAdapter::AcceptPendingSessionStart(const SessionStartedEvent& event) {
+    if (closed_) {
+        return failed_precondition("websocket session is closed");
+    }
+
+    const absl::StatusOr<EmitResult> emit = handler_.AcceptSessionStart();
+    if (!emit.ok()) {
+        return emit.status();
+    }
+    const absl::Status send_status = SendFrames(emit->outgoing_frames);
+    if (!send_status.ok()) {
+        return send_status;
+    }
+    if (event_sink_ != nullptr) {
+        event_sink_->OnSessionStarted(event);
+    }
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " started";
+    return absl::OkStatus();
+}
+
+absl::Status GatewayWebSocketSessionAdapter::RejectPendingSessionStart(const absl::Status& status) {
+    if (closed_) {
+        return failed_precondition("websocket session is closed");
+    }
+
+    const absl::StatusOr<EmitResult> emit =
+        handler_.RejectSessionStart(SessionStartErrorCode(status), status.message());
+    if (!emit.ok()) {
+        return emit.status();
+    }
+    const absl::Status send_status = SendFrames(emit->outgoing_frames);
+    if (!send_status.ok()) {
+        return send_status;
+    }
+    VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " startup rejected reason='"
+            << SanitizeForLog(status.message()) << "'";
     return absl::OkStatus();
 }
 
@@ -334,8 +371,7 @@ void GatewayWebSocketSessionAdapter::HandleTransportClosed() {
         return;
     }
 
-    const bool session_started =
-        handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted;
+    const bool session_started = HasConfirmedSessionStarted(handler_.snapshot().status);
     const std::optional<std::string> inflight_turn_id = active_turn_id();
     if (inflight_turn_id.has_value()) {
         LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id_) << " transport closed"
@@ -357,9 +393,7 @@ void GatewayWebSocketSessionAdapter::HandleServerShutdown() {
     const std::optional<std::string> inflight_turn_id = active_turn_id();
     VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_) << " closed for server shutdown"
             << " session_started="
-            << (handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted
-                    ? "true"
-                    : "false")
+            << (HasConfirmedSessionStarted(handler_.snapshot().status) ? "true" : "false")
             << " inflight_turn_id='"
             << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
                                              : std::string("<none>"))
@@ -397,9 +431,7 @@ void GatewayWebSocketSessionAdapter::CloseSession(SessionCloseReason reason,
     }
     VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
             << " closed reason=" << close_reason_name(reason) << " session_started="
-            << (handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted
-                    ? "true"
-                    : "false")
+            << (HasConfirmedSessionStarted(handler_.snapshot().status) ? "true" : "false")
             << " inflight_turn_id='"
             << (inflight_turn_id.has_value() ? SanitizeForLog(*inflight_turn_id)
                                              : std::string("<none>"))
@@ -407,8 +439,7 @@ void GatewayWebSocketSessionAdapter::CloseSession(SessionCloseReason reason,
     if (event_sink_ != nullptr) {
         event_sink_->OnSessionClosed(SessionClosedEvent{
             .session_id = session_id_,
-            .session_started =
-                handler_.snapshot().status != isla::shared::ai_gateway::SessionStatus::NotStarted,
+            .session_started = HasConfirmedSessionStarted(handler_.snapshot().status),
             .inflight_turn_id = std::move(inflight_turn_id),
             .reason = reason,
             .detail = std::string(detail),

@@ -116,6 +116,8 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     void AttachSessionRegistry(GatewaySessionRegistry* session_registry);
 
     [[nodiscard]] absl::Status HandleSessionStart(const SessionStartRequestEvent& event) override;
+    void HandleSessionStartAsync(const SessionStartRequestEvent& event,
+                                 GatewayEmitCallback on_complete) override;
     void OnSessionStarted(const SessionStartedEvent& event) override;
     [[nodiscard]] absl::Status HandleTranscriptSeed(const TranscriptSeedEvent& event) override;
     void OnTurnAccepted(const TurnAcceptedEvent& event) override;
@@ -170,6 +172,13 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
         bool cancel_requested = false;
     };
 
+    struct PendingSessionStart {
+        SessionStartRequestEvent event;
+        GatewayEmitCallback on_complete;
+        Clock::time_point ready_at = Clock::time_point::min();
+        std::size_t attempts_used = 0;
+    };
+
     struct LiveReplayClockState {
         std::optional<isla::server::memory::Timestamp> session_start_time;
         absl::flat_hash_map<std::string, isla::server::memory::Timestamp> conversation_times;
@@ -177,6 +186,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
 
     void StopWorker();
     void WorkerLoop();
+    void CompleteSessionStartCallback(GatewayEmitCallback on_complete, absl::Status status) const;
     void RecordDequeueTelemetry(const PendingTurn& turn, Clock::time_point dequeued_at) const;
     [[nodiscard]] bool TryMarkTrackedTurnCancelled(std::string_view session_id,
                                                    std::string_view turn_id);
@@ -236,6 +246,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     std::condition_variable cv_;
     std::thread worker_;
     GatewaySessionRegistry* session_registry_ = nullptr;
+    absl::flat_hash_map<std::string, PendingSessionStart> pending_session_starts_;
     absl::flat_hash_map<std::string, PendingTurn> pending_turns_;
     absl::flat_hash_map<std::string, PendingTurn> in_progress_turns_;
     absl::flat_hash_map<std::string, std::shared_ptr<SessionMemoryState>> memory_by_session_;

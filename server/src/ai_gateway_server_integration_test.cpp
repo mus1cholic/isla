@@ -228,6 +228,108 @@ class FailingSessionStartMemoryStore final : public isla::server::memory::Memory
     std::string last_turn_id_;
 };
 
+class BlockingSessionStartMemoryStore final : public isla::server::memory::MemoryStore {
+  public:
+    absl::Status UpsertSession(const isla::server::memory::MemorySessionRecord& record) override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ++upsert_session_attempts_;
+            last_session_id_ = record.session_id;
+            cv_.notify_all();
+        }
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!cv_.wait_for(lock, 2s, [this] { return allow_upsert_; })) {
+            return absl::DeadlineExceededError("timed out waiting to release session start upsert");
+        }
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertUserWorkingMemory(const isla::server::memory::UserWorkingMemoryRecord& record) override {
+        static_cast<void>(record);
+        return absl::OkStatus();
+    }
+
+    absl::Status AppendConversationMessage(
+        const isla::server::memory::ConversationMessageWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status ReplaceConversationItemWithEpisodeStub(
+        const isla::server::memory::EpisodeStubWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status SplitConversationItemWithEpisodeStub(
+        const isla::server::memory::SplitEpisodeStubWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::Status ClearSessionWorkingSet(std::string_view session_id) override {
+        static_cast<void>(session_id);
+        return absl::OkStatus();
+    }
+
+    absl::Status
+    UpsertMidTermEpisode(const isla::server::memory::MidTermEpisodeWrite& write) override {
+        static_cast<void>(write);
+        return absl::OkStatus();
+    }
+
+    absl::StatusOr<std::vector<isla::server::memory::Episode>>
+    ListMidTermEpisodes(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::vector<isla::server::memory::Episode>{};
+    }
+
+    absl::StatusOr<std::optional<isla::server::memory::Episode>>
+    GetMidTermEpisode(std::string_view session_id, std::string_view episode_id) const override {
+        static_cast<void>(session_id);
+        static_cast<void>(episode_id);
+        return std::nullopt;
+    }
+
+    absl::StatusOr<std::optional<isla::server::memory::MemoryStoreSnapshot>>
+    LoadSnapshot(std::string_view session_id) const override {
+        static_cast<void>(session_id);
+        return std::nullopt;
+    }
+
+    bool WaitForUpsertAttemptCount(std::size_t expected_count) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, 2s, [&] { return upsert_session_attempts_ >= expected_count; });
+    }
+
+    void ReleaseUpsert() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            allow_upsert_ = true;
+        }
+        cv_.notify_all();
+    }
+
+    [[nodiscard]] std::size_t upsert_session_attempts() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return upsert_session_attempts_;
+    }
+
+    [[nodiscard]] std::string last_session_id() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_session_id_;
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::size_t upsert_session_attempts_ = 0;
+    bool allow_upsert_ = false;
+    std::string last_session_id_;
+};
+
 class RecordingApplicationSink final : public GatewayApplicationEventSink {
   public:
     void OnSessionStarted(const SessionStartedEvent& event) override {
@@ -1103,6 +1205,74 @@ TEST(AiGatewayServerIntegrationTest,
 
     EXPECT_EQ(store->upsert_session_attempts(), 3U);
     EXPECT_EQ(store->append_message_attempts(), 0U);
+
+    client.CloseTransport();
+    server.Stop();
+}
+
+TEST(AiGatewayServerIntegrationTest,
+     SessionStartPendingRejectsTurnIngressUntilAsyncStartupCompletes) {
+    auto store = std::make_shared<BlockingSessionStartMemoryStore>();
+    GatewayStubResponder responder(GatewayStubResponderConfig{
+        .response_delay = 0ms,
+        .async_emit_timeout = 2s,
+        .session_start_persistence_max_attempts = 1,
+        .session_start_persistence_retry_delay = 0ms,
+        .memory_store = store,
+        .openai_client = MakeEchoOpenAiResponsesClient(),
+    });
+    GatewayServer server(
+        GatewayServerConfig{ .bind_host = "127.0.0.1", .port = 0, .listen_backlog = 4 }, &responder,
+        std::make_unique<SequentialSessionIdGenerator>("srv_pending_"));
+    responder.AttachSessionRegistry(&server.session_registry());
+
+    ASSERT_TRUE(server.Start().ok());
+
+    RealWebSocketClient client;
+    ASSERT_TRUE(client.Connect(server.bound_port()).ok());
+    ASSERT_TRUE(client.SendJson(kSessionStartJson).ok());
+    ASSERT_TRUE(store->WaitForUpsertAttemptCount(1U));
+    EXPECT_EQ(store->last_session_id(), "srv_pending_1");
+
+    ASSERT_TRUE(
+        client
+            .SendJson(
+                R"json({"type":"text.input","turn_id":"turn_pending","text":"hello gateway"})json")
+            .ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> pending_error = client.ReadJsonFrame();
+    ASSERT_TRUE(pending_error.ok()) << pending_error.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*pending_error));
+    const auto& pending_error_message = std::get<protocol::ErrorMessage>(*pending_error);
+    EXPECT_EQ(pending_error_message.code, "service_unavailable");
+    EXPECT_EQ(pending_error_message.message, "session.start is still pending");
+    EXPECT_FALSE(pending_error_message.session_id.has_value());
+    ASSERT_TRUE(pending_error_message.turn_id.has_value());
+    EXPECT_EQ(*pending_error_message.turn_id, "turn_pending");
+
+    store->ReleaseUpsert();
+
+    const absl::StatusOr<protocol::GatewayMessage> started_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(started_frame.ok()) << started_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*started_frame));
+    EXPECT_EQ(std::get<protocol::SessionStartedMessage>(*started_frame).session_id,
+              "srv_pending_1");
+
+    ASSERT_TRUE(
+        client
+            .SendJson(R"json({"type":"text.input","turn_id":"turn_1","text":"hello gateway"})json")
+            .ok());
+
+    const absl::StatusOr<protocol::GatewayMessage> text_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(text_frame.ok()) << text_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TextOutputMessage>(*text_frame));
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_frame).turn_id, "turn_1");
+    EXPECT_EQ(std::get<protocol::TextOutputMessage>(*text_frame).text, "stub echo: hello gateway");
+
+    const absl::StatusOr<protocol::GatewayMessage> completed_frame = client.ReadJsonFrame();
+    ASSERT_TRUE(completed_frame.ok()) << completed_frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::TurnCompletedMessage>(*completed_frame));
+    EXPECT_EQ(std::get<protocol::TurnCompletedMessage>(*completed_frame).turn_id, "turn_1");
 
     client.CloseTransport();
     server.Stop();

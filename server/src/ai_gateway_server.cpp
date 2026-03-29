@@ -42,6 +42,29 @@ absl::Status failed_precondition(std::string_view message) {
     return absl::FailedPreconditionError(std::string(message));
 }
 
+std::string SessionStartErrorCode(const absl::Status& status) {
+    switch (status.code()) {
+    case absl::StatusCode::kInvalidArgument:
+    case absl::StatusCode::kFailedPrecondition:
+    case absl::StatusCode::kAlreadyExists:
+    case absl::StatusCode::kNotFound:
+    case absl::StatusCode::kUnimplemented:
+        return "bad_request";
+    case absl::StatusCode::kUnauthenticated:
+        return "authentication_error";
+    case absl::StatusCode::kPermissionDenied:
+        return "permission_denied";
+    case absl::StatusCode::kResourceExhausted:
+        return "response_too_large";
+    case absl::StatusCode::kDeadlineExceeded:
+        return "upstream_timeout";
+    case absl::StatusCode::kUnavailable:
+        return "service_unavailable";
+    default:
+        return "internal_error";
+    }
+}
+
 std::string format_error(std::string_view context, const boost::system::error_code& error) {
     return std::string(context) + ": " + error.message();
 }
@@ -90,6 +113,35 @@ class LiveGatewaySession final : public GatewayLiveSession,
 
     [[nodiscard]] bool is_closed() const override {
         return closed_.load();
+    }
+
+    void AsyncAcceptSessionStart(SessionStartedEvent event,
+                                 GatewayEmitCallback on_complete) override {
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
+                << " queueing session.start acceptance";
+        InvokeOnTransport(
+            "session.started",
+            [this, event = std::move(event)] {
+                if (adapter_ == nullptr) {
+                    return failed_precondition("websocket session is not ready");
+                }
+                return adapter_->AcceptPendingSessionStart(event);
+            },
+            std::move(on_complete));
+    }
+
+    void AsyncRejectSessionStart(absl::Status status, GatewayEmitCallback on_complete) override {
+        VLOG(1) << "AI gateway session=" << SanitizeForLog(session_id_)
+                << " queueing session.start rejection";
+        InvokeOnTransport(
+            "session.start.error",
+            [this, status = std::move(status)]() mutable {
+                if (adapter_ == nullptr) {
+                    return failed_precondition("websocket session is not ready");
+                }
+                return adapter_->RejectPendingSessionStart(status);
+            },
+            std::move(on_complete));
     }
 
     void AsyncEmitTextOutput(std::string turn_id, std::string text,
@@ -629,11 +681,59 @@ class GatewaySessionRegistry::Impl {
         return sessions_.size();
     }
 
-    [[nodiscard]] absl::Status ForwardSessionStart(const SessionStartRequestEvent& event) {
+    [[nodiscard]] absl::StatusOr<SessionStartHandlingResult>
+    ForwardSessionStart(const SessionStartRequestEvent& event) {
         if (application_sink_ == nullptr) {
-            return absl::OkStatus();
+            return SessionStartHandlingResult::Accepted;
         }
-        return application_sink_->HandleSessionStart(event);
+        std::shared_ptr<GatewayLiveSession> live_session;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto it = sessions_.find(event.session_id);
+            if (it != sessions_.end()) {
+                live_session = it->second.lock();
+            }
+        }
+        if (live_session == nullptr) {
+            return failed_precondition("missing live session for session.start");
+        }
+        std::weak_ptr<GatewayLiveSession> weak_live_session = live_session;
+        application_sink_->HandleSessionStartAsync(
+            event, [weak_live_session, event](absl::Status status) mutable {
+                const std::shared_ptr<GatewayLiveSession> live_session = weak_live_session.lock();
+                if (live_session == nullptr) {
+                    VLOG(1) << "AI gateway dropped async session.start completion session="
+                            << SanitizeForLog(event.session_id);
+                    return;
+                }
+                auto log_completion = [session_id = event.session_id](std::string_view op,
+                                                                      absl::Status emit_status) {
+                    if (!emit_status.ok()) {
+                        LOG(WARNING) << "AI gateway session=" << SanitizeForLog(session_id)
+                                     << " async session.start completion failed op=" << op
+                                     << " detail='" << SanitizeForLog(emit_status.message()) << "'";
+                    }
+                };
+                if (status.ok()) {
+                    live_session->AsyncAcceptSessionStart(
+                        SessionStartedEvent{
+                            .session_id = event.session_id,
+                            .user_id = event.user_id,
+                            .session_start_time = event.session_start_time,
+                            .evaluation_reference_time = event.evaluation_reference_time,
+                        },
+                        [log_completion = std::move(log_completion)](absl::Status emit_status) {
+                            log_completion("session.started", std::move(emit_status));
+                        });
+                    return;
+                }
+                live_session->AsyncRejectSessionStart(
+                    absl::Status(status.code(), status.message()),
+                    [log_completion = std::move(log_completion)](absl::Status emit_status) {
+                        log_completion("session.start.error", std::move(emit_status));
+                    });
+            });
+        return SessionStartHandlingResult::Pending;
     }
 
     void ForwardSessionStarted(const SessionStartedEvent& event) {
@@ -713,7 +813,8 @@ void GatewaySessionRegistry::NotifyServerStopping() {
     impl_->NotifyServerStopping(*this);
 }
 
-absl::Status GatewaySessionRegistry::HandleSessionStart(const SessionStartRequestEvent& event) {
+absl::StatusOr<SessionStartHandlingResult>
+GatewaySessionRegistry::HandleSessionStart(const SessionStartRequestEvent& event) {
     return impl_->ForwardSessionStart(event);
 }
 

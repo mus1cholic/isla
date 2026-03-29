@@ -61,7 +61,8 @@ class RecordingEventSink final : public NiceMock<test::MockGatewaySessionEventSi
         ON_CALL(*this, HandleSessionStart(_))
             .WillByDefault([this](const SessionStartRequestEvent& event) {
                 startup_requests.push_back(event);
-                return absl::OkStatus();
+                return absl::StatusOr<SessionStartHandlingResult>(
+                    SessionStartHandlingResult::Accepted);
             });
         ON_CALL(*this, OnSessionStarted(_)).WillByDefault([this](const SessionStartedEvent& event) {
             started_sessions.push_back(event);
@@ -203,7 +204,8 @@ TEST(AiGatewayWebSocketSessionTest, RejectedSessionStartReturnsErrorWithoutStart
     ON_CALL(sink, HandleSessionStart(_))
         .WillByDefault([&sink](const SessionStartRequestEvent& event) {
             sink.startup_requests.push_back(event);
-            return absl::UnavailableError("startup unavailable");
+            return absl::StatusOr<SessionStartHandlingResult>(
+                absl::UnavailableError("startup unavailable"));
         });
 
     const absl::Status status = session.HandleIncomingTextFrame(kSessionStartJson);
@@ -233,7 +235,8 @@ TEST(AiGatewayWebSocketSessionTest, SessionStartPermissionDeniedMapsToPermission
     ON_CALL(sink, HandleSessionStart(_))
         .WillByDefault([&sink](const SessionStartRequestEvent& event) {
             sink.startup_requests.push_back(event);
-            return absl::PermissionDeniedError("startup forbidden");
+            return absl::StatusOr<SessionStartHandlingResult>(
+                absl::PermissionDeniedError("startup forbidden"));
         });
 
     const absl::Status status = session.HandleIncomingTextFrame(kSessionStartJson);
@@ -257,7 +260,8 @@ TEST(AiGatewayWebSocketSessionTest, SessionStartDeadlineExceededMapsToUpstreamTi
     ON_CALL(sink, HandleSessionStart(_))
         .WillByDefault([&sink](const SessionStartRequestEvent& event) {
             sink.startup_requests.push_back(event);
-            return absl::DeadlineExceededError("startup timed out");
+            return absl::StatusOr<SessionStartHandlingResult>(
+                absl::DeadlineExceededError("startup timed out"));
         });
 
     const absl::Status status = session.HandleIncomingTextFrame(kSessionStartJson);
@@ -271,6 +275,88 @@ TEST(AiGatewayWebSocketSessionTest, SessionStartDeadlineExceededMapsToUpstreamTi
     const auto& error = std::get<protocol::ErrorMessage>(*frame);
     EXPECT_EQ(error.code, "upstream_timeout");
     EXPECT_EQ(error.message, "startup timed out");
+}
+
+TEST(AiGatewayWebSocketSessionTest, PendingSessionStartDefersSessionStartedUntilAccepted) {
+    RecordingWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ON_CALL(sink, HandleSessionStart(_))
+        .WillByDefault([&sink](const SessionStartRequestEvent& event) {
+            sink.startup_requests.push_back(event);
+            return absl::StatusOr<SessionStartHandlingResult>(
+                SessionStartHandlingResult::Pending);
+        });
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
+    EXPECT_EQ(session.snapshot().status, protocol::SessionStatus::Starting);
+    EXPECT_TRUE(connection.sent_frames.empty());
+    ASSERT_EQ(sink.startup_requests.size(), 1U);
+    EXPECT_TRUE(sink.started_sessions.empty());
+
+    ASSERT_TRUE(session.AcceptPendingSessionStart(sink.startup_requests.front()).ok());
+    EXPECT_EQ(session.snapshot().status, protocol::SessionStatus::Active);
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    ASSERT_EQ(sink.started_sessions.size(), 1U);
+
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(connection.sent_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::SessionStartedMessage>(*frame));
+    EXPECT_EQ(std::get<protocol::SessionStartedMessage>(*frame).session_id, "srv_test");
+}
+
+TEST(AiGatewayWebSocketSessionTest, PendingSessionStartRejectsIngressUntilCompletion) {
+    RecordingWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ON_CALL(sink, HandleSessionStart(_))
+        .WillByDefault([&sink](const SessionStartRequestEvent& event) {
+            sink.startup_requests.push_back(event);
+            return absl::StatusOr<SessionStartHandlingResult>(
+                SessionStartHandlingResult::Pending);
+        });
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
+
+    const absl::Status status = session.HandleIncomingTextFrame(
+        R"json({"type":"text.input","turn_id":"turn_1","text":"hello"})json");
+
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.message(), "session.start is still pending");
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    EXPECT_TRUE(sink.accepted_turns.empty());
+
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(connection.sent_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_EQ(error.code, "service_unavailable");
+    EXPECT_EQ(error.message, "session.start is still pending");
+}
+
+TEST(AiGatewayWebSocketSessionTest, PendingSessionStartCloseDoesNotReportStartedSession) {
+    RecordingWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ON_CALL(sink, HandleSessionStart(_))
+        .WillByDefault([&sink](const SessionStartRequestEvent& event) {
+            sink.startup_requests.push_back(event);
+            return absl::StatusOr<SessionStartHandlingResult>(
+                SessionStartHandlingResult::Pending);
+        });
+
+    ASSERT_TRUE(session.HandleIncomingTextFrame(kSessionStartJson).ok());
+
+    session.HandleTransportClosed();
+
+    ASSERT_EQ(sink.closed_sessions.size(), 1U);
+    EXPECT_FALSE(sink.closed_sessions.front().session_started);
+    EXPECT_EQ(sink.closed_sessions.front().reason, SessionCloseReason::TransportClosed);
 }
 
 TEST(AiGatewayWebSocketSessionTest, AcceptedTurnIsForwardedToEventSink) {
