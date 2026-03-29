@@ -206,6 +206,9 @@ absl::Status MemoryOrchestrator::HydratePersistentMemoryCache() {
     const std::string& user_id = memory_.snapshot().conversation.user_id;
     const absl::StatusOr<std::vector<Entity>> entities = store_->ListEntitiesByUser(user_id);
     if (!entities.ok()) {
+        if (absl::IsUnimplemented(entities.status())) {
+            return absl::OkStatus();
+        }
         LOG(WARNING) << "MemoryOrchestrator failed to load entities for cache hydration"
                      << " session_id=" << SanitizeForLog(session_id_)
                      << " user_id=" << SanitizeForLog(user_id) << " detail='"
@@ -500,10 +503,12 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
         const absl::StatusOr<std::vector<Relationship>> relationships =
             store_->ListRelationshipsForEntity(entity_id);
         if (!relationships.ok()) {
-            LOG(WARNING) << "MemoryOrchestrator failed to retrieve relationships for entity"
-                         << " session_id=" << SanitizeForLog(session_id_)
-                         << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
-                         << SanitizeForLog(relationships.status().message()) << "'";
+            if (!absl::IsUnimplemented(relationships.status())) {
+                LOG(WARNING) << "MemoryOrchestrator failed to retrieve relationships for entity"
+                             << " session_id=" << SanitizeForLog(session_id_)
+                             << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
+                             << SanitizeForLog(relationships.status().message()) << "'";
+            }
             continue;
         }
 
@@ -520,10 +525,13 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
         const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
             store_->ListLongTermEpisodesForEntity(entity_id);
         if (!episodes.ok()) {
-            LOG(WARNING) << "MemoryOrchestrator failed to retrieve long-term episodes for entity"
-                         << " session_id=" << SanitizeForLog(session_id_)
-                         << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
-                         << SanitizeForLog(episodes.status().message()) << "'";
+            if (!absl::IsUnimplemented(episodes.status())) {
+                LOG(WARNING)
+                    << "MemoryOrchestrator failed to retrieve long-term episodes for entity"
+                    << " session_id=" << SanitizeForLog(session_id_)
+                    << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
+                    << SanitizeForLog(episodes.status().message()) << "'";
+            }
             continue;
         }
 
