@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "absl/status/status.h"
@@ -13,6 +15,7 @@ namespace isla::server {
 struct EmbeddingRequest {
     std::string model;
     std::string text;
+    std::optional<std::size_t> output_dimensionality;
     std::shared_ptr<const ai_gateway::TurnTelemetryContext> telemetry_context;
 };
 

@@ -7,6 +7,29 @@
 namespace isla::server::memory {
 namespace {
 
+absl::Status ValidateEmbeddingDimensions(const Embedding& embedding, bool allow_empty,
+                                         std::string_view context) {
+    if (embedding.empty()) {
+        if (allow_empty) {
+            return absl::OkStatus();
+        }
+        return absl::InvalidArgumentError(std::string(context) + " must not be empty when set");
+    }
+    if (embedding.size() != kEmbeddingDimensions) {
+        return absl::InvalidArgumentError(std::string(context) + " must contain exactly " +
+                                          std::to_string(kEmbeddingDimensions) + " elements");
+    }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateOptionalEmbeddingDimensions(const std::optional<Embedding>& embedding,
+                                                 std::string_view context) {
+    if (!embedding.has_value()) {
+        return absl::OkStatus();
+    }
+    return ValidateEmbeddingDimensions(*embedding, /*allow_empty=*/false, context);
+}
+
 absl::Status ValidateEpisodeCoreFields(const Episode& episode) {
     if (episode.episode_id.empty()) {
         return absl::InvalidArgumentError("mid-term episode write must include an episode_id");
@@ -20,6 +43,11 @@ absl::Status ValidateEpisodeCoreFields(const Episode& episode) {
     if (episode.salience < 1 || episode.salience > 10) {
         return absl::InvalidArgumentError(
             "mid-term episode write salience must be in the range 1-10");
+    }
+    if (absl::Status status = ValidateEmbeddingDimensions(episode.embedding, /*allow_empty=*/true,
+                                                          "mid-term episode embedding");
+        !status.ok()) {
+        return status;
     }
     return absl::OkStatus();
 }
@@ -231,9 +259,11 @@ absl::Status ValidateEntityWrite(const EntityWrite& write) {
         return absl::InvalidArgumentError(
             "ValidateEntityWrite requires activeness to be in the range 1-10");
     }
-    // TODO: Validate that name_embedding, when present, has exactly kEmbeddingDimension
-    // elements. Deferred until a shared embedding-dimension constant is introduced across
-    // all embedding paths (mid-term, long-term, entity, relationship).
+    if (absl::Status status = ValidateOptionalEmbeddingDimensions(
+            entity.name_embedding, "ValidateEntityWrite name_embedding");
+        !status.ok()) {
+        return status;
+    }
     return absl::OkStatus();
 }
 
@@ -259,9 +289,11 @@ absl::Status ValidateRelationshipWrite(const RelationshipWrite& write) {
         return absl::InvalidArgumentError(
             "ValidateRelationshipWrite requires to_entity_id to be non-empty");
     }
-    // TODO: Validate that embedding, when present, has exactly kEmbeddingDimension
-    // elements. Deferred until a shared embedding-dimension constant is introduced across
-    // all embedding paths (mid-term, long-term, entity, relationship).
+    if (absl::Status status = ValidateOptionalEmbeddingDimensions(
+            rel.embedding, "ValidateRelationshipWrite embedding");
+        !status.ok()) {
+        return status;
+    }
     return absl::OkStatus();
 }
 
@@ -283,9 +315,11 @@ absl::Status ValidateLongTermEpisodeWrite(const LongTermEpisodeWrite& write) {
         return absl::InvalidArgumentError(
             "ValidateLongTermEpisodeWrite requires complexity to be in the range 1-10");
     }
-    // TODO: Validate that embedding, when present, has exactly kEmbeddingDimension
-    // elements. Deferred until a shared embedding-dimension constant is introduced across
-    // all embedding paths (mid-term, long-term, entity, relationship).
+    if (absl::Status status = ValidateOptionalEmbeddingDimensions(
+            episode.embedding, "ValidateLongTermEpisodeWrite embedding");
+        !status.ok()) {
+        return status;
+    }
     return absl::OkStatus();
 }
 

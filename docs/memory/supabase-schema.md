@@ -95,14 +95,14 @@ Suggested columns:
 - `tier3_ref text not null`
 - `tier3_keywords text[] not null default '{}'`
 - `salience integer not null check (salience between 1 and 10)`
-- `embedding jsonb not null default '[]'::jsonb`
+- `embedding extensions.vector(1536) null`
 - `created_at timestamptz not null`
 
 Notes:
 
 - `source_item_index` links the episode back to the original conversation position.
-- `embedding` can start as `jsonb` if we want the simplest path first.
-- If we later want similarity search inside Postgres, migrate `embedding` to `vector(n)` once the model dimension is fixed.
+- `embedding` uses pgvector directly so mid-term recall and long-term memory share one vector format.
+- Keep it nullable because the runtime still allows embeddings to be temporarily unavailable.
 
 ### `entities`
 
@@ -256,5 +256,9 @@ Working memory and mid-term memory store methods are implemented:
 - sleep-cycle reset RPC persistence
 - session hydration
 
-Long-term memory store methods (entity CRUD, relationship CRUD, long-term episode CRUD, episode-entity
-linking) are defined in the schema but not yet implemented in the Supabase store layer.
+Long-term memory store methods are implemented:
+
+- entity upsert/list/get
+- relationship upsert/list
+- long-term episode upsert/list-by-entity
+- episode-entity linking

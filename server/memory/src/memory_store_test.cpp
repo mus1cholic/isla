@@ -14,6 +14,10 @@ Timestamp Ts(std::string_view text) {
     return json(text).get<Timestamp>();
 }
 
+Embedding MakeEmbedding(std::size_t dimensions = kEmbeddingDimensions) {
+    return Embedding(dimensions, 0.25);
+}
+
 TEST(MemoryStoreTest, ConversationMessageWriteRejectsMissingIdentifiers) {
     const absl::Status status = ValidateConversationMessageWrite(ConversationMessageWrite{
         .session_id = "",
@@ -229,6 +233,26 @@ TEST(MemoryStoreTest, EntityWriteRejectsOutOfRangeActiveness) {
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(MemoryStoreTest, EntityWriteRejectsWrongEmbeddingDimension) {
+    const absl::Status status = ValidateEntityWrite(EntityWrite{
+        .entity =
+            Entity{
+                .entity_id = "ent_001",
+                .user_id = "user_001",
+                .label = "Alice",
+                .category = "person",
+                .activeness = 5,
+                .name_embedding = Embedding{ 0.1, 0.2, 0.3 },
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+                .updated_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(status.message()).find("exactly 1536"), std::string::npos);
+}
+
 TEST(MemoryStoreTest, EntityWriteAcceptsValidInput) {
     const absl::Status status = ValidateEntityWrite(EntityWrite{
         .entity =
@@ -238,7 +262,7 @@ TEST(MemoryStoreTest, EntityWriteAcceptsValidInput) {
                 .label = "Alice",
                 .category = "person",
                 .activeness = 5,
-                .name_embedding = {},
+                .name_embedding = MakeEmbedding(),
                 .created_at = Ts("2026-03-08T14:00:00Z"),
                 .updated_at = Ts("2026-03-08T14:00:00Z"),
             },
@@ -268,6 +292,26 @@ TEST(MemoryStoreTest, RelationshipWriteRejectsEmptyPredicate) {
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(MemoryStoreTest, RelationshipWriteRejectsWrongEmbeddingDimension) {
+    const absl::Status status = ValidateRelationshipWrite(RelationshipWrite{
+        .relationship =
+            Relationship{
+                .relationship_id = "rel_001",
+                .user_id = "user_001",
+                .from_entity_id = "ent_001",
+                .predicate = "knows",
+                .to_entity_id = "ent_002",
+                .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+                .embedding = Embedding{ 0.1, 0.2 },
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(status.message()).find("exactly 1536"), std::string::npos);
+}
+
 TEST(MemoryStoreTest, RelationshipWriteAcceptsValidInput) {
     const absl::Status status = ValidateRelationshipWrite(RelationshipWrite{
         .relationship =
@@ -278,7 +322,7 @@ TEST(MemoryStoreTest, RelationshipWriteAcceptsValidInput) {
                 .predicate = "knows",
                 .to_entity_id = "ent_002",
                 .last_observed_at = Ts("2026-03-08T14:00:00Z"),
-                .embedding = {},
+                .embedding = MakeEmbedding(),
                 .created_at = Ts("2026-03-08T14:00:00Z"),
             },
     });
@@ -304,6 +348,24 @@ TEST(MemoryStoreTest, LongTermEpisodeWriteRejectsOutOfRangeComplexity) {
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(MemoryStoreTest, LongTermEpisodeWriteRejectsWrongEmbeddingDimension) {
+    const absl::Status status = ValidateLongTermEpisodeWrite(LongTermEpisodeWrite{
+        .episode =
+            LongTermEpisode{
+                .lte_id = "lte_001",
+                .user_id = "user_001",
+                .summary_compressed = "compressed summary",
+                .embedding = Embedding{ 0.1, 0.2 },
+                .complexity = 5,
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(std::string(status.message()).find("exactly 1536"), std::string::npos);
+}
+
 TEST(MemoryStoreTest, LongTermEpisodeWriteAcceptsValidInput) {
     const absl::Status status = ValidateLongTermEpisodeWrite(LongTermEpisodeWrite{
         .episode =
@@ -311,6 +373,7 @@ TEST(MemoryStoreTest, LongTermEpisodeWriteAcceptsValidInput) {
                 .lte_id = "lte_001",
                 .user_id = "user_001",
                 .summary_compressed = "compressed summary",
+                .embedding = MakeEmbedding(),
                 .complexity = 5,
                 .created_at = Ts("2026-03-08T14:00:00Z"),
             },
@@ -486,6 +549,35 @@ TEST(MemoryStoreTest, SnapshotValidationAcceptsOrderedConversationAndEpisodes) {
                     .episode_id = std::nullopt,
                 },
             },
+        .mid_term_episodes =
+            {
+                Episode{
+                    .episode_id = "ep_001",
+                    .tier1_detail = std::nullopt,
+                    .tier2_summary = "summary",
+                    .tier3_ref = "ref",
+                    .tier3_keywords = { "memory" },
+                    .salience = 7,
+                    .embedding = {},
+                    .created_at = Ts("2026-03-08T14:00:02Z"),
+                },
+            },
+    });
+
+    EXPECT_TRUE(status.ok()) << status;
+}
+
+TEST(MemoryStoreTest, SnapshotValidationAcceptsEmptyMidTermEmbeddingWhenEmbeddingIsUnavailable) {
+    const absl::Status status = ValidateMemoryStoreSnapshot(MemoryStoreSnapshot{
+        .session =
+            MemorySessionRecord{
+                .session_id = "session_001",
+                .user_id = "user_001",
+                .system_prompt = "You are Isla.",
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+                .ended_at = std::nullopt,
+            },
+        .conversation_items = {},
         .mid_term_episodes =
             {
                 Episode{

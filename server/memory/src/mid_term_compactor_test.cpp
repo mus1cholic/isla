@@ -487,6 +487,7 @@ TEST(LlmMidTermCompactorTest, CompactGeneratesEmbeddingWhenEmbeddingClientConfig
     ASSERT_TRUE(compacted.ok()) << compacted.status();
     EXPECT_EQ(compacted->embedding, (Embedding{ 0.1, 0.2, 0.3 }));
     EXPECT_EQ(built.last_embedding_request->model, "gemini-embedding-2-preview");
+    EXPECT_EQ(built.last_embedding_request->output_dimensionality, kEmbeddingDimensions);
     EXPECT_EQ(built.last_embedding_request->text,
               "The discussion focused on debugging an export crash.");
 }

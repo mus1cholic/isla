@@ -59,6 +59,11 @@ create table if not exists public.conversation_messages (
         on delete cascade
 );
 
+-- Embedding model: gemini-embedding-2-preview with output_dimensionality=1536.
+-- Native output is 3072 dims but pgvector HNSW indexes cap at 2000 for the vector type,
+-- so we request half-dimensionality from the API.
+create extension if not exists vector with schema extensions;
+
 -- Flushed mid-term episodes with tiered compaction summaries.
 create table if not exists public.mid_term_episodes (
     episode_id text primary key,
@@ -69,7 +74,7 @@ create table if not exists public.mid_term_episodes (
     tier3_ref text not null,
     tier3_keywords text[] not null default '{}',
     salience integer not null check (salience between 1 and 10),
-    embedding jsonb not null default '[]'::jsonb,
+    embedding extensions.vector(1536),
     created_at timestamptz not null
 );
 
@@ -272,11 +277,6 @@ create index if not exists user_working_memory_session_id_idx
 -- =============================================================================
 -- Long-Term Memory: Knowledge Graph + Episodic Vector Store
 -- =============================================================================
-
--- Embedding model: gemini-embedding-2-preview with output_dimensionality=1536.
--- Native output is 3072 dims but pgvector HNSW indexes cap at 2000 for the vector type,
--- so we request half-dimensionality from the API.
-create extension if not exists vector with schema extensions;
 
 -- Entities: first-class nodes in the Knowledge Graph.
 create table if not exists public.entities (

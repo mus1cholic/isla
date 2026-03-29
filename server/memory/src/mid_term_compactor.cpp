@@ -263,6 +263,7 @@ class LlmMidTermCompactor final : public MidTermCompactor {
             absl::StatusOr<Embedding> embedding = embedding_client_->Embed(EmbeddingRequest{
                 .model = embedding_model_,
                 .text = compacted->tier2_summary,
+                .output_dimensionality = kEmbeddingDimensions,
                 .telemetry_context = nullptr,
             });
             if (!embedding.ok()) {

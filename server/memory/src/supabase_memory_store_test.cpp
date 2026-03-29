@@ -124,6 +124,14 @@ Timestamp Ts(std::string_view text) {
     return json(text).get<Timestamp>();
 }
 
+Embedding MakeEmbedding(double value = 0.25) {
+    return Embedding(kEmbeddingDimensions, value);
+}
+
+json MakeEmbeddingJson(double value = 0.25) {
+    return json(MakeEmbedding(value));
+}
+
 class SequentialHttpServer {
   public:
     explicit SequentialHttpServer(std::vector<std::string> responses)
@@ -789,14 +797,74 @@ TEST(SupabaseMemoryStoreTest, LogsRequestAndOperationLatencyWhenTelemetryEnabled
     EXPECT_TRUE(log_sink.Contains("session_id=session_telemetry"));
 }
 
+TEST(SupabaseMemoryStoreTest, UpsertMidTermEpisodeWritesNullWhenEmbeddingIsUnavailable) {
+    SequentialHttpServer server({
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::Status status = (*store)->UpsertMidTermEpisode(MidTermEpisodeWrite{
+        .session_id = "session_001",
+        .source_conversation_item_index = 0,
+        .episode =
+            Episode{
+                .episode_id = "ep_001",
+                .tier1_detail = std::nullopt,
+                .tier2_summary = "summary",
+                .tier3_ref = "summary ref",
+                .tier3_keywords = { "memory" },
+                .salience = 7,
+                .embedding = {},
+                .created_at = Ts("2026-03-08T14:00:02Z"),
+            },
+    });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests[0].find("POST /rest/v1/mid_term_episodes?on_conflict=episode_id HTTP/1.1"),
+              std::string::npos);
+    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    ASSERT_TRUE(body.is_array());
+    EXPECT_TRUE(body[0]["embedding"].is_null());
+}
+
 TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesReturnsOrderedEpisodesForSession) {
     const std::string episodes_body =
-        "[{\"episode_id\":\"ep_older\",\"tier1_detail\":null,\"tier2_summary\":\"older "
-        "summary\",\"tier3_ref\":\"older ref\",\"tier3_keywords\":[\"older\"],\"salience\":3,"
-        "\"embedding\":[],\"created_at\":\"2026-03-08T14:00:00Z\"},"
-        "{\"episode_id\":\"ep_newer\",\"tier1_detail\":\"full detail\",\"tier2_summary\":\"newer "
-        "summary\",\"tier3_ref\":\"newer ref\",\"tier3_keywords\":[\"newer\"],\"salience\":9,"
-        "\"embedding\":[],\"created_at\":\"2026-03-08T14:01:00Z\"}]";
+        json::array({
+                        json{
+                            { "episode_id", "ep_older" },
+                            { "tier1_detail", nullptr },
+                            { "tier2_summary", "older summary" },
+                            { "tier3_ref", "older ref" },
+                            { "tier3_keywords", json::array({ "older" }) },
+                            { "salience", 3 },
+                            { "embedding", nullptr },
+                            { "created_at", "2026-03-08T14:00:00Z" },
+                        },
+                        json{
+                            { "episode_id", "ep_newer" },
+                            { "tier1_detail", "full detail" },
+                            { "tier2_summary", "newer summary" },
+                            { "tier3_ref", "newer ref" },
+                            { "tier3_keywords", json::array({ "newer" }) },
+                            { "salience", 9 },
+                            { "embedding", MakeEmbeddingJson() },
+                            { "created_at", "2026-03-08T14:01:00Z" },
+                        },
+                    })
+            .dump();
     RoutingHttpServer server({
         { "/rest/v1/mid_term_episodes",
           "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
@@ -820,6 +888,8 @@ TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesReturnsOrderedEpisodesForSessio
     ASSERT_EQ(episodes->size(), 2U);
     EXPECT_EQ((*episodes)[0].episode_id, "ep_older");
     EXPECT_EQ((*episodes)[1].episode_id, "ep_newer");
+    EXPECT_TRUE((*episodes)[0].embedding.empty());
+    EXPECT_EQ((*episodes)[1].embedding.size(), kEmbeddingDimensions);
     EXPECT_TRUE((*episodes)[1].tier1_detail.has_value());
 }
 
@@ -870,9 +940,19 @@ TEST(SupabaseMemoryStoreTest, ListMidTermEpisodesRejectsMalformedEpisodeRows) {
 
 TEST(SupabaseMemoryStoreTest, GetMidTermEpisodeReturnsSingleSessionScopedEpisode) {
     const std::string episode_body =
-        "[{\"episode_id\":\"ep_001\",\"tier1_detail\":\"full detail\",\"tier2_summary\":"
-        "\"summary\",\"tier3_ref\":\"ref\",\"tier3_keywords\":[\"memory\"],\"salience\":8,"
-        "\"embedding\":[],\"created_at\":\"2026-03-08T14:00:02Z\"}]";
+        json::array({
+                        json{
+                            { "episode_id", "ep_001" },
+                            { "tier1_detail", "full detail" },
+                            { "tier2_summary", "summary" },
+                            { "tier3_ref", "ref" },
+                            { "tier3_keywords", json::array({ "memory" }) },
+                            { "salience", 8 },
+                            { "embedding", nullptr },
+                            { "created_at", "2026-03-08T14:00:02Z" },
+                        },
+                    })
+            .dump();
     RoutingHttpServer server({
         { "/rest/v1/mid_term_episodes",
           "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
@@ -895,6 +975,7 @@ TEST(SupabaseMemoryStoreTest, GetMidTermEpisodeReturnsSingleSessionScopedEpisode
     ASSERT_TRUE(server.WaitForRequestCount(1U));
     ASSERT_TRUE(episode->has_value());
     EXPECT_EQ(episode->value().episode_id, "ep_001");
+    EXPECT_TRUE(episode->value().embedding.empty());
     EXPECT_EQ(episode->value().tier1_detail, std::optional<std::string>("full detail"));
 }
 
@@ -1032,10 +1113,20 @@ TEST(SupabaseMemoryStoreTest, LoadSnapshotHydratesConversationAndMidTermEpisodes
         "\"created_at\":\"2026-03-08T14:00:01Z\"},"
         "{\"item_index\":1,\"message_index\":0,\"role\":\"user\",\"content\":\"follow "
         "up\",\"created_at\":\"2026-03-08T14:00:04Z\"}]";
-    const std::string episodes_body = "[{\"episode_id\":\"ep_001\",\"tier1_detail\":null,\"tier2_"
-                                      "summary\":\"summary\",\"tier3_ref\":\"summary "
-                                      "ref\",\"tier3_keywords\":[\"memory\"],\"salience\":7,"
-                                      "\"embedding\":[],\"created_at\":\"2026-03-08T14:00:02Z\"}]";
+    const std::string episodes_body =
+        json::array({
+                        json{
+                            { "episode_id", "ep_001" },
+                            { "tier1_detail", nullptr },
+                            { "tier2_summary", "summary" },
+                            { "tier3_ref", "summary ref" },
+                            { "tier3_keywords", json::array({ "memory" }) },
+                            { "salience", 7 },
+                            { "embedding", nullptr },
+                            { "created_at", "2026-03-08T14:00:02Z" },
+                        },
+                    })
+            .dump();
     RoutingHttpServer server({
         { "/rest/v1/memory_sessions",
           "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
@@ -1140,7 +1231,7 @@ TEST(SupabaseMemoryStoreTest, UpsertEntitySendsPostToEntitiesTable) {
                 .label = "Alice",
                 .category = "person",
                 .activeness = 5,
-                .name_embedding = Embedding{ 0.1, 0.2, 0.3 },
+                .name_embedding = MakeEmbedding(0.1),
                 .created_at = Ts("2026-03-08T14:00:00Z"),
                 .updated_at = Ts("2026-03-08T14:00:00Z"),
             },
@@ -1165,7 +1256,7 @@ TEST(SupabaseMemoryStoreTest, UpsertEntitySendsPostToEntitiesTable) {
     EXPECT_TRUE(body[0]["active_model_text"].is_null());
     EXPECT_TRUE(body[0]["familiar_label_text"].is_null());
     ASSERT_TRUE(body[0]["name_embedding"].is_array());
-    EXPECT_EQ(body[0]["name_embedding"].size(), 3U);
+    EXPECT_EQ(body[0]["name_embedding"].size(), kEmbeddingDimensions);
     EXPECT_DOUBLE_EQ(body[0]["name_embedding"][0].get<double>(), 0.1);
     EXPECT_EQ(body[0]["created_at"], "2026-03-08T14:00:00Z");
     EXPECT_EQ(body[0]["updated_at"], "2026-03-08T14:00:00Z");
@@ -1197,7 +1288,7 @@ TEST(SupabaseMemoryStoreTest, UpsertRelationshipSendsPostToRelationshipsTable) {
                 .observation_count = 3,
                 .last_observed_at = Ts("2026-03-08T14:00:00Z"),
                 .source_episode_ids = { "ep_001" },
-                .embedding = Embedding{ 0.1, 0.2 },
+                .embedding = MakeEmbedding(0.1),
                 .created_at = Ts("2026-03-08T14:00:00Z"),
             },
     });
@@ -1224,7 +1315,7 @@ TEST(SupabaseMemoryStoreTest, UpsertRelationshipSendsPostToRelationshipsTable) {
     ASSERT_TRUE(body[0]["source_episode_ids"].is_array());
     EXPECT_EQ(body[0]["source_episode_ids"][0], "ep_001");
     ASSERT_TRUE(body[0]["embedding"].is_array());
-    EXPECT_EQ(body[0]["embedding"].size(), 2U);
+    EXPECT_EQ(body[0]["embedding"].size(), kEmbeddingDimensions);
     EXPECT_EQ(body[0]["is_archived"], false);
     EXPECT_TRUE(body[0]["archived_at"].is_null());
     EXPECT_TRUE(body[0]["superseded_by"].is_null());
@@ -1253,7 +1344,7 @@ TEST(SupabaseMemoryStoreTest, UpsertLongTermEpisodeSendsPostToLongTermEpisodesTa
                 .summary_full = std::string("Full summary"),
                 .summary_compressed = "Compressed",
                 .keywords = { "memory", "test" },
-                .embedding = Embedding{ 0.5, 0.6 },
+                .embedding = MakeEmbedding(0.5),
                 .outcome = LongTermEpisodeOutcome::Resolved,
                 .complexity = 3,
                 .created_at = Ts("2026-03-08T14:00:00Z"),
@@ -1281,7 +1372,7 @@ TEST(SupabaseMemoryStoreTest, UpsertLongTermEpisodeSendsPostToLongTermEpisodesTa
     EXPECT_EQ(body[0]["keywords"][0], "memory");
     EXPECT_EQ(body[0]["keywords"][1], "test");
     ASSERT_TRUE(body[0]["embedding"].is_array());
-    EXPECT_EQ(body[0]["embedding"].size(), 2U);
+    EXPECT_EQ(body[0]["embedding"].size(), kEmbeddingDimensions);
     EXPECT_DOUBLE_EQ(body[0]["embedding"][0].get<double>(), 0.5);
     EXPECT_EQ(body[0]["outcome"], "resolved");
     EXPECT_EQ(body[0]["complexity"], 3);
@@ -1379,7 +1470,7 @@ TEST(SupabaseMemoryStoreTest, GetEntityReturnsEntityWhenFound) {
             { "activeness", 7 },
             { "active_model_text", "Alice is the user's friend." },
             { "familiar_label_text", nullptr },
-            { "name_embedding", json::array({ 0.1, 0.2, 0.3 }) },
+            { "name_embedding", MakeEmbeddingJson(0.1) },
             { "created_at", "2026-03-08T14:00:00Z" },
             { "updated_at", "2026-03-08T14:01:00Z" },
         },
@@ -1407,7 +1498,7 @@ TEST(SupabaseMemoryStoreTest, GetEntityReturnsEntityWhenFound) {
     EXPECT_EQ((*entity)->label, "Alice");
     EXPECT_EQ((*entity)->activeness, 7);
     ASSERT_TRUE((*entity)->name_embedding.has_value());
-    EXPECT_EQ((*entity)->name_embedding->size(), 3U);
+    EXPECT_EQ((*entity)->name_embedding->size(), kEmbeddingDimensions);
 }
 
 TEST(SupabaseMemoryStoreTest, GetEntityReturnsNulloptWhenNotFound) {
@@ -1444,7 +1535,7 @@ TEST(SupabaseMemoryStoreTest, ListRelationshipsForEntityReturnsActiveRelationshi
             { "observation_count", 3 },
             { "last_observed_at", "2026-03-08T14:00:00Z" },
             { "source_episode_ids", json::array({ "ep_001" }) },
-            { "embedding", json::array({ 0.1, 0.2 }) },
+            { "embedding", MakeEmbeddingJson(0.1) },
             { "is_archived", false },
             { "archived_at", nullptr },
             { "superseded_by", nullptr },
@@ -1488,7 +1579,7 @@ TEST(SupabaseMemoryStoreTest, ListLongTermEpisodesForEntityUsesResourceEmbedding
                   { "summary_full", "Full summary" },
                   { "summary_compressed", "Compressed" },
                   { "keywords", json::array({ "memory" }) },
-                  { "embedding", json::array({ 0.5, 0.6 }) },
+                  { "embedding", MakeEmbeddingJson(0.5) },
                   { "outcome", "resolved" },
                   { "complexity", 3 },
                   { "original_episode_ids", json::array({ "ep_001" }) },

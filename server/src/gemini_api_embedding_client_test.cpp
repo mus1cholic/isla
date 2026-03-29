@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <iterator>
 #include <mutex>
@@ -182,10 +183,19 @@ TEST(GeminiApiEmbeddingClientTest, EmbedPostsEmbedContentRequestAndParsesEmbeddi
     const absl::StatusOr<memory::Embedding> embedding = (*client)->Embed(EmbeddingRequest{
         .model = "gemini-embedding-2-preview",
         .text = "debugged the export crash",
+        .output_dimensionality = memory::kEmbeddingDimensions,
     });
 
     ASSERT_TRUE(embedding.ok()) << embedding.status();
-    EXPECT_EQ(*embedding, (memory::Embedding{ 0.25, -0.5, 1.75 }));
+    ASSERT_EQ(embedding->size(), 3U);
+    EXPECT_NEAR((*embedding)[0], 0.13608276, 1e-6);
+    EXPECT_NEAR((*embedding)[1], -0.27216553, 1e-6);
+    EXPECT_NEAR((*embedding)[2], 0.95257934, 1e-6);
+    double norm = 0.0;
+    for (const double value : *embedding) {
+        norm += value * value;
+    }
+    EXPECT_NEAR(std::sqrt(norm), 1.0, 1e-6);
     ASSERT_TRUE(server.WaitForRequest());
     const std::string request = server.request_text();
     EXPECT_NE(request.find("POST /v1beta/models/gemini-embedding-2-preview:embedContent HTTP/1.1"),
@@ -195,9 +205,11 @@ TEST(GeminiApiEmbeddingClientTest, EmbedPostsEmbedContentRequestAndParsesEmbeddi
     ASSERT_NE(body_pos, std::string::npos);
     const json body = json::parse(request.substr(body_pos + 4U));
     ASSERT_TRUE(body.contains("content"));
+    ASSERT_TRUE(body.contains("output_dimensionality"));
     ASSERT_TRUE(body["content"].contains("parts"));
     ASSERT_EQ(body["content"]["parts"].size(), 1U);
     EXPECT_EQ(body["content"]["parts"][0]["text"], "debugged the export crash");
+    EXPECT_EQ(body["output_dimensionality"], memory::kEmbeddingDimensions);
 }
 
 TEST(GeminiApiEmbeddingClientTest, EmbedMapsHttpFailures) {
@@ -212,6 +224,7 @@ TEST(GeminiApiEmbeddingClientTest, EmbedMapsHttpFailures) {
     const absl::StatusOr<memory::Embedding> embedding = (*client)->Embed(EmbeddingRequest{
         .model = "gemini-embedding-2-preview",
         .text = "debugged the export crash",
+        .output_dimensionality = memory::kEmbeddingDimensions,
     });
 
     ASSERT_FALSE(embedding.ok());
@@ -229,6 +242,7 @@ TEST(GeminiApiEmbeddingClientTest, EmbedRejectsMalformedResponses) {
     const absl::StatusOr<memory::Embedding> embedding = (*client)->Embed(EmbeddingRequest{
         .model = "gemini-embedding-2-preview",
         .text = "debugged the export crash",
+        .output_dimensionality = memory::kEmbeddingDimensions,
     });
 
     ASSERT_FALSE(embedding.ok());

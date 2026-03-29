@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -12,6 +13,8 @@ namespace isla::server::memory {
 
 using Embedding = std::vector<double>;
 using RetrievedMemory = std::string;
+inline constexpr std::size_t kEmbeddingDimensions = 1536;
+inline constexpr std::size_t kNativeGeminiEmbeddingDimensions = 3072;
 inline constexpr int kExpandableEpisodeSalienceThreshold = 8;
 
 enum class MessageRole {
