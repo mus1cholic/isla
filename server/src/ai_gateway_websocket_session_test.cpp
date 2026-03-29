@@ -225,6 +225,54 @@ TEST(AiGatewayWebSocketSessionTest, RejectedSessionStartReturnsErrorWithoutStart
     EXPECT_EQ(error.message, "startup unavailable");
 }
 
+TEST(AiGatewayWebSocketSessionTest, SessionStartPermissionDeniedMapsToPermissionDeniedError) {
+    RecordingWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ON_CALL(sink, HandleSessionStart(_))
+        .WillByDefault([&sink](const SessionStartRequestEvent& event) {
+            sink.startup_requests.push_back(event);
+            return absl::PermissionDeniedError("startup forbidden");
+        });
+
+    const absl::Status status = session.HandleIncomingTextFrame(kSessionStartJson);
+
+    EXPECT_FALSE(status.ok());
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(connection.sent_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_EQ(error.code, "permission_denied");
+    EXPECT_EQ(error.message, "startup forbidden");
+}
+
+TEST(AiGatewayWebSocketSessionTest, SessionStartDeadlineExceededMapsToUpstreamTimeoutError) {
+    RecordingWebSocketConnection connection;
+    RecordingEventSink sink;
+    GatewayWebSocketSessionAdapter session("srv_test", connection, &sink);
+
+    ON_CALL(sink, HandleSessionStart(_))
+        .WillByDefault([&sink](const SessionStartRequestEvent& event) {
+            sink.startup_requests.push_back(event);
+            return absl::DeadlineExceededError("startup timed out");
+        });
+
+    const absl::Status status = session.HandleIncomingTextFrame(kSessionStartJson);
+
+    EXPECT_FALSE(status.ok());
+    ASSERT_EQ(connection.sent_frames.size(), 1U);
+    const absl::StatusOr<protocol::GatewayMessage> frame =
+        parse_frame(connection.sent_frames.front());
+    ASSERT_TRUE(frame.ok()) << frame.status().ToString();
+    ASSERT_TRUE(std::holds_alternative<protocol::ErrorMessage>(*frame));
+    const auto& error = std::get<protocol::ErrorMessage>(*frame);
+    EXPECT_EQ(error.code, "upstream_timeout");
+    EXPECT_EQ(error.message, "startup timed out");
+}
+
 TEST(AiGatewayWebSocketSessionTest, AcceptedTurnIsForwardedToEventSink) {
     RecordingWebSocketConnection connection;
     RecordingEventSink sink;

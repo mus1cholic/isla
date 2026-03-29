@@ -42,7 +42,14 @@ std::string SessionStartErrorCode(const absl::Status& status) {
     case absl::StatusCode::kNotFound:
     case absl::StatusCode::kUnimplemented:
         return "bad_request";
+    case absl::StatusCode::kUnauthenticated:
+        return "authentication_error";
+    case absl::StatusCode::kPermissionDenied:
+        return "permission_denied";
+    case absl::StatusCode::kResourceExhausted:
+        return "response_too_large";
     case absl::StatusCode::kDeadlineExceeded:
+        return "upstream_timeout";
     case absl::StatusCode::kUnavailable:
         return "service_unavailable";
     default:
