@@ -1162,6 +1162,13 @@ TEST(SupabaseMemoryStoreTest, UpsertEntitySendsPostToEntitiesTable) {
     EXPECT_EQ(body[0]["label"], "Alice");
     EXPECT_EQ(body[0]["category"], "person");
     EXPECT_EQ(body[0]["activeness"], 5);
+    EXPECT_TRUE(body[0]["active_model_text"].is_null());
+    EXPECT_TRUE(body[0]["familiar_label_text"].is_null());
+    ASSERT_TRUE(body[0]["name_embedding"].is_array());
+    EXPECT_EQ(body[0]["name_embedding"].size(), 3U);
+    EXPECT_DOUBLE_EQ(body[0]["name_embedding"][0].get<double>(), 0.1);
+    EXPECT_EQ(body[0]["created_at"], "2026-03-08T14:00:00Z");
+    EXPECT_EQ(body[0]["updated_at"], "2026-03-08T14:00:00Z");
 }
 
 TEST(SupabaseMemoryStoreTest, UpsertRelationshipSendsPostToRelationshipsTable) {
@@ -1190,7 +1197,7 @@ TEST(SupabaseMemoryStoreTest, UpsertRelationshipSendsPostToRelationshipsTable) {
                 .observation_count = 3,
                 .last_observed_at = Ts("2026-03-08T14:00:00Z"),
                 .source_episode_ids = { "ep_001" },
-                .embedding = { 0.1, 0.2 },
+                .embedding = Embedding{ 0.1, 0.2 },
                 .created_at = Ts("2026-03-08T14:00:00Z"),
             },
     });
@@ -1207,9 +1214,21 @@ TEST(SupabaseMemoryStoreTest, UpsertRelationshipSendsPostToRelationshipsTable) {
     const json body = json::parse(requests[0].substr(body_pos + 4U));
     ASSERT_TRUE(body.is_array());
     EXPECT_EQ(body[0]["relationship_id"], "rel_001");
-    EXPECT_EQ(body[0]["predicate"], "knows");
+    EXPECT_EQ(body[0]["user_id"], "user_001");
     EXPECT_EQ(body[0]["from_entity_id"], "ent_001");
+    EXPECT_EQ(body[0]["predicate"], "knows");
     EXPECT_EQ(body[0]["to_entity_id"], "ent_002");
+    EXPECT_DOUBLE_EQ(body[0]["weight"].get<double>(), 0.8);
+    EXPECT_EQ(body[0]["observation_count"], 3);
+    EXPECT_EQ(body[0]["last_observed_at"], "2026-03-08T14:00:00Z");
+    ASSERT_TRUE(body[0]["source_episode_ids"].is_array());
+    EXPECT_EQ(body[0]["source_episode_ids"][0], "ep_001");
+    ASSERT_TRUE(body[0]["embedding"].is_array());
+    EXPECT_EQ(body[0]["embedding"].size(), 2U);
+    EXPECT_EQ(body[0]["is_archived"], false);
+    EXPECT_TRUE(body[0]["archived_at"].is_null());
+    EXPECT_TRUE(body[0]["superseded_by"].is_null());
+    EXPECT_EQ(body[0]["created_at"], "2026-03-08T14:00:00Z");
 }
 
 TEST(SupabaseMemoryStoreTest, UpsertLongTermEpisodeSendsPostToLongTermEpisodesTable) {
@@ -1234,7 +1253,7 @@ TEST(SupabaseMemoryStoreTest, UpsertLongTermEpisodeSendsPostToLongTermEpisodesTa
                 .summary_full = std::string("Full summary"),
                 .summary_compressed = "Compressed",
                 .keywords = { "memory", "test" },
-                .embedding = { 0.5, 0.6 },
+                .embedding = Embedding{ 0.5, 0.6 },
                 .outcome = LongTermEpisodeOutcome::Resolved,
                 .complexity = 3,
                 .created_at = Ts("2026-03-08T14:00:00Z"),
@@ -1254,8 +1273,24 @@ TEST(SupabaseMemoryStoreTest, UpsertLongTermEpisodeSendsPostToLongTermEpisodesTa
     const json body = json::parse(requests[0].substr(body_pos + 4U));
     ASSERT_TRUE(body.is_array());
     EXPECT_EQ(body[0]["lte_id"], "lte_001");
+    EXPECT_EQ(body[0]["user_id"], "user_001");
+    EXPECT_EQ(body[0]["summary_full"], "Full summary");
     EXPECT_EQ(body[0]["summary_compressed"], "Compressed");
+    ASSERT_TRUE(body[0]["keywords"].is_array());
+    EXPECT_EQ(body[0]["keywords"].size(), 2U);
+    EXPECT_EQ(body[0]["keywords"][0], "memory");
+    EXPECT_EQ(body[0]["keywords"][1], "test");
+    ASSERT_TRUE(body[0]["embedding"].is_array());
+    EXPECT_EQ(body[0]["embedding"].size(), 2U);
+    EXPECT_DOUBLE_EQ(body[0]["embedding"][0].get<double>(), 0.5);
     EXPECT_EQ(body[0]["outcome"], "resolved");
+    EXPECT_EQ(body[0]["complexity"], 3);
+    ASSERT_TRUE(body[0]["original_episode_ids"].is_array());
+    EXPECT_EQ(body[0]["original_episode_ids"][0], "ep_001");
+    EXPECT_EQ(body[0]["original_episode_ids"][1], "ep_002");
+    EXPECT_TRUE(body[0]["caused_by"].is_null());
+    EXPECT_TRUE(body[0]["led_to"].is_null());
+    EXPECT_EQ(body[0]["created_at"], "2026-03-08T14:00:00Z");
 }
 
 TEST(SupabaseMemoryStoreTest, LinkLongTermEpisodeEntitiesSendsJunctionRows) {
@@ -1442,37 +1477,31 @@ TEST(SupabaseMemoryStoreTest, ListRelationshipsForEntityReturnsActiveRelationshi
     EXPECT_DOUBLE_EQ((*relationships)[0].weight, 0.8);
 }
 
-TEST(SupabaseMemoryStoreTest, ListLongTermEpisodesForEntityJoinsThroughJunctionTable) {
-    // Step 1 response: junction table returns lte_ids.
-    const json junction_rows = json::array({
-        json{ { "lte_id", "lte_001" } },
-    });
-    const std::string junction_body = junction_rows.dump();
-
-    // Step 2 response: long_term_episodes table returns full episodes.
-    const json episode_rows = json::array({
+TEST(SupabaseMemoryStoreTest, ListLongTermEpisodesForEntityUsesResourceEmbedding) {
+    // PostgREST resource embedding: junction rows contain nested long_term_episodes objects.
+    const json response_rows = json::array({
         json{
-            { "lte_id", "lte_001" },
-            { "user_id", "user_001" },
-            { "summary_full", "Full summary" },
-            { "summary_compressed", "Compressed" },
-            { "keywords", json::array({ "memory" }) },
-            { "embedding", json::array({ 0.5, 0.6 }) },
-            { "outcome", "resolved" },
-            { "complexity", 3 },
-            { "original_episode_ids", json::array({ "ep_001" }) },
-            { "caused_by", nullptr },
-            { "led_to", nullptr },
-            { "created_at", "2026-03-08T14:00:00Z" },
+            { "long_term_episodes",
+              json{
+                  { "lte_id", "lte_001" },
+                  { "user_id", "user_001" },
+                  { "summary_full", "Full summary" },
+                  { "summary_compressed", "Compressed" },
+                  { "keywords", json::array({ "memory" }) },
+                  { "embedding", json::array({ 0.5, 0.6 }) },
+                  { "outcome", "resolved" },
+                  { "complexity", 3 },
+                  { "original_episode_ids", json::array({ "ep_001" }) },
+                  { "caused_by", nullptr },
+                  { "led_to", nullptr },
+                  { "created_at", "2026-03-08T14:00:00Z" },
+              } },
         },
     });
-    const std::string episodes_body = episode_rows.dump();
-
+    const std::string response_body = response_rows.dump();
     SequentialHttpServer server({
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(junction_body.size()) + "\r\n\r\n" + junction_body,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
-            std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body,
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
     });
     const absl::StatusOr<MemoryStorePtr> store =
         CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
@@ -1493,7 +1522,7 @@ TEST(SupabaseMemoryStoreTest, ListLongTermEpisodesForEntityJoinsThroughJunctionT
     EXPECT_EQ((*episodes)[0].summary_compressed, "Compressed");
     EXPECT_EQ((*episodes)[0].outcome, LongTermEpisodeOutcome::Resolved);
     EXPECT_EQ((*episodes)[0].complexity, 3);
-    ASSERT_TRUE(server.WaitForRequestCount(2U));
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
 }
 
 TEST(SupabaseMemoryStoreTest, ListLongTermEpisodesForEntityReturnsEmptyWhenNoJunctionRows) {

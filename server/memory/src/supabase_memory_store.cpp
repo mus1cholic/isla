@@ -34,6 +34,19 @@ using nlohmann::json;
 
 using Clock = std::chrono::steady_clock;
 
+constexpr std::string_view kEntityColumns =
+    "entity_id,user_id,label,category,activeness,active_model_text,"
+    "familiar_label_text,name_embedding,created_at,updated_at";
+
+constexpr std::string_view kRelationshipColumns =
+    "relationship_id,user_id,from_entity_id,predicate,to_entity_id,"
+    "weight,observation_count,last_observed_at,source_episode_ids,"
+    "embedding,is_archived,archived_at,superseded_by,created_at";
+
+constexpr std::string_view kLongTermEpisodeColumns =
+    "lte_id,user_id,summary_full,summary_compressed,keywords,embedding,"
+    "outcome,complexity,original_episode_ids,caused_by,led_to,created_at";
+
 json BuildSessionJson(const MemorySessionRecord& record) {
     return json{
         { "session_id", record.session_id },       { "user_id", record.user_id },
@@ -177,7 +190,7 @@ absl::StatusOr<Relationship> ParseRelationshipRow(const json& row) {
             .observation_count = row.at("observation_count").get<int>(),
             .last_observed_at = row.at("last_observed_at").get<Timestamp>(),
             .source_episode_ids = row.at("source_episode_ids").get<std::vector<std::string>>(),
-            .embedding = row.at("embedding").get<Embedding>(),
+            .embedding = row.at("embedding").get<std::optional<Embedding>>(),
             .is_archived = row.at("is_archived").get<bool>(),
             .archived_at = row.at("archived_at").get<std::optional<Timestamp>>(),
             .superseded_by = row.at("superseded_by").get<std::optional<std::string>>(),
@@ -197,7 +210,7 @@ absl::StatusOr<LongTermEpisode> ParseLongTermEpisodeRow(const json& row) {
             .summary_full = row.at("summary_full").get<std::optional<std::string>>(),
             .summary_compressed = row.at("summary_compressed").get<std::string>(),
             .keywords = row.at("keywords").get<std::vector<std::string>>(),
-            .embedding = row.at("embedding").get<Embedding>(),
+            .embedding = row.at("embedding").get<std::optional<Embedding>>(),
             .outcome = row.at("outcome").get<LongTermEpisodeOutcome>(),
             .complexity = row.at("complexity").get<int>(),
             .created_at = row.at("created_at").get<Timestamp>(),
@@ -901,7 +914,7 @@ class SupabaseMemoryStore final : public MemoryStore {
     // -------------------------------------------------------------------------
 
     [[nodiscard]] absl::Status UpsertEntity(const EntityWrite& write) override {
-        ScopedSupabaseOperationLatency latency(config_, "upsert_entity", write.entity.user_id);
+        ScopedSupabaseOperationLatency latency(config_, "upsert_entity", std::nullopt);
         if (absl::Status status = ValidateEntityWrite(write); !status.ok()) {
             latency.SetOutcome("validation_error");
             return status;
@@ -919,8 +932,7 @@ class SupabaseMemoryStore final : public MemoryStore {
     }
 
     [[nodiscard]] absl::Status UpsertRelationship(const RelationshipWrite& write) override {
-        ScopedSupabaseOperationLatency latency(config_, "upsert_relationship",
-                                               write.relationship.user_id);
+        ScopedSupabaseOperationLatency latency(config_, "upsert_relationship", std::nullopt);
         if (absl::Status status = ValidateRelationshipWrite(write); !status.ok()) {
             latency.SetOutcome("validation_error");
             return status;
@@ -938,8 +950,7 @@ class SupabaseMemoryStore final : public MemoryStore {
     }
 
     [[nodiscard]] absl::Status UpsertLongTermEpisode(const LongTermEpisodeWrite& write) override {
-        ScopedSupabaseOperationLatency latency(config_, "upsert_long_term_episode",
-                                               write.episode.user_id);
+        ScopedSupabaseOperationLatency latency(config_, "upsert_long_term_episode", std::nullopt);
         if (absl::Status status = ValidateLongTermEpisodeWrite(write); !status.ok()) {
             latency.SetOutcome("validation_error");
             return status;
@@ -959,7 +970,7 @@ class SupabaseMemoryStore final : public MemoryStore {
     [[nodiscard]] absl::Status
     LinkLongTermEpisodeEntities(const LongTermEpisodeEntityLink& link) override {
         ScopedSupabaseOperationLatency latency(config_, "link_long_term_episode_entities",
-                                               link.lte_id);
+                                               std::nullopt);
         if (absl::Status status = ValidateLongTermEpisodeEntityLink(link); !status.ok()) {
             latency.SetOutcome("validation_error");
             return status;
@@ -984,22 +995,21 @@ class SupabaseMemoryStore final : public MemoryStore {
 
     [[nodiscard]] absl::StatusOr<std::vector<Entity>>
     ListEntitiesByUser(std::string_view user_id) const override {
-        ScopedSupabaseOperationLatency latency(config_, "list_entities_by_user", user_id);
+        ScopedSupabaseOperationLatency latency(config_, "list_entities_by_user", std::nullopt);
         if (user_id.empty()) {
             latency.SetOutcome("validation_error");
             return absl::InvalidArgumentError(
                 "ListEntitiesByUser requires user_id to be non-empty");
         }
 
-        const HttpRequestSpec request = BuildGetRequest(
-            "/rest/v1/entities",
-            {
-                { "select", "entity_id,user_id,label,category,activeness,active_model_text,"
-                            "familiar_label_text,name_embedding,created_at,updated_at" },
-                { "user_id", "eq." + std::string(user_id) },
-                { "order", "created_at.asc" },
-            },
-            config_.schema, config_);
+        const HttpRequestSpec request =
+            BuildGetRequest("/rest/v1/entities",
+                            {
+                                { "select", std::string(kEntityColumns) },
+                                { "user_id", "eq." + std::string(user_id) },
+                                { "order", "created_at.asc" },
+                            },
+                            config_.schema, config_);
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(*client_, config_, request);
         if (!response.ok()) {
@@ -1025,21 +1035,20 @@ class SupabaseMemoryStore final : public MemoryStore {
 
     [[nodiscard]] absl::StatusOr<std::optional<Entity>>
     GetEntity(std::string_view entity_id) const override {
-        ScopedSupabaseOperationLatency latency(config_, "get_entity", entity_id);
+        ScopedSupabaseOperationLatency latency(config_, "get_entity", std::nullopt);
         if (entity_id.empty()) {
             latency.SetOutcome("validation_error");
             return absl::InvalidArgumentError("GetEntity requires entity_id to be non-empty");
         }
 
-        const HttpRequestSpec request = BuildGetRequest(
-            "/rest/v1/entities",
-            {
-                { "select", "entity_id,user_id,label,category,activeness,active_model_text,"
-                            "familiar_label_text,name_embedding,created_at,updated_at" },
-                { "entity_id", "eq." + std::string(entity_id) },
-                { "limit", "2" },
-            },
-            config_.schema, config_);
+        const HttpRequestSpec request =
+            BuildGetRequest("/rest/v1/entities",
+                            {
+                                { "select", std::string(kEntityColumns) },
+                                { "entity_id", "eq." + std::string(entity_id) },
+                                { "limit", "2" },
+                            },
+                            config_.schema, config_);
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(*client_, config_, request);
         if (!response.ok()) {
@@ -1068,24 +1077,23 @@ class SupabaseMemoryStore final : public MemoryStore {
 
     [[nodiscard]] absl::StatusOr<std::vector<Relationship>>
     ListRelationshipsForEntity(std::string_view entity_id) const override {
-        ScopedSupabaseOperationLatency latency(config_, "list_relationships_for_entity", entity_id);
+        ScopedSupabaseOperationLatency latency(config_, "list_relationships_for_entity",
+                                               std::nullopt);
         if (entity_id.empty()) {
             latency.SetOutcome("validation_error");
             return absl::InvalidArgumentError(
                 "ListRelationshipsForEntity requires entity_id to be non-empty");
         }
 
-        const HttpRequestSpec request = BuildGetRequest(
-            "/rest/v1/relationships",
-            {
-                { "select", "relationship_id,user_id,from_entity_id,predicate,to_entity_id,"
-                            "weight,observation_count,last_observed_at,source_episode_ids,"
-                            "embedding,is_archived,archived_at,superseded_by,created_at" },
-                { "from_entity_id", "eq." + std::string(entity_id) },
-                { "is_archived", "eq.false" },
-                { "order", "weight.desc" },
-            },
-            config_.schema, config_);
+        const HttpRequestSpec request =
+            BuildGetRequest("/rest/v1/relationships",
+                            {
+                                { "select", std::string(kRelationshipColumns) },
+                                { "from_entity_id", "eq." + std::string(entity_id) },
+                                { "is_archived", "eq.false" },
+                                { "order", "weight.desc" },
+                            },
+                            config_.schema, config_);
         const absl::StatusOr<std::string> response =
             ExecuteSupabaseRequest(*client_, config_, request);
         if (!response.ok()) {
@@ -1113,28 +1121,29 @@ class SupabaseMemoryStore final : public MemoryStore {
     [[nodiscard]] absl::StatusOr<std::vector<LongTermEpisode>>
     ListLongTermEpisodesForEntity(std::string_view entity_id) const override {
         ScopedSupabaseOperationLatency latency(config_, "list_long_term_episodes_for_entity",
-                                               entity_id);
+                                               std::nullopt);
         if (entity_id.empty()) {
             latency.SetOutcome("validation_error");
             return absl::InvalidArgumentError(
                 "ListLongTermEpisodesForEntity requires entity_id to be non-empty");
         }
 
-        // Step 1: Look up lte_ids from the junction table.
-        const HttpRequestSpec junction_request =
-            BuildGetRequest("/rest/v1/long_term_episode_entities",
-                            {
-                                { "select", "lte_id" },
-                                { "entity_id", "eq." + std::string(entity_id) },
-                            },
-                            config_.schema, config_);
-        const absl::StatusOr<std::string> junction_response =
-            ExecuteSupabaseRequest(*client_, config_, junction_request);
-        if (!junction_response.ok()) {
-            return junction_response.status();
+        // Use resource embedding to fetch episodes in a single request.
+        const HttpRequestSpec request = BuildGetRequest(
+            "/rest/v1/long_term_episode_entities",
+            {
+                { "select", "long_term_episodes(" + std::string(kLongTermEpisodeColumns) + ")" },
+                { "entity_id", "eq." + std::string(entity_id) },
+                { "order", "long_term_episodes.created_at.asc" },
+            },
+            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
         }
         const absl::StatusOr<json> junction_rows =
-            ParseJsonArrayResponse(*junction_response, "supabase long_term_episode_entities");
+            ParseJsonArrayResponse(*response, "supabase long_term_episode_entities");
         if (!junction_rows.ok()) {
             return junction_rows.status();
         }
@@ -1143,42 +1152,14 @@ class SupabaseMemoryStore final : public MemoryStore {
             return std::vector<LongTermEpisode>{};
         }
 
-        // Step 2: Build comma-separated lte_id list for an IN filter.
-        std::string lte_id_filter = "in.(";
-        for (std::size_t i = 0; i < junction_rows->size(); ++i) {
-            if (i > 0) {
-                lte_id_filter += ',';
-            }
-            lte_id_filter += (*junction_rows)[i].at("lte_id").get<std::string>();
-        }
-        lte_id_filter += ')';
-
-        // Step 3: Fetch the full long-term episodes.
-        const HttpRequestSpec episodes_request = BuildGetRequest(
-            "/rest/v1/long_term_episodes",
-            {
-                { "select", "lte_id,user_id,summary_full,summary_compressed,keywords,embedding,"
-                            "outcome,complexity,original_episode_ids,caused_by,led_to,"
-                            "created_at" },
-                { "lte_id", lte_id_filter },
-                { "order", "created_at.asc" },
-            },
-            config_.schema, config_);
-        const absl::StatusOr<std::string> episodes_response =
-            ExecuteSupabaseRequest(*client_, config_, episodes_request);
-        if (!episodes_response.ok()) {
-            return episodes_response.status();
-        }
-        const absl::StatusOr<json> episode_rows =
-            ParseJsonArrayResponse(*episodes_response, "supabase long_term_episodes");
-        if (!episode_rows.ok()) {
-            return episode_rows.status();
-        }
-
         std::vector<LongTermEpisode> episodes;
-        episodes.reserve(episode_rows->size());
-        for (const json& row : *episode_rows) {
-            absl::StatusOr<LongTermEpisode> episode = ParseLongTermEpisodeRow(row);
+        episodes.reserve(junction_rows->size());
+        for (const json& row : *junction_rows) {
+            if (!row.contains("long_term_episodes") || row.at("long_term_episodes").is_null()) {
+                continue;
+            }
+            absl::StatusOr<LongTermEpisode> episode =
+                ParseLongTermEpisodeRow(row.at("long_term_episodes"));
             if (!episode.ok()) {
                 return episode.status();
             }
