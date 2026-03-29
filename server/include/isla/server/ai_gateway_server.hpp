@@ -30,8 +30,7 @@ class GatewayApplicationEventSink {
   public:
     virtual ~GatewayApplicationEventSink() = default;
 
-    [[nodiscard]] virtual absl::Status
-    HandleSessionStart(const SessionStartRequestEvent& event) {
+    [[nodiscard]] virtual absl::Status HandleSessionStart(const SessionStartRequestEvent& event) {
         static_cast<void>(event);
         return absl::OkStatus();
     }

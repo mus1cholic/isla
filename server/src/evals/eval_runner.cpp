@@ -25,6 +25,7 @@ using isla::server::ai_gateway::GatewayLiveSession;
 using isla::server::ai_gateway::GatewaySessionRegistry;
 using isla::server::ai_gateway::GatewayStubResponder;
 using isla::server::ai_gateway::SessionStartedEvent;
+using isla::server::ai_gateway::SessionStartRequestEvent;
 using isla::server::ai_gateway::TurnAcceptedEvent;
 using isla::server::memory::IsExpandableEpisode;
 using isla::server::memory::MessageRole;
@@ -418,9 +419,20 @@ absl::StatusOr<EvalArtifacts> EvalRunner::RunCase(const EvalCase& eval_case) con
     ResponderRegistryAttachment registry_scope(responder);
     auto session = std::make_shared<RecordingLiveSession>(eval_case.session_id);
     registry_scope.registry().RegisterSession(session);
+    absl::Status startup_status = responder.HandleSessionStart(SessionStartRequestEvent{
+        .session_id = eval_case.session_id,
+        .user_id = memory_user_id,
+        .session_start_time = eval_case.session_start_time,
+        .evaluation_reference_time = eval_case.evaluation_reference_time,
+    });
+    if (!startup_status.ok()) {
+        return startup_status;
+    }
     responder.OnSessionStarted(SessionStartedEvent{
         .session_id = eval_case.session_id,
         .user_id = memory_user_id,
+        .session_start_time = eval_case.session_start_time,
+        .evaluation_reference_time = eval_case.evaluation_reference_time,
     });
 
     for (const ReplayMessage& message : replay_plan->history_messages) {

@@ -71,9 +71,8 @@ TEST_F(GatewayStubResponderStandaloneFixture, SessionStartDoesNotRetryNonRetryab
     config.session_start_persistence_retry_delay = 0ms;
     InitializeResponder(std::move(config));
 
-    const absl::Status start_status =
-        responder().HandleSessionStart(
-            SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
+    const absl::Status start_status = responder().HandleSessionStart(
+        SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
 
     EXPECT_FALSE(start_status.ok());
     EXPECT_EQ(start_status.code(), absl::StatusCode::kPermissionDenied);
@@ -87,9 +86,8 @@ TEST_F(GatewayStubResponderStandaloneFixture, DuplicateSessionStartDoesNotPoison
     InitializeResponder(MakeStoreEchoConfig(store));
 
     StartSession();
-    const absl::Status second_start_status =
-        responder().HandleSessionStart(
-            SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
+    const absl::Status second_start_status = responder().HandleSessionStart(
+        SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
     EXPECT_FALSE(second_start_status.ok());
     EXPECT_EQ(second_start_status.code(), absl::StatusCode::kAlreadyExists);
     EXPECT_TRUE(session().events().empty());
@@ -118,9 +116,8 @@ TEST_F(GatewayStubResponderStandaloneFixture,
     config.session_start_persistence_retry_delay = 0ms;
     InitializeResponder(std::move(config));
 
-    const absl::Status start_status =
-        responder().HandleSessionStart(
-            SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
+    const absl::Status start_status = responder().HandleSessionStart(
+        SessionStartRequestEvent{ .session_id = session_id(), .user_id = "test_user" });
     EXPECT_FALSE(start_status.ok());
     EXPECT_EQ(start_status.code(), absl::StatusCode::kUnavailable);
     EXPECT_EQ(store->upsert_session_attempts, 3U);
@@ -159,9 +156,9 @@ TEST_F(GatewayStubResponderTest, AcceptedTurnProvidesRenderedPromptPiecesToOpenA
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
-    ASSERT_TRUE(responder.HandleSessionStart(
-                    SessionStartRequestEvent{ .session_id = "srv_test",
-                                              .user_id = "test_user" })
+    ASSERT_TRUE(responder
+                    .HandleSessionStart(SessionStartRequestEvent{ .session_id = "srv_test",
+                                                                  .user_id = "test_user" })
                     .ok());
     responder.OnSessionStarted(
         SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
@@ -221,9 +218,9 @@ TEST_F(GatewayStubResponderTest,
     GatewaySessionRegistry& registry = registry_scope.registry();
     auto session = std::make_shared<RecordingLiveSession>("srv_test");
     registry.RegisterSession(session);
-    ASSERT_TRUE(responder.HandleSessionStart(
-                    SessionStartRequestEvent{ .session_id = "srv_test",
-                                              .user_id = "test_user" })
+    ASSERT_TRUE(responder
+                    .HandleSessionStart(SessionStartRequestEvent{ .session_id = "srv_test",
+                                                                  .user_id = "test_user" })
                     .ok());
     responder.OnSessionStarted(
         SessionStartedEvent{ .session_id = "srv_test", .user_id = "test_user" });
