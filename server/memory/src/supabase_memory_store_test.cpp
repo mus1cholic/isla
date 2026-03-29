@@ -1114,5 +1114,410 @@ TEST(SupabaseMemoryStoreTest, UpsertSessionUsesHttpsWithInjectedTrust) {
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// Long-term memory: Knowledge Graph + Episodic Vector Store
+// ---------------------------------------------------------------------------
+
+TEST(SupabaseMemoryStoreTest, UpsertEntitySendsPostToEntitiesTable) {
+    SequentialHttpServer server({
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::Status status = (*store)->UpsertEntity(EntityWrite{
+        .entity =
+            Entity{
+                .entity_id = "ent_001",
+                .user_id = "user_001",
+                .label = "Alice",
+                .category = "person",
+                .activeness = 5,
+                .name_embedding = Embedding{ 0.1, 0.2, 0.3 },
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+                .updated_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests[0].find("POST /rest/v1/entities?on_conflict=entity_id HTTP/1.1"),
+              std::string::npos);
+
+    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    ASSERT_TRUE(body.is_array());
+    EXPECT_EQ(body[0]["entity_id"], "ent_001");
+    EXPECT_EQ(body[0]["user_id"], "user_001");
+    EXPECT_EQ(body[0]["label"], "Alice");
+    EXPECT_EQ(body[0]["category"], "person");
+    EXPECT_EQ(body[0]["activeness"], 5);
+}
+
+TEST(SupabaseMemoryStoreTest, UpsertRelationshipSendsPostToRelationshipsTable) {
+    SequentialHttpServer server({
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::Status status = (*store)->UpsertRelationship(RelationshipWrite{
+        .relationship =
+            Relationship{
+                .relationship_id = "rel_001",
+                .user_id = "user_001",
+                .from_entity_id = "ent_001",
+                .predicate = "knows",
+                .to_entity_id = "ent_002",
+                .weight = 0.8,
+                .observation_count = 3,
+                .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+                .source_episode_ids = { "ep_001" },
+                .embedding = { 0.1, 0.2 },
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+            },
+    });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests[0].find("POST /rest/v1/relationships?on_conflict=relationship_id HTTP/1.1"),
+              std::string::npos);
+
+    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    ASSERT_TRUE(body.is_array());
+    EXPECT_EQ(body[0]["relationship_id"], "rel_001");
+    EXPECT_EQ(body[0]["predicate"], "knows");
+    EXPECT_EQ(body[0]["from_entity_id"], "ent_001");
+    EXPECT_EQ(body[0]["to_entity_id"], "ent_002");
+}
+
+TEST(SupabaseMemoryStoreTest, UpsertLongTermEpisodeSendsPostToLongTermEpisodesTable) {
+    SequentialHttpServer server({
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::Status status = (*store)->UpsertLongTermEpisode(LongTermEpisodeWrite{
+        .episode =
+            LongTermEpisode{
+                .lte_id = "lte_001",
+                .user_id = "user_001",
+                .summary_full = std::string("Full summary"),
+                .summary_compressed = "Compressed",
+                .keywords = { "memory", "test" },
+                .embedding = { 0.5, 0.6 },
+                .outcome = LongTermEpisodeOutcome::Resolved,
+                .complexity = 3,
+                .created_at = Ts("2026-03-08T14:00:00Z"),
+                .original_episode_ids = { "ep_001", "ep_002" },
+            },
+    });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests[0].find("POST /rest/v1/long_term_episodes?on_conflict=lte_id HTTP/1.1"),
+              std::string::npos);
+
+    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    ASSERT_TRUE(body.is_array());
+    EXPECT_EQ(body[0]["lte_id"], "lte_001");
+    EXPECT_EQ(body[0]["summary_compressed"], "Compressed");
+    EXPECT_EQ(body[0]["outcome"], "resolved");
+}
+
+TEST(SupabaseMemoryStoreTest, LinkLongTermEpisodeEntitiesSendsJunctionRows) {
+    SequentialHttpServer server({
+        "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::Status status = (*store)->LinkLongTermEpisodeEntities(LongTermEpisodeEntityLink{
+        .lte_id = "lte_001",
+        .entity_ids = { "ent_001", "ent_002" },
+    });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests[0].find("POST /rest/v1/long_term_episode_entities"), std::string::npos);
+
+    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    ASSERT_TRUE(body.is_array());
+    ASSERT_EQ(body.size(), 2U);
+    EXPECT_EQ(body[0]["lte_id"], "lte_001");
+    EXPECT_EQ(body[0]["entity_id"], "ent_001");
+    EXPECT_EQ(body[1]["lte_id"], "lte_001");
+    EXPECT_EQ(body[1]["entity_id"], "ent_002");
+}
+
+TEST(SupabaseMemoryStoreTest, ListEntitiesByUserReturnsEntitiesFromGetResponse) {
+    const json response_rows = json::array({
+        json{
+            { "entity_id", "ent_001" },
+            { "user_id", "user_001" },
+            { "label", "Alice" },
+            { "category", "person" },
+            { "activeness", 5 },
+            { "active_model_text", nullptr },
+            { "familiar_label_text", nullptr },
+            { "name_embedding", nullptr },
+            { "created_at", "2026-03-08T14:00:00Z" },
+            { "updated_at", "2026-03-08T14:00:00Z" },
+        },
+    });
+    const std::string response_body = response_rows.dump();
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<Entity>> entities = (*store)->ListEntitiesByUser("user_001");
+
+    ASSERT_TRUE(entities.ok()) << entities.status();
+    ASSERT_EQ(entities->size(), 1U);
+    EXPECT_EQ((*entities)[0].entity_id, "ent_001");
+    EXPECT_EQ((*entities)[0].label, "Alice");
+    EXPECT_EQ((*entities)[0].activeness, 5);
+    EXPECT_FALSE((*entities)[0].name_embedding.has_value());
+}
+
+TEST(SupabaseMemoryStoreTest, GetEntityReturnsEntityWhenFound) {
+    const json response_rows = json::array({
+        json{
+            { "entity_id", "ent_001" },
+            { "user_id", "user_001" },
+            { "label", "Alice" },
+            { "category", "person" },
+            { "activeness", 7 },
+            { "active_model_text", "Alice is the user's friend." },
+            { "familiar_label_text", nullptr },
+            { "name_embedding", json::array({ 0.1, 0.2, 0.3 }) },
+            { "created_at", "2026-03-08T14:00:00Z" },
+            { "updated_at", "2026-03-08T14:01:00Z" },
+        },
+    });
+    const std::string response_body = response_rows.dump();
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::optional<Entity>> entity = (*store)->GetEntity("ent_001");
+
+    ASSERT_TRUE(entity.ok()) << entity.status();
+    ASSERT_TRUE(entity->has_value());
+    EXPECT_EQ((*entity)->entity_id, "ent_001");
+    EXPECT_EQ((*entity)->label, "Alice");
+    EXPECT_EQ((*entity)->activeness, 7);
+    ASSERT_TRUE((*entity)->name_embedding.has_value());
+    EXPECT_EQ((*entity)->name_embedding->size(), 3U);
+}
+
+TEST(SupabaseMemoryStoreTest, GetEntityReturnsNulloptWhenNotFound) {
+    const std::string response_body = "[]";
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::optional<Entity>> entity = (*store)->GetEntity("ent_nonexistent");
+
+    ASSERT_TRUE(entity.ok()) << entity.status();
+    EXPECT_FALSE(entity->has_value());
+}
+
+TEST(SupabaseMemoryStoreTest, ListRelationshipsForEntityReturnsActiveRelationships) {
+    const json response_rows = json::array({
+        json{
+            { "relationship_id", "rel_001" },
+            { "user_id", "user_001" },
+            { "from_entity_id", "ent_001" },
+            { "predicate", "knows" },
+            { "to_entity_id", "ent_002" },
+            { "weight", 0.8 },
+            { "observation_count", 3 },
+            { "last_observed_at", "2026-03-08T14:00:00Z" },
+            { "source_episode_ids", json::array({ "ep_001" }) },
+            { "embedding", json::array({ 0.1, 0.2 }) },
+            { "is_archived", false },
+            { "archived_at", nullptr },
+            { "superseded_by", nullptr },
+            { "created_at", "2026-03-08T14:00:00Z" },
+        },
+    });
+    const std::string response_body = response_rows.dump();
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<Relationship>> relationships =
+        (*store)->ListRelationshipsForEntity("ent_001");
+
+    ASSERT_TRUE(relationships.ok()) << relationships.status();
+    ASSERT_EQ(relationships->size(), 1U);
+    EXPECT_EQ((*relationships)[0].relationship_id, "rel_001");
+    EXPECT_EQ((*relationships)[0].predicate, "knows");
+    EXPECT_EQ((*relationships)[0].to_entity_id, "ent_002");
+    EXPECT_DOUBLE_EQ((*relationships)[0].weight, 0.8);
+}
+
+TEST(SupabaseMemoryStoreTest, ListLongTermEpisodesForEntityJoinsThroughJunctionTable) {
+    // Step 1 response: junction table returns lte_ids.
+    const json junction_rows = json::array({
+        json{ { "lte_id", "lte_001" } },
+    });
+    const std::string junction_body = junction_rows.dump();
+
+    // Step 2 response: long_term_episodes table returns full episodes.
+    const json episode_rows = json::array({
+        json{
+            { "lte_id", "lte_001" },
+            { "user_id", "user_001" },
+            { "summary_full", "Full summary" },
+            { "summary_compressed", "Compressed" },
+            { "keywords", json::array({ "memory" }) },
+            { "embedding", json::array({ 0.5, 0.6 }) },
+            { "outcome", "resolved" },
+            { "complexity", 3 },
+            { "original_episode_ids", json::array({ "ep_001" }) },
+            { "caused_by", nullptr },
+            { "led_to", nullptr },
+            { "created_at", "2026-03-08T14:00:00Z" },
+        },
+    });
+    const std::string episodes_body = episode_rows.dump();
+
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(junction_body.size()) + "\r\n\r\n" + junction_body,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(episodes_body.size()) + "\r\n\r\n" + episodes_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->ListLongTermEpisodesForEntity("ent_001");
+
+    ASSERT_TRUE(episodes.ok()) << episodes.status();
+    ASSERT_EQ(episodes->size(), 1U);
+    EXPECT_EQ((*episodes)[0].lte_id, "lte_001");
+    EXPECT_EQ((*episodes)[0].summary_compressed, "Compressed");
+    EXPECT_EQ((*episodes)[0].outcome, LongTermEpisodeOutcome::Resolved);
+    EXPECT_EQ((*episodes)[0].complexity, 3);
+    ASSERT_TRUE(server.WaitForRequestCount(2U));
+}
+
+TEST(SupabaseMemoryStoreTest, ListLongTermEpisodesForEntityReturnsEmptyWhenNoJunctionRows) {
+    const std::string empty_body = "[]";
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(empty_body.size()) + "\r\n\r\n" + empty_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->ListLongTermEpisodesForEntity("ent_nonexistent");
+
+    ASSERT_TRUE(episodes.ok()) << episodes.status();
+    EXPECT_TRUE(episodes->empty());
+}
+
 } // namespace
 } // namespace isla::server::memory
