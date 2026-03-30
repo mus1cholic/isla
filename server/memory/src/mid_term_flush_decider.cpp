@@ -48,7 +48,7 @@ std::string SummarizeDecisionBoundariesForLog(const MidTermFlushDecision& decisi
         if (i > 0) {
             summary += ", ";
         }
-        summary += MakeMessageId(decision.boundaries[i].starts_at_message_index);
+        summary += MakeMessageId(decision.boundaries[i].split_before_message_index);
     }
     summary += "]";
     return summary;
@@ -126,13 +126,13 @@ absl::Status ValidateBoundaryObjectKeys(const json& boundary) {
     }
     for (const auto& [key, value] : boundary.items()) {
         static_cast<void>(value);
-        if (key != "starts_at" && key != "reasoning") {
+        if (key != "split_before" && key != "reasoning") {
             return invalid_argument("flush decider boundary contains unexpected field '" + key +
                                     "'");
         }
     }
-    if (!boundary.contains("starts_at")) {
-        return invalid_argument("flush decider boundary is missing required field 'starts_at'");
+    if (!boundary.contains("split_before")) {
+        return invalid_argument("flush decider boundary is missing required field 'split_before'");
     }
     return absl::OkStatus();
 }
@@ -179,14 +179,14 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
         if (absl::Status status = ValidateBoundaryObjectKeys(boundary); !status.ok()) {
             return status;
         }
-        if (!boundary.at("starts_at").is_string()) {
-            return invalid_argument("flush decider boundary field 'starts_at' must be a string");
+        if (!boundary.at("split_before").is_string()) {
+            return invalid_argument("flush decider boundary field 'split_before' must be a string");
         }
-        const std::string starts_at = boundary.at("starts_at").get<std::string>();
-        absl::StatusOr<std::size_t> parsed_index = ParseIdWithPrefix(starts_at, 'm');
+        const std::string split_before = boundary.at("split_before").get<std::string>();
+        absl::StatusOr<std::size_t> parsed_index = ParseIdWithPrefix(split_before, 'm');
         if (!parsed_index.ok()) {
-            return invalid_argument("flush decider returned invalid boundary starts_at '" +
-                                    starts_at +
+            return invalid_argument("flush decider returned invalid boundary split_before '" +
+                                    split_before +
                                     "': " + std::string(parsed_index.status().message()));
         }
         absl::StatusOr<std::optional<std::string>> boundary_reasoning =
@@ -195,7 +195,7 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
             return boundary_reasoning.status();
         }
         boundaries.push_back(MidTermFlushBoundary{
-            .starts_at_message_index = *parsed_index,
+            .split_before_message_index = *parsed_index,
             .reasoning = std::move(*boundary_reasoning),
         });
     }
@@ -326,7 +326,7 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
                     std::vector<std::size_t> indices;
                     indices.reserve(decision->boundaries.size());
                     for (const MidTermFlushBoundary& boundary : decision->boundaries) {
-                        indices.push_back(boundary.starts_at_message_index);
+                        indices.push_back(boundary.split_before_message_index);
                     }
                     return indices;
                 }(),
@@ -350,7 +350,7 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
                     boundaries_summary += ", ";
                 }
                 boundaries_summary +=
-                    std::to_string(decision->boundaries[i].starts_at_message_index);
+                    std::to_string(decision->boundaries[i].split_before_message_index);
             }
             boundaries_summary += "]";
             VLOG(1) << "LlmMidTermFlushDecider decided boundary_count="

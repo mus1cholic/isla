@@ -81,7 +81,7 @@ FindLiveConversationItemIndex(const Conversation& conversation,
     };
     boundary_plan.boundary_message_indices.reserve(decision.boundaries.size());
     for (const MidTermFlushBoundary& boundary : decision.boundaries) {
-        boundary_plan.boundary_message_indices.push_back(boundary.starts_at_message_index);
+        boundary_plan.boundary_message_indices.push_back(boundary.split_before_message_index);
     }
     if (absl::Status status =
             ValidateOngoingEpisodeBoundaryPlan(*item.ongoing_episode, boundary_plan);
@@ -137,7 +137,7 @@ CaptureOngoingEpisodeSegmentsForFlush(const Conversation& conversation,
     };
     boundary_plan.boundary_message_indices.reserve(decision.boundaries.size());
     for (const MidTermFlushBoundary& boundary : decision.boundaries) {
-        boundary_plan.boundary_message_indices.push_back(boundary.starts_at_message_index);
+        boundary_plan.boundary_message_indices.push_back(boundary.split_before_message_index);
     }
 
     absl::StatusOr<std::vector<OngoingEpisodeMessageRange>> ranges =

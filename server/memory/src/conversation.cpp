@@ -178,15 +178,6 @@ absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
         return absl::InvalidArgumentError(
             "SplitOngoingEpisodeWithStub requires at least 2 messages before the split point");
     }
-    if (messages[split_at_message_index].role != MessageRole::User) {
-        LOG(WARNING) << "Conversation SplitOngoingEpisodeWithStub rejected because the message at "
-                        "split_at_message_index is not a user message"
-                     << " conversation_item_index=" << conversation_item_index
-                     << " split_at_message_index=" << split_at_message_index;
-        return absl::InvalidArgumentError(
-            "SplitOngoingEpisodeWithStub requires split_at_message_index to reference a user "
-            "message");
-    }
 
     // Extract remaining messages [split_at, end) before mutating the item.
     std::vector<Message> remaining_messages(
@@ -224,8 +215,7 @@ absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
 
 absl::Status ValidateOngoingEpisodeBoundaryPlan(const OngoingEpisode& ongoing_episode,
                                                 const OngoingEpisodeBoundaryPlan& boundary_plan) {
-    const auto& messages = ongoing_episode.messages;
-    const std::size_t message_count = messages.size();
+    const std::size_t message_count = ongoing_episode.messages.size();
 
     if (boundary_plan.boundary_message_indices.empty()) {
         if (!boundary_plan.tail_complete) {
@@ -241,21 +231,18 @@ absl::Status ValidateOngoingEpisodeBoundaryPlan(const OngoingEpisode& ongoing_ep
     std::size_t previous_boundary = 0U;
     for (std::size_t boundary_index = 0;
          boundary_index < boundary_plan.boundary_message_indices.size(); ++boundary_index) {
-        const std::size_t starts_at = boundary_plan.boundary_message_indices[boundary_index];
-        if (starts_at >= message_count) {
-            return invalid_argument("boundary starts_at exceeds message count");
+        const std::size_t split_before = boundary_plan.boundary_message_indices[boundary_index];
+        if (split_before >= message_count) {
+            return invalid_argument("boundary split_before exceeds message count");
         }
-        if (boundary_index > 0U && starts_at <= previous_boundary) {
+        if (boundary_index > 0U && split_before <= previous_boundary) {
             return invalid_argument("boundaries must be strictly increasing");
         }
-        if (messages[starts_at].role != MessageRole::User) {
-            return invalid_argument("boundaries must reference user messages");
-        }
-        if (starts_at - previous_boundary < 2U) {
+        if (split_before - previous_boundary < 2U) {
             return invalid_argument(
                 "each completed segment before a boundary must contain at least 2 messages");
         }
-        previous_boundary = starts_at;
+        previous_boundary = split_before;
     }
 
     const std::size_t final_segment_size = message_count - previous_boundary;
@@ -278,12 +265,12 @@ BuildCompletedEpisodeRanges(const OngoingEpisode& ongoing_episode,
 
     std::vector<OngoingEpisodeMessageRange> ranges;
     std::size_t previous_boundary = 0U;
-    for (const std::size_t starts_at : boundary_plan.boundary_message_indices) {
+    for (const std::size_t split_before : boundary_plan.boundary_message_indices) {
         ranges.push_back(OngoingEpisodeMessageRange{
             .begin_message_index = previous_boundary,
-            .end_message_index = starts_at,
+            .end_message_index = split_before,
         });
-        previous_boundary = starts_at;
+        previous_boundary = split_before;
     }
 
     if (boundary_plan.tail_complete) {
