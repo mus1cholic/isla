@@ -54,11 +54,10 @@ absl::Status EmitResponseText(std::string_view text, const OpenAiResponsesEventC
 
 absl::Status EmitMidTermAwareReply(const OpenAiResponsesRequest& request,
                                    const OpenAiResponsesEventCallback& on_event) {
-    if (request.system_prompt.find("should_flush") != std::string::npos) {
+    if (request.system_prompt.find("tail_complete") != std::string::npos) {
         return EmitResponseText(R"json({
-            "should_flush": false,
-            "item_id": null,
-            "split_at": null,
+            "boundaries": [],
+            "tail_complete": false,
             "reasoning": "No completed episode boundary."
         })json",
                                 on_event, "resp_live_eval_decider");

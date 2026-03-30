@@ -62,8 +62,8 @@ std::string BuildBenchmarkReply(std::string_view user_text) {
 }
 
 std::string BuildMidTermAwareResponse(std::string_view system_prompt, std::string_view user_text) {
-    if (system_prompt.find("should_flush") != std::string_view::npos) {
-        return R"({"should_flush":false,"item_id":null,"split_at":null,"reasoning":"test"})";
+    if (system_prompt.find("tail_complete") != std::string_view::npos) {
+        return R"({"boundaries":[],"tail_complete":false,"reasoning":"test"})";
     }
     if (system_prompt.find("tier2_summary") != std::string_view::npos) {
         return R"({"tier1_detail":"d","tier2_summary":"s","tier3_ref":"r","tier3_keywords":["k"],"salience":5})";

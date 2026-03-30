@@ -120,9 +120,8 @@ absl::Status EmitMidTermAwareReply(std::string_view decider_prompt,
                                    std::string_view main_prefix = "stub reply: ") {
     if (request.system_prompt == decider_prompt) {
         return EmitResponseText(R"json({
-            "should_flush": false,
-            "item_id": null,
-            "split_at": null,
+            "boundaries": [],
+            "tail_complete": false,
             "reasoning": "No completed episode boundary."
         })json",
                                 on_event, "resp_decider");
@@ -224,17 +223,15 @@ TEST(EvalRunnerTest, CapturesStructuredMidTermEpisodesAfterFlushIsApplied) {
                 const int call_index = (*decider_call_count)++;
                 if (call_index == 0) {
                     return EmitResponseText(R"json({
-                        "should_flush": true,
-                        "item_id": "i0",
-                        "split_at": null,
+                        "boundaries": [],
+                        "tail_complete": true,
                         "reasoning": "Completed first exchange."
                     })json",
                                             on_event, "resp_decider");
                 }
                 return EmitResponseText(R"json({
-                    "should_flush": false,
-                    "item_id": null,
-                    "split_at": null,
+                    "boundaries": [],
+                    "tail_complete": false,
                     "reasoning": "No additional completed episode."
                 })json",
                                         on_event, "resp_decider");
@@ -320,17 +317,15 @@ TEST(EvalRunnerTest, WaitsForDelayedMidTermFlushBeforeCapturingPostTurnSnapshot)
                 const int call_index = (*decider_call_count)++;
                 if (call_index == 0) {
                     return EmitResponseText(R"json({
-                        "should_flush": true,
-                        "item_id": "i0",
-                        "split_at": null,
+                        "boundaries": [],
+                        "tail_complete": true,
                         "reasoning": "Completed first exchange."
                     })json",
                                             on_event, "resp_decider");
                 }
                 return EmitResponseText(R"json({
-                    "should_flush": false,
-                    "item_id": null,
-                    "split_at": null,
+                    "boundaries": [],
+                    "tail_complete": false,
                     "reasoning": "No additional completed episode."
                 })json",
                                         on_event, "resp_decider");

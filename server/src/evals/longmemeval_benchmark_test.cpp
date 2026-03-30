@@ -158,9 +158,8 @@ std::shared_ptr<FakeOpenAiResponsesClient> MakeMidTermAwareFakeClient(std::strin
              std::move(user_reply)](const OpenAiResponsesRequest& request,
                                     const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             std::string text;
-            if (request.system_prompt.find("should_flush") != std::string::npos) {
-                text =
-                    R"({"should_flush":false,"item_id":null,"split_at":null,"reasoning":"test"})";
+            if (request.system_prompt.find("tail_complete") != std::string::npos) {
+                text = R"({"boundaries":[],"tail_complete":false,"reasoning":"test"})";
             } else if (request.system_prompt.find("tier2_summary") != std::string::npos) {
                 text =
                     R"({"tier1_detail":"d","tier2_summary":"s","tier3_ref":"r","tier3_keywords":["k"],"salience":5})";
