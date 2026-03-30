@@ -259,9 +259,10 @@ absl::Status ValidateOngoingEpisodeBoundaryPlan(const OngoingEpisode& ongoing_ep
     }
 
     const std::size_t final_segment_size = message_count - previous_boundary;
-    if (final_segment_size < 2U) {
-        return invalid_argument("the final segment after the last boundary must contain at least "
-                                "2 messages");
+    if (boundary_plan.tail_complete && final_segment_size < 2U) {
+        return invalid_argument(
+            "tail_complete requires the final segment after the last boundary to contain at least "
+            "2 messages");
     }
 
     return absl::OkStatus();

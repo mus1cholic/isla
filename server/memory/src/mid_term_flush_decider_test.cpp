@@ -321,6 +321,20 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundaryThatLeavesTooShortTail) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LlmMidTermFlushDeciderTest, DecideAllowsSingleMessageLiveTailWhenTailIsNotComplete) {
+    auto [fake, last_request, decider] = MakeDecider(
+        R"({"boundaries": [{"starts_at": "m2"}], "tail_complete": false, "reasoning": "Tail is still live"})");
+    ASSERT_NE(decider, nullptr);
+
+    const Conversation conversation = MakeSimpleConversation();
+    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+
+    ASSERT_TRUE(decision.ok()) << decision.status();
+    ASSERT_EQ(decision->boundaries.size(), 1U);
+    EXPECT_EQ(decision->boundaries[0].starts_at_message_index, 2U);
+    EXPECT_FALSE(decision->tail_complete);
+}
+
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsUnorderedBoundaries) {
     auto [fake, last_request, decider] = MakeDecider(
         R"({"boundaries": [{"starts_at": "m4"}, {"starts_at": "m2"}], "tail_complete": false})");

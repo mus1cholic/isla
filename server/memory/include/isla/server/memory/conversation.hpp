@@ -49,9 +49,9 @@ void AppendEpisodeStub(Conversation& conversation, std::string content, Timestam
                                                        std::string stub_text,
                                                        Timestamp stub_timestamp);
 
-// Validates a multi-boundary segmentation plan for one ongoing episode. Every completed segment,
-// and any retained live tail when boundaries are present, must contain at least 2 messages and
-// each boundary must point at a user message.
+// Validates a multi-boundary segmentation plan for one ongoing episode. Every completed segment
+// must contain at least 2 messages, the final segment must also contain at least 2 messages when
+// tail_complete is true, and each boundary must point at a user message.
 [[nodiscard]] absl::Status
 ValidateOngoingEpisodeBoundaryPlan(const OngoingEpisode& ongoing_episode,
                                    const OngoingEpisodeBoundaryPlan& boundary_plan);
