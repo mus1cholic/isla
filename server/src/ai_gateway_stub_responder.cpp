@@ -1516,8 +1516,7 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
                                              .mid_term_flush_decider = mid_term_flush_decider_,
                                              .mid_term_compactor = mid_term_compactor_,
                                              .mid_term_flush_decider_interval_user_turns =
-                                                 config_
-                                                     .mid_term_flush_decider_interval_user_turns,
+                                                 config_.mid_term_flush_decider_interval_user_turns,
                                          });
         if (!orchestrator.ok()) {
             failed_session_starts_.insert_or_assign(std::string(session_id), orchestrator.status());
