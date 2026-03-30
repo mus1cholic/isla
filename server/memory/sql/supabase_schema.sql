@@ -311,7 +311,6 @@ begin
         active_model_text = excluded.active_model_text,
         familiar_label_text = excluded.familiar_label_text,
         name_embedding = excluded.name_embedding,
-        created_at = excluded.created_at,
         updated_at = excluded.updated_at;
 
     insert into public.relationships(
@@ -370,8 +369,7 @@ begin
         embedding = excluded.embedding,
         is_archived = excluded.is_archived,
         archived_at = excluded.archived_at,
-        superseded_by = excluded.superseded_by,
-        created_at = excluded.created_at;
+        superseded_by = excluded.superseded_by;
 
     insert into public.long_term_episodes(
         lte_id,
@@ -430,8 +428,7 @@ begin
         complexity = excluded.complexity,
         original_episode_ids = excluded.original_episode_ids,
         caused_by = excluded.caused_by,
-        led_to = excluded.led_to,
-        created_at = excluded.created_at;
+        led_to = excluded.led_to;
 
     insert into public.long_term_episode_entities(
         lte_id,
