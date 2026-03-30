@@ -170,8 +170,8 @@ TEST(LlmMidTermFlushDeciderTest, DecideReturnsNoFlushWhenLlmFindsNoBoundaries) {
 TEST(LlmMidTermFlushDeciderTest, DecideReturnsMultipleBoundaries) {
     const std::string response = R"json({
         "boundaries": [
-            { "starts_at": "m4", "reasoning": "Topic B begins here." },
-            { "starts_at": "m6", "reasoning": "Topic C begins here." }
+            { "split_before": "m4", "reasoning": "Topic B begins here." },
+            { "split_before": "m6", "reasoning": "Topic C begins here." }
         ],
         "tail_complete": true,
         "reasoning": "Three completed topics were found."
@@ -184,8 +184,8 @@ TEST(LlmMidTermFlushDeciderTest, DecideReturnsMultipleBoundaries) {
 
     ASSERT_TRUE(decision.ok()) << decision.status();
     ASSERT_EQ(decision->boundaries.size(), 2U);
-    EXPECT_EQ(decision->boundaries[0].starts_at_message_index, 4U);
-    EXPECT_EQ(decision->boundaries[1].starts_at_message_index, 6U);
+    EXPECT_EQ(decision->boundaries[0].split_before_message_index, 4U);
+    EXPECT_EQ(decision->boundaries[1].split_before_message_index, 6U);
     EXPECT_TRUE(decision->tail_complete);
 }
 
@@ -275,7 +275,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingTailCompleteField) {
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidBoundaryIdFormat) {
     auto [fake, last_request, decider] = MakeDecider(
-        R"({"boundaries": [{"starts_at": "bad"}], "tail_complete": false, "reasoning": "No"})");
+        R"({"boundaries": [{"split_before": "bad"}], "tail_complete": false, "reasoning": "No"})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -285,21 +285,23 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidBoundaryIdFormat) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsAssistantBoundary) {
+TEST(LlmMidTermFlushDeciderTest, DecideAllowsAssistantBoundary) {
     auto [fake, last_request, decider] = MakeDecider(
-        R"({"boundaries": [{"starts_at": "m3"}], "tail_complete": false, "reasoning": "No"})");
+        R"({"boundaries": [{"split_before": "m3"}], "tail_complete": false, "reasoning": "Assistant starts the next segment"})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
 
-    ASSERT_FALSE(decision.ok());
-    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
+    ASSERT_TRUE(decision.ok()) << decision.status();
+    ASSERT_EQ(decision->boundaries.size(), 1U);
+    EXPECT_EQ(decision->boundaries[0].split_before_message_index, 3U);
+    EXPECT_FALSE(decision->tail_complete);
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundaryThatLeavesTooFewMessagesBeforeIt) {
     auto [fake, last_request, decider] = MakeDecider(
-        R"({"boundaries": [{"starts_at": "m0"}], "tail_complete": false, "reasoning": "No"})");
+        R"({"boundaries": [{"split_before": "m0"}], "tail_complete": false, "reasoning": "No"})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -311,7 +313,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundaryThatLeavesTooFewMessagesBe
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundaryThatLeavesTooShortTail) {
     auto [fake, last_request, decider] = MakeDecider(
-        R"({"boundaries": [{"starts_at": "m2"}, {"starts_at": "m3"}], "tail_complete": false})");
+        R"({"boundaries": [{"split_before": "m2"}, {"split_before": "m3"}], "tail_complete": false})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -323,7 +325,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundaryThatLeavesTooShortTail) {
 
 TEST(LlmMidTermFlushDeciderTest, DecideAllowsSingleMessageLiveTailWhenTailIsNotComplete) {
     auto [fake, last_request, decider] = MakeDecider(
-        R"({"boundaries": [{"starts_at": "m2"}], "tail_complete": false, "reasoning": "Tail is still live"})");
+        R"({"boundaries": [{"split_before": "m2"}], "tail_complete": false, "reasoning": "Tail is still live"})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -331,13 +333,13 @@ TEST(LlmMidTermFlushDeciderTest, DecideAllowsSingleMessageLiveTailWhenTailIsNotC
 
     ASSERT_TRUE(decision.ok()) << decision.status();
     ASSERT_EQ(decision->boundaries.size(), 1U);
-    EXPECT_EQ(decision->boundaries[0].starts_at_message_index, 2U);
+    EXPECT_EQ(decision->boundaries[0].split_before_message_index, 2U);
     EXPECT_FALSE(decision->tail_complete);
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsUnorderedBoundaries) {
     auto [fake, last_request, decider] = MakeDecider(
-        R"({"boundaries": [{"starts_at": "m4"}, {"starts_at": "m2"}], "tail_complete": false})");
+        R"({"boundaries": [{"split_before": "m4"}, {"split_before": "m2"}], "tail_complete": false})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeEightMessageConversation();
@@ -376,7 +378,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideHandlesEmptyConversationWhenNoFlushReques
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundariesForEmptyConversation) {
     const std::string response =
-        R"({"boundaries": [{"starts_at": "m0"}], "tail_complete": false, "reasoning": "Empty"})";
+        R"({"boundaries": [{"split_before": "m0"}], "tail_complete": false, "reasoning": "Empty"})";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
@@ -425,7 +427,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideStripsMarkdownCodeFencesAndRetries) {
 TEST(LlmMidTermFlushDeciderTest, DecideExtractsBoundaryAndTopLevelReasoning) {
     const std::string response = R"json({
         "boundaries": [
-            { "starts_at": "m2", "reasoning": "A new topic starts here." }
+            { "split_before": "m2", "reasoning": "A new topic starts here." }
         ],
         "tail_complete": false,
         "reasoning": "One boundary detected."
@@ -440,6 +442,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideExtractsBoundaryAndTopLevelReasoning) {
     ASSERT_EQ(decision->boundaries.size(), 1U);
     ASSERT_TRUE(decision->boundaries[0].reasoning.has_value());
     EXPECT_EQ(*decision->boundaries[0].reasoning, "A new topic starts here.");
+    EXPECT_EQ(decision->boundaries[0].split_before_message_index, 2U);
     ASSERT_TRUE(decision->reasoning.has_value());
     EXPECT_EQ(*decision->reasoning, "One boundary detected.");
 }
