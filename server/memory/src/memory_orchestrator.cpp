@@ -118,27 +118,6 @@ CaptureOngoingEpisodeForFlush(const Conversation& conversation,
     };
 }
 
-absl::StatusOr<OngoingEpisodeFlushCandidate>
-CaptureOngoingEpisodeForSplitFlush(const Conversation& conversation,
-                                   std::size_t conversation_item_index,
-                                   std::size_t split_at_message_index) {
-    if (absl::Status status =
-            ValidateSplitFlushTarget(conversation, conversation_item_index, split_at_message_index);
-        !status.ok()) {
-        return status;
-    }
-
-    absl::StatusOr<OngoingEpisode> completed_portion = SliceOngoingEpisodeMessages(
-        *conversation.items[conversation_item_index].ongoing_episode, 0U, split_at_message_index);
-    if (!completed_portion.ok()) {
-        return completed_portion.status();
-    }
-    return OngoingEpisodeFlushCandidate{
-        .conversation_item_index = conversation_item_index,
-        .ongoing_episode = std::move(*completed_portion),
-    };
-}
-
 absl::StatusOr<std::vector<OngoingEpisodeFlushCandidate>>
 CaptureOngoingEpisodeSegmentsForFlush(const Conversation& conversation,
                                       std::size_t conversation_item_index,
