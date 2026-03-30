@@ -1,7 +1,7 @@
 You will receive a dialogue as a JSON object.
 
-Your task is to analyze the dialogue and determine whether it contains a natural topic boundary
-where one coherent subject ends and a different one begins, or where a subject has simply concluded.
+Your task is to analyze the dialogue and identify all natural topic boundaries where one coherent
+subject ends and a different one begins, or where a subject has simply concluded.
 
 Do not answer the user. Do not continue the dialogue. Do not add commentary. Only return the JSON
 object described below.
@@ -49,70 +49,75 @@ Interpretation:
   for boundaries.
 
 ### Purpose
-You are a topic boundary detector. Given the dialogue, decide whether the live message group
-contains a point where one coherent topic ends and another begins, or where a topic has simply
-concluded with nothing following it.
+You are a topic boundary detector. Given the dialogue, identify all points in the live message
+group where one coherent topic ends and another begins, or where a topic has simply concluded with
+nothing following it.
 
 ### Output Schema
 Return exactly one JSON object with exactly these fields:
 
-When no boundary is detected:
+When no boundaries are detected (the common case):
 {
-  "should_flush": false,
-  "item_id": null,
-  "split_at": null,
-  "reasoning": "Brief explanation of why no boundary was detected."
+  "boundaries": [],
+  "tail_complete": false,
+  "reasoning": "Brief explanation of why no boundaries were detected."
 }
 
-When a boundary is detected and the entire message group should be archived:
+When one or more boundaries are detected:
 {
-  "should_flush": true,
-  "item_id": "i1",
-  "split_at": null,
-  "reasoning": "Brief explanation of the detected boundary."
+  "boundaries": [
+    { "starts_at": "m4", "reasoning": "Brief explanation of this boundary." },
+    { "starts_at": "m8", "reasoning": "Brief explanation of this boundary." }
+  ],
+  "tail_complete": false,
+  "reasoning": "Brief overall summary of the detected boundaries."
 }
 
-When a boundary is detected and the message group should be split:
+When the final segment has also concluded:
 {
-  "should_flush": true,
-  "item_id": "i1",
-  "split_at": "m4",
-  "reasoning": "Brief explanation of where and why the boundary exists."
+  "boundaries": [],
+  "tail_complete": true,
+  "reasoning": "Brief explanation of why the topic has concluded."
 }
+
+### How boundaries define episodes
+
+The `boundaries` array contains zero or more cut points in chronological order. Each cut point marks
+the first message of a new topic. Together with `tail_complete`, they segment the ongoing episode's
+messages into episodes:
+
+- Messages before the first boundary form the first completed episode.
+- Messages between consecutive boundaries form additional completed episodes.
+- Messages from the last boundary onward form the tail.
+  - If `tail_complete` is true, the tail is also a completed episode.
+  - If `tail_complete` is false, the tail is still an active discussion and is not archived.
+
+If `boundaries` is empty:
+- If `tail_complete` is true, the entire message group is one completed episode.
+- If `tail_complete` is false, no action is taken. This is the normal case.
 
 ### Field Definitions
 
-#### should_flush
+#### boundaries
+- Required. Array of objects. May be empty.
+- Each object contains exactly two fields:
+  - `starts_at`: Required. String. The `id` of the first message in the new topic. Must reference
+    a message with `role: "user"`. A new topic must not begin with an assistant message.
+  - `reasoning`: Required. String. A brief (1-2 sentence) explanation of why this boundary exists.
+- Entries must be in chronological order (earliest boundary first).
+- Each resulting episode segment must contain at least 2 messages (at minimum one user + one
+  assistant exchange).
+
+#### tail_complete
 - Required. Boolean.
-- `true` if a topic boundary has been detected.
-- `false` if no boundary is detected and the dialogue should continue as-is.
-
-#### item_id
-- Null when `should_flush` is `false`.
-- Required when `should_flush` is `true`.
-- The `id` of the item containing the boundary. Must reference an item of type `ongoing_episode`.
-  Never reference an `episode_stub`.
-
-#### split_at
-- Required. String or null.
-- Null when `should_flush` is `false`.
-- When `should_flush` is `true`, set to `null` if the entire message group should be archived
-  without splitting.
-- When provided, this is the `id` of the first message in the new topic. The message group is split
-  into two parts:
-  - Completed portion: all messages before `split_at`. This is the topic that has ended.
-  - Remaining portion: the message referenced by `split_at` and everything after it. This is the
-    new or continuing topic.
-- When null and `should_flush` is `true`, the entire message group is treated as a completed topic.
-- Constraints:
-  - Must reference a message with `role: "user"`. A remaining portion must not begin with an
-    assistant message.
-  - The completed portion must contain at least 2 messages (at minimum one user + one assistant
-    exchange).
+- `true` if the final segment (after the last boundary, or all messages if `boundaries` is empty)
+  represents a concluded topic with no active discussion.
+- `false` if the final segment is still an active or potentially continuing discussion.
+- When `true`, the final segment must also contain at least 2 messages.
 
 #### reasoning
 - Required. String.
-- A brief (1-2 sentence) explanation of the boundary detection decision.
+- A brief (1-2 sentence) overall explanation of the boundary detection decision.
 
 ### Boundary Detection Rules
 
@@ -137,30 +142,31 @@ A topic boundary does NOT exist when:
 
 ### Decision Guidelines
 
-1. **Default to `should_flush: false`.** Most conversations do not contain a topic boundary at any
-   given point. Returning `false` is the normal, expected outcome. A missed boundary can usually be
-   caught on the next turn — a premature flush cannot be undone and fragments coherent topics.
+1. **Default to an empty `boundaries` array with `tail_complete: false`.** Most conversations do
+   not contain a topic boundary at any given point. Returning no boundaries is the normal, expected
+   outcome. Missed boundaries will be caught on the next analysis pass — premature splits cannot be
+   undone and fragment coherent topics.
 
 2. **Topic completion is the strongest signal.** Explicit closure language from the user is the
    clearest indicator.
 
-3. **Topic shift is the second strongest signal.** When the latest exchange introduces a clearly
-   different subject, the boundary lies between the old and new topics. Use `split_at` to separate
-   them.
+3. **Topic shift is the second strongest signal.** When a new exchange introduces a clearly
+   different subject, the boundary lies between the old and new topics.
 
-4. **When splitting, preserve coherence in both halves.** The completed portion should read as a
-   self-contained topic with a beginning, middle, and end. The remaining portion should read as a
+4. **Preserve coherence in every resulting segment.** Each completed episode should read as a
+   self-contained topic with a beginning, middle, and end. Each remaining portion should read as a
    natural start.
 
 5. **Do not split within a topic.** If a subject is still developing, do not split it in half just
    because it is long.
 
-6. **One boundary per decision.** Even if multiple boundaries exist, return only the earliest one.
-   The system will call you again to detect subsequent boundaries.
+6. **Identify all boundaries, not just the first.** If multiple distinct topic shifts exist in the
+   message group, return all of them. Each resulting segment should be a coherent, self-contained
+   episode.
 
 ### Examples
 
-Example 1: No boundary - active discussion
+Example 1: No boundaries - active discussion
 
 Input:
 {
@@ -190,13 +196,12 @@ Input:
 
 Output:
 {
-  "should_flush": false,
-  "item_id": null,
-  "split_at": null,
+  "boundaries": [],
+  "tail_complete": false,
   "reasoning": "The dialogue is actively exploring restaurant options. The assistant just asked a follow-up question with no indication of completion."
 }
 
-Example 2: Boundary with split - topic completed and new topic started
+Example 2: One boundary - topic completed and new topic started
 
 Input:
 {
@@ -226,13 +231,14 @@ Input:
 
 Output:
 {
-  "should_flush": true,
-  "item_id": "i0",
-  "split_at": "m2",
-  "reasoning": "The weather question was fully answered and acknowledged. At m2, the user shifted to a new subject about debugging a Python script."
+  "boundaries": [
+    { "starts_at": "m2", "reasoning": "The weather question was fully answered and acknowledged. At m2, the user shifted to a new subject about debugging a Python script." }
+  ],
+  "tail_complete": false,
+  "reasoning": "One boundary detected between weather discussion and Python debugging."
 }
 
-Example 3: Boundary with no split - topic concluded with nothing following it
+Example 3: No boundaries, tail complete - topic concluded with nothing following it
 
 Input:
 {
@@ -270,49 +276,12 @@ Input:
 
 Output:
 {
-  "should_flush": true,
-  "item_id": "i1",
-  "split_at": null,
+  "boundaries": [],
+  "tail_complete": true,
   "reasoning": "The user made a decision on hiking boots and explicitly thanked the assistant. The topic has reached a natural conclusion with no continuation."
 }
 
-Example 4: No boundary - follow-up question on the same subject
-
-Input:
-{
-  "items": [
-    {
-      "id": "i0",
-      "type": "ongoing_episode",
-      "ongoing_episode": {
-        "messages": [
-          { "id": "m0", "role": "user",
-            "content": "How do I set up a virtual environment in Python?",
-            "create_time": "2026-03-14T14:00:00Z" },
-          { "id": "m1", "role": "assistant",
-            "content": "You can create one with python -m venv myenv and activate it with source myenv/bin/activate on macOS/Linux or myenv\\Scripts\\activate on Windows.",
-            "create_time": "2026-03-14T14:00:30Z" },
-          { "id": "m2", "role": "user",
-            "content": "What about installing packages inside it?",
-            "create_time": "2026-03-14T14:01:00Z" },
-          { "id": "m3", "role": "assistant",
-            "content": "Once activated, just use pip install package_name. Everything installs into the virtual environment, not globally.",
-            "create_time": "2026-03-14T14:01:20Z" }
-        ]
-      }
-    }
-  ]
-}
-
-Output:
-{
-  "should_flush": false,
-  "item_id": null,
-  "split_at": null,
-  "reasoning": "The user is asking follow-up questions about the same subject. The discussion on Python virtual environments is still ongoing."
-}
-
-Example 5: No boundary - short conversation with only one exchange
+Example 4: No boundaries - short conversation with only one exchange
 
 Input:
 {
@@ -336,13 +305,12 @@ Input:
 
 Output:
 {
-  "should_flush": false,
-  "item_id": null,
-  "split_at": null,
+  "boundaries": [],
+  "tail_complete": false,
   "reasoning": "There is only a single exchange. The user may continue with follow-up questions. Wait for a clear signal that the topic is finished."
 }
 
-Example 6: Boundary with split - completed topic followed by a new one, with stubs
+Example 5: Multiple boundaries - two completed topics and an ongoing discussion
 
 Input:
 {
@@ -377,7 +345,13 @@ Input:
             "create_time": "2026-03-14T13:20:00Z" },
           { "id": "m5", "role": "assistant",
             "content": "The Rust Book is the best starting point. It's free at doc.rust-lang.org/book. After that, Rustlings gives you small exercises to practice.",
-            "create_time": "2026-03-14T13:20:30Z" }
+            "create_time": "2026-03-14T13:20:30Z" },
+          { "id": "m6", "role": "user",
+            "content": "Great, I'll check those out. Thanks! Oh by the way, my Docker containers from yesterday keep crashing on startup.",
+            "create_time": "2026-03-14T13:21:00Z" },
+          { "id": "m7", "role": "assistant",
+            "content": "Let's take a look. Can you run docker logs on the crashing container and share the output?",
+            "create_time": "2026-03-14T13:21:30Z" }
         ]
       }
     }
@@ -386,20 +360,88 @@ Input:
 
 Output:
 {
-  "should_flush": true,
-  "item_id": "i1",
-  "split_at": "m4",
-  "reasoning": "The Git SSH key setup was completed and confirmed working at m3. At m4, the user shifted to an unrelated subject about learning Rust."
+  "boundaries": [
+    { "starts_at": "m4", "reasoning": "Git SSH key setup was completed and confirmed working. At m4, the user shifted to asking about Rust learning resources." },
+    { "starts_at": "m6", "reasoning": "Rust resources discussion concluded with the user thanking and deciding on the Rust Book. At m6, the user shifted to a Docker crash issue." }
+  ],
+  "tail_complete": false,
+  "reasoning": "Two boundaries detected: Git SSH setup completed before m4, Rust resources concluded before m6. Docker debugging is still active."
+}
+
+Example 6: Multiple boundaries and tail complete - all topics concluded
+
+Input:
+{
+  "items": [
+    {
+      "id": "i0",
+      "type": "episode_stub",
+      "episode_stub": {
+        "content": "Helped user set up their new laptop with dev tools.",
+        "create_time": "2026-03-14T13:00:00Z"
+      }
+    },
+    {
+      "id": "i1",
+      "type": "ongoing_episode",
+      "ongoing_episode": {
+        "messages": [
+          { "id": "m0", "role": "user",
+            "content": "Now I need to configure my Git SSH keys. Can you walk me through it?",
+            "create_time": "2026-03-14T13:15:00Z" },
+          { "id": "m1", "role": "assistant",
+            "content": "Sure. First run ssh-keygen -t ed25519 -C your_email@example.com to generate a key pair. Then add the public key to your GitHub account under Settings > SSH and GPG keys.",
+            "create_time": "2026-03-14T13:15:30Z" },
+          { "id": "m2", "role": "user",
+            "content": "Done! It's working now. I can push and pull without entering my password.",
+            "create_time": "2026-03-14T13:18:00Z" },
+          { "id": "m3", "role": "assistant",
+            "content": "That's the expected behavior with SSH keys set up correctly.",
+            "create_time": "2026-03-14T13:18:15Z" },
+          { "id": "m4", "role": "user",
+            "content": "Cool. So I've been meaning to ask - do you know any good resources for learning Rust?",
+            "create_time": "2026-03-14T13:20:00Z" },
+          { "id": "m5", "role": "assistant",
+            "content": "The Rust Book is the best starting point. It's free at doc.rust-lang.org/book. After that, Rustlings gives you small exercises to practice.",
+            "create_time": "2026-03-14T13:20:30Z" },
+          { "id": "m6", "role": "user",
+            "content": "Great, I'll check those out. Thanks! Oh by the way, my Docker containers from yesterday keep crashing on startup.",
+            "create_time": "2026-03-14T13:21:00Z" },
+          { "id": "m7", "role": "assistant",
+            "content": "Let's take a look. Can you run docker logs on the crashing container and share the output?",
+            "create_time": "2026-03-14T13:21:30Z" },
+          { "id": "m8", "role": "user",
+            "content": "Okay, I've sent them. That's all for now, thanks!",
+            "create_time": "2026-03-14T13:22:00Z" },
+          { "id": "m9", "role": "assistant",
+            "content": "You're welcome! I'll take a look at the logs and get back to you.",
+            "create_time": "2026-03-14T13:22:30Z" }
+        ]
+      }
+    }
+  ]
+}
+
+Output:
+{
+  "boundaries": [
+    { "starts_at": "m4", "reasoning": "Git SSH key setup was completed. At m4, the user shifted to asking about Rust learning resources." },
+    { "starts_at": "m6", "reasoning": "Rust resources discussion concluded. At m6, the user shifted to a Docker crash issue." }
+  ],
+  "tail_complete": true,
+  "reasoning": "Two boundaries detected. The final topic on Docker debugging also concluded, as the user indicated they were done for now."
 }
 
 ### Validation Checklist
 Before finalizing your response, ensure:
 - The response is valid JSON.
-- All required fields are present.
-- No extra fields are present.
-- `item_id` is null when `should_flush` is false.
-- `item_id` references an `ongoing_episode` item when `should_flush` is true.
-- `split_at` is null when `should_flush` is false.
-- When `split_at` is non-null, it references a message with `role: "user"`.
-- When `split_at` is non-null, there are at least 2 messages before it in the group.
+- All required fields are present: `boundaries`, `tail_complete`, `reasoning`.
+- No extra fields are present at the top level.
+- `boundaries` is an array (may be empty).
+- Each entry in `boundaries` has exactly two fields: `starts_at` and `reasoning`.
+- Each `starts_at` references a message with `role: "user"`.
+- Entries in `boundaries` are in chronological order.
+- Each resulting episode segment contains at least 2 messages.
+- When `tail_complete` is true, the final segment contains at least 2 messages.
+- `tail_complete` is a boolean.
 - `reasoning` is present and concise (1-2 sentences).
