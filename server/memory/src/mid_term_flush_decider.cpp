@@ -338,9 +338,8 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
             LOG(WARNING) << "LlmMidTermFlushDecider rejected invalid boundary plan"
                          << " boundaries="
                          << SanitizeForLog(SummarizeDecisionBoundariesForLog(*decision))
-                         << " tail_complete="
-                         << (decision->tail_complete ? "true" : "false") << " detail='"
-                         << SanitizeForLog(status.message()) << "'";
+                         << " tail_complete=" << (decision->tail_complete ? "true" : "false")
+                         << " detail='" << SanitizeForLog(status.message()) << "'";
             return status;
         }
 
