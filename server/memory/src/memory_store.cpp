@@ -52,6 +52,19 @@ absl::Status ValidateEpisodeCoreFields(const Episode& episode) {
     return absl::OkStatus();
 }
 
+template <typename T, typename IdFn>
+absl::Status ValidateUniqueIds(const std::vector<T>& items, IdFn id_fn, std::string_view context) {
+    std::unordered_set<std::string> seen;
+    for (const T& item : items) {
+        const std::string& id = id_fn(item);
+        if (!seen.insert(id).second) {
+            return absl::InvalidArgumentError(std::string(context) +
+                                              " must not contain duplicate ids: " + id);
+        }
+    }
+    return absl::OkStatus();
+}
+
 } // namespace
 
 absl::Status ValidateMemorySessionRecord(const MemorySessionRecord& record) {
@@ -343,6 +356,100 @@ absl::Status ValidateLongTermEpisodeEntityLink(const LongTermEpisodeEntityLink& 
                 "ValidateLongTermEpisodeEntityLink requires all entity_ids to be unique");
         }
     }
+    return absl::OkStatus();
+}
+
+absl::Status ValidateSleepCycleExtractionResult(const SleepCycleExtractionResult& result) {
+    if (absl::Status status = ValidateUniqueIds(
+            result.entities,
+            [](const EntityWrite& write) -> const std::string& { return write.entity.entity_id; },
+            "ValidateSleepCycleExtractionResult entities");
+        !status.ok()) {
+        return status;
+    }
+    if (absl::Status status = ValidateUniqueIds(
+            result.relationships,
+            [](const RelationshipWrite& write) -> const std::string& {
+                return write.relationship.relationship_id;
+            },
+            "ValidateSleepCycleExtractionResult relationships");
+        !status.ok()) {
+        return status;
+    }
+    if (absl::Status status = ValidateUniqueIds(
+            result.long_term_episodes,
+            [](const LongTermEpisodeWrite& write) -> const std::string& {
+                return write.episode.lte_id;
+            },
+            "ValidateSleepCycleExtractionResult long_term_episodes");
+        !status.ok()) {
+        return status;
+    }
+    if (absl::Status status = ValidateUniqueIds(
+            result.long_term_episode_entity_links,
+            [](const LongTermEpisodeEntityLink& link) -> const std::string& { return link.lte_id; },
+            "ValidateSleepCycleExtractionResult long_term_episode_entity_links");
+        !status.ok()) {
+        return status;
+    }
+
+    std::unordered_set<std::string> long_term_episode_ids;
+    std::optional<std::string> batch_user_id;
+    const auto validate_batch_user_id = [&batch_user_id](std::string_view user_id,
+                                                         std::string_view context) -> absl::Status {
+        if (!batch_user_id.has_value()) {
+            batch_user_id = std::string(user_id);
+            return absl::OkStatus();
+        }
+        if (*batch_user_id != user_id) {
+            return absl::InvalidArgumentError(
+                std::string("ValidateSleepCycleExtractionResult requires all ") +
+                std::string(context) + " to share the same user_id");
+        }
+        return absl::OkStatus();
+    };
+
+    for (const LongTermEpisodeWrite& write : result.long_term_episodes) {
+        if (absl::Status status = ValidateLongTermEpisodeWrite(write); !status.ok()) {
+            return status;
+        }
+        if (absl::Status status =
+                validate_batch_user_id(write.episode.user_id, "long_term_episodes");
+            !status.ok()) {
+            return status;
+        }
+        long_term_episode_ids.insert(write.episode.lte_id);
+    }
+    for (const EntityWrite& write : result.entities) {
+        if (absl::Status status = ValidateEntityWrite(write); !status.ok()) {
+            return status;
+        }
+        if (absl::Status status = validate_batch_user_id(write.entity.user_id, "entities");
+            !status.ok()) {
+            return status;
+        }
+    }
+    for (const RelationshipWrite& write : result.relationships) {
+        if (absl::Status status = ValidateRelationshipWrite(write); !status.ok()) {
+            return status;
+        }
+        if (absl::Status status =
+                validate_batch_user_id(write.relationship.user_id, "relationships");
+            !status.ok()) {
+            return status;
+        }
+    }
+    for (const LongTermEpisodeEntityLink& link : result.long_term_episode_entity_links) {
+        if (absl::Status status = ValidateLongTermEpisodeEntityLink(link); !status.ok()) {
+            return status;
+        }
+        if (!long_term_episode_ids.contains(link.lte_id)) {
+            return absl::InvalidArgumentError(
+                "ValidateSleepCycleExtractionResult requires every long-term episode entity link "
+                "to reference an lte_id present in long_term_episodes");
+        }
+    }
+
     return absl::OkStatus();
 }
 

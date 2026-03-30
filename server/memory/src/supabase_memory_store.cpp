@@ -228,6 +228,38 @@ json BuildLongTermEpisodeJson(const LongTermEpisodeWrite& write) {
     };
 }
 
+json BuildSleepCycleExtractionJson(const SleepCycleExtractionResult& result) {
+    json entities = json::array();
+    for (const EntityWrite& write : result.entities) {
+        entities.push_back(BuildEntityJson(write));
+    }
+
+    json relationships = json::array();
+    for (const RelationshipWrite& write : result.relationships) {
+        relationships.push_back(BuildRelationshipJson(write));
+    }
+
+    json long_term_episodes = json::array();
+    for (const LongTermEpisodeWrite& write : result.long_term_episodes) {
+        long_term_episodes.push_back(BuildLongTermEpisodeJson(write));
+    }
+
+    json long_term_episode_entity_links = json::array();
+    for (const LongTermEpisodeEntityLink& link : result.long_term_episode_entity_links) {
+        long_term_episode_entity_links.push_back(json{
+            { "lte_id", link.lte_id },
+            { "entity_ids", link.entity_ids },
+        });
+    }
+
+    return json{
+        { "entities", std::move(entities) },
+        { "relationships", std::move(relationships) },
+        { "long_term_episodes", std::move(long_term_episodes) },
+        { "long_term_episode_entity_links", std::move(long_term_episode_entity_links) },
+    };
+}
+
 absl::StatusOr<Entity> ParseEntityRow(const json& row) {
     try {
         return Entity{
@@ -984,6 +1016,29 @@ class SupabaseMemoryStore final : public MemoryStore {
     // -------------------------------------------------------------------------
     // Long-term memory (Knowledge Graph + Episodic Vector Store)
     // -------------------------------------------------------------------------
+
+    [[nodiscard]] absl::Status
+    PersistSleepCycleExtraction(const SleepCycleExtractionResult& result) override {
+        ScopedSupabaseOperationLatency latency(config_, "persist_sleep_cycle_extraction",
+                                               std::nullopt);
+        if (absl::Status status = ValidateSleepCycleExtractionResult(result); !status.ok()) {
+            latency.SetOutcome("validation_error");
+            return status;
+        }
+        const HttpRequestSpec request =
+            BuildRpcRequest("persist_sleep_cycle_extraction",
+                            json{
+                                { "p_extraction", BuildSleepCycleExtractionJson(result) },
+                            },
+                            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        latency.SetOutcome("ok");
+        return absl::OkStatus();
+    }
 
     [[nodiscard]] absl::Status UpsertEntity(const EntityWrite& write) override {
         ScopedSupabaseOperationLatency latency(config_, "upsert_entity", std::nullopt);

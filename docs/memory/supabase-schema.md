@@ -123,6 +123,12 @@ Suggested columns:
 - `updated_at timestamptz not null`
 - `unique (entity_id, user_id)` — enables composite FK enforcement on relationships
 
+Notes:
+
+- Treat `user_id` as immutable for a given `entity_id`. The transactional
+  `persist_sleep_cycle_extraction(...)` path should fail if an existing entity is submitted under
+  a different user rather than "moving" that entity across users.
+
 ### `relationships`
 
 Enriched edges connecting two entities in the Knowledge Graph. Written during the sleep cycle.
@@ -203,10 +209,11 @@ now-empty live working set.
 For the sleep cycle, long-term consolidation happens before the working-set clear:
 
 1. The sleep cycle captures the current mid-term episodes
-2. Consolidated episodes are upserted into `long_term_episodes`
-3. Extracted entities and relationships are upserted into `entities` and `relationships`
-4. Entity-episode cross-links are written to `long_term_episode_entities`
-5. The store calls `clear_session_working_set(...)` to wipe mid-term episodes and conversation
+2. The store calls `persist_sleep_cycle_extraction(...)` so all long-term writes happen inside one transaction
+3. Within that transaction, consolidated episodes are upserted into `long_term_episodes`
+4. Extracted entities and relationships are upserted into `entities` and `relationships`
+5. Entity-episode cross-links are written to `long_term_episode_entities`
+6. The store calls `clear_session_working_set(...)` to wipe mid-term episodes and conversation
 
 This mirrors the current C++ architecture:
 
@@ -238,7 +245,8 @@ Steps 1-4 map directly to the `MemoryStoreSnapshot` shape in C++. Step 5 populat
 - Keep simple writes on direct PostgREST table upserts where possible.
 - Use RPC-backed SQL functions for multi-row memory mutations that need fewer round trips or
   transactional guarantees. The split-flush path now uses
-  `split_conversation_item_with_episode_stub(...)`, and the sleep-cycle reset uses
+  `split_conversation_item_with_episode_stub(...)`, the sleep-cycle extraction batch uses
+  `persist_sleep_cycle_extraction(...)`, and the sleep-cycle reset uses
   `clear_session_working_set(...)`, for exactly that reason.
 - The current schema does not preserve archived transcript rows across a sleep-cycle reset. If we
   want transcript retention later, we will need to decouple `conversation_messages` from
@@ -258,6 +266,7 @@ Working memory and mid-term memory store methods are implemented:
 
 Long-term memory store methods are implemented:
 
+- transactional sleep-cycle extraction batch persistence
 - entity upsert/list/get
 - relationship upsert/list
 - long-term episode upsert/list-by-entity

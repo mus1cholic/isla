@@ -260,6 +260,222 @@ begin
 end;
 $$;
 
+create or replace function public.persist_sleep_cycle_extraction(
+    p_extraction jsonb
+)
+returns void
+language plpgsql
+as $$
+declare
+    v_conflicting_entity_id text;
+    v_existing_entity_user_id text;
+    v_incoming_entity_user_id text;
+begin
+    if p_extraction is null then
+        raise exception using
+            errcode = '23514',
+            message = 'p_extraction must not be null';
+    end if;
+
+    set constraints all deferred;
+
+    -- NOTICE: entity_id ownership is immutable. If an entity already exists for a different
+    -- user, fail explicitly before any writes so the caller gets a clear invariant violation
+    -- instead of a later composite-FK failure from relationships.
+    select
+        existing.entity_id,
+        existing.user_id,
+        incoming.entity_json ->> 'user_id'
+    into
+        v_conflicting_entity_id,
+        v_existing_entity_user_id,
+        v_incoming_entity_user_id
+    from jsonb_array_elements(coalesce(p_extraction -> 'entities', '[]'::jsonb)) as incoming(entity_json)
+    join public.entities existing
+      on existing.entity_id = incoming.entity_json ->> 'entity_id'
+    where existing.user_id <> incoming.entity_json ->> 'user_id'
+    limit 1;
+
+    if v_conflicting_entity_id is not null then
+        raise exception using
+            errcode = '23514',
+            message = format(
+                'entity_id %s already belongs to user_id %s and cannot be moved to user_id %s',
+                v_conflicting_entity_id,
+                v_existing_entity_user_id,
+                v_incoming_entity_user_id
+            );
+    end if;
+
+    insert into public.entities(
+        entity_id,
+        user_id,
+        label,
+        category,
+        activeness,
+        active_model_text,
+        familiar_label_text,
+        name_embedding,
+        created_at,
+        updated_at
+    )
+    select
+        entity_json ->> 'entity_id',
+        entity_json ->> 'user_id',
+        entity_json ->> 'label',
+        entity_json ->> 'category',
+        (entity_json ->> 'activeness')::integer,
+        entity_json ->> 'active_model_text',
+        entity_json ->> 'familiar_label_text',
+        case
+            when entity_json -> 'name_embedding' is null
+                 or entity_json -> 'name_embedding' = 'null'::jsonb then null
+            else (entity_json ->> 'name_embedding')::extensions.vector
+        end,
+        (entity_json ->> 'created_at')::timestamptz,
+        (entity_json ->> 'updated_at')::timestamptz
+    from jsonb_array_elements(coalesce(p_extraction -> 'entities', '[]'::jsonb)) as entity_json
+    on conflict (entity_id) do update
+    set label = excluded.label,
+        category = excluded.category,
+        activeness = excluded.activeness,
+        active_model_text = excluded.active_model_text,
+        familiar_label_text = excluded.familiar_label_text,
+        name_embedding = excluded.name_embedding,
+        updated_at = excluded.updated_at;
+
+    insert into public.relationships(
+        relationship_id,
+        user_id,
+        from_entity_id,
+        predicate,
+        to_entity_id,
+        weight,
+        observation_count,
+        last_observed_at,
+        source_episode_ids,
+        embedding,
+        is_archived,
+        archived_at,
+        superseded_by,
+        created_at
+    )
+    select
+        relationship_json ->> 'relationship_id',
+        relationship_json ->> 'user_id',
+        relationship_json ->> 'from_entity_id',
+        relationship_json ->> 'predicate',
+        relationship_json ->> 'to_entity_id',
+        (relationship_json ->> 'weight')::double precision,
+        (relationship_json ->> 'observation_count')::integer,
+        (relationship_json ->> 'last_observed_at')::timestamptz,
+        coalesce(
+            array(
+                select jsonb_array_elements_text(
+                    coalesce(relationship_json -> 'source_episode_ids', '[]'::jsonb)
+                )
+            ),
+            '{}'::text[]
+        ),
+        case
+            when relationship_json -> 'embedding' is null
+                 or relationship_json -> 'embedding' = 'null'::jsonb then null
+            else (relationship_json ->> 'embedding')::extensions.vector
+        end,
+        coalesce((relationship_json ->> 'is_archived')::boolean, false),
+        (relationship_json ->> 'archived_at')::timestamptz,
+        relationship_json ->> 'superseded_by',
+        (relationship_json ->> 'created_at')::timestamptz
+    from jsonb_array_elements(coalesce(p_extraction -> 'relationships', '[]'::jsonb))
+        as relationship_json
+    on conflict (relationship_id) do update
+    set user_id = excluded.user_id,
+        from_entity_id = excluded.from_entity_id,
+        predicate = excluded.predicate,
+        to_entity_id = excluded.to_entity_id,
+        weight = excluded.weight,
+        observation_count = excluded.observation_count,
+        last_observed_at = excluded.last_observed_at,
+        source_episode_ids = excluded.source_episode_ids,
+        embedding = excluded.embedding,
+        is_archived = excluded.is_archived,
+        archived_at = excluded.archived_at,
+        superseded_by = excluded.superseded_by;
+
+    insert into public.long_term_episodes(
+        lte_id,
+        user_id,
+        summary_full,
+        summary_compressed,
+        keywords,
+        embedding,
+        outcome,
+        complexity,
+        original_episode_ids,
+        caused_by,
+        led_to,
+        created_at
+    )
+    select
+        episode_json ->> 'lte_id',
+        episode_json ->> 'user_id',
+        episode_json ->> 'summary_full',
+        episode_json ->> 'summary_compressed',
+        coalesce(
+            array(
+                select jsonb_array_elements_text(
+                    coalesce(episode_json -> 'keywords', '[]'::jsonb)
+                )
+            ),
+            '{}'::text[]
+        ),
+        case
+            when episode_json -> 'embedding' is null
+                 or episode_json -> 'embedding' = 'null'::jsonb then null
+            else (episode_json ->> 'embedding')::extensions.vector
+        end,
+        coalesce(episode_json ->> 'outcome', 'informational'),
+        (episode_json ->> 'complexity')::integer,
+        coalesce(
+            array(
+                select jsonb_array_elements_text(
+                    coalesce(episode_json -> 'original_episode_ids', '[]'::jsonb)
+                )
+            ),
+            '{}'::text[]
+        ),
+        episode_json ->> 'caused_by',
+        episode_json ->> 'led_to',
+        (episode_json ->> 'created_at')::timestamptz
+    from jsonb_array_elements(coalesce(p_extraction -> 'long_term_episodes', '[]'::jsonb))
+        as episode_json
+    on conflict (lte_id) do update
+    set user_id = excluded.user_id,
+        summary_full = excluded.summary_full,
+        summary_compressed = excluded.summary_compressed,
+        keywords = excluded.keywords,
+        embedding = excluded.embedding,
+        outcome = excluded.outcome,
+        complexity = excluded.complexity,
+        original_episode_ids = excluded.original_episode_ids,
+        caused_by = excluded.caused_by,
+        led_to = excluded.led_to;
+
+    insert into public.long_term_episode_entities(
+        lte_id,
+        entity_id
+    )
+    select
+        link_json ->> 'lte_id',
+        entity_id_text.value
+    from jsonb_array_elements(coalesce(p_extraction -> 'long_term_episode_entity_links',
+                                       '[]'::jsonb)) as link_json
+    cross join lateral jsonb_array_elements_text(coalesce(link_json -> 'entity_ids', '[]'::jsonb))
+        as entity_id_text(value)
+    on conflict (lte_id, entity_id) do nothing;
+end;
+$$;
+
 -- Working memory + mid-term memory indexes.
 
 create index if not exists conversation_items_session_order_idx

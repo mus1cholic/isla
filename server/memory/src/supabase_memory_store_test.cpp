@@ -1460,6 +1460,121 @@ TEST(SupabaseMemoryStoreTest, LinkLongTermEpisodeEntitiesSendsJunctionRows) {
     EXPECT_EQ(body[1]["entity_id"], "ent_002");
 }
 
+TEST(SupabaseMemoryStoreTest, PersistSleepCycleExtractionUsesTransactionalRpc) {
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::Status status =
+        (*store)->PersistSleepCycleExtraction(SleepCycleExtractionResult{
+            .entities =
+                {
+                    EntityWrite{
+                        .entity =
+                            Entity{
+                                .entity_id = "ent_001",
+                                .user_id = "user_001",
+                                .label = "Alice",
+                                .category = "person",
+                                .activeness = 7,
+                                .active_model_text = std::string("Alice is important."),
+                                .name_embedding = MakeEmbedding(0.1),
+                                .created_at = Ts("2026-03-08T14:00:00Z"),
+                                .updated_at = Ts("2026-03-08T14:00:00Z"),
+                            },
+                    },
+                },
+            .relationships =
+                {
+                    RelationshipWrite{
+                        .relationship =
+                            Relationship{
+                                .relationship_id = "rel_001",
+                                .user_id = "user_001",
+                                .from_entity_id = "ent_001",
+                                .predicate = "knows",
+                                .to_entity_id = "ent_002",
+                                .weight = 3.5,
+                                .observation_count = 2,
+                                .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+                                .source_episode_ids = { "ep_001" },
+                                .embedding = MakeEmbedding(0.2),
+                                .created_at = Ts("2026-03-08T14:00:00Z"),
+                            },
+                    },
+                },
+            .long_term_episodes =
+                {
+                    LongTermEpisodeWrite{
+                        .episode =
+                            LongTermEpisode{
+                                .lte_id = "lte_001",
+                                .user_id = "user_001",
+                                .summary_full = std::string("Full summary"),
+                                .summary_compressed = "Compressed",
+                                .keywords = { "memory", "test" },
+                                .embedding = MakeEmbedding(0.3),
+                                .outcome = LongTermEpisodeOutcome::Resolved,
+                                .complexity = 4,
+                                .created_at = Ts("2026-03-08T14:00:00Z"),
+                                .original_episode_ids = { "ep_001" },
+                            },
+                    },
+                },
+            .long_term_episode_entity_links =
+                {
+                    LongTermEpisodeEntityLink{
+                        .lte_id = "lte_001",
+                        .entity_ids = { "ent_001", "ent_002" },
+                    },
+                },
+        });
+
+    ASSERT_TRUE(status.ok()) << status;
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests[0].find("POST /rest/v1/rpc/persist_sleep_cycle_extraction"),
+              std::string::npos);
+
+    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    ASSERT_TRUE(body.is_object());
+    ASSERT_TRUE(body.contains("p_extraction"));
+    ASSERT_TRUE(body["p_extraction"]["entities"].is_array());
+    ASSERT_EQ(body["p_extraction"]["entities"].size(), 1U);
+    EXPECT_EQ(body["p_extraction"]["entities"][0]["entity_id"], "ent_001");
+    EXPECT_EQ(body["p_extraction"]["entities"][0]["label"], "Alice");
+    ASSERT_TRUE(body["p_extraction"]["entities"][0]["name_embedding"].is_array());
+    EXPECT_EQ(body["p_extraction"]["entities"][0]["name_embedding"].size(), kEmbeddingDimensions);
+    ASSERT_TRUE(body["p_extraction"]["relationships"].is_array());
+    ASSERT_EQ(body["p_extraction"]["relationships"].size(), 1U);
+    EXPECT_EQ(body["p_extraction"]["relationships"][0]["relationship_id"], "rel_001");
+    EXPECT_EQ(body["p_extraction"]["relationships"][0]["predicate"], "knows");
+    ASSERT_TRUE(body["p_extraction"]["long_term_episodes"].is_array());
+    ASSERT_EQ(body["p_extraction"]["long_term_episodes"].size(), 1U);
+    EXPECT_EQ(body["p_extraction"]["long_term_episodes"][0]["lte_id"], "lte_001");
+    EXPECT_EQ(body["p_extraction"]["long_term_episodes"][0]["summary_compressed"], "Compressed");
+    ASSERT_TRUE(body["p_extraction"]["long_term_episode_entity_links"].is_array());
+    ASSERT_EQ(body["p_extraction"]["long_term_episode_entity_links"].size(), 1U);
+    EXPECT_EQ(body["p_extraction"]["long_term_episode_entity_links"][0]["lte_id"], "lte_001");
+    ASSERT_TRUE(body["p_extraction"]["long_term_episode_entity_links"][0]["entity_ids"].is_array());
+    EXPECT_EQ(body["p_extraction"]["long_term_episode_entity_links"][0]["entity_ids"][0],
+              "ent_001");
+    EXPECT_EQ(body["p_extraction"]["long_term_episode_entity_links"][0]["entity_ids"][1],
+              "ent_002");
+}
+
 TEST(SupabaseMemoryStoreTest, ListEntitiesByUserReturnsEntitiesFromGetResponse) {
     const json response_rows = json::array({
         json{

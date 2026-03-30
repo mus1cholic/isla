@@ -582,6 +582,41 @@ std::string MemoryOrchestrator::NextEpisodeId() {
     return "ep_" + session_id_ + "_" + std::to_string(next_episode_sequence_++);
 }
 
+absl::StatusOr<SleepCycleExtractionResult>
+MemoryOrchestrator::BuildSleepCycleExtractionResult(std::string_view user_id,
+                                                    const std::vector<Episode>& mid_term_episodes) {
+    if (user_id.empty()) {
+        return invalid_argument("sleep-cycle extraction requires a non-empty user_id");
+    }
+
+    SleepCycleExtractionResult result;
+    result.long_term_episodes.reserve(mid_term_episodes.size());
+
+    for (const Episode& episode : mid_term_episodes) {
+        result.long_term_episodes.push_back(LongTermEpisodeWrite{
+            .episode =
+                LongTermEpisode{
+                    .lte_id = "lte_" + episode.episode_id,
+                    .user_id = std::string(user_id),
+                    .summary_full = episode.tier1_detail,
+                    .summary_compressed = episode.tier2_summary,
+                    .keywords = episode.tier3_keywords,
+                    .embedding = episode.embedding.empty()
+                                     ? std::nullopt
+                                     : std::optional<Embedding>(episode.embedding),
+                    .complexity = episode.salience,
+                    .created_at = episode.created_at,
+                    .original_episode_ids = { episode.episode_id },
+                },
+        });
+    }
+
+    if (absl::Status status = ValidateSleepCycleExtractionResult(result); !status.ok()) {
+        return status;
+    }
+    return result;
+}
+
 absl::StatusOr<std::size_t>
 MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes) {
     if (store_ == nullptr || mid_term_episodes.empty()) {
@@ -589,44 +624,32 @@ MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_e
     }
 
     const std::string& user_id = memory_.snapshot().conversation.user_id;
-    std::size_t consolidated = 0;
-
-    for (const Episode& episode : mid_term_episodes) {
-        LongTermEpisode lte{
-            .lte_id = "lte_" + episode.episode_id,
-            .user_id = user_id,
-            .summary_full = episode.tier1_detail,
-            .summary_compressed = episode.tier2_summary,
-            .keywords = episode.tier3_keywords,
-            .embedding = episode.embedding.empty() ? std::nullopt
-                                                   : std::optional<Embedding>(episode.embedding),
-            .complexity = episode.salience,
-            .created_at = episode.created_at,
-            .original_episode_ids = { episode.episode_id },
-        };
-
-        // TODO: Entity and relationship extraction will be added in a future PR.
-
-        absl::Status status = store_->UpsertLongTermEpisode(LongTermEpisodeWrite{
-            .episode = std::move(lte),
-        });
-        if (!status.ok()) {
-            LOG(WARNING) << "MemoryOrchestrator failed to consolidate mid-term episode to "
-                            "long-term storage"
-                         << " session_id=" << SanitizeForLog(session_id_)
-                         << " episode_id=" << SanitizeForLog(episode.episode_id) << " detail='"
-                         << SanitizeForLog(status.message()) << "'";
-            return status;
-        }
-        ++consolidated;
+    absl::StatusOr<SleepCycleExtractionResult> extraction =
+        BuildSleepCycleExtractionResult(user_id, mid_term_episodes);
+    if (!extraction.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to build sleep-cycle extraction result"
+                     << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                     << SanitizeForLog(extraction.status().message()) << "'";
+        return extraction.status();
     }
 
-    LOG(INFO) << "MemoryOrchestrator consolidated " << consolidated
+    if (absl::Status status = store_->PersistSleepCycleExtraction(*extraction); !status.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to persist sleep-cycle extraction batch"
+                     << " session_id=" << SanitizeForLog(session_id_)
+                     << " entity_count=" << extraction->entities.size()
+                     << " relationship_count=" << extraction->relationships.size()
+                     << " long_term_episode_count=" << extraction->long_term_episodes.size()
+                     << " episode_link_count=" << extraction->long_term_episode_entity_links.size()
+                     << " detail='" << SanitizeForLog(status.message()) << "'";
+        return status;
+    }
+
+    LOG(INFO) << "MemoryOrchestrator consolidated " << extraction->long_term_episodes.size()
               << " mid-term episodes to "
                  "long-term storage"
               << " session_id=" << SanitizeForLog(session_id_);
 
-    return consolidated;
+    return extraction->long_term_episodes.size();
 }
 
 absl::StatusOr<MemoryOrchestrator::CompletedFlushBuildInput>
