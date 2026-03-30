@@ -199,6 +199,14 @@ class MemoryStore {
     // Long-term memory (Knowledge Graph + Episodic Vector Store)
     // -------------------------------------------------------------------------
 
+    // Persists a complete sleep-cycle extraction batch atomically. Store implementations should
+    // treat this as one transactional operation so partially applied long-term updates cannot
+    // leak out if any step fails.
+    [[nodiscard]] virtual absl::Status
+    PersistSleepCycleExtraction(const SleepCycleExtractionResult& /*result*/) {
+        return absl::UnimplementedError("PersistSleepCycleExtraction not implemented");
+    }
+
     // Creates or updates a persisted entity in the Knowledge Graph.
     [[nodiscard]] virtual absl::Status UpsertEntity(const EntityWrite& /*write*/) {
         return absl::UnimplementedError("UpsertEntity not implemented");
@@ -252,8 +260,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(EntityWrite, entity)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(RelationshipWrite, relationship)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LongTermEpisodeWrite, episode)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LongTermEpisodeEntityLink, lte_id, entity_ids)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-    SleepCycleExtractionResult, entities, relationships, long_term_episodes,
-    long_term_episode_entity_links)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SleepCycleExtractionResult, entities, relationships,
+                                                long_term_episodes, long_term_episode_entity_links)
 
 } // namespace isla::server::memory

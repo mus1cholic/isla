@@ -116,6 +116,24 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
                 episode_writes.push_back(write);
                 return absl::OkStatus();
             });
+        ON_CALL(*this, PersistSleepCycleExtraction(_))
+            .WillByDefault([this](const SleepCycleExtractionResult& result) {
+                if (!persist_sleep_cycle_extraction_status.ok()) {
+                    return persist_sleep_cycle_extraction_status;
+                }
+                extraction_results.push_back(result);
+                entity_writes.insert(entity_writes.end(), result.entities.begin(),
+                                     result.entities.end());
+                relationship_writes.insert(relationship_writes.end(), result.relationships.begin(),
+                                           result.relationships.end());
+                long_term_episode_writes.insert(long_term_episode_writes.end(),
+                                                result.long_term_episodes.begin(),
+                                                result.long_term_episodes.end());
+                long_term_episode_entity_links.insert(long_term_episode_entity_links.end(),
+                                                      result.long_term_episode_entity_links.begin(),
+                                                      result.long_term_episode_entity_links.end());
+                return absl::OkStatus();
+            });
         ON_CALL(*this, UpsertEntity(_)).WillByDefault([this](const EntityWrite& write) {
             if (!upsert_entity_status.ok()) {
                 return upsert_entity_status;
@@ -194,6 +212,7 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     std::vector<SplitEpisodeStubWrite> split_stub_writes;
     std::vector<std::string> cleared_session_ids;
     std::vector<MidTermEpisodeWrite> episode_writes;
+    std::vector<SleepCycleExtractionResult> extraction_results;
     std::vector<EntityWrite> entity_writes;
     std::vector<RelationshipWrite> relationship_writes;
     std::vector<LongTermEpisodeWrite> long_term_episode_writes;
@@ -208,6 +227,7 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     absl::Status split_stub_status = absl::OkStatus();
     absl::Status clear_working_set_status = absl::OkStatus();
     absl::Status upsert_episode_status = absl::OkStatus();
+    absl::Status persist_sleep_cycle_extraction_status = absl::OkStatus();
     absl::Status upsert_entity_status = absl::OkStatus();
     absl::Status upsert_relationship_status = absl::OkStatus();
     absl::Status upsert_long_term_episode_status = absl::OkStatus();
@@ -746,6 +766,7 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleConsolidatesMidTermEpisodesToLongTer
 
     ASSERT_TRUE(result.ok()) << result.status();
     EXPECT_EQ(result->consolidated_long_term_episode_count, 1U);
+    ASSERT_EQ(store->extraction_results.size(), 1U);
     ASSERT_EQ(store->long_term_episode_writes.size(), 1U);
 
     const LongTermEpisode& lte = store->long_term_episode_writes.front().episode;
@@ -772,7 +793,8 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleAbortsWhenConsolidationFails) {
                                                                  Ts("2026-03-08T14:00:01Z")))
                     .ok());
 
-    store->upsert_long_term_episode_status = absl::InternalError("long-term upsert failed");
+    store->persist_sleep_cycle_extraction_status =
+        absl::InternalError("sleep-cycle extraction persistence failed");
     const absl::StatusOr<SleepCycleResult> result =
         handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
 
@@ -833,6 +855,7 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleConsolidationMapsEmptyEmbeddingToNul
         handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
 
     ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->extraction_results.size(), 1U);
     ASSERT_EQ(store->long_term_episode_writes.size(), 1U);
     EXPECT_FALSE(store->long_term_episode_writes.front().episode.embedding.has_value());
 }
@@ -864,6 +887,7 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleUsesStructuredExtractionBatchPlaceho
         handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
 
     ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->extraction_results.size(), 1U);
     EXPECT_TRUE(store->entity_writes.empty());
     EXPECT_TRUE(store->relationship_writes.empty());
     ASSERT_EQ(store->long_term_episode_writes.size(), 1U);

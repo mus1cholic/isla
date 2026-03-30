@@ -26,6 +26,8 @@ class MockMemoryStore : public MemoryStore {
                 (std::string_view session_id, std::string_view episode_id), (const, override));
     MOCK_METHOD((absl::StatusOr<std::optional<MemoryStoreSnapshot>>), LoadSnapshot,
                 (std::string_view session_id), (const, override));
+    MOCK_METHOD(absl::Status, PersistSleepCycleExtraction,
+                (const SleepCycleExtractionResult& result), (override));
     MOCK_METHOD(absl::Status, UpsertEntity, (const EntityWrite& write), (override));
     MOCK_METHOD(absl::Status, UpsertRelationship, (const RelationshipWrite& write), (override));
     MOCK_METHOD(absl::Status, UpsertLongTermEpisode, (const LongTermEpisodeWrite& write),

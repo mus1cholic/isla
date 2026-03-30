@@ -633,42 +633,15 @@ MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_e
         return extraction.status();
     }
 
-    for (const EntityWrite& write : extraction->entities) {
-        if (absl::Status status = store_->UpsertEntity(write); !status.ok()) {
-            LOG(WARNING) << "MemoryOrchestrator failed to persist extracted entity"
-                         << " session_id=" << SanitizeForLog(session_id_)
-                         << " entity_id=" << SanitizeForLog(write.entity.entity_id) << " detail='"
-                         << SanitizeForLog(status.message()) << "'";
-            return status;
-        }
-    }
-    for (const RelationshipWrite& write : extraction->relationships) {
-        if (absl::Status status = store_->UpsertRelationship(write); !status.ok()) {
-            LOG(WARNING) << "MemoryOrchestrator failed to persist extracted relationship"
-                         << " session_id=" << SanitizeForLog(session_id_) << " relationship_id="
-                         << SanitizeForLog(write.relationship.relationship_id) << " detail='"
-                         << SanitizeForLog(status.message()) << "'";
-            return status;
-        }
-    }
-    for (const LongTermEpisodeWrite& write : extraction->long_term_episodes) {
-        if (absl::Status status = store_->UpsertLongTermEpisode(write); !status.ok()) {
-            LOG(WARNING) << "MemoryOrchestrator failed to consolidate mid-term episode to "
-                            "long-term storage"
-                         << " session_id=" << SanitizeForLog(session_id_)
-                         << " episode_id=" << SanitizeForLog(write.episode.lte_id) << " detail='"
-                         << SanitizeForLog(status.message()) << "'";
-            return status;
-        }
-    }
-    for (const LongTermEpisodeEntityLink& link : extraction->long_term_episode_entity_links) {
-        if (absl::Status status = store_->LinkLongTermEpisodeEntities(link); !status.ok()) {
-            LOG(WARNING) << "MemoryOrchestrator failed to persist long-term episode entity links"
-                         << " session_id=" << SanitizeForLog(session_id_)
-                         << " lte_id=" << SanitizeForLog(link.lte_id) << " detail='"
-                         << SanitizeForLog(status.message()) << "'";
-            return status;
-        }
+    if (absl::Status status = store_->PersistSleepCycleExtraction(*extraction); !status.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to persist sleep-cycle extraction batch"
+                     << " session_id=" << SanitizeForLog(session_id_)
+                     << " entity_count=" << extraction->entities.size()
+                     << " relationship_count=" << extraction->relationships.size()
+                     << " long_term_episode_count=" << extraction->long_term_episodes.size()
+                     << " episode_link_count=" << extraction->long_term_episode_entity_links.size()
+                     << " detail='" << SanitizeForLog(status.message()) << "'";
+        return status;
     }
 
     LOG(INFO) << "MemoryOrchestrator consolidated " << extraction->long_term_episodes.size()
