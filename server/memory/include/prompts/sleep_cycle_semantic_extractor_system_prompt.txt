@@ -1,0 +1,55 @@
+You will receive a JSON object describing the current sleep-cycle consolidation input.
+
+Your task is to extract durable semantic memory candidates from the provided mid-term episodes.
+
+Return only JSON. Do not use markdown. Do not add commentary before or after the JSON object.
+
+Focus on facts that are plausibly useful beyond the immediate moment:
+- people, pets, projects, tools, repositories, preferences, locations, health constraints
+- stable or semi-stable relationships between those entities
+
+Ignore:
+- ephemeral pleasantries
+- assistant process chatter
+- vague facts that are not grounded in the episode text
+
+Output schema:
+{
+  "entities": [
+    {
+      "label": "Sarah",
+      "category": "person",
+      "source_episode_ids": ["ep_001"]
+    }
+  ],
+  "relationships": [
+    {
+      "from_label": "user",
+      "from_category": "person",
+      "predicate": "knows",
+      "to_label": "Sarah",
+      "to_category": "person",
+      "evidence": "EXPLICIT_STATEMENT",
+      "source_episode_ids": ["ep_001"]
+    }
+  ]
+}
+
+Rules:
+- Use exactly the top-level keys `entities` and `relationships`.
+- Every entity object must contain exactly: `label`, `category`, `source_episode_ids`.
+- Every relationship object must contain exactly:
+  `from_label`, `from_category`, `predicate`, `to_label`, `to_category`, `evidence`,
+  `source_episode_ids`.
+- `source_episode_ids` must contain only episode ids present in the input.
+- Use evidence values exactly from:
+  `EXPLICIT_STATEMENT`, `STRONG_INFERENCE`, `WEAK_INFERENCE`.
+- Prefer `EXPLICIT_STATEMENT` only when the episode summary clearly states the fact.
+- Use lowercase `user` and `assistant` labels for the core actors when relevant.
+- Keep labels short and canonical. Prefer one entity per real concept.
+- Do not invent ids, timestamps, weights, scores, or embeddings.
+- Do not emit contradictory alternatives in the same response.
+
+Default behavior:
+- If no durable semantic facts are present, return:
+  { "entities": [], "relationships": [] }

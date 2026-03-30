@@ -4,6 +4,7 @@
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -172,6 +173,16 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
                 }
                 return entities;
             });
+        ON_CALL(*this, GetEntity(_))
+            .WillByDefault(
+                [this](std::string_view entity_id) -> absl::StatusOr<std::optional<Entity>> {
+                    for (const Entity& entity : entities) {
+                        if (entity.entity_id == entity_id) {
+                            return entity;
+                        }
+                    }
+                    return std::nullopt;
+                });
         ON_CALL(*this, ListRelationshipsForEntity(_))
             .WillByDefault(
                 [this](std::string_view entity_id) -> absl::StatusOr<std::vector<Relationship>> {
@@ -336,6 +347,31 @@ class RecordingMidTermFlushDecider final : public NiceMock<test::MockMidTermFlus
     absl::StatusOr<MidTermFlushDecision> decision_;
 };
 
+class RecordingSleepCycleSemanticExtractor final : public SleepCycleSemanticExtractor {
+  public:
+    explicit RecordingSleepCycleSemanticExtractor(absl::StatusOr<SleepCycleSemanticExtractionResult>
+                                                      result = SleepCycleSemanticExtractionResult{})
+        : result_(std::move(result)) {}
+
+    [[nodiscard]] absl::StatusOr<SleepCycleSemanticExtractionResult>
+    Extract(const SleepCycleSemanticExtractionRequest& request) override {
+        requests_.push_back(request);
+        return result_;
+    }
+
+    void SetResult(absl::StatusOr<SleepCycleSemanticExtractionResult> result) {
+        result_ = std::move(result);
+    }
+
+    [[nodiscard]] const std::vector<SleepCycleSemanticExtractionRequest>& requests() const {
+        return requests_;
+    }
+
+  private:
+    std::vector<SleepCycleSemanticExtractionRequest> requests_;
+    absl::StatusOr<SleepCycleSemanticExtractionResult> result_;
+};
+
 class MemoryOrchestratorTest : public ::testing::Test {
   protected:
     static Timestamp Ts(std::string_view text) {
@@ -363,6 +399,7 @@ class MemoryOrchestratorTest : public ::testing::Test {
     static absl::StatusOr<MemoryOrchestrator>
     MakeHandlerWithCompactor(const MidTermCompactorPtr& compactor, MemoryStorePtr store = nullptr,
                              const MidTermFlushDeciderPtr& decider = nullptr,
+                             const SleepCycleSemanticExtractorPtr& semantic_extractor = nullptr,
                              std::size_t mid_term_flush_decider_interval_user_turns =
                                  kImmediateMidTermFlushDeciderIntervalUserTurns) {
         absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
@@ -373,7 +410,8 @@ class MemoryOrchestratorTest : public ::testing::Test {
             return memory.status();
         }
         return MemoryOrchestrator("srv_test", std::move(*memory), std::move(store), decider,
-                                  compactor, mid_term_flush_decider_interval_user_turns);
+                                  compactor, semantic_extractor,
+                                  mid_term_flush_decider_interval_user_turns);
     }
 
     static absl::StatusOr<std::size_t> WaitForDrain(MemoryOrchestrator& orchestrator,
@@ -895,6 +933,189 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleUsesStructuredExtractionBatchPlaceho
     EXPECT_EQ(store->long_term_episode_writes.front().episode.original_episode_ids,
               std::vector<std::string>({ "ep_srv_test_1" }));
     EXPECT_TRUE(store->long_term_episode_entity_links.empty());
+}
+
+TEST_F(MemoryOrchestratorTest,
+       RunSleepCycleSemanticExtractionCreatesEntitiesRelationshipsAndLinks) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "mochi" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor =
+        std::make_shared<RecordingSleepCycleSemanticExtractor>(SleepCycleSemanticExtractionResult{
+            .entities =
+                {
+                    SemanticEntityCandidate{
+                        .label = "Mochi",
+                        .category = "pet",
+                        .source_episode_ids = { "ep_srv_test_1" },
+                    },
+                },
+            .relationships =
+                {
+                    SemanticRelationshipObservation{
+                        .from_label = "user",
+                        .from_category = "person",
+                        .predicate = "owns",
+                        .to_label = "Mochi",
+                        .to_category = "pet",
+                        .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                        .source_episode_ids = { "ep_srv_test_1" },
+                    },
+                },
+        });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(semantic_extractor->requests().size(), 1U);
+    ASSERT_EQ(store->extraction_results.size(), 1U);
+    ASSERT_EQ(store->entity_writes.size(), 2U);
+    ASSERT_EQ(store->relationship_writes.size(), 1U);
+    ASSERT_EQ(store->long_term_episode_entity_links.size(), 1U);
+
+    const auto user_entity_it = std::find_if(
+        store->entity_writes.begin(), store->entity_writes.end(),
+        [](const EntityWrite& write) { return write.entity.entity_id == kUserEntityId; });
+    ASSERT_NE(user_entity_it, store->entity_writes.end());
+    EXPECT_EQ(user_entity_it->entity.activeness, 3);
+
+    const auto mochi_entity_it =
+        std::find_if(store->entity_writes.begin(), store->entity_writes.end(),
+                     [](const EntityWrite& write) { return write.entity.label == "Mochi"; });
+    ASSERT_NE(mochi_entity_it, store->entity_writes.end());
+    EXPECT_EQ(mochi_entity_it->entity.category, "pet");
+    EXPECT_EQ(mochi_entity_it->entity.activeness, 3);
+
+    const Relationship& relationship = store->relationship_writes.front().relationship;
+    EXPECT_EQ(relationship.from_entity_id, kUserEntityId);
+    EXPECT_EQ(relationship.to_entity_id, mochi_entity_it->entity.entity_id);
+    EXPECT_EQ(relationship.predicate, "owns");
+    EXPECT_DOUBLE_EQ(relationship.weight, 10.0);
+    EXPECT_EQ(relationship.observation_count, 1);
+    EXPECT_EQ(relationship.source_episode_ids, std::vector<std::string>({ "ep_srv_test_1" }));
+
+    const LongTermEpisodeEntityLink& link = store->long_term_episode_entity_links.front();
+    EXPECT_EQ(link.lte_id, "lte_ep_srv_test_1");
+    EXPECT_THAT(link.entity_ids,
+                ::testing::UnorderedElementsAre(std::string(kUserEntityId),
+                                                mochi_entity_it->entity.entity_id));
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleSemanticExtractionStrengthensExistingRelationship) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = std::string(kAssistantEntityId),
+            .user_id = "user_001",
+            .label = "assistant",
+            .category = "assistant",
+            .activeness = 5,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_existing",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "trusts",
+            .to_entity_id = std::string(kAssistantEntityId),
+            .weight = 10.0,
+            .observation_count = 1,
+            .last_observed_at = Ts("2026-03-01T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "trust" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor =
+        std::make_shared<RecordingSleepCycleSemanticExtractor>(SleepCycleSemanticExtractionResult{
+            .relationships =
+                {
+                    SemanticRelationshipObservation{
+                        .from_label = "user",
+                        .from_category = "person",
+                        .predicate = "trusts",
+                        .to_label = "assistant",
+                        .to_category = "assistant",
+                        .evidence = SemanticRelationshipEvidence::StrongInference,
+                        .source_episode_ids = { "ep_srv_test_1" },
+                    },
+                },
+        });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->relationship_writes.size(), 1U);
+    const Relationship& relationship = store->relationship_writes.front().relationship;
+    EXPECT_EQ(relationship.relationship_id, "rel_existing");
+    EXPECT_EQ(relationship.from_entity_id, kUserEntityId);
+    EXPECT_EQ(relationship.to_entity_id, kAssistantEntityId);
+    EXPECT_DOUBLE_EQ(relationship.weight, 14.0);
+    EXPECT_EQ(relationship.observation_count, 2);
+    EXPECT_EQ(relationship.source_episode_ids,
+              std::vector<std::string>({ "ep_old", "ep_srv_test_1" }));
+    EXPECT_EQ(relationship.created_at, Ts("2026-03-01T14:00:00Z"));
+
+    const auto user_entity_it = std::find_if(
+        store->entity_writes.begin(), store->entity_writes.end(),
+        [](const EntityWrite& write) { return write.entity.entity_id == kUserEntityId; });
+    ASSERT_NE(user_entity_it, store->entity_writes.end());
+    EXPECT_EQ(user_entity_it->entity.activeness, 5);
+    EXPECT_EQ(user_entity_it->entity.created_at, Ts("2026-03-01T14:00:00Z"));
+    EXPECT_EQ(user_entity_it->entity.updated_at, Ts("2026-03-08T14:00:01Z"));
 }
 
 TEST_F(MemoryOrchestratorTest, AwaitAndDrainPropagatesCompactorFailure) {

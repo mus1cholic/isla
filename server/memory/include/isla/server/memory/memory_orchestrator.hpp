@@ -13,6 +13,7 @@
 #include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
+#include "isla/server/memory/sleep_cycle_semantic_extractor.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
@@ -61,6 +62,7 @@ struct MemoryOrchestratorInit {
     MemoryStorePtr store;
     MidTermFlushDeciderPtr mid_term_flush_decider = nullptr;
     MidTermCompactorPtr mid_term_compactor = nullptr;
+    SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor = nullptr;
     std::size_t mid_term_flush_decider_interval_user_turns =
         kDefaultMidTermFlushDeciderIntervalUserTurns;
 };
@@ -81,6 +83,7 @@ class MemoryOrchestrator {
     MemoryOrchestrator(std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr,
                        MidTermFlushDeciderPtr mid_term_flush_decider = nullptr,
                        MidTermCompactorPtr mid_term_compactor = nullptr,
+                       SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor = nullptr,
                        std::size_t mid_term_flush_decider_interval_user_turns =
                            kDefaultMidTermFlushDeciderIntervalUserTurns);
 
@@ -243,9 +246,9 @@ class MemoryOrchestrator {
     // Builds the persistence batch produced by one sleep-cycle extraction pass. Today this keeps
     // long-term episode writes explicit while leaving room for future entity/relationship
     // extraction without reshaping the consolidation call path again.
-    [[nodiscard]] static absl::StatusOr<SleepCycleExtractionResult>
+    [[nodiscard]] absl::StatusOr<SleepCycleExtractionResult>
     BuildSleepCycleExtractionResult(std::string_view user_id,
-                                    const std::vector<Episode>& mid_term_episodes);
+                                    const std::vector<Episode>& mid_term_episodes) const;
 
     struct CompletedFlushBuildInput {
         CompactedMidTermEpisode compacted;
@@ -283,6 +286,7 @@ class MemoryOrchestrator {
     MemoryStorePtr store_;
     MidTermFlushDeciderPtr mid_term_flush_decider_;
     MidTermCompactorPtr mid_term_compactor_;
+    SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor_;
     std::vector<PendingMidTermFlush> pending_mid_term_flushes_;
     std::size_t mid_term_flush_decider_interval_user_turns_ =
         kDefaultMidTermFlushDeciderIntervalUserTurns;

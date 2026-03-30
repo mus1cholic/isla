@@ -11,6 +11,7 @@ enum class PromptAsset {
     kSystemPrompt,
     kMidTermCompactorSystemPrompt,
     kMidTermFlushDeciderSystemPrompt,
+    kSleepCycleSemanticExtractorSystemPrompt,
     kFuturePromptTest,
 };
 
