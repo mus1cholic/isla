@@ -59,15 +59,13 @@ using SleepCycleSemanticExtractorPtr = std::shared_ptr<SleepCycleSemanticExtract
     std::shared_ptr<const isla::server::LlmClient> llm_client, std::string model,
     isla::server::LlmReasoningEffort reasoning_effort = isla::server::LlmReasoningEffort::kNone);
 
-NLOHMANN_JSON_SERIALIZE_ENUM(SemanticRelationshipEvidence,
-                             {
-                                 { SemanticRelationshipEvidence::ExplicitStatement,
-                                   "EXPLICIT_STATEMENT" },
-                                 { SemanticRelationshipEvidence::StrongInference,
-                                   "STRONG_INFERENCE" },
-                                 { SemanticRelationshipEvidence::WeakInference,
-                                   "WEAK_INFERENCE" },
-                             })
+NLOHMANN_JSON_SERIALIZE_ENUM(
+    SemanticRelationshipEvidence,
+    {
+        { SemanticRelationshipEvidence::ExplicitStatement, "EXPLICIT_STATEMENT" },
+        { SemanticRelationshipEvidence::StrongInference, "STRONG_INFERENCE" },
+        { SemanticRelationshipEvidence::WeakInference, "WEAK_INFERENCE" },
+    })
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SemanticEntityCandidate, label, category,
                                                 source_episode_ids)

@@ -32,6 +32,7 @@ absl::Status invalid_argument(std::string_view message) {
 constexpr std::uint64_t kFnv1aOffsetBasis = 14695981039346656037ULL;
 constexpr std::uint64_t kFnv1aPrime = 1099511628211ULL;
 constexpr int kNewSemanticEntityActiveness = 3;
+constexpr int kMaxEntityActiveness = 10;
 
 std::uint64_t StableHash64(std::string_view text) {
     std::uint64_t hash = kFnv1aOffsetBasis;
@@ -112,12 +113,6 @@ double TranslateEvidenceWeight(SemanticRelationshipEvidence evidence) {
         return 1.0;
     }
     return 1.0;
-}
-
-Timestamp
-LookupEpisodeTimestamp(const std::unordered_map<std::string, const Episode*>& episodes_by_id,
-                       std::string_view episode_id) {
-    return episodes_by_id.at(std::string(episode_id))->created_at;
 }
 
 std::vector<std::string> SortedVectorFromSet(const std::unordered_set<std::string>& values) {
@@ -763,24 +758,7 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
             }
 
             const std::string entity_id = BuildEntityId(label, category);
-            const Timestamp first_seen_at =
-                LookupEpisodeTimestamp(episodes_by_id, source_episode_ids.front());
-            auto [entity_it, inserted] =
-                aggregated_entities.try_emplace(entity_id, AggregatedEntityCandidate{
-                                                               .entity_id = entity_id,
-                                                               .label = std::string(label),
-                                                               .category = std::string(category),
-                                                               .source_episode_ids = {},
-                                                               .earliest_seen_at = first_seen_at,
-                                                               .latest_seen_at = first_seen_at,
-                                                           });
-
-            if (!inserted) {
-                entity_it->second.earliest_seen_at =
-                    std::min(entity_it->second.earliest_seen_at, first_seen_at);
-                entity_it->second.latest_seen_at =
-                    std::max(entity_it->second.latest_seen_at, first_seen_at);
-            }
+            auto entity_it = aggregated_entities.find(entity_id);
 
             for (const std::string& source_episode_id : source_episode_ids) {
                 const auto episode_it = episodes_by_id.find(source_episode_id);
@@ -789,6 +767,19 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                         "sleep-cycle semantic extraction referenced an unknown source episode");
                 }
                 const Timestamp seen_at = episode_it->second->created_at;
+                if (entity_it == aggregated_entities.end()) {
+                    entity_it = aggregated_entities
+                                    .try_emplace(entity_id,
+                                                 AggregatedEntityCandidate{
+                                                     .entity_id = entity_id,
+                                                     .label = std::string(label),
+                                                     .category = std::string(category),
+                                                     .source_episode_ids = {},
+                                                     .earliest_seen_at = seen_at,
+                                                     .latest_seen_at = seen_at,
+                                                 })
+                                    .first;
+                }
                 entity_it->second.source_episode_ids.insert(source_episode_id);
                 entity_it->second.earliest_seen_at =
                     std::min(entity_it->second.earliest_seen_at, seen_at);
@@ -828,23 +819,7 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
             const std::string predicate = CanonicalizePredicate(relationship.predicate);
             const std::string relationship_key =
                 BuildRelationshipTripleKey(*from_entity_id, predicate, *to_entity_id);
-            const Timestamp first_seen_at =
-                LookupEpisodeTimestamp(episodes_by_id, relationship.source_episode_ids.front());
-            auto [relationship_it, inserted] = aggregated_relationships.try_emplace(
-                relationship_key, AggregatedRelationshipObservation{
-                                      .from_entity_id = *from_entity_id,
-                                      .predicate = predicate,
-                                      .to_entity_id = *to_entity_id,
-                                      .weight_increment = 0.0,
-                                      .observation_count_increment = 0,
-                                      .source_episode_ids = {},
-                                      .earliest_seen_at = first_seen_at,
-                                      .latest_seen_at = first_seen_at,
-                                  });
-
-            relationship_it->second.weight_increment +=
-                TranslateEvidenceWeight(relationship.evidence);
-            relationship_it->second.observation_count_increment += 1;
+            auto relationship_it = aggregated_relationships.find(relationship_key);
 
             for (const std::string& source_episode_id : relationship.source_episode_ids) {
                 const auto episode_it = episodes_by_id.find(source_episode_id);
@@ -853,18 +828,30 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                         "sleep-cycle semantic extraction referenced an unknown source episode");
                 }
                 const Timestamp seen_at = episode_it->second->created_at;
+                if (relationship_it == aggregated_relationships.end()) {
+                    relationship_it = aggregated_relationships
+                                          .try_emplace(relationship_key,
+                                                       AggregatedRelationshipObservation{
+                                                           .from_entity_id = *from_entity_id,
+                                                           .predicate = predicate,
+                                                           .to_entity_id = *to_entity_id,
+                                                           .weight_increment = 0.0,
+                                                           .observation_count_increment = 0,
+                                                           .source_episode_ids = {},
+                                                           .earliest_seen_at = seen_at,
+                                                           .latest_seen_at = seen_at,
+                                                       })
+                                          .first;
+                }
                 relationship_it->second.source_episode_ids.insert(source_episode_id);
                 relationship_it->second.earliest_seen_at =
                     std::min(relationship_it->second.earliest_seen_at, seen_at);
                 relationship_it->second.latest_seen_at =
                     std::max(relationship_it->second.latest_seen_at, seen_at);
             }
-            if (!inserted) {
-                relationship_it->second.earliest_seen_at =
-                    std::min(relationship_it->second.earliest_seen_at, first_seen_at);
-                relationship_it->second.latest_seen_at =
-                    std::max(relationship_it->second.latest_seen_at, first_seen_at);
-            }
+            relationship_it->second.weight_increment +=
+                TranslateEvidenceWeight(relationship.evidence);
+            relationship_it->second.observation_count_increment += 1;
         }
 
         std::unordered_map<std::string, std::optional<Entity>> existing_entities_by_id;
@@ -909,7 +896,7 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                                             "owned by a different user");
                 }
                 entity = **existing_entity;
-                entity.activeness = std::min(10, entity.activeness + 1);
+                entity.activeness = std::min(kMaxEntityActiveness, entity.activeness + 1);
                 entity.updated_at = std::max(entity.updated_at, aggregated_entity.latest_seen_at);
             } else {
                 entity = Entity{
