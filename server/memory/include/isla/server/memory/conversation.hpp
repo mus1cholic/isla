@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,8 +41,8 @@ void AppendEpisodeStub(Conversation& conversation, std::string content, Timestam
                                                          Timestamp stub_timestamp);
 
 // Replaces the completed prefix of an ongoing episode with a stub, then inserts a new ongoing
-// episode immediately after it for the remaining tail messages. The split point references the
-// first message of the remaining segment and may point to either a user or assistant message.
+// episode immediately after it for the remaining tail messages. The split point must reference a
+// user message so the retained tail begins at a fresh user turn.
 [[nodiscard]] absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
                                                        std::size_t conversation_item_index,
                                                        std::size_t split_at_message_index,
@@ -49,8 +50,8 @@ void AppendEpisodeStub(Conversation& conversation, std::string content, Timestam
                                                        Timestamp stub_timestamp);
 
 // Validates a multi-boundary segmentation plan for one ongoing episode. Every completed segment
-// must contain at least 2 messages, and the final segment must also contain at least 2 messages
-// when tail_complete is true. Each boundary references the first message of a later segment.
+// must contain at least 2 messages, the final segment must also contain at least 2 messages when
+// tail_complete is true, and each boundary must point at a user message.
 [[nodiscard]] absl::Status
 ValidateOngoingEpisodeBoundaryPlan(const OngoingEpisode& ongoing_episode,
                                    const OngoingEpisodeBoundaryPlan& boundary_plan);

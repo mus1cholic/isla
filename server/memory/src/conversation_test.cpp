@@ -296,7 +296,7 @@ TEST(ConversationTest, SplitOngoingEpisodeWithStubRejectsTooFewMessages) {
         SplitOngoingEpisodeWithStub(conversation, 0, 0, "[stub]", Ts("2026-03-08T14:00:05Z")).ok());
 }
 
-TEST(ConversationTest, SplitOngoingEpisodeWithStubAllowsAssistantAtSplitPoint) {
+TEST(ConversationTest, SplitOngoingEpisodeWithStubRejectsAssistantAtSplitPoint) {
     Conversation conversation{
         .items = {},
         .user_id = "user_001",
@@ -306,15 +306,9 @@ TEST(ConversationTest, SplitOngoingEpisodeWithStubAllowsAssistantAtSplitPoint) {
     AppendUserMessage(conversation, "u2", Ts("2026-03-08T14:00:03Z"));
     AppendAssistantMessage(conversation, "a2", Ts("2026-03-08T14:00:04Z"));
 
-    // Index 3 is an assistant message, which now becomes the first message of the new segment.
-    ASSERT_TRUE(
+    // Index 3 is an assistant message
+    EXPECT_FALSE(
         SplitOngoingEpisodeWithStub(conversation, 0, 3, "[stub]", Ts("2026-03-08T14:00:05Z")).ok());
-    ASSERT_EQ(conversation.items.size(), 2U);
-    EXPECT_EQ(conversation.items[0].type, ConversationItemType::EpisodeStub);
-    ASSERT_TRUE(conversation.items[1].ongoing_episode.has_value());
-    ASSERT_EQ(conversation.items[1].ongoing_episode->messages.size(), 1U);
-    EXPECT_EQ(conversation.items[1].ongoing_episode->messages[0].role, MessageRole::Assistant);
-    EXPECT_EQ(conversation.items[1].ongoing_episode->messages[0].content, "a2");
 }
 
 TEST(ConversationTest, SplitOngoingEpisodeWithStubRejectsNonOngoingEpisode) {

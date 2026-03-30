@@ -66,8 +66,8 @@ When no boundaries are detected (the common case):
 When one or more boundaries are detected:
 {
   "boundaries": [
-    { "split_before": "m4", "reasoning": "Brief explanation of this boundary." },
-    { "split_before": "m8", "reasoning": "Brief explanation of this boundary." }
+    { "starts_at": "m4", "reasoning": "Brief explanation of this boundary." },
+    { "starts_at": "m8", "reasoning": "Brief explanation of this boundary." }
   ],
   "tail_complete": false,
   "reasoning": "Brief overall summary of the detected boundaries."
@@ -83,8 +83,8 @@ When the final segment has also concluded:
 ### How boundaries define episodes
 
 The `boundaries` array contains zero or more cut points in chronological order. Each cut point marks
-where the dialogue should split, immediately before the referenced message. Together with
-`tail_complete`, they segment the ongoing episode's messages into episodes:
+the first message of a new topic. Together with `tail_complete`, they segment the ongoing episode's
+messages into episodes:
 
 - Messages before the first boundary form the first completed episode.
 - Messages between consecutive boundaries form additional completed episodes.
@@ -101,8 +101,8 @@ If `boundaries` is empty:
 #### boundaries
 - Required. Array of objects. May be empty.
 - Each object contains exactly two fields:
-  - `split_before`: Required. String. The `id` of the first message in the next segment. This may
-    reference either a user or assistant message.
+  - `starts_at`: Required. String. The `id` of the first message in the new topic. Must reference
+    a message with `role: "user"`. A new topic must not begin with an assistant message.
   - `reasoning`: Required. String. A brief (1-2 sentence) explanation of why this boundary exists.
 - Entries must be in chronological order (earliest boundary first).
 - Each completed episode segment must contain at least 2 messages (at minimum one user + one
@@ -233,7 +233,7 @@ Input:
 Output:
 {
   "boundaries": [
-    { "split_before": "m2", "reasoning": "The weather question was fully answered and acknowledged. The next segment begins at m2 when the conversation shifts to debugging a Python script." }
+    { "starts_at": "m2", "reasoning": "The weather question was fully answered and acknowledged. At m2, the user shifted to a new subject about debugging a Python script." }
   ],
   "tail_complete": false,
   "reasoning": "One boundary detected between weather discussion and Python debugging."
@@ -362,8 +362,8 @@ Input:
 Output:
 {
   "boundaries": [
-    { "split_before": "m4", "reasoning": "Git SSH key setup was completed and confirmed working. The next segment begins at m4 when the discussion shifts to Rust learning resources." },
-    { "split_before": "m6", "reasoning": "Rust resources discussion concluded with the user thanking and deciding on the Rust Book. The next segment begins at m6 when the Docker crash issue is introduced." }
+    { "starts_at": "m4", "reasoning": "Git SSH key setup was completed and confirmed working. At m4, the user shifted to asking about Rust learning resources." },
+    { "starts_at": "m6", "reasoning": "Rust resources discussion concluded with the user thanking and deciding on the Rust Book. At m6, the user shifted to a Docker crash issue." }
   ],
   "tail_complete": false,
   "reasoning": "Two boundaries detected: Git SSH setup completed before m4, Rust resources concluded before m6. Docker debugging is still active."
@@ -426,8 +426,8 @@ Input:
 Output:
 {
   "boundaries": [
-    { "split_before": "m4", "reasoning": "Git SSH key setup was completed. The next segment begins at m4 when the discussion shifts to Rust learning resources." },
-    { "split_before": "m6", "reasoning": "Rust resources discussion concluded. The next segment begins at m6 when the Docker crash issue is introduced." }
+    { "starts_at": "m4", "reasoning": "Git SSH key setup was completed. At m4, the user shifted to asking about Rust learning resources." },
+    { "starts_at": "m6", "reasoning": "Rust resources discussion concluded. At m6, the user shifted to a Docker crash issue." }
   ],
   "tail_complete": true,
   "reasoning": "Two boundaries detected. The final topic on Docker debugging also concluded, as the user indicated they were done for now."
@@ -439,8 +439,8 @@ Before finalizing your response, ensure:
 - All required fields are present: `boundaries`, `tail_complete`, `reasoning`.
 - No extra fields are present at the top level.
 - `boundaries` is an array (may be empty).
-- Each entry in `boundaries` has exactly two fields: `split_before` and `reasoning`.
-- Each `split_before` references a message in the live ongoing episode.
+- Each entry in `boundaries` has exactly two fields: `starts_at` and `reasoning`.
+- Each `starts_at` references a message with `role: "user"`.
 - Entries in `boundaries` are in chronological order.
 - Each completed episode segment contains at least 2 messages.
 - When `tail_complete` is true, the final segment contains at least 2 messages.

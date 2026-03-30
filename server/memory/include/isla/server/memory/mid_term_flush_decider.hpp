@@ -13,7 +13,7 @@
 namespace isla::server::memory {
 
 struct MidTermFlushBoundary {
-    std::size_t split_before_message_index = 0;
+    std::size_t starts_at_message_index = 0;
     std::optional<std::string> reasoning;
 };
 

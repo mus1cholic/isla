@@ -46,12 +46,12 @@ MidTermFlushDecision TailCompleteDecision() {
     };
 }
 
-MidTermFlushDecision SplitAtDecision(std::size_t split_before_message_index,
+MidTermFlushDecision SplitAtDecision(std::size_t starts_at_message_index,
                                      bool tail_complete = false) {
     return MidTermFlushDecision{
         .boundaries =
             {
-                MidTermFlushBoundary{ .split_before_message_index = split_before_message_index },
+                MidTermFlushBoundary{ .starts_at_message_index = starts_at_message_index },
             },
         .tail_complete = tail_complete,
     };
@@ -1199,18 +1199,14 @@ TEST_F(MemoryOrchestratorTest, DrainFailsWhenRebasedFullFlushWouldSplitAtAssista
                            Ts("2026-03-08T14:00:02Z"));
 
     release_promise.set_value();
-    const absl::StatusOr<std::size_t> drained = WaitForDrain(*handler, 1U);
-    ASSERT_TRUE(drained.ok()) << drained.status();
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
 
     const WorkingMemoryState& state = handler->memory().snapshot();
-    ASSERT_EQ(state.mid_term_episodes.size(), 1U);
-    ASSERT_EQ(state.conversation.items.size(), 2U);
-    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
-    ASSERT_TRUE(state.conversation.items[1].ongoing_episode.has_value());
-    ASSERT_EQ(state.conversation.items[1].ongoing_episode->messages.size(), 1U);
-    EXPECT_EQ(state.conversation.items[1].ongoing_episode->messages[0].role,
-              MessageRole::Assistant);
-    EXPECT_EQ(state.conversation.items[1].ongoing_episode->messages[0].content,
+    ASSERT_TRUE(state.mid_term_episodes.empty());
+    ASSERT_EQ(state.conversation.items.size(), 1U);
+    ASSERT_TRUE(state.conversation.items[0].ongoing_episode.has_value());
+    ASSERT_EQ(state.conversation.items[0].ongoing_episode->messages.size(), 3U);
+    EXPECT_EQ(state.conversation.items[0].ongoing_episode->messages[2].content,
               "bad assistant append");
 }
 
@@ -2024,7 +2020,7 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtTooSmall) {
     EXPECT_TRUE(compactor->requests().empty());
 }
 
-TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseAssistantStartSplitFlush) {
+TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtReferencesAssistantMessage) {
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     // split_at=3 → an assistant message (U A U A => index 3 is assistant)
     auto decider = std::make_shared<RecordingMidTermFlushDecider>(SplitAtDecision(3U));
@@ -2047,26 +2043,8 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseAssistantStartSplitFlush) {
                                                                  Ts("2026-03-08T14:00:03Z")))
                     .ok());
 
-    ASSERT_TRUE(compactor->WaitForRequestCount(1U));
-
-    const std::vector<MidTermCompactionRequest> requests = compactor->requests();
-    ASSERT_EQ(requests.size(), 1U);
-    ASSERT_EQ(requests[0].flush_candidate.ongoing_episode.messages.size(), 3U);
-    EXPECT_EQ(requests[0].flush_candidate.ongoing_episode.messages[0].content, "u1");
-    EXPECT_EQ(requests[0].flush_candidate.ongoing_episode.messages[1].content, "a1");
-    EXPECT_EQ(requests[0].flush_candidate.ongoing_episode.messages[2].content, "u2");
-
-    const absl::StatusOr<std::size_t> drained = WaitForDrain(*handler, 1U);
-    ASSERT_TRUE(drained.ok()) << drained.status();
-
-    const WorkingMemoryState& state = handler->memory().snapshot();
-    ASSERT_EQ(state.mid_term_episodes.size(), 1U);
-    ASSERT_EQ(state.conversation.items.size(), 2U);
-    ASSERT_TRUE(state.conversation.items[1].ongoing_episode.has_value());
-    ASSERT_EQ(state.conversation.items[1].ongoing_episode->messages.size(), 1U);
-    EXPECT_EQ(state.conversation.items[1].ongoing_episode->messages[0].role,
-              MessageRole::Assistant);
-    EXPECT_EQ(state.conversation.items[1].ongoing_episode->messages[0].content, "a2");
+    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
+    EXPECT_TRUE(compactor->requests().empty());
 }
 
 TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseSplitFlush) {
@@ -2126,8 +2104,8 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseMultipleBoundaries) {
     auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
         .boundaries =
             {
-                MidTermFlushBoundary{ .split_before_message_index = 2U },
-                MidTermFlushBoundary{ .split_before_message_index = 4U },
+                MidTermFlushBoundary{ .starts_at_message_index = 2U },
+                MidTermFlushBoundary{ .starts_at_message_index = 4U },
             },
         .tail_complete = false,
     });
