@@ -44,7 +44,7 @@ void AppendEpisodeStub(Conversation& conversation, std::string content, Timestam
 // first message of the remaining segment and may point to either a user or assistant message.
 [[nodiscard]] absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
                                                        std::size_t conversation_item_index,
-                                                       std::size_t split_at_message_index,
+                                                       std::size_t split_before_message_index,
                                                        std::string stub_text,
                                                        Timestamp stub_timestamp);
 

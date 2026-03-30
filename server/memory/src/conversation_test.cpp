@@ -273,7 +273,7 @@ TEST(ConversationTest, SplitOngoingEpisodeWithStubRejectsOutOfRange) {
     EXPECT_FALSE(
         SplitOngoingEpisodeWithStub(conversation, 5, 2, "[stub]", Ts("2026-03-08T14:00:05Z")).ok());
 
-    // split_at_message_index out of range (>= message count)
+    // split_before_message_index out of range (>= message count)
     EXPECT_FALSE(
         SplitOngoingEpisodeWithStub(conversation, 0, 10, "[stub]", Ts("2026-03-08T14:00:05Z"))
             .ok());
@@ -289,7 +289,7 @@ TEST(ConversationTest, SplitOngoingEpisodeWithStubRejectsTooFewMessages) {
     AppendUserMessage(conversation, "u2", Ts("2026-03-08T14:00:03Z"));
     AppendAssistantMessage(conversation, "a2", Ts("2026-03-08T14:00:04Z"));
 
-    // split_at < 2
+    // split_before < 2
     EXPECT_FALSE(
         SplitOngoingEpisodeWithStub(conversation, 0, 1, "[stub]", Ts("2026-03-08T14:00:05Z")).ok());
     EXPECT_FALSE(

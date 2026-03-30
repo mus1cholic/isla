@@ -1168,7 +1168,7 @@ TEST_F(MemoryOrchestratorTest,
     ASSERT_TRUE(WaitForDrain(*handler, 1U).ok());
 }
 
-TEST_F(MemoryOrchestratorTest, DrainFailsWhenRebasedFullFlushWouldSplitAtAssistantMessage) {
+TEST_F(MemoryOrchestratorTest, DrainSucceedsWhenRebasedFullFlushLeavesAssistantTail) {
     std::promise<void> release_promise;
     auto compactor = std::make_shared<RecordingMidTermCompactor>(
         CompactedMidTermEpisode{

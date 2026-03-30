@@ -127,7 +127,8 @@ absl::Status ReplaceOngoingEpisodeWithStub(Conversation& conversation,
 
 absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
                                          std::size_t conversation_item_index,
-                                         std::size_t split_at_message_index, std::string stub_text,
+                                         std::size_t split_before_message_index,
+                                         std::string stub_text,
                                          Timestamp stub_timestamp) {
     if (conversation_item_index >= conversation.items.size()) {
         LOG(WARNING) << "Conversation SplitOngoingEpisodeWithStub rejected because the requested "
@@ -160,32 +161,32 @@ absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
     }
 
     auto& messages = item.ongoing_episode->messages;
-    if (split_at_message_index >= messages.size()) {
+    if (split_before_message_index >= messages.size()) {
         LOG(WARNING) << "Conversation SplitOngoingEpisodeWithStub rejected because "
-                        "split_at_message_index is out of range"
+                        "split_before_message_index is out of range"
                      << " conversation_item_index=" << conversation_item_index
-                     << " split_at_message_index=" << split_at_message_index
+                     << " split_before_message_index=" << split_before_message_index
                      << " message_count=" << messages.size();
         return absl::InvalidArgumentError(
-            "SplitOngoingEpisodeWithStub requires split_at_message_index to be within the "
+            "SplitOngoingEpisodeWithStub requires split_before_message_index to be within the "
             "message range");
     }
-    if (split_at_message_index < 2) {
+    if (split_before_message_index < 2) {
         LOG(WARNING) << "Conversation SplitOngoingEpisodeWithStub rejected because "
-                        "split_at_message_index is too small to form a complete exchange"
+                        "split_before_message_index is too small to form a complete exchange"
                      << " conversation_item_index=" << conversation_item_index
-                     << " split_at_message_index=" << split_at_message_index;
+                     << " split_before_message_index=" << split_before_message_index;
         return absl::InvalidArgumentError(
             "SplitOngoingEpisodeWithStub requires at least 2 messages before the split point");
     }
 
-    // Extract remaining messages [split_at, end) before mutating the item.
+    // Extract remaining messages [split_before, end) before mutating the item.
     std::vector<Message> remaining_messages(
         std::make_move_iterator(messages.begin() +
-                                static_cast<std::ptrdiff_t>(split_at_message_index)),
+                                static_cast<std::ptrdiff_t>(split_before_message_index)),
         std::make_move_iterator(messages.end()));
 
-    const std::size_t completed_count = split_at_message_index;
+    const std::size_t completed_count = split_before_message_index;
     const std::size_t remaining_count = remaining_messages.size();
 
     // Replace the item at the target index with an episode stub.
@@ -207,7 +208,7 @@ absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
 
     LOG(INFO) << "Conversation SplitOngoingEpisodeWithStub split the target ongoing episode"
               << " conversation_item_index=" << conversation_item_index
-              << " split_at_message_index=" << split_at_message_index
+              << " split_before_message_index=" << split_before_message_index
               << " completed_message_count=" << completed_count
               << " remaining_message_count=" << remaining_count;
     return absl::OkStatus();
