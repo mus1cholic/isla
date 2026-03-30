@@ -476,6 +476,64 @@ TEST(MemoryStoreTest, SleepCycleExtractionResultRejectsLinksToMissingEpisodes) {
     EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(MemoryStoreTest, SleepCycleExtractionResultRejectsMixedUserIds) {
+    const absl::Status status = ValidateSleepCycleExtractionResult(SleepCycleExtractionResult{
+        .entities =
+            {
+                EntityWrite{
+                    .entity =
+                        Entity{
+                            .entity_id = "ent_001",
+                            .user_id = "user_001",
+                            .label = "Isla",
+                            .category = "project",
+                            .activeness = 7,
+                            .created_at = Ts("2026-03-08T14:00:00Z"),
+                            .updated_at = Ts("2026-03-08T14:00:00Z"),
+                        },
+                },
+            },
+        .relationships =
+            {
+                RelationshipWrite{
+                    .relationship =
+                        Relationship{
+                            .relationship_id = "rel_001",
+                            .user_id = "user_002",
+                            .from_entity_id = "ent_001",
+                            .predicate = "uses",
+                            .to_entity_id = "ent_002",
+                            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+                            .created_at = Ts("2026-03-08T14:00:00Z"),
+                        },
+                },
+            },
+        .long_term_episodes =
+            {
+                LongTermEpisodeWrite{
+                    .episode =
+                        LongTermEpisode{
+                            .lte_id = "lte_001",
+                            .user_id = "user_001",
+                            .summary_compressed = "compressed summary",
+                            .complexity = 5,
+                            .created_at = Ts("2026-03-08T14:00:00Z"),
+                        },
+                },
+            },
+        .long_term_episode_entity_links =
+            {
+                LongTermEpisodeEntityLink{
+                    .lte_id = "lte_001",
+                    .entity_ids = { "ent_001", "ent_002" },
+                },
+            },
+    });
+
+    ASSERT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(MemoryStoreTest, SleepCycleExtractionResultAcceptsValidBatch) {
     const absl::Status status = ValidateSleepCycleExtractionResult(SleepCycleExtractionResult{
         .entities =

@@ -123,6 +123,12 @@ Suggested columns:
 - `updated_at timestamptz not null`
 - `unique (entity_id, user_id)` — enables composite FK enforcement on relationships
 
+Notes:
+
+- Treat `user_id` as immutable for a given `entity_id`. The transactional
+  `persist_sleep_cycle_extraction(...)` path should fail if an existing entity is submitted under
+  a different user rather than "moving" that entity across users.
+
 ### `relationships`
 
 Enriched edges connecting two entities in the Knowledge Graph. Written during the sleep cycle.

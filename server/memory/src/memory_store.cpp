@@ -394,8 +394,28 @@ absl::Status ValidateSleepCycleExtractionResult(const SleepCycleExtractionResult
     }
 
     std::unordered_set<std::string> long_term_episode_ids;
+    std::optional<std::string> batch_user_id;
+    const auto validate_batch_user_id = [&batch_user_id](std::string_view user_id,
+                                                         std::string_view context) -> absl::Status {
+        if (!batch_user_id.has_value()) {
+            batch_user_id = std::string(user_id);
+            return absl::OkStatus();
+        }
+        if (*batch_user_id != user_id) {
+            return absl::InvalidArgumentError(
+                std::string("ValidateSleepCycleExtractionResult requires all ") +
+                std::string(context) + " to share the same user_id");
+        }
+        return absl::OkStatus();
+    };
+
     for (const LongTermEpisodeWrite& write : result.long_term_episodes) {
         if (absl::Status status = ValidateLongTermEpisodeWrite(write); !status.ok()) {
+            return status;
+        }
+        if (absl::Status status =
+                validate_batch_user_id(write.episode.user_id, "long_term_episodes");
+            !status.ok()) {
             return status;
         }
         long_term_episode_ids.insert(write.episode.lte_id);
@@ -404,9 +424,18 @@ absl::Status ValidateSleepCycleExtractionResult(const SleepCycleExtractionResult
         if (absl::Status status = ValidateEntityWrite(write); !status.ok()) {
             return status;
         }
+        if (absl::Status status = validate_batch_user_id(write.entity.user_id, "entities");
+            !status.ok()) {
+            return status;
+        }
     }
     for (const RelationshipWrite& write : result.relationships) {
         if (absl::Status status = ValidateRelationshipWrite(write); !status.ok()) {
+            return status;
+        }
+        if (absl::Status status =
+                validate_batch_user_id(write.relationship.user_id, "relationships");
+            !status.ok()) {
             return status;
         }
     }

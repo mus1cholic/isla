@@ -266,6 +266,10 @@ create or replace function public.persist_sleep_cycle_extraction(
 returns void
 language plpgsql
 as $$
+declare
+    v_conflicting_entity_id text;
+    v_existing_entity_user_id text;
+    v_incoming_entity_user_id text;
 begin
     if p_extraction is null then
         raise exception using
@@ -274,6 +278,34 @@ begin
     end if;
 
     set constraints all deferred;
+
+    -- NOTICE: entity_id ownership is immutable. If an entity already exists for a different
+    -- user, fail explicitly before any writes so the caller gets a clear invariant violation
+    -- instead of a later composite-FK failure from relationships.
+    select
+        existing.entity_id,
+        existing.user_id,
+        incoming.entity_json ->> 'user_id'
+    into
+        v_conflicting_entity_id,
+        v_existing_entity_user_id,
+        v_incoming_entity_user_id
+    from jsonb_array_elements(coalesce(p_extraction -> 'entities', '[]'::jsonb)) as incoming(entity_json)
+    join public.entities existing
+      on existing.entity_id = incoming.entity_json ->> 'entity_id'
+    where existing.user_id <> incoming.entity_json ->> 'user_id'
+    limit 1;
+
+    if v_conflicting_entity_id is not null then
+        raise exception using
+            errcode = '23514',
+            message = format(
+                'entity_id %s already belongs to user_id %s and cannot be moved to user_id %s',
+                v_conflicting_entity_id,
+                v_existing_entity_user_id,
+                v_incoming_entity_user_id
+            );
+    end if;
 
     insert into public.entities(
         entity_id,
@@ -304,8 +336,7 @@ begin
         (entity_json ->> 'updated_at')::timestamptz
     from jsonb_array_elements(coalesce(p_extraction -> 'entities', '[]'::jsonb)) as entity_json
     on conflict (entity_id) do update
-    set user_id = excluded.user_id,
-        label = excluded.label,
+    set label = excluded.label,
         category = excluded.category,
         activeness = excluded.activeness,
         active_model_text = excluded.active_model_text,
