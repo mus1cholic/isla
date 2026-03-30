@@ -281,42 +281,7 @@ Output:
   "reasoning": "The user made a decision on hiking boots and explicitly thanked the assistant. The topic has reached a natural conclusion with no continuation."
 }
 
-Example 4: No boundaries - follow-up question on the same subject
-
-Input:
-{
-  "items": [
-    {
-      "id": "i0",
-      "type": "ongoing_episode",
-      "ongoing_episode": {
-        "messages": [
-          { "id": "m0", "role": "user",
-            "content": "How do I set up a virtual environment in Python?",
-            "create_time": "2026-03-14T14:00:00Z" },
-          { "id": "m1", "role": "assistant",
-            "content": "You can create one with python -m venv myenv and activate it with source myenv/bin/activate on macOS/Linux or myenv\\Scripts\\activate on Windows.",
-            "create_time": "2026-03-14T14:00:30Z" },
-          { "id": "m2", "role": "user",
-            "content": "What about installing packages inside it?",
-            "create_time": "2026-03-14T14:01:00Z" },
-          { "id": "m3", "role": "assistant",
-            "content": "Once activated, just use pip install package_name. Everything installs into the virtual environment, not globally.",
-            "create_time": "2026-03-14T14:01:20Z" }
-        ]
-      }
-    }
-  ]
-}
-
-Output:
-{
-  "boundaries": [],
-  "tail_complete": false,
-  "reasoning": "The user is asking follow-up questions about the same subject. The discussion on Python virtual environments is still ongoing."
-}
-
-Example 5: No boundaries - short conversation with only one exchange
+Example 4: No boundaries - short conversation with only one exchange
 
 Input:
 {
@@ -345,7 +310,7 @@ Output:
   "reasoning": "There is only a single exchange. The user may continue with follow-up questions. Wait for a clear signal that the topic is finished."
 }
 
-Example 6: Multiple boundaries - two completed topics and an ongoing discussion
+Example 5: Multiple boundaries - two completed topics and an ongoing discussion
 
 Input:
 {
@@ -401,6 +366,70 @@ Output:
   ],
   "tail_complete": false,
   "reasoning": "Two boundaries detected: Git SSH setup completed before m4, Rust resources concluded before m6. Docker debugging is still active."
+}
+
+Example 6: Multiple boundaries and tail complete - all topics concluded
+
+Input:
+{
+  "items": [
+    {
+      "id": "i0",
+      "type": "episode_stub",
+      "episode_stub": {
+        "content": "Helped user set up their new laptop with dev tools.",
+        "create_time": "2026-03-14T13:00:00Z"
+      }
+    },
+    {
+      "id": "i1",
+      "type": "ongoing_episode",
+      "ongoing_episode": {
+        "messages": [
+          { "id": "m0", "role": "user",
+            "content": "Now I need to configure my Git SSH keys. Can you walk me through it?",
+            "create_time": "2026-03-14T13:15:00Z" },
+          { "id": "m1", "role": "assistant",
+            "content": "Sure. First run ssh-keygen -t ed25519 -C your_email@example.com to generate a key pair. Then add the public key to your GitHub account under Settings > SSH and GPG keys.",
+            "create_time": "2026-03-14T13:15:30Z" },
+          { "id": "m2", "role": "user",
+            "content": "Done! It's working now. I can push and pull without entering my password.",
+            "create_time": "2026-03-14T13:18:00Z" },
+          { "id": "m3", "role": "assistant",
+            "content": "That's the expected behavior with SSH keys set up correctly.",
+            "create_time": "2026-03-14T13:18:15Z" },
+          { "id": "m4", "role": "user",
+            "content": "Cool. So I've been meaning to ask - do you know any good resources for learning Rust?",
+            "create_time": "2026-03-14T13:20:00Z" },
+          { "id": "m5", "role": "assistant",
+            "content": "The Rust Book is the best starting point. It's free at doc.rust-lang.org/book. After that, Rustlings gives you small exercises to practice.",
+            "create_time": "2026-03-14T13:20:30Z" },
+          { "id": "m6", "role": "user",
+            "content": "Great, I'll check those out. Thanks! Oh by the way, my Docker containers from yesterday keep crashing on startup.",
+            "create_time": "2026-03-14T13:21:00Z" },
+          { "id": "m7", "role": "assistant",
+            "content": "Let's take a look. Can you run docker logs on the crashing container and share the output?",
+            "create_time": "2026-03-14T13:21:30Z" },
+          { "id": "m8", "role": "user",
+            "content": "Okay, I've sent them. That's all for now, thanks!",
+            "create_time": "2026-03-14T13:22:00Z" },
+          { "id": "m9", "role": "assistant",
+            "content": "You're welcome! I'll take a look at the logs and get back to you.",
+            "create_time": "2026-03-14T13:22:30Z" }
+        ]
+      }
+    }
+  ]
+}
+
+Output:
+{
+  "boundaries": [
+    { "starts_at": "m4", "reasoning": "Git SSH key setup was completed. At m4, the user shifted to asking about Rust learning resources." },
+    { "starts_at": "m6", "reasoning": "Rust resources discussion concluded. At m6, the user shifted to a Docker crash issue." }
+  ],
+  "tail_complete": true,
+  "reasoning": "Two boundaries detected. The final topic on Docker debugging also concluded, as the user indicated they were done for now."
 }
 
 ### Validation Checklist
