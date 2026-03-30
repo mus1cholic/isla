@@ -42,6 +42,18 @@ std::string MakeMessageId(std::size_t index) {
     return "m" + std::to_string(index);
 }
 
+std::string SummarizeDecisionBoundariesForLog(const MidTermFlushDecision& decision) {
+    std::string summary = "[";
+    for (std::size_t i = 0; i < decision.boundaries.size(); ++i) {
+        if (i > 0) {
+            summary += ", ";
+        }
+        summary += MakeMessageId(decision.boundaries[i].starts_at_message_index);
+    }
+    summary += "]";
+    return summary;
+}
+
 absl::StatusOr<std::size_t> ParseIdWithPrefix(const std::string& id, char prefix) {
     if (id.empty() || id[0] != prefix) {
         return invalid_argument("expected id to start with '" + std::string(1, prefix) +
@@ -323,6 +335,12 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
         if (absl::Status status =
                 ValidateOngoingEpisodeBoundaryPlan(*live_item.ongoing_episode, boundary_plan);
             !status.ok()) {
+            LOG(WARNING) << "LlmMidTermFlushDecider rejected invalid boundary plan"
+                         << " boundaries="
+                         << SanitizeForLog(SummarizeDecisionBoundariesForLog(*decision))
+                         << " tail_complete="
+                         << (decision->tail_complete ? "true" : "false") << " detail='"
+                         << SanitizeForLog(status.message()) << "'";
             return status;
         }
 
