@@ -17,6 +17,8 @@
 
 namespace isla::server::memory {
 
+inline constexpr std::size_t kDefaultMidTermFlushDeciderIntervalUserTurns = 10U;
+
 struct GatewayTurnText {
     std::string session_id;
     std::string turn_id;
@@ -59,6 +61,8 @@ struct MemoryOrchestratorInit {
     MemoryStorePtr store;
     MidTermFlushDeciderPtr mid_term_flush_decider = nullptr;
     MidTermCompactorPtr mid_term_compactor = nullptr;
+    std::size_t mid_term_flush_decider_interval_user_turns =
+        kDefaultMidTermFlushDeciderIntervalUserTurns;
 };
 
 struct SleepCycleResult {
@@ -76,7 +80,9 @@ class MemoryOrchestrator {
   public:
     MemoryOrchestrator(std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr,
                        MidTermFlushDeciderPtr mid_term_flush_decider = nullptr,
-                       MidTermCompactorPtr mid_term_compactor = nullptr);
+                       MidTermCompactorPtr mid_term_compactor = nullptr,
+                       std::size_t mid_term_flush_decider_interval_user_turns =
+                           kDefaultMidTermFlushDeciderIntervalUserTurns);
 
     // Builds a fresh orchestrator with empty working-memory conversation state for the session.
     // Persistence and async mid-term components are optional and can be attached up front.
@@ -203,6 +209,14 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
 
+    // Returns whether the decider cadence threshold has been reached for the live session.
+    [[nodiscard]] bool ShouldQueueMidTermAnalysisAfterAssistantReply() const;
+
+    // Tracks cadence state for decider-triggering user turns and resets it once analysis is
+    // actually queued.
+    void NoteUserTurnAppended();
+    void NoteMidTermAnalysisQueued();
+
     // Runs the decider against a snapshot, and if it chooses completed segments, chains
     // compaction work for those captured conversation ranges off-thread.
     [[nodiscard]] absl::Status QueueMidTermAnalysis(const Conversation& conversation_snapshot);
@@ -263,6 +277,9 @@ class MemoryOrchestrator {
     MidTermFlushDeciderPtr mid_term_flush_decider_;
     MidTermCompactorPtr mid_term_compactor_;
     std::vector<PendingMidTermFlush> pending_mid_term_flushes_;
+    std::size_t mid_term_flush_decider_interval_user_turns_ =
+        kDefaultMidTermFlushDeciderIntervalUserTurns;
+    std::size_t user_turns_since_last_mid_term_decider_run_ = 0;
     std::size_t next_episode_sequence_ = 1;
     bool session_persisted_ = false;
 };

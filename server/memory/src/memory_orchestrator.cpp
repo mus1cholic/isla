@@ -166,11 +166,14 @@ CaptureOngoingEpisodeSegmentsForFlush(const Conversation& conversation,
 MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory memory,
                                        MemoryStorePtr store,
                                        MidTermFlushDeciderPtr mid_term_flush_decider,
-                                       MidTermCompactorPtr mid_term_compactor)
+                                       MidTermCompactorPtr mid_term_compactor,
+                                       std::size_t mid_term_flush_decider_interval_user_turns)
     : session_id_(std::move(session_id)), memory_(std::move(memory)), store_(std::move(store)),
       mid_term_flush_decider_(std::move(mid_term_flush_decider)),
       mid_term_compactor_(std::move(mid_term_compactor)), pending_mid_term_flushes_(),
-      next_episode_sequence_(1), session_persisted_(false) {}
+      mid_term_flush_decider_interval_user_turns_(mid_term_flush_decider_interval_user_turns),
+      user_turns_since_last_mid_term_decider_run_(0), next_episode_sequence_(1),
+      session_persisted_(false) {}
 
 absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
                                                               const MemoryOrchestratorInit& init) {
@@ -179,6 +182,10 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
     }
     if (init.user_id.empty()) {
         return invalid_argument("memory orchestrator must include a user_id");
+    }
+    if (init.mid_term_flush_decider_interval_user_turns == 0U) {
+        return invalid_argument(
+            "memory orchestrator mid-term flush decider interval must be at least 1 user turn");
     }
 
     absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
@@ -189,7 +196,8 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
         return memory.status();
     }
     return MemoryOrchestrator(std::move(session_id), std::move(*memory), init.store,
-                              init.mid_term_flush_decider, init.mid_term_compactor);
+                              init.mid_term_flush_decider, init.mid_term_compactor,
+                              init.mid_term_flush_decider_interval_user_turns);
 }
 
 absl::Status MemoryOrchestrator::BeginSession(Timestamp create_time) {
@@ -548,6 +556,22 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
         return std::nullopt;
     }
     return context;
+}
+
+bool MemoryOrchestrator::ShouldQueueMidTermAnalysisAfterAssistantReply() const {
+    return mid_term_flush_decider_ != nullptr && user_turns_since_last_mid_term_decider_run_ >=
+                                                     mid_term_flush_decider_interval_user_turns_;
+}
+
+void MemoryOrchestrator::NoteUserTurnAppended() {
+    if (mid_term_flush_decider_ == nullptr) {
+        return;
+    }
+    ++user_turns_since_last_mid_term_decider_run_;
+}
+
+void MemoryOrchestrator::NoteMidTermAnalysisQueued() {
+    user_turns_since_last_mid_term_decider_run_ = 0U;
 }
 
 std::string MemoryOrchestrator::NextEpisodeId() {
@@ -1014,6 +1038,7 @@ void MemoryOrchestrator::PrepareConversationForAppend() {
 }
 
 absl::Status MemoryOrchestrator::AfterUserQueryAppended(const Message& user_message) {
+    NoteUserTurnAppended();
     absl::StatusOr<std::optional<RetrievedMemory>> retrieved_memory =
         RetrieveRelevantMemories(user_message);
     if (!retrieved_memory.ok()) {
@@ -1037,6 +1062,15 @@ absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assi
     }
 
     if (mid_term_flush_decider_ != nullptr) {
+        if (!ShouldQueueMidTermAnalysisAfterAssistantReply()) {
+            VLOG(1) << "MemoryOrchestrator deferred async mid-term analysis until more user turns "
+                       "accumulate"
+                    << " session_id=" << SanitizeForLog(session_id_)
+                    << " user_turns_since_last_decider_run="
+                    << user_turns_since_last_mid_term_decider_run_
+                    << " required_user_turns=" << mid_term_flush_decider_interval_user_turns_;
+            return absl::OkStatus();
+        }
         if (!pending_mid_term_flushes_.empty()) {
             VLOG(1) << "MemoryOrchestrator skipped async mid-term analysis queue because another "
                        "analysis or flush is already pending"
@@ -1044,7 +1078,11 @@ absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assi
                     << " pending_count=" << pending_mid_term_flushes_.size();
             return absl::OkStatus();
         }
-        return QueueMidTermAnalysis(conversation);
+        if (absl::Status status = QueueMidTermAnalysis(conversation); !status.ok()) {
+            return status;
+        }
+        NoteMidTermAnalysisQueued();
+        return absl::OkStatus();
     }
 
     const std::size_t conversation_item_index = conversation.items.size() - 1U;

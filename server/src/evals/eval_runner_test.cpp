@@ -163,6 +163,7 @@ TEST(EvalRunnerTest, RunsCaseThroughAppBoundaryAndCapturesPromptArtifacts) {
             isla::server::ai_gateway::GatewayStubResponderConfig{
                 .response_delay = 0ms,
                 .async_emit_timeout = 2s,
+                .mid_term_flush_decider_interval_user_turns = 1U,
                 .openai_client = client,
             },
     });
@@ -258,6 +259,7 @@ TEST(EvalRunnerTest, CapturesStructuredMidTermEpisodesAfterFlushIsApplied) {
             isla::server::ai_gateway::GatewayStubResponderConfig{
                 .response_delay = 0ms,
                 .async_emit_timeout = 2s,
+                .mid_term_flush_decider_interval_user_turns = 1U,
                 .openai_client = client,
             },
     });
@@ -353,6 +355,7 @@ TEST(EvalRunnerTest, WaitsForDelayedMidTermFlushBeforeCapturingPostTurnSnapshot)
             isla::server::ai_gateway::GatewayStubResponderConfig{
                 .response_delay = 0ms,
                 .async_emit_timeout = 250ms,
+                .mid_term_flush_decider_interval_user_turns = 1U,
                 .openai_client = client,
             },
     });
@@ -409,6 +412,7 @@ TEST(EvalRunnerTest, ReplaysConversationAssistantMessageWithoutPriorUser) {
             isla::server::ai_gateway::GatewayStubResponderConfig{
                 .response_delay = 0ms,
                 .async_emit_timeout = 2s,
+                .mid_term_flush_decider_interval_user_turns = 1U,
                 .openai_client = client,
             },
     });
@@ -470,6 +474,7 @@ TEST(EvalRunnerTest, ReplaysEvalCaseWithEmptyHistoryMessages) {
             isla::server::ai_gateway::GatewayStubResponderConfig{
                 .response_delay = 0ms,
                 .async_emit_timeout = 2s,
+                .mid_term_flush_decider_interval_user_turns = 1U,
                 .openai_client = client,
             },
     });
@@ -525,6 +530,7 @@ TEST(EvalRunnerTest, ReplaysEvalCaseWithEmptyInput) {
             isla::server::ai_gateway::GatewayStubResponderConfig{
                 .response_delay = 0ms,
                 .async_emit_timeout = 2s,
+                .mid_term_flush_decider_interval_user_turns = 1U,
                 .openai_client = client,
             },
     });
@@ -636,6 +642,7 @@ TEST(EvalRunnerTest, UsesBenchmarkSuppliedTimesWithoutInjectingEvalOnlyPromptCon
             isla::server::ai_gateway::GatewayStubResponderConfig{
                 .response_delay = 0ms,
                 .async_emit_timeout = 2s,
+                .mid_term_flush_decider_interval_user_turns = 1U,
                 .memory_store = store,
                 .openai_client = client,
             },
@@ -757,6 +764,7 @@ TEST(EvalRunnerTest, OrdersEvaluationReferenceTimeBeforeLaterEvaluatedTurnInput)
             isla::server::ai_gateway::GatewayStubResponderConfig{
                 .response_delay = 0ms,
                 .async_emit_timeout = 2s,
+                .mid_term_flush_decider_interval_user_turns = 1U,
                 .memory_store = store,
                 .openai_client = client,
             },
