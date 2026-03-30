@@ -188,6 +188,7 @@ TEST(LiveEvalRunnerTest, SeedsHistoricalAssistantMessagesThroughLiveGateway) {
 
     ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
         .response_delay = 0ms,
+        .mid_term_flush_decider_interval_user_turns = 1U,
         .memory_store = store,
         .openai_client = client,
     });
@@ -290,6 +291,7 @@ TEST(LiveEvalRunnerTest, UsesBenchmarkSuppliedTimesOverLiveGateway) {
 
     ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{
         .response_delay = 0ms,
+        .mid_term_flush_decider_interval_user_turns = 1U,
         .memory_store = store,
         .openai_client = client,
     });

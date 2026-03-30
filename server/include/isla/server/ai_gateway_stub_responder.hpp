@@ -76,6 +76,10 @@ struct GatewayStubResponderConfig {
     // treated as 1. At least one attempt is always made if a memory store is configured.
     std::size_t session_start_persistence_max_attempts = 3;
     std::chrono::milliseconds session_start_persistence_retry_delay{ 100 };
+    // The flush decider runs after an assistant reply only when at least this many new user turns
+    // have accumulated since the last decider run.
+    std::size_t mid_term_flush_decider_interval_user_turns =
+        isla::server::memory::kDefaultMidTermFlushDeciderIntervalUserTurns;
     isla::server::memory::MemoryStorePtr memory_store;
     GatewayLlmRuntimeConfig llm_runtime_config;
     std::shared_ptr<const isla::server::LlmClient> llm_client;

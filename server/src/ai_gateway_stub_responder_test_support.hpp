@@ -582,10 +582,14 @@ class GatewayStubResponderStandaloneFixture : public ::testing::Test {
     static constexpr std::string_view kSessionId = "srv_test";
 
     [[nodiscard]] GatewayStubResponderConfig
-    MakeEchoConfig(std::chrono::milliseconds response_delay = 0ms) const {
+    MakeEchoConfig(std::chrono::milliseconds response_delay = 0ms,
+                   std::size_t mid_term_flush_decider_interval_user_turns =
+                       isla::server::memory::kDefaultMidTermFlushDeciderIntervalUserTurns) const {
         return GatewayStubResponderConfig{
             .response_delay = response_delay,
             .async_emit_timeout = 2s,
+            .mid_term_flush_decider_interval_user_turns =
+                mid_term_flush_decider_interval_user_turns,
             .openai_client = MakeEchoOpenAiResponsesClient(),
         };
     }

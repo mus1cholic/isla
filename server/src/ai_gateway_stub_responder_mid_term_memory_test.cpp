@@ -94,6 +94,7 @@ TEST(GatewayStubResponderStandaloneTest,
     GatewayStubResponder responder(GatewayStubResponderConfig{
         .response_delay = 0ms,
         .async_emit_timeout = 2s,
+        .mid_term_flush_decider_interval_user_turns = 1U,
         .openai_client = client,
     });
     ResponderRegistryAttachment registry_scope(responder);
@@ -227,7 +228,7 @@ TEST_F(GatewayStubResponderStandaloneFixture,
             return EmitResponseText(reply, on_event);
         });
 
-    GatewayStubResponderConfig config = MakeEchoConfig();
+    GatewayStubResponderConfig config = MakeEchoConfig(0ms, 1U);
     config.openai_client = client;
     InitializeResponder(std::move(config));
     StartSession();
@@ -264,7 +265,7 @@ TEST_F(GatewayStubResponderStandaloneFixture,
 
 TEST_F(GatewayStubResponderStandaloneFixture,
        AwaitSessionMemorySettledReturnsNotFoundForUnknownSession) {
-    InitializeResponder(MakeEchoConfig());
+    InitializeResponder(MakeEchoConfig(0ms, 1U));
 
     const absl::Status settled = responder().AwaitSessionMemorySettled("unknown_session");
     EXPECT_EQ(settled.code(), absl::StatusCode::kNotFound);
@@ -318,7 +319,7 @@ TEST_F(GatewayStubResponderStandaloneFixture, ExpandMidTermToolLoopUsesSessionMe
             return std::nullopt;
         });
 
-    GatewayStubResponderConfig config = MakeEchoConfig();
+    GatewayStubResponderConfig config = MakeEchoConfig(0ms, 1U);
     config.openai_client = client;
     InitializeResponder(std::move(config));
     StartSession();
@@ -387,7 +388,7 @@ TEST_F(GatewayStubResponderStandaloneFixture, MidTermMemoryUsesConfiguredModelOv
     auto client = MakeRecordingMidTermMemoryClient(recorded_requests, requests_mutex,
                                                    compactor_finished, compactor_finished_once);
 
-    GatewayStubResponderConfig config = MakeEchoConfig();
+    GatewayStubResponderConfig config = MakeEchoConfig(0ms, 1U);
     config.llm_runtime_config = GatewayLlmRuntimeConfig{
         .main_model = std::string(kDefaultMainLlmModel),
         .mid_term_flush_decider_model = "gpt-4.1-mini",
@@ -471,7 +472,7 @@ TEST_F(GatewayStubResponderStandaloneFixture, TranscriptSeedDrainsCompactionBefo
             return EmitResponseText(reply, on_event);
         });
 
-    GatewayStubResponderConfig config = MakeEchoConfig();
+    GatewayStubResponderConfig config = MakeEchoConfig(0ms, 1U);
     config.openai_client = client;
     InitializeResponder(std::move(config));
     StartSession();
