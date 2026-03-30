@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/status/statusor.h"
 #include "isla/server/llm_client.hpp"
@@ -11,13 +12,16 @@
 
 namespace isla::server::memory {
 
+struct MidTermFlushBoundary {
+    std::size_t starts_at_message_index = 0;
+    std::optional<std::string> reasoning;
+};
+
 struct MidTermFlushDecision {
-    bool should_flush = false;
-    std::optional<std::size_t> conversation_item_index;
-    std::optional<std::size_t> split_at_message_index;
-    // Free-form text from the model explaining why it chose to flush (or not). Present only when
-    // the model includes a "reasoning" field in its JSON response. Intended for diagnostics and
-    // logging only — not stable or machine-parseable. Must be sanitized before logging.
+    std::vector<MidTermFlushBoundary> boundaries;
+    bool tail_complete = false;
+    // Free-form text from the model explaining why it chose these boundaries (or no boundaries).
+    // Intended for diagnostics and logging only, not for machine parsing.
     std::optional<std::string> reasoning;
 };
 
@@ -25,9 +29,9 @@ class MidTermFlushDecider {
   public:
     virtual ~MidTermFlushDecider() = default;
 
-    // Chooses whether a conversation item should flush to mid-term memory. When `should_flush` is
-    // true, `conversation_item_index` must be set; `split_at_message_index` is optional and, when
-    // present, refers to the first user message that should remain in working memory.
+    // Returns the ordered topic boundaries for the final live ongoing episode plus whether the
+    // remaining tail has also concluded. An empty boundary list with tail_complete=false means
+    // the conversation should remain live with no flush.
     [[nodiscard]] virtual absl::StatusOr<MidTermFlushDecision>
     Decide(const Conversation& conversation) = 0;
 };

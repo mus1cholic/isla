@@ -2,6 +2,7 @@
 
 #include <gmock/gmock.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -70,12 +71,7 @@ DeciderWithFake MakeFailingDecider(absl::Status failure_status) {
     return { .fake_client = fake, .last_request = last_request, .decider = std::move(*decider) };
 }
 
-// ---------------------------------------------------------------------------
-// Helper: build test conversations
-// ---------------------------------------------------------------------------
-
 Conversation MakeSimpleConversation() {
-    // 1 ongoing episode with 4 messages (2 user + 2 assistant turns).
     Conversation conversation;
     conversation.user_id = "user_test";
     ConversationItem item;
@@ -97,7 +93,6 @@ Conversation MakeSimpleConversation() {
 }
 
 Conversation MakeConversationWithStubAndEpisode() {
-    // 1 episode stub + 1 ongoing episode with 4 messages.
     Conversation conversation;
     conversation.user_id = "user_test";
 
@@ -127,8 +122,7 @@ Conversation MakeConversationWithStubAndEpisode() {
     return conversation;
 }
 
-Conversation MakeSixMessageConversation() {
-    // 1 ongoing episode with 6 messages for split testing.
+Conversation MakeEightMessageConversation() {
     Conversation conversation;
     conversation.user_id = "user_test";
     ConversationItem item;
@@ -143,23 +137,23 @@ Conversation MakeSixMessageConversation() {
                     .create_time = Ts("2026-03-14T10:01:00Z")},
             Message{.role = MessageRole::Assistant, .content = "Topic A detail",
                     .create_time = Ts("2026-03-14T10:01:10Z")},
-            Message{.role = MessageRole::User, .content = "New topic B",
+            Message{.role = MessageRole::User, .content = "Topic B question",
                     .create_time = Ts("2026-03-14T10:02:00Z")},
             Message{.role = MessageRole::Assistant, .content = "Topic B answer",
                     .create_time = Ts("2026-03-14T10:02:10Z")},
+            Message{.role = MessageRole::User, .content = "Topic C question",
+                    .create_time = Ts("2026-03-14T10:03:00Z")},
+            Message{.role = MessageRole::Assistant, .content = "Topic C answer",
+                    .create_time = Ts("2026-03-14T10:03:10Z")},
         },
     };
     conversation.items.push_back(std::move(item));
     return conversation;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-TEST(LlmMidTermFlushDeciderTest, DecideReturnsNoFlushWhenLlmSaysNo) {
+TEST(LlmMidTermFlushDeciderTest, DecideReturnsNoFlushWhenLlmFindsNoBoundaries) {
     const std::string response =
-        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "Active discussion"})";
+        R"({"boundaries": [], "tail_complete": false, "reasoning": "Active discussion"})";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
@@ -167,47 +161,51 @@ TEST(LlmMidTermFlushDeciderTest, DecideReturnsNoFlushWhenLlmSaysNo) {
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
 
     ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_FALSE(decision->should_flush);
-    EXPECT_FALSE(decision->conversation_item_index.has_value());
-    EXPECT_FALSE(decision->split_at_message_index.has_value());
+    EXPECT_TRUE(decision->boundaries.empty());
+    EXPECT_FALSE(decision->tail_complete);
+    ASSERT_TRUE(decision->reasoning.has_value());
+    EXPECT_EQ(*decision->reasoning, "Active discussion");
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideReturnsFullFlushWhenLlmFlushesEntireEpisode) {
-    const std::string response =
-        R"({"should_flush": true, "item_id": "i1", "split_at": null, "reasoning": "Topic completed"})";
+TEST(LlmMidTermFlushDeciderTest, DecideReturnsMultipleBoundaries) {
+    const std::string response = R"json({
+        "boundaries": [
+            { "starts_at": "m4", "reasoning": "Topic B begins here." },
+            { "starts_at": "m6", "reasoning": "Topic C begins here." }
+        ],
+        "tail_complete": true,
+        "reasoning": "Three completed topics were found."
+    })json";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
-    const Conversation conversation = MakeConversationWithStubAndEpisode();
+    const Conversation conversation = MakeEightMessageConversation();
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
 
     ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_TRUE(decision->should_flush);
-    ASSERT_TRUE(decision->conversation_item_index.has_value());
-    EXPECT_EQ(*decision->conversation_item_index, 1U);
-    EXPECT_FALSE(decision->split_at_message_index.has_value());
+    ASSERT_EQ(decision->boundaries.size(), 2U);
+    EXPECT_EQ(decision->boundaries[0].starts_at_message_index, 4U);
+    EXPECT_EQ(decision->boundaries[1].starts_at_message_index, 6U);
+    EXPECT_TRUE(decision->tail_complete);
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideReturnsSplitFlushWhenLlmSplits) {
+TEST(LlmMidTermFlushDeciderTest, DecideReturnsTailCompleteWithoutBoundaries) {
     const std::string response =
-        R"({"should_flush": true, "item_id": "i0", "split_at": "m4", "reasoning": "Topic shift at m4"})";
+        R"({"boundaries": [], "tail_complete": true, "reasoning": "Topic concluded"})";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
-    const Conversation conversation = MakeSixMessageConversation();
+    const Conversation conversation = MakeSimpleConversation();
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
 
     ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_TRUE(decision->should_flush);
-    ASSERT_TRUE(decision->conversation_item_index.has_value());
-    EXPECT_EQ(*decision->conversation_item_index, 0U);
-    ASSERT_TRUE(decision->split_at_message_index.has_value());
-    EXPECT_EQ(*decision->split_at_message_index, 4U);
+    EXPECT_TRUE(decision->boundaries.empty());
+    EXPECT_TRUE(decision->tail_complete);
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecidePassesCorrectJsonToLlm) {
     const std::string response =
-        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "No boundary"})";
+        R"({"boundaries": [], "tail_complete": false, "reasoning": "No boundary"})";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
@@ -215,33 +213,19 @@ TEST(LlmMidTermFlushDeciderTest, DecidePassesCorrectJsonToLlm) {
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
     ASSERT_TRUE(decision.ok()) << decision.status();
 
-    // Parse the user_text that was sent to the LLM.
     const json sent = json::parse(last_request->user_text);
-
     ASSERT_TRUE(sent.contains("items"));
     ASSERT_EQ(sent["items"].size(), 2U);
-
-    // Item 0: episode stub.
-    const json& stub_item = sent["items"][0];
-    EXPECT_EQ(stub_item["id"], "i0");
-    EXPECT_EQ(stub_item["type"], "episode_stub");
-    EXPECT_EQ(stub_item["episode_stub"]["content"], "Discussed weekend plans.");
-
-    // Item 1: ongoing episode.
-    const json& oe_item = sent["items"][1];
-    EXPECT_EQ(oe_item["id"], "i1");
-    EXPECT_EQ(oe_item["type"], "ongoing_episode");
-    ASSERT_EQ(oe_item["ongoing_episode"]["messages"].size(), 4U);
-    EXPECT_EQ(oe_item["ongoing_episode"]["messages"][0]["id"], "m0");
-    EXPECT_EQ(oe_item["ongoing_episode"]["messages"][0]["role"], "user");
-    EXPECT_EQ(oe_item["ongoing_episode"]["messages"][0]["content"], "What about dinner?");
-    EXPECT_EQ(oe_item["ongoing_episode"]["messages"][1]["id"], "m1");
-    EXPECT_EQ(oe_item["ongoing_episode"]["messages"][1]["role"], "assistant");
+    EXPECT_EQ(sent["items"][0]["id"], "i0");
+    EXPECT_EQ(sent["items"][0]["type"], "episode_stub");
+    EXPECT_EQ(sent["items"][1]["id"], "i1");
+    EXPECT_EQ(sent["items"][1]["type"], "ongoing_episode");
+    EXPECT_EQ(sent["items"][1]["ongoing_episode"]["messages"][0]["id"], "m0");
+    EXPECT_EQ(sent["items"][1]["ongoing_episode"]["messages"][0]["role"], "user");
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideUsesCorrectModelAndSystemPrompt) {
-    const std::string response =
-        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "No"})";
+    const std::string response = R"({"boundaries": [], "tail_complete": false, "reasoning": "No"})";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
@@ -250,7 +234,6 @@ TEST(LlmMidTermFlushDeciderTest, DecideUsesCorrectModelAndSystemPrompt) {
     ASSERT_TRUE(decision.ok()) << decision.status();
 
     EXPECT_EQ(last_request->model, "test-model");
-    // Verify the system prompt matches the embedded asset (correct wiring).
     const absl::StatusOr<std::string> expected_prompt =
         LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
     ASSERT_TRUE(expected_prompt.ok()) << expected_prompt.status();
@@ -268,8 +251,8 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidJson) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingShouldFlushField) {
-    auto [fake, last_request, decider] = MakeDecider(R"({"item_id": "i0"})");
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingBoundariesField) {
+    auto [fake, last_request, decider] = MakeDecider(R"({"tail_complete": false})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -279,9 +262,8 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingShouldFlushField) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingItemIdWhenFlushing) {
-    auto [fake, last_request, decider] =
-        MakeDecider(R"({"should_flush": true, "split_at": null, "reasoning": "Yes"})");
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingTailCompleteField) {
+    auto [fake, last_request, decider] = MakeDecider(R"({"boundaries": []})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -291,9 +273,9 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsMissingItemIdWhenFlushing) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidItemIdFormat) {
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidBoundaryIdFormat) {
     auto [fake, last_request, decider] = MakeDecider(
-        R"({"should_flush": true, "item_id": "bad", "split_at": null, "reasoning": "Yes"})");
+        R"({"boundaries": [{"starts_at": "bad"}], "tail_complete": false, "reasoning": "No"})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
@@ -303,12 +285,48 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidItemIdFormat) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidSplitAtFormat) {
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsAssistantBoundary) {
     auto [fake, last_request, decider] = MakeDecider(
-        R"({"should_flush": true, "item_id": "i0", "split_at": "bad", "reasoning": "Yes"})");
+        R"({"boundaries": [{"starts_at": "m3"}], "tail_complete": false, "reasoning": "No"})");
     ASSERT_NE(decider, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
+    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+
+    ASSERT_FALSE(decision.ok());
+    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundaryThatLeavesTooFewMessagesBeforeIt) {
+    auto [fake, last_request, decider] = MakeDecider(
+        R"({"boundaries": [{"starts_at": "m0"}], "tail_complete": false, "reasoning": "No"})");
+    ASSERT_NE(decider, nullptr);
+
+    const Conversation conversation = MakeSimpleConversation();
+    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+
+    ASSERT_FALSE(decision.ok());
+    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundaryThatLeavesTooShortTail) {
+    auto [fake, last_request, decider] = MakeDecider(
+        R"({"boundaries": [{"starts_at": "m2"}, {"starts_at": "m3"}], "tail_complete": false})");
+    ASSERT_NE(decider, nullptr);
+
+    const Conversation conversation = MakeSimpleConversation();
+    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+
+    ASSERT_FALSE(decision.ok());
+    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsUnorderedBoundaries) {
+    auto [fake, last_request, decider] = MakeDecider(
+        R"({"boundaries": [{"starts_at": "m4"}, {"starts_at": "m2"}], "tail_complete": false})");
+    ASSERT_NE(decider, nullptr);
+
+    const Conversation conversation = MakeEightMessageConversation();
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
 
     ASSERT_FALSE(decision.ok());
@@ -327,72 +345,9 @@ TEST(LlmMidTermFlushDeciderTest, DecidePropagatesLlmFailure) {
     EXPECT_EQ(decision.status().code(), absl::StatusCode::kInternal);
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsInconsistentNoFlushWithItemId) {
-    auto [fake, last_request, decider] = MakeDecider(
-        R"({"should_flush": false, "item_id": "i0", "split_at": null, "reasoning": "No"})");
-    ASSERT_NE(decider, nullptr);
-
-    const Conversation conversation = MakeSimpleConversation();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
-
-    ASSERT_FALSE(decision.ok());
-    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
-}
-
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsInconsistentNoFlushWithSplitAt) {
-    auto [fake, last_request, decider] = MakeDecider(
-        R"({"should_flush": false, "item_id": null, "split_at": "m3", "reasoning": "No"})");
-    ASSERT_NE(decider, nullptr);
-
-    const Conversation conversation = MakeSimpleConversation();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
-
-    ASSERT_FALSE(decision.ok());
-    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
-}
-
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsItemIndexOutOfBounds) {
-    // Conversation has 1 item (index 0), but LLM returns item_id "i5".
-    auto [fake, last_request, decider] = MakeDecider(
-        R"({"should_flush": true, "item_id": "i5", "split_at": null, "reasoning": "Yes"})");
-    ASSERT_NE(decider, nullptr);
-
-    const Conversation conversation = MakeSimpleConversation();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
-
-    ASSERT_FALSE(decision.ok());
-    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
-}
-
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsSplitAtOutOfBounds) {
-    // Conversation has 4 messages (indices 0-3), but LLM returns split_at "m10".
-    auto [fake, last_request, decider] = MakeDecider(
-        R"({"should_flush": true, "item_id": "i0", "split_at": "m10", "reasoning": "Yes"})");
-    ASSERT_NE(decider, nullptr);
-
-    const Conversation conversation = MakeSimpleConversation();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
-
-    ASSERT_FALSE(decision.ok());
-    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
-}
-
-TEST(LlmMidTermFlushDeciderTest, DecideRejectsSplitAtOnEpisodeStub) {
-    // LLM tries to split an episode stub (item i0), which has no messages.
-    auto [fake, last_request, decider] = MakeDecider(
-        R"({"should_flush": true, "item_id": "i0", "split_at": "m0", "reasoning": "Yes"})");
-    ASSERT_NE(decider, nullptr);
-
-    const Conversation conversation = MakeConversationWithStubAndEpisode();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
-
-    ASSERT_FALSE(decision.ok());
-    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
-}
-
-TEST(LlmMidTermFlushDeciderTest, DecideHandlesEmptyConversation) {
+TEST(LlmMidTermFlushDeciderTest, DecideHandlesEmptyConversationWhenNoFlushRequested) {
     const std::string response =
-        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "Empty"})";
+        R"({"boundaries": [], "tail_complete": false, "reasoning": "Empty"})";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
@@ -401,11 +356,22 @@ TEST(LlmMidTermFlushDeciderTest, DecideHandlesEmptyConversation) {
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
 
     ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_FALSE(decision->should_flush);
+    EXPECT_TRUE(decision->boundaries.empty());
+    EXPECT_FALSE(decision->tail_complete);
+}
 
-    // Verify the serialized JSON has an empty items array.
-    const json sent = json::parse(last_request->user_text);
-    EXPECT_TRUE(sent["items"].empty());
+TEST(LlmMidTermFlushDeciderTest, DecideRejectsBoundariesForEmptyConversation) {
+    const std::string response =
+        R"({"boundaries": [{"starts_at": "m0"}], "tail_complete": false, "reasoning": "Empty"})";
+    auto [fake, last_request, decider] = MakeDecider(response);
+    ASSERT_NE(decider, nullptr);
+
+    Conversation conversation;
+    conversation.user_id = "user_test";
+    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+
+    ASSERT_FALSE(decision.ok());
+    EXPECT_EQ(decision.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsEmptyLlmResponse) {
@@ -429,7 +395,7 @@ TEST(LlmMidTermFlushDeciderTest, DecideRejectsEmptyLlmResponse) {
 
 TEST(LlmMidTermFlushDeciderTest, DecideStripsMarkdownCodeFencesAndRetries) {
     const std::string response = "```json\n"
-                                 R"({"should_flush": false})"
+                                 R"({"boundaries": [], "tail_complete": false})"
                                  "\n```";
     const DeciderWithFake built = MakeDecider(response);
     ASSERT_NE(built.decider, nullptr);
@@ -438,12 +404,18 @@ TEST(LlmMidTermFlushDeciderTest, DecideStripsMarkdownCodeFencesAndRetries) {
     const absl::StatusOr<MidTermFlushDecision> decision = built.decider->Decide(conversation);
 
     ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_FALSE(decision->should_flush);
+    EXPECT_TRUE(decision->boundaries.empty());
+    EXPECT_FALSE(decision->tail_complete);
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideExtractsReasoningWhenFlushTrue) {
-    const std::string response =
-        R"({"should_flush": true, "item_id": "i0", "split_at": null, "reasoning": "Topic completed naturally"})";
+TEST(LlmMidTermFlushDeciderTest, DecideExtractsBoundaryAndTopLevelReasoning) {
+    const std::string response = R"json({
+        "boundaries": [
+            { "starts_at": "m2", "reasoning": "A new topic starts here." }
+        ],
+        "tail_complete": false,
+        "reasoning": "One boundary detected."
+    })json";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
@@ -451,56 +423,33 @@ TEST(LlmMidTermFlushDeciderTest, DecideExtractsReasoningWhenFlushTrue) {
     const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
 
     ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_TRUE(decision->should_flush);
+    ASSERT_EQ(decision->boundaries.size(), 1U);
+    ASSERT_TRUE(decision->boundaries[0].reasoning.has_value());
+    EXPECT_EQ(*decision->boundaries[0].reasoning, "A new topic starts here.");
     ASSERT_TRUE(decision->reasoning.has_value());
-    EXPECT_EQ(*decision->reasoning, "Topic completed naturally");
+    EXPECT_EQ(*decision->reasoning, "One boundary detected.");
 }
 
-TEST(LlmMidTermFlushDeciderTest, DecideExtractsReasoningWhenFlushFalse) {
-    const std::string response =
-        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": "Active discussion"})";
-    auto [fake, last_request, decider] = MakeDecider(response);
-    ASSERT_NE(decider, nullptr);
+TEST(LlmMidTermFlushDeciderTest, DecideReasoningIsNulloptWhenAbsentOrNull) {
+    auto [fake1, last_request1, decider1] =
+        MakeDecider(R"({"boundaries": [], "tail_complete": false})");
+    ASSERT_NE(decider1, nullptr);
+    auto [fake2, last_request2, decider2] =
+        MakeDecider(R"({"boundaries": [], "tail_complete": false, "reasoning": null})");
+    ASSERT_NE(decider2, nullptr);
 
     const Conversation conversation = MakeSimpleConversation();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+    const absl::StatusOr<MidTermFlushDecision> decision1 = decider1->Decide(conversation);
+    const absl::StatusOr<MidTermFlushDecision> decision2 = decider2->Decide(conversation);
 
-    ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_FALSE(decision->should_flush);
-    ASSERT_TRUE(decision->reasoning.has_value());
-    EXPECT_EQ(*decision->reasoning, "Active discussion");
-}
-
-TEST(LlmMidTermFlushDeciderTest, DecideReasoningIsNulloptWhenAbsent) {
-    const std::string response = R"({"should_flush": false, "item_id": null, "split_at": null})";
-    auto [fake, last_request, decider] = MakeDecider(response);
-    ASSERT_NE(decider, nullptr);
-
-    const Conversation conversation = MakeSimpleConversation();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
-
-    ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_FALSE(decision->should_flush);
-    EXPECT_FALSE(decision->reasoning.has_value());
-}
-
-TEST(LlmMidTermFlushDeciderTest, DecideReasoningIsNulloptWhenExplicitlyNull) {
-    const std::string response =
-        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": null})";
-    auto [fake, last_request, decider] = MakeDecider(response);
-    ASSERT_NE(decider, nullptr);
-
-    const Conversation conversation = MakeSimpleConversation();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
-
-    ASSERT_TRUE(decision.ok()) << decision.status();
-    EXPECT_FALSE(decision->should_flush);
-    EXPECT_FALSE(decision->reasoning.has_value());
+    ASSERT_TRUE(decision1.ok()) << decision1.status();
+    ASSERT_TRUE(decision2.ok()) << decision2.status();
+    EXPECT_FALSE(decision1->reasoning.has_value());
+    EXPECT_FALSE(decision2->reasoning.has_value());
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsReasoningWithWrongType) {
-    const std::string response =
-        R"({"should_flush": false, "item_id": null, "split_at": null, "reasoning": 42})";
+    const std::string response = R"({"boundaries": [], "tail_complete": false, "reasoning": 42})";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
 
@@ -538,9 +487,8 @@ TEST(LlmMidTermFlushDeciderTest, FactoryFailsForEmptyModel) {
 
 TEST(LlmMidTermFlushDeciderTest, DefaultReasoningEffortIsNone) {
     auto [fake_client, last_request, decider] = MakeDecider(R"json({
-        "should_flush": false,
-        "item_id": null,
-        "split_at": null,
+        "boundaries": [],
+        "tail_complete": false,
         "reasoning": "Nothing to flush."
     })json");
     ASSERT_NE(decider, nullptr);
@@ -554,9 +502,8 @@ TEST(LlmMidTermFlushDeciderTest, DefaultReasoningEffortIsNone) {
 TEST(LlmMidTermFlushDeciderTest, ReasoningEffortIsConfigurable) {
     auto [fake_client, last_request, decider] =
         MakeDecider(R"json({
-        "should_flush": false,
-        "item_id": null,
-        "split_at": null,
+        "boundaries": [],
+        "tail_complete": false,
         "reasoning": "Nothing to flush."
     })json",
                     isla::server::LlmReasoningEffort::kHigh);

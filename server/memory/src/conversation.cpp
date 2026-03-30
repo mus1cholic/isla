@@ -2,6 +2,7 @@
 
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -9,6 +10,10 @@
 
 namespace isla::server::memory {
 namespace {
+
+absl::Status invalid_argument(std::string_view message) {
+    return absl::InvalidArgumentError(std::string(message));
+}
 
 OngoingEpisode& CurrentOngoingEpisode(Conversation& conversation) {
     if (conversation.items.empty() ||
@@ -215,6 +220,96 @@ absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
               << " completed_message_count=" << completed_count
               << " remaining_message_count=" << remaining_count;
     return absl::OkStatus();
+}
+
+absl::Status ValidateOngoingEpisodeBoundaryPlan(const OngoingEpisode& ongoing_episode,
+                                                const OngoingEpisodeBoundaryPlan& boundary_plan) {
+    const auto& messages = ongoing_episode.messages;
+    const std::size_t message_count = messages.size();
+
+    if (boundary_plan.boundary_message_indices.empty()) {
+        if (!boundary_plan.tail_complete) {
+            return absl::OkStatus();
+        }
+        if (message_count < 2U) {
+            return invalid_argument(
+                "tail_complete requires the final segment to contain at least 2 messages");
+        }
+        return absl::OkStatus();
+    }
+
+    std::size_t previous_boundary = 0U;
+    for (std::size_t boundary_index = 0;
+         boundary_index < boundary_plan.boundary_message_indices.size(); ++boundary_index) {
+        const std::size_t starts_at = boundary_plan.boundary_message_indices[boundary_index];
+        if (starts_at >= message_count) {
+            return invalid_argument("boundary starts_at exceeds message count");
+        }
+        if (boundary_index > 0U && starts_at <= previous_boundary) {
+            return invalid_argument("boundaries must be strictly increasing");
+        }
+        if (messages[starts_at].role != MessageRole::User) {
+            return invalid_argument("boundaries must reference user messages");
+        }
+        if (starts_at - previous_boundary < 2U) {
+            return invalid_argument(
+                "each completed segment before a boundary must contain at least 2 messages");
+        }
+        previous_boundary = starts_at;
+    }
+
+    const std::size_t final_segment_size = message_count - previous_boundary;
+    if (final_segment_size < 2U) {
+        return invalid_argument("the final segment after the last boundary must contain at least "
+                                "2 messages");
+    }
+
+    return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<OngoingEpisodeMessageRange>>
+BuildCompletedEpisodeRanges(const OngoingEpisode& ongoing_episode,
+                            const OngoingEpisodeBoundaryPlan& boundary_plan) {
+    if (absl::Status status = ValidateOngoingEpisodeBoundaryPlan(ongoing_episode, boundary_plan);
+        !status.ok()) {
+        return status;
+    }
+
+    std::vector<OngoingEpisodeMessageRange> ranges;
+    std::size_t previous_boundary = 0U;
+    for (const std::size_t starts_at : boundary_plan.boundary_message_indices) {
+        ranges.push_back(OngoingEpisodeMessageRange{
+            .begin_message_index = previous_boundary,
+            .end_message_index = starts_at,
+        });
+        previous_boundary = starts_at;
+    }
+
+    if (boundary_plan.tail_complete) {
+        ranges.push_back(OngoingEpisodeMessageRange{
+            .begin_message_index = previous_boundary,
+            .end_message_index = ongoing_episode.messages.size(),
+        });
+    }
+
+    return ranges;
+}
+
+absl::StatusOr<OngoingEpisode> SliceOngoingEpisodeMessages(const OngoingEpisode& ongoing_episode,
+                                                           std::size_t begin_message_index,
+                                                           std::size_t end_message_index) {
+    const auto& messages = ongoing_episode.messages;
+    if (begin_message_index > end_message_index) {
+        return invalid_argument("message slice begin must be less than or equal to end");
+    }
+    if (end_message_index > messages.size()) {
+        return invalid_argument("message slice end exceeds message count");
+    }
+
+    OngoingEpisode slice;
+    slice.messages.assign(messages.begin() + static_cast<std::ptrdiff_t>(begin_message_index),
+                          messages.begin() + static_cast<std::ptrdiff_t>(end_message_index));
+    return slice;
 }
 
 } // namespace isla::server::memory

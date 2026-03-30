@@ -1,12 +1,25 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "isla/server/memory/memory_types.hpp"
 
 namespace isla::server::memory {
+
+struct OngoingEpisodeBoundaryPlan {
+    std::vector<std::size_t> boundary_message_indices;
+    bool tail_complete = false;
+};
+
+struct OngoingEpisodeMessageRange {
+    std::size_t begin_message_index = 0;
+    std::size_t end_message_index = 0;
+};
 
 // Appends a new empty ongoing episode item to the end of the conversation.
 void BeginOngoingEpisode(Conversation& conversation);
@@ -35,5 +48,23 @@ void AppendEpisodeStub(Conversation& conversation, std::string content, Timestam
                                                        std::size_t split_at_message_index,
                                                        std::string stub_text,
                                                        Timestamp stub_timestamp);
+
+// Validates a multi-boundary segmentation plan for one ongoing episode. Every completed segment,
+// and any retained live tail when boundaries are present, must contain at least 2 messages and
+// each boundary must point at a user message.
+[[nodiscard]] absl::Status
+ValidateOngoingEpisodeBoundaryPlan(const OngoingEpisode& ongoing_episode,
+                                   const OngoingEpisodeBoundaryPlan& boundary_plan);
+
+// Converts a validated boundary plan into completed message ranges in chronological order. The
+// returned ranges use half-open [begin, end) indexing into the original ongoing episode.
+[[nodiscard]] absl::StatusOr<std::vector<OngoingEpisodeMessageRange>>
+BuildCompletedEpisodeRanges(const OngoingEpisode& ongoing_episode,
+                            const OngoingEpisodeBoundaryPlan& boundary_plan);
+
+// Copies one half-open [begin, end) message range out of an ongoing episode.
+[[nodiscard]] absl::StatusOr<OngoingEpisode>
+SliceOngoingEpisodeMessages(const OngoingEpisode& ongoing_episode, std::size_t begin_message_index,
+                            std::size_t end_message_index);
 
 } // namespace isla::server::memory

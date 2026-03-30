@@ -112,18 +112,11 @@ WorkingMemory::ValidateOngoingEpisodeForSplitFlush(std::size_t conversation_item
     if (item.type != ConversationItemType::OngoingEpisode || !item.ongoing_episode.has_value()) {
         return invalid_argument("split flush target must be an ongoing episode");
     }
-    const auto& messages = item.ongoing_episode->messages;
-    if (split_at_message_index >= messages.size()) {
-        return invalid_argument("split_at_message_index exceeds message count");
-    }
-    if (split_at_message_index < 2) {
-        return invalid_argument(
-            "split_at_message_index must leave at least 2 messages in the completed portion");
-    }
-    if (messages[split_at_message_index].role != MessageRole::User) {
-        return invalid_argument("split_at_message_index must reference a user message");
-    }
-    return absl::OkStatus();
+    return ValidateOngoingEpisodeBoundaryPlan(
+        *item.ongoing_episode, OngoingEpisodeBoundaryPlan{
+                                   .boundary_message_indices = { split_at_message_index },
+                                   .tail_complete = false,
+                               });
 }
 
 absl::StatusOr<OngoingEpisodeFlushCandidate>
@@ -151,20 +144,20 @@ WorkingMemory::CaptureOngoingEpisodeForSplitFlush(std::size_t conversation_item_
         !status.ok()) {
         return status;
     }
-    const auto& messages =
-        state_.conversation.items[conversation_item_index].ongoing_episode->messages;
-
-    OngoingEpisode completed_portion;
-    completed_portion.messages.assign(
-        messages.begin(), messages.begin() + static_cast<std::ptrdiff_t>(split_at_message_index));
+    const auto& messages = *state_.conversation.items[conversation_item_index].ongoing_episode;
+    absl::StatusOr<OngoingEpisode> completed_portion =
+        SliceOngoingEpisodeMessages(messages, 0U, split_at_message_index);
+    if (!completed_portion.ok()) {
+        return completed_portion.status();
+    }
 
     VLOG(1) << "WorkingMemory captured split flush conversation_item_index="
             << conversation_item_index << " split_at_message_index=" << split_at_message_index
-            << " completed_message_count=" << completed_portion.messages.size()
-            << " total_message_count=" << messages.size();
+            << " completed_message_count=" << completed_portion->messages.size()
+            << " total_message_count=" << messages.messages.size();
     return OngoingEpisodeFlushCandidate{
         .conversation_item_index = conversation_item_index,
-        .ongoing_episode = std::move(completed_portion),
+        .ongoing_episode = std::move(*completed_portion),
     };
 }
 

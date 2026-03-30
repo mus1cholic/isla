@@ -14,6 +14,7 @@
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/llm_client.hpp"
+#include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/llm_json_utils.hpp"
 #include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
@@ -32,10 +33,6 @@ using nlohmann::json;
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
 }
-
-// ---------------------------------------------------------------------------
-// ID helpers: "i3" <-> index 3, "m7" <-> index 7
-// ---------------------------------------------------------------------------
 
 std::string MakeItemId(std::size_t index) {
     return "i" + std::to_string(index);
@@ -56,7 +53,6 @@ absl::StatusOr<std::size_t> ParseIdWithPrefix(const std::string& id, char prefix
     }
     try {
         const std::size_t value = std::stoull(numeric_part);
-        // Verify no trailing garbage (stoull stops at first non-digit).
         if (std::to_string(value) != numeric_part) {
             return invalid_argument("id '" + id + "' contains non-numeric characters");
         }
@@ -65,10 +61,6 @@ absl::StatusOr<std::size_t> ParseIdWithPrefix(const std::string& id, char prefix
         return invalid_argument("id '" + id + "' has an invalid numeric suffix");
     }
 }
-
-// ---------------------------------------------------------------------------
-// Conversation -> JSON serialization
-// ---------------------------------------------------------------------------
 
 json SerializeConversationForDecider(const Conversation& conversation) {
     json items_json = json::array();
@@ -104,16 +96,40 @@ json SerializeConversationForDecider(const Conversation& conversation) {
     return json{ { "items", std::move(items_json) } };
 }
 
-// ---------------------------------------------------------------------------
-// JSON response -> MidTermFlushDecision parsing
-// ---------------------------------------------------------------------------
+absl::StatusOr<std::optional<std::string>>
+ParseOptionalReasoning(const json& object, std::string_view field_name, std::string_view context) {
+    if (!object.contains(field_name) || object.at(field_name).is_null()) {
+        return std::nullopt;
+    }
+    if (!object.at(field_name).is_string()) {
+        return invalid_argument(std::string(context) + " field '" + std::string(field_name) +
+                                "' must be a string or null");
+    }
+    return object.at(field_name).get<std::string>();
+}
+
+absl::Status ValidateBoundaryObjectKeys(const json& boundary) {
+    if (!boundary.is_object()) {
+        return invalid_argument("flush decider boundary entries must be JSON objects");
+    }
+    for (const auto& [key, value] : boundary.items()) {
+        static_cast<void>(value);
+        if (key != "starts_at" && key != "reasoning") {
+            return invalid_argument("flush decider boundary contains unexpected field '" + key +
+                                    "'");
+        }
+    }
+    if (!boundary.contains("starts_at")) {
+        return invalid_argument("flush decider boundary is missing required field 'starts_at'");
+    }
+    return absl::OkStatus();
+}
 
 absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& response_text) {
     json response;
     try {
         response = json::parse(response_text);
     } catch (const json::parse_error& error) {
-        // Fallback: some models wrap JSON in markdown code fences despite prompt instructions.
         const std::string stripped = StripMarkdownCodeFences(response_text);
         if (stripped == response_text) {
             return invalid_argument(std::string("flush decider returned invalid JSON: ") +
@@ -128,74 +144,78 @@ absl::StatusOr<MidTermFlushDecision> ParseDeciderResponse(const std::string& res
         }
     }
 
-    if (!response.contains("should_flush") || !response["should_flush"].is_boolean()) {
-        return invalid_argument("flush decider response missing boolean 'should_flush' field");
+    if (!response.is_object()) {
+        return invalid_argument("flush decider response must be a JSON object");
     }
-    const bool should_flush = response["should_flush"].get<bool>();
-
-    // Extract optional reasoning text (absent or null is fine, wrong type is rejected).
-    std::optional<std::string> reasoning;
-    if (response.contains("reasoning") && !response["reasoning"].is_null()) {
-        if (!response["reasoning"].is_string()) {
-            return invalid_argument(
-                "flush decider response field 'reasoning' must be a string or null");
+    for (const auto& [key, value] : response.items()) {
+        static_cast<void>(value);
+        if (key != "boundaries" && key != "tail_complete" && key != "reasoning") {
+            return invalid_argument("flush decider response contains unexpected field '" + key +
+                                    "'");
         }
-        reasoning = response["reasoning"].get<std::string>();
     }
-
-    if (!should_flush) {
-        // Validate consistency: flush-only fields should be null when not flushing.
-        if (response.contains("item_id") && !response["item_id"].is_null()) {
-            return invalid_argument(
-                "flush decider returned should_flush=false but item_id is non-null");
-        }
-        if (response.contains("split_at") && !response["split_at"].is_null()) {
-            return invalid_argument(
-                "flush decider returned should_flush=false but split_at is non-null");
-        }
-        return MidTermFlushDecision{ .should_flush = false, .reasoning = std::move(reasoning) };
+    if (!response.contains("boundaries") || !response.at("boundaries").is_array()) {
+        return invalid_argument("flush decider response missing array 'boundaries' field");
+    }
+    if (!response.contains("tail_complete") || !response.at("tail_complete").is_boolean()) {
+        return invalid_argument("flush decider response missing boolean 'tail_complete' field");
     }
 
-    // should_flush == true: item_id is required.
-    if (!response.contains("item_id") || response["item_id"].is_null()) {
-        return invalid_argument("flush decider returned should_flush=true but item_id is null");
-    }
-    if (!response["item_id"].is_string()) {
-        return invalid_argument("flush decider response item_id must be a string");
-    }
-    const std::string item_id = response["item_id"].get<std::string>();
-    const absl::StatusOr<std::size_t> conversation_item_index = ParseIdWithPrefix(item_id, 'i');
-    if (!conversation_item_index.ok()) {
-        return invalid_argument("flush decider returned invalid item_id '" + item_id +
-                                "': " + std::string(conversation_item_index.status().message()));
+    std::vector<MidTermFlushBoundary> boundaries;
+    boundaries.reserve(response.at("boundaries").size());
+    for (const json& boundary : response.at("boundaries")) {
+        if (absl::Status status = ValidateBoundaryObjectKeys(boundary); !status.ok()) {
+            return status;
+        }
+        if (!boundary.at("starts_at").is_string()) {
+            return invalid_argument("flush decider boundary field 'starts_at' must be a string");
+        }
+        const std::string starts_at = boundary.at("starts_at").get<std::string>();
+        absl::StatusOr<std::size_t> parsed_index = ParseIdWithPrefix(starts_at, 'm');
+        if (!parsed_index.ok()) {
+            return invalid_argument("flush decider returned invalid boundary starts_at '" +
+                                    starts_at +
+                                    "': " + std::string(parsed_index.status().message()));
+        }
+        absl::StatusOr<std::optional<std::string>> boundary_reasoning =
+            ParseOptionalReasoning(boundary, "reasoning", "flush decider boundary");
+        if (!boundary_reasoning.ok()) {
+            return boundary_reasoning.status();
+        }
+        boundaries.push_back(MidTermFlushBoundary{
+            .starts_at_message_index = *parsed_index,
+            .reasoning = std::move(*boundary_reasoning),
+        });
     }
 
-    // split_at is optional.
-    std::optional<std::size_t> split_at_message_index;
-    if (response.contains("split_at") && !response["split_at"].is_null()) {
-        if (!response["split_at"].is_string()) {
-            return invalid_argument("flush decider response split_at must be a string or null");
-        }
-        const std::string split_at = response["split_at"].get<std::string>();
-        const absl::StatusOr<std::size_t> parsed_split = ParseIdWithPrefix(split_at, 'm');
-        if (!parsed_split.ok()) {
-            return invalid_argument("flush decider returned invalid split_at '" + split_at +
-                                    "': " + std::string(parsed_split.status().message()));
-        }
-        split_at_message_index = *parsed_split;
+    absl::StatusOr<std::optional<std::string>> reasoning =
+        ParseOptionalReasoning(response, "reasoning", "flush decider response");
+    if (!reasoning.ok()) {
+        return reasoning.status();
     }
 
     return MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = *conversation_item_index,
-        .split_at_message_index = split_at_message_index,
-        .reasoning = std::move(reasoning),
+        .boundaries = std::move(boundaries),
+        .tail_complete = response.at("tail_complete").get<bool>(),
+        .reasoning = std::move(*reasoning),
     };
 }
 
-// ---------------------------------------------------------------------------
-// Concrete implementation
-// ---------------------------------------------------------------------------
+absl::StatusOr<std::optional<std::size_t>>
+FindLiveOngoingEpisodeIndex(const Conversation& conversation) {
+    if (conversation.items.empty()) {
+        return std::nullopt;
+    }
+    const std::size_t tail_index = conversation.items.size() - 1U;
+    const ConversationItem& tail_item = conversation.items.back();
+    if (tail_item.type != ConversationItemType::OngoingEpisode ||
+        !tail_item.ongoing_episode.has_value()) {
+        return invalid_argument(
+            "flush decider requires the final conversation item to be an ongoing "
+            "episode");
+    }
+    return tail_index;
+}
 
 class LlmMidTermFlushDecider final : public MidTermFlushDecider {
   public:
@@ -207,11 +227,11 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
     [[nodiscard]] absl::StatusOr<MidTermFlushDecision>
     Decide(const Conversation& conversation) override {
         if (VLOG_IS_ON(1)) {
-            // Build compact summary of conversation shape for diagnostics.
             std::string items_summary = "[";
             for (std::size_t i = 0; i < conversation.items.size(); ++i) {
-                if (i > 0)
+                if (i > 0) {
                     items_summary += ", ";
+                }
                 const ConversationItem& item = conversation.items[i];
                 if (item.type == ConversationItemType::EpisodeStub) {
                     items_summary += "stub";
@@ -233,7 +253,6 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
         const json input_json = SerializeConversationForDecider(conversation);
         const std::string user_text = input_json.dump();
 
-        // Stream the LLM response and accumulate text.
         std::string output_text;
         absl::Status stream_status = llm_client_->StreamResponse(
             LlmRequest{
@@ -272,42 +291,56 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
             return decision.status();
         }
 
-        // Validate parsed indices against the actual conversation.
-        if (decision->should_flush && decision->conversation_item_index.has_value()) {
-            const std::size_t item_idx = *decision->conversation_item_index;
-            if (item_idx >= conversation.items.size()) {
-                return invalid_argument("flush decider returned item_id i" +
-                                        std::to_string(item_idx) + " but conversation only has " +
-                                        std::to_string(conversation.items.size()) + " items");
+        absl::StatusOr<std::optional<std::size_t>> live_item_index =
+            FindLiveOngoingEpisodeIndex(conversation);
+        if (!live_item_index.ok()) {
+            if (decision->boundaries.empty() && !decision->tail_complete) {
+                return decision;
             }
-            if (decision->split_at_message_index.has_value()) {
-                const ConversationItem& item = conversation.items[item_idx];
-                if (item.type != ConversationItemType::OngoingEpisode ||
-                    !item.ongoing_episode.has_value()) {
-                    return invalid_argument("flush decider returned split_at for item i" +
-                                            std::to_string(item_idx) +
-                                            " which is not an ongoing episode");
-                }
-                const std::size_t msg_idx = *decision->split_at_message_index;
-                if (msg_idx >= item.ongoing_episode->messages.size()) {
-                    return invalid_argument(
-                        "flush decider returned split_at m" + std::to_string(msg_idx) +
-                        " but ongoing episode only has " +
-                        std::to_string(item.ongoing_episode->messages.size()) + " messages");
-                }
+            return live_item_index.status();
+        }
+        if (!live_item_index->has_value()) {
+            if (!decision->boundaries.empty() || decision->tail_complete) {
+                return invalid_argument(
+                    "flush decider returned boundaries for an empty conversation");
             }
+            return decision;
         }
 
-        VLOG(1) << "LlmMidTermFlushDecider decided should_flush="
-                << (decision->should_flush ? "true" : "false") << " conversation_item_index="
-                << (decision->conversation_item_index.has_value()
-                        ? std::to_string(*decision->conversation_item_index)
-                        : "none")
-                << " split_at_message_index="
-                << (decision->split_at_message_index.has_value()
-                        ? std::to_string(*decision->split_at_message_index)
-                        : "none")
-                << " reasoning='" << SanitizeForLog(decision->reasoning.value_or("")) << "'";
+        const ConversationItem& live_item = conversation.items[live_item_index->value()];
+        const OngoingEpisodeBoundaryPlan boundary_plan{
+            .boundary_message_indices =
+                [&decision]() {
+                    std::vector<std::size_t> indices;
+                    indices.reserve(decision->boundaries.size());
+                    for (const MidTermFlushBoundary& boundary : decision->boundaries) {
+                        indices.push_back(boundary.starts_at_message_index);
+                    }
+                    return indices;
+                }(),
+            .tail_complete = decision->tail_complete,
+        };
+        if (absl::Status status =
+                ValidateOngoingEpisodeBoundaryPlan(*live_item.ongoing_episode, boundary_plan);
+            !status.ok()) {
+            return status;
+        }
+
+        if (VLOG_IS_ON(1)) {
+            std::string boundaries_summary = "[";
+            for (std::size_t i = 0; i < decision->boundaries.size(); ++i) {
+                if (i > 0) {
+                    boundaries_summary += ", ";
+                }
+                boundaries_summary +=
+                    std::to_string(decision->boundaries[i].starts_at_message_index);
+            }
+            boundaries_summary += "]";
+            VLOG(1) << "LlmMidTermFlushDecider decided boundary_count="
+                    << decision->boundaries.size() << " boundaries=" << boundaries_summary
+                    << " tail_complete=" << (decision->tail_complete ? "true" : "false")
+                    << " reasoning='" << SanitizeForLog(decision->reasoning.value_or("")) << "'";
+        }
         return decision;
     }
 
@@ -319,10 +352,6 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
 };
 
 } // namespace
-
-// ---------------------------------------------------------------------------
-// Factory function
-// ---------------------------------------------------------------------------
 
 absl::StatusOr<MidTermFlushDeciderPtr>
 CreateLlmMidTermFlushDecider(std::shared_ptr<const isla::server::LlmClient> llm_client,
