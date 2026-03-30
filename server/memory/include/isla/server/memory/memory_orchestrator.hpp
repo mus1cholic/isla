@@ -203,8 +203,8 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
 
-    // Runs the decider against a snapshot, and if it chooses a target, chains compaction work for
-    // that captured conversation state off-thread.
+    // Runs the decider against a snapshot, and if it chooses completed segments, chains
+    // compaction work for those captured conversation ranges off-thread.
     [[nodiscard]] absl::Status QueueMidTermAnalysis(const Conversation& conversation_snapshot);
 
     // Queues compaction for an already chosen flush candidate. The captured snapshot is owned by
@@ -230,17 +230,13 @@ class MemoryOrchestrator {
         CompactedMidTermEpisode compacted;
         Timestamp episode_created_at;
         Timestamp stub_timestamp;
-        std::optional<std::size_t> split_at_message_index;
+        std::size_t segment_message_count = 0;
     };
 
     struct AsyncMidTermFlushResult {
-        std::optional<CompletedFlushBuildInput> completed_flush;
+        std::vector<CompletedFlushBuildInput> completed_flushes;
         std::size_t captured_message_count = 0;
-        // Conversation item index chosen by the async analysis task.  When the
-        // flush was queued via QueueMidTermAnalysis (decider-driven), this
-        // carries the index the decider selected so DrainCompletedMidTermCompactions
-        // can apply the flush to the correct item.
-        std::optional<std::size_t> resolved_conversation_item_index;
+        bool tail_complete = false;
     };
 
     struct PendingMidTermFlush {
@@ -254,12 +250,12 @@ class MemoryOrchestrator {
     [[nodiscard]] static absl::StatusOr<CompletedFlushBuildInput>
     CompactFlushCandidate(const MidTermCompactorPtr& compactor, std::string_view session_id,
                           const OngoingEpisodeFlushCandidate& flush_candidate,
-                          std::optional<std::size_t> split_at_message_index,
                           std::string_view failure_context);
 
     [[nodiscard]] CompletedOngoingEpisodeFlush
     BuildCompletedEpisodeFlush(std::size_t conversation_item_index,
-                               CompletedFlushBuildInput build_input);
+                               CompletedFlushBuildInput build_input,
+                               std::optional<std::size_t> split_at_message_index);
 
     std::string session_id_;
     WorkingMemory memory_;

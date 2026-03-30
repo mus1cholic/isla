@@ -143,6 +143,7 @@ cc_library(
     srcs = ["mid_term_flush_decider.cpp"],
     visibility = ["//visibility:public"],
     deps = [
+        ":conversation",
         ":llm_json_utils",
         ":memory_types",
         ":prompt_loader",

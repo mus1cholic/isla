@@ -33,17 +33,15 @@ std::shared_ptr<test::FakeOpenAiResponsesClient> MakeRecordingMidTermMemoryClien
                 const int call_index = decider_call_count->fetch_add(1);
                 if (call_index == 0) {
                     return EmitResponseText(R"json({
-                        "should_flush": true,
-                        "item_id": "i0",
-                        "split_at": null,
+                        "boundaries": [],
+                        "tail_complete": true,
                         "reasoning": "Completed first exchange."
                     })json",
                                             on_event, "resp_decider");
                 }
                 return EmitResponseText(R"json({
-                    "should_flush": false,
-                    "item_id": null,
-                    "split_at": null,
+                    "boundaries": [],
+                    "tail_complete": false,
                     "reasoning": "No additional completed episode."
                 })json",
                                         on_event, "resp_decider");
@@ -205,9 +203,8 @@ TEST_F(GatewayStubResponderStandaloneFixture,
                                  const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             if (request.system_prompt == MidTermFlushDeciderPromptText()) {
                 return EmitResponseText(R"json({
-                    "should_flush": true,
-                    "item_id": "i0",
-                    "split_at": null,
+                    "boundaries": [],
+                    "tail_complete": true,
                     "reasoning": "Completed first exchange."
                 })json",
                                         on_event, "resp_decider");
@@ -451,16 +448,10 @@ TEST_F(GatewayStubResponderStandaloneFixture, TranscriptSeedDrainsCompactionBefo
         [decider_call_count](const OpenAiResponsesRequest& request,
                              const OpenAiResponsesEventCallback& on_event) -> absl::Status {
             if (request.system_prompt == MidTermFlushDeciderPromptText()) {
-                const int call_index = decider_call_count->fetch_add(1);
-                // Return the last conversation item (the active ongoing episode).
-                // After the first flush, prior items become stubs, so the ongoing
-                // episode shifts to a higher index.
-                const std::string item_id = "i" + std::to_string(call_index);
+                decider_call_count->fetch_add(1);
                 const std::string response = R"json({
-                    "should_flush": true,
-                    "item_id": ")json" + item_id +
-                                             R"json(",
-                    "split_at": null,
+                    "boundaries": [],
+                    "tail_complete": true,
                     "reasoning": "Completed exchange."
                 })json";
                 return EmitResponseText(response, on_event, "resp_decider");

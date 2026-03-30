@@ -101,9 +101,8 @@ absl::Status EmitMidTermAwareEchoResponse(const OpenAiResponsesRequest& request,
                                           std::string_view prefix = "stub echo: ") {
     if (request.system_prompt == MidTermFlushDeciderPromptText()) {
         return EmitResponseText(R"json({
-            "should_flush": false,
-            "item_id": null,
-            "split_at": null,
+            "boundaries": [],
+            "tail_complete": false,
             "reasoning": "No completed episode boundary."
         })json",
                                 on_event, "resp_decider");

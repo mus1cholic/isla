@@ -30,6 +30,31 @@ using ::testing::_;
 using ::testing::NiceMock;
 using ::testing::Return;
 
+MidTermFlushDecision NoFlushDecision() {
+    return MidTermFlushDecision{
+        .boundaries = {},
+        .tail_complete = false,
+    };
+}
+
+MidTermFlushDecision TailCompleteDecision() {
+    return MidTermFlushDecision{
+        .boundaries = {},
+        .tail_complete = true,
+    };
+}
+
+MidTermFlushDecision SplitAtDecision(std::size_t starts_at_message_index,
+                                     bool tail_complete = false) {
+    return MidTermFlushDecision{
+        .boundaries =
+            {
+                MidTermFlushBoundary{ .starts_at_message_index = starts_at_message_index },
+            },
+        .tail_complete = tail_complete,
+    };
+}
+
 class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
   public:
     RecordingMemoryStore() {
@@ -829,10 +854,7 @@ TEST_F(MemoryOrchestratorTest, ConversationStaysOnSingleEpisodeWhenNoCompactorCo
 
 TEST_F(MemoryOrchestratorTest, FlushDeciderCanSuppressAutomaticFlushQueueing) {
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = false,
-        .conversation_item_index = std::nullopt,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(NoFlushDecision());
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -863,10 +885,7 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderCanSuppressAutomaticFlushQueueing) {
 
 TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseConversationItemForAsyncFlush) {
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(TailCompleteDecision());
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -899,10 +918,7 @@ TEST_F(MemoryOrchestratorTest, FullFlushDecisionRebasesToSplitWhenNewMessagesArr
             .embedding = {},
         },
         release_promise.get_future().share());
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(TailCompleteDecision());
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -950,10 +966,7 @@ TEST_F(MemoryOrchestratorTest, FullFlushDecisionRebasesToSplitWhenNewMessagesArr
 
 TEST_F(MemoryOrchestratorTest, NoFlushAnalysisDrainsCleanlyAndLaterAnalysisCanRunAgain) {
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = false,
-        .conversation_item_index = std::nullopt,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(NoFlushDecision());
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -969,10 +982,7 @@ TEST_F(MemoryOrchestratorTest, NoFlushAnalysisDrainsCleanlyAndLaterAnalysisCanRu
     ASSERT_TRUE(decider->WaitForRequestCount(1U));
     EXPECT_TRUE(compactor->requests().empty());
 
-    decider->SetDecision(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-    });
+    decider->SetDecision(TailCompleteDecision());
 
     ASSERT_TRUE(handler
                     ->HandleUserQuery(
@@ -1046,10 +1056,7 @@ TEST_F(MemoryOrchestratorTest,
             .embedding = {},
         },
         release_promise.get_future().share());
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(TailCompleteDecision());
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -1109,10 +1116,7 @@ TEST_F(MemoryOrchestratorTest, DrainFailsWhenRebasedFullFlushWouldSplitAtAssista
             .embedding = {},
         },
         release_promise.get_future().share());
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(TailCompleteDecision());
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -1164,78 +1168,6 @@ TEST_F(MemoryOrchestratorTest, HandleAssistantReplyPropagatesFlushDeciderFailure
     EXPECT_TRUE(compactor->requests().empty());
 }
 
-TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsMissingConversationItemWhenFlushRequested) {
-    auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = std::nullopt,
-    });
-    absl::StatusOr<MemoryOrchestrator> handler =
-        MakeHandlerWithCompactor(compactor, nullptr, decider);
-    ASSERT_TRUE(handler.ok()) << handler.status();
-
-    ASSERT_TRUE(handler
-                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
-                                                       Ts("2026-03-08T14:00:00Z")))
-                    .ok());
-
-    ASSERT_TRUE(handler
-                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
-                                                                 Ts("2026-03-08T14:00:01Z")))
-                    .ok());
-
-    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
-    EXPECT_TRUE(compactor->requests().empty());
-}
-
-TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsConversationItemWhenFlushNotRequested) {
-    auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = false,
-        .conversation_item_index = 0U,
-    });
-    absl::StatusOr<MemoryOrchestrator> handler =
-        MakeHandlerWithCompactor(compactor, nullptr, decider);
-    ASSERT_TRUE(handler.ok()) << handler.status();
-
-    ASSERT_TRUE(handler
-                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
-                                                       Ts("2026-03-08T14:00:00Z")))
-                    .ok());
-
-    ASSERT_TRUE(handler
-                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
-                                                                 Ts("2026-03-08T14:00:01Z")))
-                    .ok());
-
-    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
-    EXPECT_TRUE(compactor->requests().empty());
-}
-
-TEST_F(MemoryOrchestratorTest, FlushDeciderRejectsOutOfRangeConversationItem) {
-    auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 99U,
-    });
-    absl::StatusOr<MemoryOrchestrator> handler =
-        MakeHandlerWithCompactor(compactor, nullptr, decider);
-    ASSERT_TRUE(handler.ok()) << handler.status();
-
-    ASSERT_TRUE(handler
-                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
-                                                       Ts("2026-03-08T14:00:00Z")))
-                    .ok());
-
-    ASSERT_TRUE(handler
-                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
-                                                                 Ts("2026-03-08T14:00:01Z")))
-                    .ok());
-
-    ASSERT_TRUE(WaitForDrainFailure(*handler, absl::StatusCode::kInvalidArgument).ok());
-    EXPECT_TRUE(compactor->requests().empty());
-}
-
 TEST_F(MemoryOrchestratorTest, FlushDeciderDoesNotQueueDuplicatePendingFlushes) {
     std::promise<void> release_promise;
     auto compactor = std::make_shared<RecordingMidTermCompactor>(
@@ -1248,10 +1180,7 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderDoesNotQueueDuplicatePendingFlushes) 
             .embedding = {},
         },
         release_promise.get_future().share());
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(TailCompleteDecision());
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -1986,11 +1915,7 @@ TEST_F(MemoryOrchestratorTest, CreateRejectsEmptyUserId) {
 
 TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtOutOfRange) {
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-        .split_at_message_index = 99U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(SplitAtDecision(99U));
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -2011,11 +1936,7 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtOutOfRange) {
 
 TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtTooSmall) {
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-        .split_at_message_index = 1U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(SplitAtDecision(1U));
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -2038,11 +1959,7 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtTooSmall) {
 TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtReferencesAssistantMessage) {
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     // split_at=3 → an assistant message (U A U A => index 3 is assistant)
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-        .split_at_message_index = 3U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(SplitAtDecision(3U));
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -2069,11 +1986,7 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderSplitAtReferencesAssistantMessage) {
 TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseSplitFlush) {
     // Decider splits at message index 2 (a user message in U A U A pattern).
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-        .split_at_message_index = 2U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(SplitAtDecision(2U));
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -2122,6 +2035,62 @@ TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseSplitFlush) {
     EXPECT_EQ(state.conversation.items[1].ongoing_episode->messages[1].content, "a2");
 }
 
+TEST_F(MemoryOrchestratorTest, FlushDeciderCanChooseMultipleBoundaries) {
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
+        .boundaries =
+            {
+                MidTermFlushBoundary{ .starts_at_message_index = 2U },
+                MidTermFlushBoundary{ .starts_at_message_index = 4U },
+            },
+        .tail_complete = false,
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, nullptr, decider);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    AppendUserMessage(handler->mutable_memory().mutable_conversation(), "u1",
+                      Ts("2026-03-08T14:00:00Z"));
+    AppendAssistantMessage(handler->mutable_memory().mutable_conversation(), "a1",
+                           Ts("2026-03-08T14:00:01Z"));
+    AppendUserMessage(handler->mutable_memory().mutable_conversation(), "u2",
+                      Ts("2026-03-08T14:00:02Z"));
+    AppendAssistantMessage(handler->mutable_memory().mutable_conversation(), "a2",
+                           Ts("2026-03-08T14:00:03Z"));
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(
+                        GatewayUserQuery("srv_test", "turn_003", "u3", Ts("2026-03-08T14:00:04Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_003", "a3",
+                                                                 Ts("2026-03-08T14:00:05Z")))
+                    .ok());
+    ASSERT_TRUE(compactor->WaitForRequestCount(2U));
+
+    const std::vector<MidTermCompactionRequest> requests = compactor->requests();
+    ASSERT_EQ(requests.size(), 2U);
+    ASSERT_EQ(requests[0].flush_candidate.ongoing_episode.messages.size(), 2U);
+    EXPECT_EQ(requests[0].flush_candidate.ongoing_episode.messages[0].content, "u1");
+    EXPECT_EQ(requests[0].flush_candidate.ongoing_episode.messages[1].content, "a1");
+    ASSERT_EQ(requests[1].flush_candidate.ongoing_episode.messages.size(), 2U);
+    EXPECT_EQ(requests[1].flush_candidate.ongoing_episode.messages[0].content, "u2");
+    EXPECT_EQ(requests[1].flush_candidate.ongoing_episode.messages[1].content, "a2");
+
+    const absl::StatusOr<std::size_t> drained = WaitForDrain(*handler, 1U);
+    ASSERT_TRUE(drained.ok()) << drained.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_EQ(state.mid_term_episodes.size(), 2U);
+    ASSERT_EQ(state.conversation.items.size(), 3U);
+    EXPECT_EQ(state.conversation.items[0].type, ConversationItemType::EpisodeStub);
+    EXPECT_EQ(state.conversation.items[1].type, ConversationItemType::EpisodeStub);
+    EXPECT_EQ(state.conversation.items[2].type, ConversationItemType::OngoingEpisode);
+    ASSERT_TRUE(state.conversation.items[2].ongoing_episode.has_value());
+    ASSERT_EQ(state.conversation.items[2].ongoing_episode->messages.size(), 2U);
+    EXPECT_EQ(state.conversation.items[2].ongoing_episode->messages[0].content, "u3");
+    EXPECT_EQ(state.conversation.items[2].ongoing_episode->messages[1].content, "a3");
+}
+
 TEST_F(MemoryOrchestratorTest, SplitFlushPreservesNewMessagesAppendedAfterCapture) {
     std::promise<void> release_promise;
     auto compactor = std::make_shared<RecordingMidTermCompactor>(
@@ -2134,11 +2103,7 @@ TEST_F(MemoryOrchestratorTest, SplitFlushPreservesNewMessagesAppendedAfterCaptur
             .embedding = {},
         },
         release_promise.get_future().share());
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-        .split_at_message_index = 2U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(SplitAtDecision(2U));
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, nullptr, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -2196,11 +2161,7 @@ TEST_F(MemoryOrchestratorTest, SplitFlushPreservesNewMessagesAppendedAfterCaptur
 TEST_F(MemoryOrchestratorTest, SplitFlushPersistsSplitEpisodeStubWrite) {
     auto store = std::make_shared<RecordingMemoryStore>();
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
-    auto decider = std::make_shared<RecordingMidTermFlushDecider>(MidTermFlushDecision{
-        .should_flush = true,
-        .conversation_item_index = 0U,
-        .split_at_message_index = 2U,
-    });
+    auto decider = std::make_shared<RecordingMidTermFlushDecider>(SplitAtDecision(2U));
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, store, decider);
     ASSERT_TRUE(handler.ok()) << handler.status();

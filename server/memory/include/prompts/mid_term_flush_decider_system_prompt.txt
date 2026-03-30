@@ -105,8 +105,9 @@ If `boundaries` is empty:
     a message with `role: "user"`. A new topic must not begin with an assistant message.
   - `reasoning`: Required. String. A brief (1-2 sentence) explanation of why this boundary exists.
 - Entries must be in chronological order (earliest boundary first).
-- Each resulting episode segment must contain at least 2 messages (at minimum one user + one
+- Each completed episode segment must contain at least 2 messages (at minimum one user + one
   assistant exchange).
+- When `tail_complete` is false, the retained live tail may be shorter than 2 messages.
 
 #### tail_complete
 - Required. Boolean.
@@ -441,7 +442,7 @@ Before finalizing your response, ensure:
 - Each entry in `boundaries` has exactly two fields: `starts_at` and `reasoning`.
 - Each `starts_at` references a message with `role: "user"`.
 - Entries in `boundaries` are in chronological order.
-- Each resulting episode segment contains at least 2 messages.
+- Each completed episode segment contains at least 2 messages.
 - When `tail_complete` is true, the final segment contains at least 2 messages.
 - `tail_complete` is a boolean.
 - `reasoning` is present and concise (1-2 sentences).
