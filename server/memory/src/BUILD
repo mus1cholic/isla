@@ -184,6 +184,7 @@ cc_library(
         ":memory_store",
         "//server/memory/include/isla/server/memory:memory_headers",
         "//server/src:ai_gateway_logging_utils",
+        "@abseil-cpp//absl/log:check",
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",

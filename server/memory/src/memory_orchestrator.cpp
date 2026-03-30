@@ -7,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
@@ -173,7 +174,10 @@ MemoryOrchestrator::MemoryOrchestrator(std::string session_id, WorkingMemory mem
       mid_term_compactor_(std::move(mid_term_compactor)), pending_mid_term_flushes_(),
       mid_term_flush_decider_interval_user_turns_(mid_term_flush_decider_interval_user_turns),
       user_turns_since_last_mid_term_decider_run_(0), next_episode_sequence_(1),
-      session_persisted_(false) {}
+      session_persisted_(false) {
+    CHECK_GT(mid_term_flush_decider_interval_user_turns_, 0U)
+        << "mid_term_flush_decider_interval_user_turns must be at least 1";
+}
 
 absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
                                                               const MemoryOrchestratorInit& init) {
