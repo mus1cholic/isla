@@ -25,6 +25,8 @@ inline constexpr std::string_view kMidTermCompactorSystemPromptRunfile =
     "server/memory/include/prompts/mid_term_compactor_system_prompt.txt";
 inline constexpr std::string_view kMidTermFlushDeciderSystemPromptRunfile =
     "server/memory/include/prompts/mid_term_flush_decider_system_prompt.txt";
+inline constexpr std::string_view kSleepCycleSemanticExtractorSystemPromptRunfile =
+    "server/memory/include/prompts/sleep_cycle_semantic_extractor_system_prompt.txt";
 inline constexpr std::string_view kFuturePromptTestRunfile =
     "server/memory/include/prompts/future_prompt_test.txt";
 
@@ -38,6 +40,8 @@ absl::StatusOr<std::string_view> PromptAssetRunfilePath(PromptAsset prompt_asset
         return kMidTermCompactorSystemPromptRunfile;
     case PromptAsset::kMidTermFlushDeciderSystemPrompt:
         return kMidTermFlushDeciderSystemPromptRunfile;
+    case PromptAsset::kSleepCycleSemanticExtractorSystemPrompt:
+        return kSleepCycleSemanticExtractorSystemPromptRunfile;
     case PromptAsset::kFuturePromptTest:
         return kFuturePromptTestRunfile;
     }

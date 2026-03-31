@@ -181,6 +181,7 @@ bool IsRetryableSessionStartStatus(const absl::Status& status) {
 struct MidTermMemoryComponents {
     isla::server::memory::MidTermFlushDeciderPtr flush_decider;
     isla::server::memory::MidTermCompactorPtr compactor;
+    isla::server::memory::SleepCycleSemanticExtractorPtr semantic_extractor;
 };
 
 absl::StatusOr<MidTermMemoryComponents>
@@ -230,9 +231,17 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
         return compactor.status();
     }
 
+    absl::StatusOr<isla::server::memory::SleepCycleSemanticExtractorPtr> semantic_extractor =
+        isla::server::memory::CreateLlmSleepCycleSemanticExtractor(
+            llm_client, ResolveMidTermCompactorModel(config), reasoning_effort);
+    if (!semantic_extractor.ok()) {
+        return semantic_extractor.status();
+    }
+
     return MidTermMemoryComponents{
         .flush_decider = std::move(*decider),
         .compactor = std::move(*compactor),
+        .semantic_extractor = std::move(*semantic_extractor),
     };
 }
 
@@ -263,6 +272,7 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
         } else {
             mid_term_flush_decider_ = std::move(created_components->flush_decider);
             mid_term_compactor_ = std::move(created_components->compactor);
+            sleep_cycle_semantic_extractor_ = std::move(created_components->semantic_extractor);
             LOG(INFO) << "AI gateway stub enabled mid-term memory flush_decider_model="
                       << SanitizeForLog(flush_decider_model)
                       << " compactor_model=" << SanitizeForLog(compactor_model)
@@ -1510,14 +1520,16 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
         }
         absl::StatusOr<isla::server::memory::MemoryOrchestrator> orchestrator =
             isla::server::memory::MemoryOrchestrator::Create(
-                std::string(session_id), isla::server::memory::MemoryOrchestratorInit{
-                                             .user_id = std::string(user_id),
-                                             .store = config_.memory_store,
-                                             .mid_term_flush_decider = mid_term_flush_decider_,
-                                             .mid_term_compactor = mid_term_compactor_,
-                                             .mid_term_flush_decider_interval_user_turns =
-                                                 config_.mid_term_flush_decider_interval_user_turns,
-                                         });
+                std::string(session_id),
+                isla::server::memory::MemoryOrchestratorInit{
+                    .user_id = std::string(user_id),
+                    .store = config_.memory_store,
+                    .mid_term_flush_decider = mid_term_flush_decider_,
+                    .mid_term_compactor = mid_term_compactor_,
+                    .sleep_cycle_semantic_extractor = sleep_cycle_semantic_extractor_,
+                    .mid_term_flush_decider_interval_user_turns =
+                        config_.mid_term_flush_decider_interval_user_turns,
+                });
         if (!orchestrator.ok()) {
             failed_session_starts_.insert_or_assign(std::string(session_id), orchestrator.status());
             return orchestrator.status();

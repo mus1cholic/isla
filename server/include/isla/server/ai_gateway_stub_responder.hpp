@@ -258,6 +258,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     WorkerPool worker_pool_;
     isla::server::memory::MidTermFlushDeciderPtr mid_term_flush_decider_;
     isla::server::memory::MidTermCompactorPtr mid_term_compactor_;
+    isla::server::memory::SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor_;
     bool mid_term_memory_configured_ = false;
     absl::Status mid_term_memory_initialization_status_ = absl::OkStatus();
     mutable std::mutex mutex_;

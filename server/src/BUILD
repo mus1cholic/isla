@@ -464,6 +464,7 @@ cc_library(
         "//server/include/isla/server:server_headers",
         "//server/memory/src:mid_term_compactor",
         "//server/memory/src:mid_term_flush_decider",
+        "//server/memory/src:sleep_cycle_semantic_extractor",
         ":ai_gateway_executor",
         ":ai_gateway_logging_utils",
         ":gemini_api_embedding_client",

@@ -12,6 +12,7 @@ cc_library(
         "memory_types.hpp",
         "memory_orchestrator.hpp",
         "prompt_loader.hpp",
+        "sleep_cycle_semantic_extractor.hpp",
         "system_prompt.hpp",
         "supabase_memory_store.hpp",
         "working_memory_utils.hpp",

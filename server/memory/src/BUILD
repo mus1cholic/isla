@@ -176,6 +176,24 @@ cc_library(
 )
 
 cc_library(
+    name = "sleep_cycle_semantic_extractor",
+    srcs = ["sleep_cycle_semantic_extractor.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":llm_json_utils",
+        ":memory_types",
+        ":prompt_loader",
+        "//server/include/isla/server:server_headers",
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "//server/src:ai_gateway_logging_utils",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
     name = "memory_orchestrator",
     srcs = ["memory_orchestrator.cpp"],
     visibility = ["//visibility:public"],
@@ -188,6 +206,7 @@ cc_library(
         "@abseil-cpp//absl/log:log",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
     ],
 )
 
@@ -340,6 +359,17 @@ cc_test(
         ":mid_term_flush_decider",
         ":prompt_loader",
         "//server/include/isla/server:server_headers",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "sleep_cycle_semantic_extractor_test",
+    srcs = ["sleep_cycle_semantic_extractor_test.cpp"],
+    deps = [
+        "//server/src:llm_client_mock",
+        ":sleep_cycle_semantic_extractor",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
     ],
