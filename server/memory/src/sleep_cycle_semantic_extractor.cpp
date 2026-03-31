@@ -29,6 +29,10 @@ using isla::server::LlmTextDeltaEvent;
 using isla::server::ai_gateway::SanitizeForLog;
 using nlohmann::json;
 
+constexpr std::size_t kMaxSemanticEntitiesPerExtraction = 128;
+constexpr std::size_t kMaxSemanticRelationshipsPerExtraction = 256;
+constexpr std::size_t kMaxSourceEpisodeIdsPerSemanticItem = 16;
+
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
 }
@@ -69,6 +73,10 @@ absl::StatusOr<std::vector<std::string>> ParseRequiredStringArray(const json& ob
     if (!object.at(field_name).is_array()) {
         return invalid_argument(std::string(context) + " field '" + std::string(field_name) +
                                 "' must be an array");
+    }
+    if (object.at(field_name).size() > kMaxSourceEpisodeIdsPerSemanticItem) {
+        return invalid_argument(std::string(context) + " field '" + std::string(field_name) +
+                                "' exceeds max size");
     }
     std::vector<std::string> values;
     values.reserve(object.at(field_name).size());
@@ -158,6 +166,13 @@ ParseResponse(const std::string& response_text,
         return invalid_argument(
             "sleep-cycle semantic extractor field 'relationships' must be an array");
     }
+    if (response.at("entities").size() > kMaxSemanticEntitiesPerExtraction) {
+        return invalid_argument("sleep-cycle semantic extractor field 'entities' exceeds max size");
+    }
+    if (response.at("relationships").size() > kMaxSemanticRelationshipsPerExtraction) {
+        return invalid_argument(
+            "sleep-cycle semantic extractor field 'relationships' exceeds max size");
+    }
 
     SleepCycleSemanticExtractionResult result;
     constexpr std::array<std::string_view, 3> kEntityKeys = { "label", "category",
@@ -200,6 +215,11 @@ ParseResponse(const std::string& response_text,
         "from_label",  "from_category", "predicate",          "to_label",
         "to_category", "evidence",      "source_episode_ids",
     };
+    constexpr std::array<std::string_view, 3> kAllowedEvidenceValues = {
+        "EXPLICIT_STATEMENT",
+        "STRONG_INFERENCE",
+        "WEAK_INFERENCE",
+    };
     for (const json& relationship_json : response.at("relationships")) {
         if (absl::Status status =
                 ValidateExactObjectKeys(relationship_json, kRelationshipKeys,
@@ -218,6 +238,24 @@ ParseResponse(const std::string& response_text,
         if (!relationship_json.at("evidence").is_string()) {
             return invalid_argument(
                 "sleep-cycle semantic extractor relationship field 'evidence' must be a string");
+        }
+        const std::string evidence_value = relationship_json.at("evidence").get<std::string>();
+        if (evidence_value.empty()) {
+            return invalid_argument(
+                "sleep-cycle semantic extractor relationship field 'evidence' must be a "
+                "non-empty string");
+        }
+        bool allowed_evidence_value = false;
+        for (std::string_view allowed_value : kAllowedEvidenceValues) {
+            if (evidence_value == allowed_value) {
+                allowed_evidence_value = true;
+                break;
+            }
+        }
+        if (!allowed_evidence_value) {
+            return invalid_argument(
+                "sleep-cycle semantic extractor relationship field 'evidence' must be one of "
+                "EXPLICIT_STATEMENT, STRONG_INFERENCE, or WEAK_INFERENCE");
         }
         absl::StatusOr<std::vector<std::string>> source_episode_ids = ParseRequiredStringArray(
             relationship_json, "source_episode_ids", "sleep-cycle semantic extractor relationship");

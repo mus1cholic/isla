@@ -1,7 +1,6 @@
 #include "isla/server/memory/memory_orchestrator.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +16,7 @@
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/strings/ascii.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
 #include "isla/server/memory/conversation.hpp"
 
@@ -48,8 +48,8 @@ std::string NormalizeIdentifierComponent(std::string_view text) {
     normalized.reserve(text.size());
     bool last_was_separator = true;
     for (const unsigned char ch : text) {
-        if (std::isalnum(ch) != 0) {
-            normalized.push_back(static_cast<char>(std::tolower(ch)));
+        if (absl::ascii_isalnum(ch)) {
+            normalized.push_back(absl::ascii_tolower(ch));
             last_was_separator = false;
             continue;
         }
