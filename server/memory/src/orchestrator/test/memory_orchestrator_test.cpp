@@ -1377,6 +1377,70 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryFallsBackToRawIdsWhenLabelEnrichme
     EXPECT_NE(state.retrieved_memory->find("User discussed their cat Mochi"), std::string::npos);
 }
 
+TEST_F(MemoryOrchestratorTest,
+       HandleUserQueryFallsBackToCachedSeedEntitiesWhenQueryAwareLabelsAreUnavailable) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_mochi",
+            .user_id = "user_001",
+            .label = "Mochi",
+            .category = "pet",
+            .familiar_label_text = std::string("Mochi - Airi's cat"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_001",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "owns",
+            .to_entity_id = "entity_mochi",
+            .weight = 10.0,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->long_term_episodes = {
+        LongTermEpisode{
+            .lte_id = "lte_001",
+            .user_id = "user_001",
+            .summary_compressed = "User discussed their cat Mochi",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    ON_CALL(*store, ListEntitiesByIds(_))
+        .WillByDefault(Return(absl::UnimplementedError("batch entity lookup unavailable")));
+    ON_CALL(*store, GetEntity(_))
+        .WillByDefault(Return(absl::UnimplementedError("single entity lookup unavailable")));
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(compactor, store);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "Tell me about Mochi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("entity_user owns entity_mochi (weight: 10)"),
+              std::string::npos);
+    EXPECT_NE(state.retrieved_memory->find("User discussed their cat Mochi"), std::string::npos);
+}
+
 TEST_F(MemoryOrchestratorTest, HandleUserQuerySkipsLongTermContextWhenQueryMatchesNoSeedEntity) {
     auto store = std::make_shared<RecordingMemoryStore>();
     store->entities = {

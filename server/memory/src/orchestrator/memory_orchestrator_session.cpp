@@ -13,8 +13,8 @@
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
-#include "absl/strings/ascii.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/memory/identifier_utils.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
@@ -24,27 +24,6 @@ using isla::server::ai_gateway::SanitizeForLog;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
-}
-
-std::string NormalizeIdentifierComponent(std::string_view text) {
-    std::string normalized;
-    normalized.reserve(text.size());
-    bool last_was_separator = true;
-    for (const unsigned char ch : text) {
-        if (absl::ascii_isalnum(ch)) {
-            normalized.push_back(absl::ascii_tolower(ch));
-            last_was_separator = false;
-            continue;
-        }
-        if (!last_was_separator) {
-            normalized.push_back('_');
-            last_was_separator = true;
-        }
-    }
-    while (!normalized.empty() && normalized.back() == '_') {
-        normalized.pop_back();
-    }
-    return normalized;
 }
 
 bool ContainsNormalizedTerm(std::string_view normalized_text, std::string_view normalized_term) {
@@ -137,6 +116,7 @@ std::vector<std::string> SelectSeedEntityIdsForRetrievedMemory(
         return {};
     }
 
+    bool has_any_usable_noncore_label = false;
     std::vector<std::string> seed_entity_ids;
     seed_entity_ids.reserve(cache_entity_ids.size());
     for (const std::string& entity_id : cache_entity_ids) {
@@ -150,9 +130,15 @@ std::vector<std::string> SelectSeedEntityIdsForRetrievedMemory(
             continue;
         }
         const std::string normalized_label = NormalizeIdentifierComponent(entity_it->second->label);
+        if (!normalized_label.empty()) {
+            has_any_usable_noncore_label = true;
+        }
         if (ContainsNormalizedTerm(normalized_query, normalized_label)) {
             seed_entity_ids.push_back(entity_id);
         }
+    }
+    if (seed_entity_ids.empty() && !has_any_usable_noncore_label) {
+        return cache_entity_ids;
     }
     return seed_entity_ids;
 }

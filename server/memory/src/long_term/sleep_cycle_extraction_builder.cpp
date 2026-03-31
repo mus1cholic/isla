@@ -13,8 +13,8 @@
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
-#include "absl/strings/ascii.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/memory/identifier_utils.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
@@ -41,30 +41,6 @@ std::uint64_t StableHash64(std::string_view text) {
         hash *= kFnv1aPrime;
     }
     return hash;
-}
-
-std::string NormalizeIdentifierComponent(std::string_view text) {
-    std::string normalized;
-    normalized.reserve(text.size());
-    bool last_was_separator = true;
-    for (const unsigned char ch : text) {
-        if (absl::ascii_isalnum(ch)) {
-            normalized.push_back(absl::ascii_tolower(ch));
-            last_was_separator = false;
-            continue;
-        }
-        if (!last_was_separator) {
-            normalized.push_back('_');
-            last_was_separator = true;
-        }
-    }
-    while (!normalized.empty() && normalized.back() == '_') {
-        normalized.pop_back();
-    }
-    if (normalized.empty()) {
-        return "unknown";
-    }
-    return normalized;
 }
 
 std::string BuildLongTermEpisodeId(std::string_view episode_id) {

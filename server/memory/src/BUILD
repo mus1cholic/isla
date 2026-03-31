@@ -129,6 +129,16 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "identifier_utils",
+    srcs = ["shared/identifier_utils.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
 cc_test(
     name = "llm_json_utils_test",
     srcs = ["shared/test/llm_json_utils_test.cpp"],
@@ -201,6 +211,7 @@ cc_library(
         "//server/memory/src:__pkg__",
     ],
     deps = [
+        ":identifier_utils",
         ":memory_store",
         "//server/memory/include/isla/server/memory:memory_headers",
         "//server/src:ai_gateway_logging_utils",
@@ -222,6 +233,7 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":identifier_utils",
         ":working_memory",
         ":memory_store",
         ":sleep_cycle_extraction_builder",

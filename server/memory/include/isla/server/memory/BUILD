@@ -4,6 +4,7 @@ cc_library(
     name = "memory_headers",
     hdrs = [
         "conversation.hpp",
+        "identifier_utils.hpp",
         "mid_term_compactor.hpp",
         "mid_term_flush_decider.hpp",
         "mid_term_memory.hpp",
