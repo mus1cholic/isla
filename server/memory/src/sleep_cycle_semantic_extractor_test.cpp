@@ -85,6 +85,8 @@ TEST(SleepCycleSemanticExtractorTest, ExtractParsesStrictJsonResponse) {
     EXPECT_EQ(result->relationships.front().predicate, "owns");
     EXPECT_EQ(result->relationships.front().evidence,
               SemanticRelationshipEvidence::ExplicitStatement);
+    EXPECT_EQ(result->relationships.front().operation, SemanticRelationshipOperation::Append);
+    EXPECT_EQ(result->relationships.front().target_relationship_id, std::nullopt);
 }
 
 TEST(SleepCycleSemanticExtractorTest, ExtractAcceptsCodeFencedJson) {
