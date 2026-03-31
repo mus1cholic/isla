@@ -33,6 +33,7 @@ constexpr std::uint64_t kFnv1aOffsetBasis = 14695981039346656037ULL;
 constexpr std::uint64_t kFnv1aPrime = 1099511628211ULL;
 constexpr int kNewSemanticEntityActiveness = 3;
 constexpr int kMaxEntityActiveness = 10;
+constexpr std::size_t kMaxExistingRelationshipsForSemanticContext = 256;
 constexpr double kRelationshipRecencyDecayPerDay = 0.0016;
 constexpr double kMinimumEffectiveRelationshipWeightFactor = 0.1;
 
@@ -769,6 +770,12 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
             return entity_ids;
         };
 
+        // NOTICE: This currently uses a correctness-first two-pass extraction flow.
+        // The first pass discovers likely entities from the mid-term episodes, then the
+        // second pass re-runs extraction with the relevant existing subgraph so the LLM
+        // can choose APPEND/STRENGTHEN/SUPERSEDE with better recall. A future optimization
+        // could replace this with a single bounded preloaded-context pass, or only trigger
+        // the second pass when the preliminary extraction indicates conflict-sensitive work.
         SleepCycleSemanticExtractionRequest semantic_request{
             .user_id = std::string(user_id),
             .mid_term_episodes = mid_term_episodes,
@@ -857,8 +864,22 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
             std::sort(existing_relationships.begin(), existing_relationships.end(),
                       [](const ExistingSemanticRelationship& lhs,
                          const ExistingSemanticRelationship& rhs) {
+                          if (lhs.weight != rhs.weight) {
+                              return lhs.weight > rhs.weight;
+                          }
+                          if (lhs.last_observed_at != rhs.last_observed_at) {
+                              return lhs.last_observed_at > rhs.last_observed_at;
+                          }
                           return lhs.relationship_id < rhs.relationship_id;
                       });
+            if (existing_relationships.size() > kMaxExistingRelationshipsForSemanticContext) {
+                LOG(WARNING)
+                    << "MemoryOrchestrator truncated semantic extraction relationship context"
+                    << " session_id=" << SanitizeForLog(session_id_)
+                    << " original_count=" << existing_relationships.size()
+                    << " truncated_count=" << kMaxExistingRelationshipsForSemanticContext;
+                existing_relationships.resize(kMaxExistingRelationshipsForSemanticContext);
+            }
             if (!existing_relationships.empty()) {
                 semantic_request.existing_relationships = std::move(existing_relationships);
                 absl::StatusOr<SleepCycleSemanticExtractionResult> contextual_semantic_result =
@@ -1118,6 +1139,14 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                                             "target relationship");
                 }
                 target_relationship = &target_it->second;
+                if (target_relationship->user_id != user_id) {
+                    return invalid_argument("sleep-cycle semantic extraction referenced a target "
+                                            "relationship owned by a different user");
+                }
+                if (target_relationship->is_archived) {
+                    return invalid_argument("sleep-cycle semantic extraction referenced an "
+                                            "archived target relationship");
+                }
             }
 
             const auto build_new_relationship = [&]() {
@@ -1198,10 +1227,14 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                         "sleep-cycle semantic extraction SUPERSEDE relationship is missing its "
                         "target");
                 }
-                if (target_relationship->from_entity_id == aggregated_relationship.from_entity_id &&
-                    target_relationship->to_entity_id == aggregated_relationship.to_entity_id &&
-                    CanonicalizePredicate(target_relationship->predicate) ==
+                if (target_relationship->from_entity_id != aggregated_relationship.from_entity_id ||
+                    CanonicalizePredicate(target_relationship->predicate) !=
                         aggregated_relationship.predicate) {
+                    return invalid_argument("sleep-cycle semantic extraction SUPERSEDE target "
+                                            "must be comparable to the observed relationship "
+                                            "triple (same source entity and predicate)");
+                }
+                if (target_relationship->to_entity_id == aggregated_relationship.to_entity_id) {
                     return invalid_argument("sleep-cycle semantic extraction SUPERSEDE target "
                                             "must differ from the observed relationship triple");
                 }
