@@ -1,6 +1,9 @@
 You will receive a JSON object describing the current sleep-cycle consolidation input.
 
 Your task is to extract durable semantic memory candidates from the provided mid-term episodes.
+The input may also include `existing_relationships`, which is a relevant active subgraph from the
+current Knowledge Graph. Use it to decide whether a newly observed fact should be appended,
+strengthened, or supersede an existing fact.
 
 Return only JSON. Do not use markdown. Do not add commentary before or after the JSON object.
 
@@ -29,6 +32,8 @@ Output schema:
       "predicate": "knows",
       "to_label": "Sarah",
       "to_category": "person",
+      "operation": "APPEND",
+      "target_relationship_id": null,
       "evidence": "EXPLICIT_STATEMENT",
       "source_episode_ids": ["ep_001"]
     }
@@ -39,9 +44,17 @@ Rules:
 - Use exactly the top-level keys `entities` and `relationships`.
 - Every entity object must contain exactly: `label`, `category`, `source_episode_ids`.
 - Every relationship object must contain exactly:
-  `from_label`, `from_category`, `predicate`, `to_label`, `to_category`, `evidence`,
-  `source_episode_ids`.
+  `from_label`, `from_category`, `predicate`, `to_label`, `to_category`, `operation`,
+  `target_relationship_id`, `evidence`, `source_episode_ids`.
 - `source_episode_ids` must contain only episode ids present in the input.
+- Use operation values exactly from: `APPEND`, `STRENGTHEN`, `SUPERSEDE`.
+- Use `APPEND` when the fact is safe to add alongside existing facts.
+- Use `STRENGTHEN` when the fact matches an existing relationship in `existing_relationships`.
+- Use `SUPERSEDE` when the fact contradicts an existing relationship in `existing_relationships`.
+- For `APPEND`, set `target_relationship_id` to `null`.
+- For `STRENGTHEN` or `SUPERSEDE`, set `target_relationship_id` to the exact
+  `relationship_id` from `existing_relationships`.
+- If `existing_relationships` is empty, use `APPEND` with `target_relationship_id: null`.
 - Use evidence values exactly from:
   `EXPLICIT_STATEMENT`, `STRONG_INFERENCE`, `WEAK_INFERENCE`.
 - Prefer `EXPLICIT_STATEMENT` only when the episode summary clearly states the fact.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,10 +17,27 @@ enum class SemanticRelationshipEvidence {
     WeakInference,
 };
 
+enum class SemanticRelationshipOperation {
+    Append,
+    Strengthen,
+    Supersede,
+};
+
 struct SemanticEntityCandidate {
     std::string label;
     std::string category;
     std::vector<std::string> source_episode_ids;
+};
+
+struct ExistingSemanticRelationship {
+    std::string relationship_id;
+    std::string from_label;
+    std::string from_category;
+    std::string predicate;
+    std::string to_label;
+    std::string to_category;
+    double weight = 0.0;
+    Timestamp last_observed_at;
 };
 
 struct SemanticRelationshipObservation {
@@ -28,6 +46,8 @@ struct SemanticRelationshipObservation {
     std::string predicate;
     std::string to_label;
     std::string to_category;
+    SemanticRelationshipOperation operation = SemanticRelationshipOperation::Append;
+    std::optional<std::string> target_relationship_id;
     SemanticRelationshipEvidence evidence = SemanticRelationshipEvidence::WeakInference;
     std::vector<std::string> source_episode_ids;
 };
@@ -35,6 +55,7 @@ struct SemanticRelationshipObservation {
 struct SleepCycleSemanticExtractionRequest {
     std::string user_id;
     std::vector<Episode> mid_term_episodes;
+    std::vector<ExistingSemanticRelationship> existing_relationships;
 };
 
 struct SleepCycleSemanticExtractionResult {
@@ -47,8 +68,8 @@ class SleepCycleSemanticExtractor {
     virtual ~SleepCycleSemanticExtractor() = default;
 
     // Extracts semantic entities and relationship observations from the current sleep-cycle
-    // episode set. The backend is responsible for translating observations into KG writes and
-    // evidence accumulation math.
+    // episode set. The backend is responsible for translating observations into KG writes,
+    // evidence accumulation math, and conflict-resolution persistence.
     [[nodiscard]] virtual absl::StatusOr<SleepCycleSemanticExtractionResult>
     Extract(const SleepCycleSemanticExtractionRequest& request) = 0;
 };
@@ -67,13 +88,25 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         { SemanticRelationshipEvidence::WeakInference, "WEAK_INFERENCE" },
     })
 
+NLOHMANN_JSON_SERIALIZE_ENUM(
+    SemanticRelationshipOperation,
+    {
+        { SemanticRelationshipOperation::Append, "APPEND" },
+        { SemanticRelationshipOperation::Strengthen, "STRENGTHEN" },
+        { SemanticRelationshipOperation::Supersede, "SUPERSEDE" },
+    })
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SemanticEntityCandidate, label, category,
                                                 source_episode_ids)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ExistingSemanticRelationship, relationship_id,
+                                                from_label, from_category, predicate, to_label,
+                                                to_category, weight, last_observed_at)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SemanticRelationshipObservation, from_label,
                                                 from_category, predicate, to_label, to_category,
-                                                evidence, source_episode_ids)
+                                                operation, target_relationship_id, evidence,
+                                                source_episode_ids)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SleepCycleSemanticExtractionRequest, user_id,
-                                                mid_term_episodes)
+                                                mid_term_episodes, existing_relationships)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SleepCycleSemanticExtractionResult, entities,
                                                 relationships)
 
