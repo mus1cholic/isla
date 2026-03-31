@@ -1,10 +1,13 @@
 #include "isla/server/memory/memory_orchestrator.hpp"
 
-#include <cstddef>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -19,6 +22,88 @@ using isla::server::ai_gateway::SanitizeForLog;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
+}
+
+struct RetrievedRelationshipCandidate {
+    std::string relationship_id;
+    std::string from_text;
+    std::string predicate;
+    std::string to_text;
+    double weight = 0.0;
+};
+
+struct RetrievedEpisodeCandidate {
+    std::string lte_id;
+    std::string summary_compressed;
+    Timestamp created_at;
+};
+
+absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>>
+LoadEntityMapForRetrievedMemory(MemoryStore* store, const std::vector<std::string>& entity_ids) {
+    std::unordered_map<std::string, std::optional<Entity>> entities_by_id;
+    if (entity_ids.empty()) {
+        return entities_by_id;
+    }
+
+    const absl::StatusOr<std::vector<Entity>> entities = store->ListEntitiesByIds(entity_ids);
+    if (entities.ok()) {
+        entities_by_id.reserve(entities->size());
+        for (const Entity& entity : *entities) {
+            entities_by_id.emplace(entity.entity_id, entity);
+        }
+        return entities_by_id;
+    }
+    if (!absl::IsUnimplemented(entities.status())) {
+        return entities.status();
+    }
+
+    entities_by_id.reserve(entity_ids.size());
+    for (const std::string& entity_id : entity_ids) {
+        const absl::StatusOr<std::optional<Entity>> entity = store->GetEntity(entity_id);
+        if (!entity.ok()) {
+            if (absl::IsUnimplemented(entity.status())) {
+                entities_by_id.emplace(entity_id, std::nullopt);
+                continue;
+            }
+            return entity.status();
+        }
+        entities_by_id.emplace(entity_id, *entity);
+    }
+    return entities_by_id;
+}
+
+std::string RenderRetrievedMemory(const std::vector<RetrievedRelationshipCandidate>& relationships,
+                                  const std::vector<RetrievedEpisodeCandidate>& episodes) {
+    std::string output;
+    if (!relationships.empty()) {
+        output.append("KG Facts:\n");
+        for (const RetrievedRelationshipCandidate& relationship : relationships) {
+            output.append("- ");
+            output.append(relationship.from_text);
+            output.push_back(' ');
+            output.append(relationship.predicate);
+            output.push_back(' ');
+            output.append(relationship.to_text);
+            if (relationship.weight > 0.0) {
+                output.append(" (weight: ");
+                output.append(std::to_string(static_cast<int>(std::round(relationship.weight))));
+                output.push_back(')');
+            }
+            output.push_back('\n');
+        }
+    }
+    if (!episodes.empty()) {
+        if (!output.empty()) {
+            output.push_back('\n');
+        }
+        output.append("Past Experiences:\n");
+        for (const RetrievedEpisodeCandidate& episode : episodes) {
+            output.append("- ");
+            output.append(episode.summary_compressed);
+            output.push_back('\n');
+        }
+    }
+    return output;
 }
 
 } // namespace
@@ -220,16 +305,25 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
         return std::nullopt;
     }
 
+    std::unordered_set<std::string> seen_entity_ids;
     std::vector<std::string> entity_ids;
     entity_ids.reserve(cache.active_models.size() + cache.familiar_labels.size());
     for (const ActiveModel& model : cache.active_models) {
-        entity_ids.push_back(model.entity_id);
+        if (seen_entity_ids.insert(model.entity_id).second) {
+            entity_ids.push_back(model.entity_id);
+        }
     }
     for (const FamiliarLabel& label : cache.familiar_labels) {
-        entity_ids.push_back(label.entity_id);
+        if (seen_entity_ids.insert(label.entity_id).second) {
+            entity_ids.push_back(label.entity_id);
+        }
     }
 
-    std::string context;
+    std::unordered_set<std::string> seen_relationship_ids;
+    std::vector<RetrievedRelationshipCandidate> relationship_candidates;
+    std::unordered_set<std::string> seen_episode_ids;
+    std::vector<RetrievedEpisodeCandidate> episode_candidates;
+    std::unordered_set<std::string> related_entity_ids;
     for (const std::string& entity_id : entity_ids) {
         const absl::StatusOr<std::vector<Relationship>> relationships =
             store_->ListRelationshipsForEntity(entity_id);
@@ -242,13 +336,19 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
             }
         } else {
             for (const Relationship& rel : *relationships) {
-                context.append("- ");
-                context.append(rel.from_entity_id);
-                context.append(" ");
-                context.append(rel.predicate);
-                context.append(" ");
-                context.append(rel.to_entity_id);
-                context.push_back('\n');
+                if (rel.is_archived || rel.user_id != memory_.snapshot().conversation.user_id ||
+                    !seen_relationship_ids.insert(rel.relationship_id).second) {
+                    continue;
+                }
+                related_entity_ids.insert(rel.from_entity_id);
+                related_entity_ids.insert(rel.to_entity_id);
+                relationship_candidates.push_back(RetrievedRelationshipCandidate{
+                    .relationship_id = rel.relationship_id,
+                    .from_text = rel.from_entity_id,
+                    .predicate = rel.predicate,
+                    .to_text = rel.to_entity_id,
+                    .weight = rel.weight,
+                });
             }
         }
 
@@ -266,16 +366,61 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
         }
 
         for (const LongTermEpisode& episode : *episodes) {
-            context.append("- [episode] ");
-            context.append(episode.summary_compressed);
-            context.push_back('\n');
+            if (episode.user_id != memory_.snapshot().conversation.user_id ||
+                !seen_episode_ids.insert(episode.lte_id).second) {
+                continue;
+            }
+            episode_candidates.push_back(RetrievedEpisodeCandidate{
+                .lte_id = episode.lte_id,
+                .summary_compressed = episode.summary_compressed,
+                .created_at = episode.created_at,
+            });
         }
     }
 
-    if (context.empty()) {
+    const std::vector<std::string> related_entity_ids_vector(related_entity_ids.begin(),
+                                                             related_entity_ids.end());
+    absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>> related_entities =
+        LoadEntityMapForRetrievedMemory(store_.get(), related_entity_ids_vector);
+    if (related_entities.ok()) {
+        for (RetrievedRelationshipCandidate& relationship : relationship_candidates) {
+            if (const auto from_it = related_entities->find(relationship.from_text);
+                from_it != related_entities->end() && from_it->second.has_value()) {
+                relationship.from_text = from_it->second->label;
+            }
+            if (const auto to_it = related_entities->find(relationship.to_text);
+                to_it != related_entities->end() && to_it->second.has_value()) {
+                relationship.to_text = to_it->second->label;
+            }
+        }
+    } else {
+        LOG(WARNING) << "MemoryOrchestrator failed to retrieve entity labels for long-term context"
+                     << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                     << SanitizeForLog(related_entities.status().message()) << "'";
+    }
+
+    std::sort(
+        relationship_candidates.begin(), relationship_candidates.end(),
+        [](const RetrievedRelationshipCandidate& lhs, const RetrievedRelationshipCandidate& rhs) {
+            if (lhs.weight != rhs.weight) {
+                return lhs.weight > rhs.weight;
+            }
+            return lhs.relationship_id < rhs.relationship_id;
+        });
+    std::sort(episode_candidates.begin(), episode_candidates.end(),
+              [](const RetrievedEpisodeCandidate& lhs, const RetrievedEpisodeCandidate& rhs) {
+                  if (lhs.created_at != rhs.created_at) {
+                      return lhs.created_at > rhs.created_at;
+                  }
+                  return lhs.lte_id < rhs.lte_id;
+              });
+
+    std::string rendered_context =
+        RenderRetrievedMemory(relationship_candidates, episode_candidates);
+    if (rendered_context.empty()) {
         return std::nullopt;
     }
-    return context;
+    return rendered_context;
 }
 
 } // namespace isla::server::memory

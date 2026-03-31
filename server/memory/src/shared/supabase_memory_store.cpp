@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -375,6 +376,25 @@ HttpRequestSpec BuildGetRequest(std::string target_path,
     };
     request.headers.emplace_back("Accept-Profile", std::string(schema));
     return request;
+}
+
+std::string BuildPostgrestInFilter(const std::vector<std::string>& values) {
+    std::string filter = "in.(";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0U) {
+            filter.push_back(',');
+        }
+        filter.push_back('"');
+        for (const char ch : values[i]) {
+            if (ch == '"' || ch == '\\') {
+                filter.push_back('\\');
+            }
+            filter.push_back(ch);
+        }
+        filter.push_back('"');
+    }
+    filter.push_back(')');
+    return filter;
 }
 
 HttpRequestSpec BuildRpcRequest(std::string_view function_name, const json& body,
@@ -1200,6 +1220,59 @@ class SupabaseMemoryStore final : public MemoryStore {
         }
         latency.SetOutcome("ok");
         return std::optional<Entity>(std::move(*entity));
+    }
+
+    [[nodiscard]] absl::StatusOr<std::vector<Entity>>
+    ListEntitiesByIds(const std::vector<std::string>& entity_ids) const override {
+        ScopedSupabaseOperationLatency latency(config_, "list_entities_by_ids", std::nullopt);
+        if (entity_ids.empty()) {
+            latency.SetOutcome("ok");
+            return std::vector<Entity>{};
+        }
+        std::unordered_set<std::string> unique_ids;
+        unique_ids.reserve(entity_ids.size());
+        std::vector<std::string> ordered_unique_ids;
+        ordered_unique_ids.reserve(entity_ids.size());
+        for (const std::string& entity_id : entity_ids) {
+            if (entity_id.empty()) {
+                latency.SetOutcome("validation_error");
+                return absl::InvalidArgumentError(
+                    "ListEntitiesByIds requires all entity_ids to be non-empty");
+            }
+            if (unique_ids.insert(entity_id).second) {
+                ordered_unique_ids.push_back(entity_id);
+            }
+        }
+
+        const HttpRequestSpec request =
+            BuildGetRequest("/rest/v1/entities",
+                            {
+                                { "select", std::string(kEntityColumns) },
+                                { "entity_id", BuildPostgrestInFilter(ordered_unique_ids) },
+                                { "order", "created_at.asc" },
+                            },
+                            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        const absl::StatusOr<json> rows = ParseJsonArrayResponse(*response, "supabase entities");
+        if (!rows.ok()) {
+            return rows.status();
+        }
+
+        std::vector<Entity> entities;
+        entities.reserve(rows->size());
+        for (const json& row : *rows) {
+            absl::StatusOr<Entity> entity = ParseEntityRow(row);
+            if (!entity.ok()) {
+                return entity.status();
+            }
+            entities.push_back(std::move(*entity));
+        }
+        latency.SetOutcome("ok");
+        return entities;
     }
 
     [[nodiscard]] absl::StatusOr<std::vector<Relationship>>

@@ -38,6 +38,8 @@ class MockMemoryStore : public MemoryStore {
                 (std::string_view user_id), (const, override));
     MOCK_METHOD((absl::StatusOr<std::optional<Entity>>), GetEntity, (std::string_view entity_id),
                 (const, override));
+    MOCK_METHOD((absl::StatusOr<std::vector<Entity>>), ListEntitiesByIds,
+                (const std::vector<std::string>& entity_ids), (const, override));
     MOCK_METHOD((absl::StatusOr<std::vector<Relationship>>), ListRelationshipsForEntity,
                 (std::string_view entity_id), (const, override));
     MOCK_METHOD((absl::StatusOr<std::vector<LongTermEpisode>>), ListLongTermEpisodesForEntity,

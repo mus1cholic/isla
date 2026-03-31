@@ -1615,6 +1615,63 @@ TEST(SupabaseMemoryStoreTest, ListEntitiesByUserReturnsEntitiesFromGetResponse) 
     EXPECT_FALSE((*entities)[0].name_embedding.has_value());
 }
 
+TEST(SupabaseMemoryStoreTest, ListEntitiesByIdsReturnsEntitiesFromBatchGetResponse) {
+    const json response_rows = json::array({
+        json{
+            { "entity_id", "ent_001" },
+            { "user_id", "user_001" },
+            { "label", "Alice" },
+            { "category", "person" },
+            { "activeness", 5 },
+            { "active_model_text", nullptr },
+            { "familiar_label_text", nullptr },
+            { "name_embedding", nullptr },
+            { "created_at", "2026-03-08T14:00:00Z" },
+            { "updated_at", "2026-03-08T14:00:00Z" },
+        },
+        json{
+            { "entity_id", "ent_002" },
+            { "user_id", "user_001" },
+            { "label", "Mochi" },
+            { "category", "pet" },
+            { "activeness", 3 },
+            { "active_model_text", nullptr },
+            { "familiar_label_text", nullptr },
+            { "name_embedding", nullptr },
+            { "created_at", "2026-03-08T14:01:00Z" },
+            { "updated_at", "2026-03-08T14:01:00Z" },
+        },
+    });
+    const std::string response_body = response_rows.dump();
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<Entity>> entities =
+        (*store)->ListEntitiesByIds({ "ent_002", "ent_001", "ent_002" });
+
+    ASSERT_TRUE(entities.ok()) << entities.status();
+    ASSERT_EQ(entities->size(), 2U);
+    EXPECT_EQ((*entities)[0].entity_id, "ent_001");
+    EXPECT_EQ((*entities)[1].entity_id, "ent_002");
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests[0].find("GET /rest/v1/entities?select="), std::string::npos);
+    EXPECT_NE(requests[0].find("entity_id=in.%28%22ent_002%22%2C%22ent_001%22%29"),
+              std::string::npos);
+}
+
 TEST(SupabaseMemoryStoreTest, GetEntityReturnsEntityWhenFound) {
     const json response_rows = json::array({
         json{
