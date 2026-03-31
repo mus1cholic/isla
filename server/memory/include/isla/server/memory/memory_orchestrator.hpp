@@ -243,13 +243,6 @@ class MemoryOrchestrator {
     [[nodiscard]] absl::StatusOr<std::size_t>
     ConsolidateToLongTerm(const std::vector<Episode>& mid_term_episodes);
 
-    // Builds the persistence batch produced by one sleep-cycle extraction pass, including
-    // long-term episode writes and, when a semantic extractor is configured, entity writes,
-    // relationship writes, and episode-entity links derived from the mid-term episodes.
-    [[nodiscard]] absl::StatusOr<SleepCycleExtractionResult>
-    BuildSleepCycleExtractionResult(std::string_view user_id,
-                                    const std::vector<Episode>& mid_term_episodes) const;
-
     struct CompletedFlushBuildInput {
         CompactedMidTermEpisode compacted;
         Timestamp episode_created_at;
