@@ -88,13 +88,12 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         { SemanticRelationshipEvidence::WeakInference, "WEAK_INFERENCE" },
     })
 
-NLOHMANN_JSON_SERIALIZE_ENUM(
-    SemanticRelationshipOperation,
-    {
-        { SemanticRelationshipOperation::Append, "APPEND" },
-        { SemanticRelationshipOperation::Strengthen, "STRENGTHEN" },
-        { SemanticRelationshipOperation::Supersede, "SUPERSEDE" },
-    })
+NLOHMANN_JSON_SERIALIZE_ENUM(SemanticRelationshipOperation,
+                             {
+                                 { SemanticRelationshipOperation::Append, "APPEND" },
+                                 { SemanticRelationshipOperation::Strengthen, "STRENGTHEN" },
+                                 { SemanticRelationshipOperation::Supersede, "SUPERSEDE" },
+                             })
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SemanticEntityCandidate, label, category,
                                                 source_episode_ids)

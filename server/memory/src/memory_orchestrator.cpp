@@ -124,7 +124,7 @@ double ComputeEffectiveRelationshipWeight(const Relationship& relationship,
     }
     const auto elapsed = evaluation_time - relationship.last_observed_at;
     const double days_since_seen =
-        std::chrono::duration_cast<std::chrono::hours>(elapsed).count() / 24.0;
+        std::chrono::duration<double, std::ratio<86400>>(elapsed).count();
     const double decay_factor = std::max(kMinimumEffectiveRelationshipWeightFactor,
                                          1.0 - (days_since_seen * kRelationshipRecencyDecayPerDay));
     return relationship.weight * decay_factor;
@@ -783,6 +783,8 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
 
         const std::unordered_set<std::string> relevant_entity_ids =
             collect_relevant_entity_ids(semantic_result);
+        std::unordered_map<std::string, std::vector<Relationship>> existing_relationships_by_entity;
+        std::unordered_map<std::string, Relationship> existing_relationships_by_id;
         if (!relevant_entity_ids.empty()) {
             std::unordered_map<std::string, std::optional<Entity>> context_entities_by_id;
             const auto load_context_entity =
@@ -810,11 +812,16 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                     store_->ListRelationshipsForEntity(entity_id);
                 if (!entity_relationships.ok()) {
                     if (absl::IsUnimplemented(entity_relationships.status())) {
+                        existing_relationships_by_entity.emplace(entity_id,
+                                                                 std::vector<Relationship>{});
                         continue;
                     }
                     return entity_relationships.status();
                 }
+                existing_relationships_by_entity.emplace(entity_id, *entity_relationships);
                 for (const Relationship& relationship : *entity_relationships) {
+                    existing_relationships_by_id.emplace(relationship.relationship_id,
+                                                         relationship);
                     if (relationship.is_archived ||
                         !seen_relationship_ids.insert(relationship.relationship_id).second) {
                         continue;
@@ -1046,8 +1053,6 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                       return lhs.entity.entity_id < rhs.entity.entity_id;
                   });
 
-        std::unordered_map<std::string, std::vector<Relationship>> existing_relationships_by_entity;
-        std::unordered_map<std::string, Relationship> existing_relationships_by_id;
         const auto load_existing_relationships =
             [&](const std::string& entity_id) -> absl::StatusOr<std::vector<Relationship>> {
             if (const auto it = existing_relationships_by_entity.find(entity_id);
@@ -1192,6 +1197,13 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                     return invalid_argument(
                         "sleep-cycle semantic extraction SUPERSEDE relationship is missing its "
                         "target");
+                }
+                if (target_relationship->from_entity_id == aggregated_relationship.from_entity_id &&
+                    target_relationship->to_entity_id == aggregated_relationship.to_entity_id &&
+                    CanonicalizePredicate(target_relationship->predicate) ==
+                        aggregated_relationship.predicate) {
+                    return invalid_argument("sleep-cycle semantic extraction SUPERSEDE target "
+                                            "must differ from the observed relationship triple");
                 }
                 const double effective_old_weight = ComputeEffectiveRelationshipWeight(
                     *target_relationship, aggregated_relationship.latest_seen_at);

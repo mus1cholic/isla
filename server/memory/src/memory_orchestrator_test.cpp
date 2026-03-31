@@ -1398,6 +1398,111 @@ TEST_F(MemoryOrchestratorTest,
     EXPECT_EQ(relationship.source_episode_ids, std::vector<std::string>({ "ep_old" }));
 }
 
+TEST_F(MemoryOrchestratorTest,
+       RunSleepCycleSemanticExtractionRejectsSupersedeForSameRelationshipTriple) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = std::string(kAssistantEntityId),
+            .user_id = "user_001",
+            .label = "assistant",
+            .category = "assistant",
+            .activeness = 3,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_city_old",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "trusts",
+            .to_entity_id = std::string(kAssistantEntityId),
+            .weight = 10.0,
+            .observation_count = 2,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "move" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                    .relationships =
+                        {
+                            SemanticRelationshipObservation{
+                                .from_label = "user",
+                                .from_category = "person",
+                                .predicate = "trusts",
+                                .to_label = "assistant",
+                                .to_category = "assistant",
+                                .operation = SemanticRelationshipOperation::Append,
+                                .target_relationship_id = std::nullopt,
+                                .evidence = SemanticRelationshipEvidence::WeakInference,
+                                .source_episode_ids = { "ep_srv_test_1" },
+                            },
+                        },
+                };
+        }
+        return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "trusts",
+                            .to_label = "assistant",
+                            .to_category = "assistant",
+                            .operation = SemanticRelationshipOperation::Supersede,
+                            .target_relationship_id = std::string("rel_city_old"),
+                            .evidence = SemanticRelationshipEvidence::WeakInference,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
+                    },
+            };
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_THAT(result.status().message(), ::testing::HasSubstr("SUPERSEDE target must differ"));
+}
+
 TEST_F(MemoryOrchestratorTest, AwaitAndDrainPropagatesCompactorFailure) {
     auto compactor =
         std::make_shared<RecordingMidTermCompactor>(absl::InternalError("compaction failed"));
