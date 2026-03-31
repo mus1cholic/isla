@@ -1306,10 +1306,14 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryDeduplicatesLongTermContextAcrossS
 
     const WorkingMemoryState& state = handler->memory().snapshot();
     ASSERT_TRUE(state.retrieved_memory.has_value());
-    EXPECT_EQ(state.retrieved_memory->find("Airi owns Mochi (weight: 10)"),
-              state.retrieved_memory->rfind("Airi owns Mochi (weight: 10)"));
-    EXPECT_EQ(state.retrieved_memory->find("User discussed their cat Mochi"),
-              state.retrieved_memory->rfind("User discussed their cat Mochi"));
+    const std::size_t relationship_pos =
+        state.retrieved_memory->find("Airi owns Mochi (weight: 10)");
+    ASSERT_NE(relationship_pos, std::string::npos);
+    EXPECT_EQ(relationship_pos, state.retrieved_memory->rfind("Airi owns Mochi (weight: 10)"));
+
+    const std::size_t episode_pos = state.retrieved_memory->find("User discussed their cat Mochi");
+    ASSERT_NE(episode_pos, std::string::npos);
+    EXPECT_EQ(episode_pos, state.retrieved_memory->rfind("User discussed their cat Mochi"));
 }
 
 TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsNulloptWhenNoCacheEntries) {

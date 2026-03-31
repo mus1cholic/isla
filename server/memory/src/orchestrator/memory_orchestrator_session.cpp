@@ -11,7 +11,6 @@
 #include <utility>
 #include <vector>
 
-
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
@@ -38,6 +37,40 @@ struct RetrievedEpisodeCandidate {
     std::string summary_compressed;
     Timestamp created_at;
 };
+
+absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>>
+LoadEntityMapForRetrievedMemory(MemoryStore* store, const std::vector<std::string>& entity_ids) {
+    std::unordered_map<std::string, std::optional<Entity>> entities_by_id;
+    if (entity_ids.empty()) {
+        return entities_by_id;
+    }
+
+    const absl::StatusOr<std::vector<Entity>> entities = store->ListEntitiesByIds(entity_ids);
+    if (entities.ok()) {
+        entities_by_id.reserve(entities->size());
+        for (const Entity& entity : *entities) {
+            entities_by_id.emplace(entity.entity_id, entity);
+        }
+        return entities_by_id;
+    }
+    if (!absl::IsUnimplemented(entities.status())) {
+        return entities.status();
+    }
+
+    entities_by_id.reserve(entity_ids.size());
+    for (const std::string& entity_id : entity_ids) {
+        const absl::StatusOr<std::optional<Entity>> entity = store->GetEntity(entity_id);
+        if (!entity.ok()) {
+            if (absl::IsUnimplemented(entity.status())) {
+                entities_by_id.emplace(entity_id, std::nullopt);
+                continue;
+            }
+            return entity.status();
+        }
+        entities_by_id.emplace(entity_id, *entity);
+    }
+    return entities_by_id;
+}
 
 std::string RenderRetrievedMemory(const std::vector<RetrievedRelationshipCandidate>& relationships,
                                   const std::vector<RetrievedEpisodeCandidate>& episodes) {
@@ -286,32 +319,11 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
         }
     }
 
-    std::unordered_map<std::string, std::optional<Entity>> entities_by_id;
-    const auto load_entity =
-        [&](const std::string& entity_id) -> absl::StatusOr<std::optional<Entity>> {
-        if (const auto it = entities_by_id.find(entity_id); it != entities_by_id.end()) {
-            return it->second;
-        }
-        const absl::StatusOr<std::optional<Entity>> entity = store_->GetEntity(entity_id);
-        if (!entity.ok()) {
-            if (absl::IsUnimplemented(entity.status())) {
-                entities_by_id.emplace(entity_id, std::nullopt);
-                return std::optional<Entity>{};
-            }
-            LOG(WARNING) << "MemoryOrchestrator failed to retrieve entity for long-term context"
-                         << " session_id=" << SanitizeForLog(session_id_)
-                         << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
-                         << SanitizeForLog(entity.status().message()) << "'";
-            return entity.status();
-        }
-        entities_by_id.emplace(entity_id, *entity);
-        return *entity;
-    };
-
     std::unordered_set<std::string> seen_relationship_ids;
     std::vector<RetrievedRelationshipCandidate> relationship_candidates;
     std::unordered_set<std::string> seen_episode_ids;
     std::vector<RetrievedEpisodeCandidate> episode_candidates;
+    std::unordered_set<std::string> related_entity_ids;
     for (const std::string& entity_id : entity_ids) {
         const absl::StatusOr<std::vector<Relationship>> relationships =
             store_->ListRelationshipsForEntity(entity_id);
@@ -328,22 +340,13 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
                     !seen_relationship_ids.insert(rel.relationship_id).second) {
                     continue;
                 }
-
-                absl::StatusOr<std::optional<Entity>> from_entity = load_entity(rel.from_entity_id);
-                if (!from_entity.ok()) {
-                    return from_entity.status();
-                }
-                absl::StatusOr<std::optional<Entity>> to_entity = load_entity(rel.to_entity_id);
-                if (!to_entity.ok()) {
-                    return to_entity.status();
-                }
-
+                related_entity_ids.insert(rel.from_entity_id);
+                related_entity_ids.insert(rel.to_entity_id);
                 relationship_candidates.push_back(RetrievedRelationshipCandidate{
                     .relationship_id = rel.relationship_id,
-                    .from_text =
-                        from_entity->has_value() ? from_entity->value().label : rel.from_entity_id,
+                    .from_text = rel.from_entity_id,
                     .predicate = rel.predicate,
-                    .to_text = to_entity->has_value() ? to_entity->value().label : rel.to_entity_id,
+                    .to_text = rel.to_entity_id,
                     .weight = rel.weight,
                 });
             }
@@ -372,6 +375,27 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
                 .summary_compressed = episode.summary_compressed,
                 .created_at = episode.created_at,
             });
+        }
+    }
+
+    const std::vector<std::string> related_entity_ids_vector(related_entity_ids.begin(),
+                                                             related_entity_ids.end());
+    absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>> related_entities =
+        LoadEntityMapForRetrievedMemory(store_.get(), related_entity_ids_vector);
+    if (!related_entities.ok()) {
+        LOG(WARNING) << "MemoryOrchestrator failed to retrieve entity labels for long-term context"
+                     << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                     << SanitizeForLog(related_entities.status().message()) << "'";
+        return related_entities.status();
+    }
+    for (RetrievedRelationshipCandidate& relationship : relationship_candidates) {
+        if (const auto from_it = related_entities->find(relationship.from_text);
+            from_it != related_entities->end() && from_it->second.has_value()) {
+            relationship.from_text = from_it->second->label;
+        }
+        if (const auto to_it = related_entities->find(relationship.to_text);
+            to_it != related_entities->end() && to_it->second.has_value()) {
+            relationship.to_text = to_it->second->label;
         }
     }
 

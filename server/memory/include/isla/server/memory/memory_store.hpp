@@ -241,6 +241,13 @@ class MemoryStore {
         return absl::UnimplementedError("GetEntity not implemented");
     }
 
+    // Returns all persisted entities matching the requested ids. Implementations may return fewer
+    // rows when some ids are missing, but should not return duplicate entity_ids.
+    [[nodiscard]] virtual absl::StatusOr<std::vector<Entity>>
+    ListEntitiesByIds(const std::vector<std::string>& /*entity_ids*/) const {
+        return absl::UnimplementedError("ListEntitiesByIds not implemented");
+    }
+
     // Lists all non-archived relationships originating from an entity.
     [[nodiscard]] virtual absl::StatusOr<std::vector<Relationship>>
     ListRelationshipsForEntity(std::string_view /*entity_id*/) const {

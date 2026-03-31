@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -186,6 +187,21 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
                     }
                     return std::nullopt;
                 });
+        ON_CALL(*this, ListEntitiesByIds(_))
+            .WillByDefault([this](const std::vector<std::string>& entity_ids)
+                               -> absl::StatusOr<std::vector<Entity>> {
+                if (!list_entities_status.ok()) {
+                    return list_entities_status;
+                }
+                std::unordered_set<std::string> requested_ids(entity_ids.begin(), entity_ids.end());
+                std::vector<Entity> matched_entities;
+                for (const Entity& entity : entities) {
+                    if (requested_ids.contains(entity.entity_id)) {
+                        matched_entities.push_back(entity);
+                    }
+                }
+                return matched_entities;
+            });
         ON_CALL(*this, ListRelationshipsForEntity(_))
             .WillByDefault(
                 [this](std::string_view entity_id) -> absl::StatusOr<std::vector<Relationship>> {
