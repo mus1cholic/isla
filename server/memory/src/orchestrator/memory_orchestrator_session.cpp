@@ -14,6 +14,8 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/memory/identifier_utils.hpp"
+#include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
 namespace {
@@ -22,6 +24,40 @@ using isla::server::ai_gateway::SanitizeForLog;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
+}
+
+bool ContainsNormalizedTerm(std::string_view normalized_text, std::string_view normalized_term) {
+    if (normalized_text.empty() || normalized_term.empty()) {
+        return false;
+    }
+
+    std::size_t position = normalized_text.find(normalized_term);
+    while (position != std::string_view::npos) {
+        const bool has_left_boundary = position == 0 || normalized_text[position - 1] == '_';
+        const std::size_t end = position + normalized_term.size();
+        const bool has_right_boundary =
+            end == normalized_text.size() || normalized_text[end] == '_';
+        if (has_left_boundary && has_right_boundary) {
+            return true;
+        }
+        position = normalized_text.find(normalized_term, position + 1U);
+    }
+    return false;
+}
+
+bool QueryReferencesCoreEntity(std::string_view entity_id, std::string_view normalized_query) {
+    if (entity_id == kUserEntityId) {
+        return ContainsNormalizedTerm(normalized_query, "i") ||
+               ContainsNormalizedTerm(normalized_query, "me") ||
+               ContainsNormalizedTerm(normalized_query, "my") ||
+               ContainsNormalizedTerm(normalized_query, "mine");
+    }
+    if (entity_id == kAssistantEntityId) {
+        return ContainsNormalizedTerm(normalized_query, "you") ||
+               ContainsNormalizedTerm(normalized_query, "your") ||
+               ContainsNormalizedTerm(normalized_query, "yours");
+    }
+    return false;
 }
 
 struct RetrievedRelationshipCandidate {
@@ -70,6 +106,41 @@ LoadEntityMapForRetrievedMemory(MemoryStore* store, const std::vector<std::strin
         entities_by_id.emplace(entity_id, *entity);
     }
     return entities_by_id;
+}
+
+std::vector<std::string> SelectSeedEntityIdsForRetrievedMemory(
+    const Message& user_message, const std::vector<std::string>& cache_entity_ids,
+    const std::unordered_map<std::string, std::optional<Entity>>& cache_entities_by_id) {
+    const std::string normalized_query = NormalizeIdentifierComponent(user_message.content);
+    if (normalized_query.empty()) {
+        return {};
+    }
+
+    bool has_any_usable_noncore_label = false;
+    std::vector<std::string> seed_entity_ids;
+    seed_entity_ids.reserve(cache_entity_ids.size());
+    for (const std::string& entity_id : cache_entity_ids) {
+        if (QueryReferencesCoreEntity(entity_id, normalized_query)) {
+            seed_entity_ids.push_back(entity_id);
+            continue;
+        }
+
+        const auto entity_it = cache_entities_by_id.find(entity_id);
+        if (entity_it == cache_entities_by_id.end() || !entity_it->second.has_value()) {
+            continue;
+        }
+        const std::string normalized_label = NormalizeIdentifierComponent(entity_it->second->label);
+        if (!normalized_label.empty()) {
+            has_any_usable_noncore_label = true;
+        }
+        if (ContainsNormalizedTerm(normalized_query, normalized_label)) {
+            seed_entity_ids.push_back(entity_id);
+        }
+    }
+    if (seed_entity_ids.empty() && !has_any_usable_noncore_label) {
+        return cache_entity_ids;
+    }
+    return seed_entity_ids;
 }
 
 std::string RenderRetrievedMemory(const std::vector<RetrievedRelationshipCandidate>& relationships,
@@ -295,7 +366,7 @@ absl::Status MemoryOrchestrator::PersistConversationMessage(std::string_view tur
 }
 
 absl::StatusOr<std::optional<RetrievedMemory>>
-MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
+MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
     if (!store_) {
         return std::nullopt;
     }
@@ -319,12 +390,28 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
         }
     }
 
+    std::vector<std::string> seed_entity_ids = entity_ids;
+    absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>> cache_entities =
+        LoadEntityMapForRetrievedMemory(store_.get(), entity_ids);
+    if (cache_entities.ok()) {
+        seed_entity_ids =
+            SelectSeedEntityIdsForRetrievedMemory(user_message, entity_ids, *cache_entities);
+    } else {
+        LOG(WARNING) << "MemoryOrchestrator failed to load cache entity labels for query-aware "
+                        "retrieval; falling back to cached entity ids"
+                     << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                     << SanitizeForLog(cache_entities.status().message()) << "'";
+    }
+    if (seed_entity_ids.empty()) {
+        return std::nullopt;
+    }
+
     std::unordered_set<std::string> seen_relationship_ids;
     std::vector<RetrievedRelationshipCandidate> relationship_candidates;
     std::unordered_set<std::string> seen_episode_ids;
     std::vector<RetrievedEpisodeCandidate> episode_candidates;
     std::unordered_set<std::string> related_entity_ids;
-    for (const std::string& entity_id : entity_ids) {
+    for (const std::string& entity_id : seed_entity_ids) {
         const absl::StatusOr<std::vector<Relationship>> relationships =
             store_->ListRelationshipsForEntity(entity_id);
         if (!relationships.ok()) {
