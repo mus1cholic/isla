@@ -8,7 +8,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
-#include "memory_store_mock.hpp"
+#include "server/memory/src/shared/test/memory_store_mock.hpp"
 
 namespace isla::server::memory {
 namespace {

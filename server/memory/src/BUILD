@@ -11,7 +11,7 @@ genrule(
 
 cc_library(
     name = "memory_types",
-    srcs = ["memory_timestamp_utils.cpp"],
+    srcs = ["shared/memory_timestamp_utils.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         "//server/memory/include/isla/server/memory:memory_headers",
@@ -21,7 +21,7 @@ cc_library(
 
 cc_library(
     name = "conversation",
-    srcs = ["conversation.cpp"],
+    srcs = ["shared/conversation.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         ":memory_types",
@@ -33,7 +33,7 @@ cc_library(
 
 cc_library(
     name = "memory_store",
-    srcs = ["memory_store.cpp"],
+    srcs = ["shared/memory_store.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         ":memory_types",
@@ -45,7 +45,7 @@ cc_library(
 
 cc_library(
     name = "mid_term_memory",
-    srcs = ["mid_term_memory.cpp"],
+    srcs = ["mid_term/mid_term_memory.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         ":memory_store",
@@ -60,7 +60,7 @@ cc_library(
 
 cc_library(
     name = "supabase_memory_store",
-    srcs = ["supabase_memory_store.cpp"],
+    srcs = ["shared/supabase_memory_store.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         ":memory_store",
@@ -77,7 +77,7 @@ cc_library(
 
 cc_test(
     name = "memory_types_test",
-    srcs = ["memory_types_test.cpp"],
+    srcs = ["shared/test/memory_types_test.cpp"],
     deps = [
         ":memory_types",
         "@googletest//:gtest_main",
@@ -89,7 +89,7 @@ cc_library(
     name = "prompt_loader",
     srcs = [
         ":embedded_prompts_header",
-        "prompt_loader.cpp",
+        "shared/prompt_loader.cpp",
     ],
     visibility = ["//visibility:public"],
     deps = [
@@ -104,9 +104,9 @@ cc_library(
 cc_library(
     name = "working_memory",
     srcs = [
-        "system_prompt.cpp",
-        "working_memory.cpp",
-        "working_memory_utils.cpp",
+        "working_memory/system_prompt.cpp",
+        "working_memory/working_memory.cpp",
+        "working_memory/working_memory_utils.cpp",
     ],
     visibility = ["//visibility:public"],
     deps = [
@@ -122,7 +122,7 @@ cc_library(
 
 cc_library(
     name = "llm_json_utils",
-    srcs = ["llm_json_utils.cpp"],
+    srcs = ["shared/llm_json_utils.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         "//server/memory/include/isla/server/memory:memory_headers",
@@ -131,7 +131,7 @@ cc_library(
 
 cc_test(
     name = "llm_json_utils_test",
-    srcs = ["llm_json_utils_test.cpp"],
+    srcs = ["shared/test/llm_json_utils_test.cpp"],
     deps = [
         ":llm_json_utils",
         "@googletest//:gtest_main",
@@ -140,7 +140,7 @@ cc_test(
 
 cc_library(
     name = "mid_term_flush_decider",
-    srcs = ["mid_term_flush_decider.cpp"],
+    srcs = ["mid_term/mid_term_flush_decider.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         ":conversation",
@@ -159,7 +159,7 @@ cc_library(
 
 cc_library(
     name = "mid_term_compactor",
-    srcs = ["mid_term_compactor.cpp"],
+    srcs = ["mid_term/mid_term_compactor.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         ":llm_json_utils",
@@ -177,7 +177,7 @@ cc_library(
 
 cc_library(
     name = "sleep_cycle_semantic_extractor",
-    srcs = ["sleep_cycle_semantic_extractor.cpp"],
+    srcs = ["long_term/sleep_cycle_semantic_extractor.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         ":llm_json_utils",
@@ -194,12 +194,37 @@ cc_library(
 )
 
 cc_library(
+    name = "sleep_cycle_extraction_builder",
+    srcs = ["long_term/sleep_cycle_extraction_builder.cpp"],
+    hdrs = ["long_term/sleep_cycle_extraction_builder.hpp"],
+    visibility = [
+        "//server/memory/src:__pkg__",
+    ],
+    deps = [
+        ":memory_store",
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "//server/src:ai_gateway_logging_utils",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+cc_library(
     name = "memory_orchestrator",
-    srcs = ["memory_orchestrator.cpp"],
+    srcs = [
+        "orchestrator/memory_orchestrator.cpp",
+        "orchestrator/memory_orchestrator_mid_term.cpp",
+        "orchestrator/memory_orchestrator_session.cpp",
+        "orchestrator/memory_orchestrator_sleep_cycle.cpp",
+        "orchestrator/memory_orchestrator_turns.cpp",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         ":working_memory",
         ":memory_store",
+        ":sleep_cycle_extraction_builder",
         "//server/memory/include/isla/server/memory:memory_headers",
         "//server/src:ai_gateway_logging_utils",
         "@abseil-cpp//absl/log:check",
@@ -213,7 +238,7 @@ cc_library(
 cc_library(
     name = "memory_store_mock",
     testonly = True,
-    hdrs = ["memory_store_mock.hpp"],
+    hdrs = ["shared/test/memory_store_mock.hpp"],
     visibility = [
         "//server/memory/src:__pkg__",
         "//server/src:__pkg__",
@@ -227,7 +252,7 @@ cc_library(
 cc_library(
     name = "mid_term_compactor_mock",
     testonly = True,
-    hdrs = ["mid_term_compactor_mock.hpp"],
+    hdrs = ["mid_term/test/mid_term_compactor_mock.hpp"],
     visibility = [
         "//server/memory/src:__pkg__",
         "//server/src:__pkg__",
@@ -241,7 +266,7 @@ cc_library(
 cc_library(
     name = "mid_term_flush_decider_mock",
     testonly = True,
-    hdrs = ["mid_term_flush_decider_mock.hpp"],
+    hdrs = ["mid_term/test/mid_term_flush_decider_mock.hpp"],
     visibility = [
         "//server/memory/src:__pkg__",
         "//server/src:__pkg__",
@@ -252,9 +277,24 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "memory_orchestrator_test_support",
+    testonly = True,
+    hdrs = ["orchestrator/test/memory_orchestrator_test_support.hpp"],
+    visibility = ["//server/memory/src:__pkg__"],
+    deps = [
+        ":memory_store_mock",
+        ":memory_orchestrator",
+        ":mid_term_compactor_mock",
+        ":mid_term_flush_decider_mock",
+        "@googletest//:gtest",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
 cc_test(
     name = "conversation_test",
-    srcs = ["conversation_test.cpp"],
+    srcs = ["shared/test/conversation_test.cpp"],
     deps = [
         ":conversation",
         "@googletest//:gtest_main",
@@ -264,7 +304,7 @@ cc_test(
 
 cc_test(
     name = "prompt_loader_test",
-    srcs = ["prompt_loader_test.cpp"],
+    srcs = ["shared/test/prompt_loader_test.cpp"],
     deps = [
         ":prompt_loader",
         "@googletest//:gtest_main",
@@ -273,7 +313,7 @@ cc_test(
 
 cc_test(
     name = "system_prompt_test",
-    srcs = ["system_prompt_test.cpp"],
+    srcs = ["working_memory/test/system_prompt_test.cpp"],
     deps = [
         ":working_memory",
         "@googletest//:gtest_main",
@@ -282,7 +322,7 @@ cc_test(
 
 cc_test(
     name = "working_memory_test",
-    srcs = ["working_memory_test.cpp"],
+    srcs = ["working_memory/test/working_memory_test.cpp"],
     deps = [
         ":working_memory",
         "@googletest//:gtest_main",
@@ -292,20 +332,34 @@ cc_test(
 
 cc_test(
     name = "memory_orchestrator_test",
-    srcs = ["memory_orchestrator_test.cpp"],
+    srcs = ["orchestrator/test/memory_orchestrator_test.cpp"],
     deps = [
-        ":memory_store_mock",
-        ":memory_orchestrator",
-        ":mid_term_compactor_mock",
-        ":mid_term_flush_decider_mock",
+        ":memory_orchestrator_test_support",
         "@googletest//:gtest_main",
-        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "memory_orchestrator_mid_term_test",
+    srcs = ["orchestrator/test/memory_orchestrator_mid_term_test.cpp"],
+    deps = [
+        ":memory_orchestrator_test_support",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "memory_orchestrator_sleep_cycle_test",
+    srcs = ["orchestrator/test/memory_orchestrator_sleep_cycle_test.cpp"],
+    deps = [
+        ":memory_orchestrator_test_support",
+        "@googletest//:gtest_main",
     ],
 )
 
 cc_test(
     name = "memory_store_test",
-    srcs = ["memory_store_test.cpp"],
+    srcs = ["shared/test/memory_store_test.cpp"],
     deps = [
         ":memory_store",
         "@googletest//:gtest_main",
@@ -315,7 +369,7 @@ cc_test(
 
 cc_test(
     name = "mid_term_memory_test",
-    srcs = ["mid_term_memory_test.cpp"],
+    srcs = ["mid_term/test/mid_term_memory_test.cpp"],
     deps = [
         ":memory_store_mock",
         ":mid_term_memory",
@@ -326,7 +380,7 @@ cc_test(
 
 cc_test(
     name = "supabase_memory_store_test",
-    srcs = ["supabase_memory_store_test.cpp"],
+    srcs = ["shared/test/supabase_memory_store_test.cpp"],
     deps = [
         "//server/src:ai_gateway_log_test_utils",
         ":supabase_memory_store",
@@ -339,7 +393,7 @@ cc_test(
 
 cc_test(
     name = "mid_term_compactor_test",
-    srcs = ["mid_term_compactor_test.cpp"],
+    srcs = ["mid_term/test/mid_term_compactor_test.cpp"],
     deps = [
         "//server/src:embedding_client_mock",
         "//server/src:llm_client_mock",
@@ -353,7 +407,7 @@ cc_test(
 
 cc_test(
     name = "mid_term_flush_decider_test",
-    srcs = ["mid_term_flush_decider_test.cpp"],
+    srcs = ["mid_term/test/mid_term_flush_decider_test.cpp"],
     deps = [
         "//server/src:llm_client_mock",
         ":mid_term_flush_decider",
@@ -366,7 +420,7 @@ cc_test(
 
 cc_test(
     name = "sleep_cycle_semantic_extractor_test",
-    srcs = ["sleep_cycle_semantic_extractor_test.cpp"],
+    srcs = ["long_term/test/sleep_cycle_semantic_extractor_test.cpp"],
     deps = [
         "//server/src:llm_client_mock",
         ":sleep_cycle_semantic_extractor",

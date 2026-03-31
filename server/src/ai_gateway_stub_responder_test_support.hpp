@@ -29,7 +29,7 @@
 #include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 #include "openai_responses_test_utils.hpp"
-#include "server/memory/src/memory_store_mock.hpp"
+#include "server/memory/src/shared/test/memory_store_mock.hpp"
 
 namespace isla::server::ai_gateway::test_support {
 
