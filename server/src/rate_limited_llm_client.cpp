@@ -186,7 +186,7 @@ CreateRateLimitedLlmClient(std::shared_ptr<const LlmClient> inner_client,
     if (inner_client == nullptr) {
         return invalid_argument("rate-limited llm client requires a non-null inner client");
     }
-    if (const absl::Status status = ValidateLlmRateLimitConfig(config); !status.ok()) {
+    if (absl::Status status = ValidateLlmRateLimitConfig(config); !status.ok()) {
         return status;
     }
     if (!config.enabled()) {

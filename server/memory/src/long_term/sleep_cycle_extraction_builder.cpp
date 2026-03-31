@@ -418,10 +418,11 @@ SleepCycleExtractionBuilder::LoadExistingRelationshipContext(
                   return lhs.relationship_id < rhs.relationship_id;
               });
     if (existing_relationships.size() > kMaxExistingRelationshipsForSemanticContext) {
-        LOG(WARNING) << "MemoryOrchestrator truncated semantic extraction relationship context"
-                     << " session_id=" << SanitizeForLog(session_id_)
-                     << " original_count=" << existing_relationships.size()
-                     << " truncated_count=" << kMaxExistingRelationshipsForSemanticContext;
+        LOG(WARNING)
+            << "SleepCycleExtractionBuilder truncated semantic extraction relationship context"
+            << " session_id=" << SanitizeForLog(session_id_)
+            << " original_count=" << existing_relationships.size()
+            << " truncated_count=" << kMaxExistingRelationshipsForSemanticContext;
         existing_relationships.resize(kMaxExistingRelationshipsForSemanticContext);
     }
     return existing_relationships;
@@ -435,7 +436,7 @@ SleepCycleExtractionBuilder::ObserveEntity(std::string_view label, std::string_v
                                 "source_episode_ids");
     }
 
-    const std::string entity_id = BuildEntityId(label, category);
+    std::string entity_id = BuildEntityId(label, category);
     auto entity_it = aggregated_entities_.find(entity_id);
 
     for (const std::string& source_episode_id : source_episode_ids) {

@@ -406,7 +406,7 @@ class ScopedLiveGatewayServer {
 
 absl::StatusOr<std::uint16_t> FindUnreachableGatewayPort() {
     ScopedLiveGatewayServer live_gateway(GatewayStubResponderConfig{});
-    if (const absl::Status status = live_gateway.Start(); !status.ok()) {
+    if (absl::Status status = live_gateway.Start(); !status.ok()) {
         return status;
     }
     const std::uint16_t port = live_gateway.port();
