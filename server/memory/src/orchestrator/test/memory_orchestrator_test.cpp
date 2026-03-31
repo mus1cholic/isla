@@ -73,7 +73,6 @@ TEST_F(MemoryOrchestratorTest, HandleAssistantReplyAppendsAssistantMessage) {
     EXPECT_EQ(messages[1].content, "hi there");
 }
 
-
 TEST_F(MemoryOrchestratorTest, RenderPromptEscapesPromptShapedConversationContent) {
     absl::StatusOr<MemoryOrchestrator> orchestrator = MakeHandler();
     ASSERT_TRUE(orchestrator.ok()) << orchestrator.status();

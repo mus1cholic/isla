@@ -18,9 +18,9 @@
 #include <vector>
 
 #include "absl/status/status.h"
-#include "server/memory/src/shared/test/memory_store_mock.hpp"
 #include "server/memory/src/mid_term/test/mid_term_compactor_mock.hpp"
 #include "server/memory/src/mid_term/test/mid_term_flush_decider_mock.hpp"
+#include "server/memory/src/shared/test/memory_store_mock.hpp"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

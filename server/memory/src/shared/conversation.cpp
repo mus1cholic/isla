@@ -128,8 +128,7 @@ absl::Status ReplaceOngoingEpisodeWithStub(Conversation& conversation,
 absl::Status SplitOngoingEpisodeWithStub(Conversation& conversation,
                                          std::size_t conversation_item_index,
                                          std::size_t split_before_message_index,
-                                         std::string stub_text,
-                                         Timestamp stub_timestamp) {
+                                         std::string stub_text, Timestamp stub_timestamp) {
     if (conversation_item_index >= conversation.items.size()) {
         LOG(WARNING) << "Conversation SplitOngoingEpisodeWithStub rejected because the requested "
                         "conversation item index is outside the current conversation"
