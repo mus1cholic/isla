@@ -1,6 +1,7 @@
 #include "isla/server/memory/memory_orchestrator.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -9,6 +10,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -51,7 +53,7 @@ std::string RenderRetrievedMemory(const std::vector<RetrievedRelationshipCandida
             output.append(relationship.to_text);
             if (relationship.weight > 0.0) {
                 output.append(" (weight: ");
-                output.append(std::to_string(static_cast<int>(relationship.weight)));
+                output.append(std::to_string(static_cast<int>(std::round(relationship.weight))));
                 output.push_back(')');
             }
             output.push_back('\n');
@@ -389,7 +391,7 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& /*user_message*/) {
                   return lhs.lte_id < rhs.lte_id;
               });
 
-    const std::string rendered_context =
+    std::string rendered_context =
         RenderRetrievedMemory(relationship_candidates, episode_candidates);
     if (rendered_context.empty()) {
         return std::nullopt;
