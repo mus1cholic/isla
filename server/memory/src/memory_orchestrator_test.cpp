@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <string>
@@ -356,11 +357,20 @@ class RecordingSleepCycleSemanticExtractor final : public SleepCycleSemanticExtr
     [[nodiscard]] absl::StatusOr<SleepCycleSemanticExtractionResult>
     Extract(const SleepCycleSemanticExtractionRequest& request) override {
         requests_.push_back(request);
+        if (extract_fn_) {
+            return extract_fn_(request);
+        }
         return result_;
     }
 
     void SetResult(absl::StatusOr<SleepCycleSemanticExtractionResult> result) {
         result_ = std::move(result);
+    }
+
+    void SetExtractFn(std::function<absl::StatusOr<SleepCycleSemanticExtractionResult>(
+                          const SleepCycleSemanticExtractionRequest&)>
+                          extract_fn) {
+        extract_fn_ = std::move(extract_fn);
     }
 
     [[nodiscard]] const std::vector<SleepCycleSemanticExtractionRequest>& requests() const {
@@ -370,6 +380,9 @@ class RecordingSleepCycleSemanticExtractor final : public SleepCycleSemanticExtr
   private:
     std::vector<SleepCycleSemanticExtractionRequest> requests_;
     absl::StatusOr<SleepCycleSemanticExtractionResult> result_;
+    std::function<absl::StatusOr<SleepCycleSemanticExtractionResult>(
+        const SleepCycleSemanticExtractionRequest&)>
+        extract_fn_;
 };
 
 class MemoryOrchestratorTest : public ::testing::Test {
@@ -1065,21 +1078,394 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleSemanticExtractionStrengthensExistin
         .salience = 6,
         .embedding = {},
     });
-    auto semantic_extractor =
-        std::make_shared<RecordingSleepCycleSemanticExtractor>(SleepCycleSemanticExtractionResult{
-            .relationships =
-                {
-                    SemanticRelationshipObservation{
-                        .from_label = "user",
-                        .from_category = "person",
-                        .predicate = "trusts",
-                        .to_label = "assistant",
-                        .to_category = "assistant",
-                        .evidence = SemanticRelationshipEvidence::StrongInference,
-                        .source_episode_ids = { "ep_srv_test_1" },
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                    .relationships =
+                        {
+                            SemanticRelationshipObservation{
+                                .from_label = "user",
+                                .from_category = "person",
+                                .predicate = "trusts",
+                                .to_label = "assistant",
+                                .to_category = "assistant",
+                                .operation = SemanticRelationshipOperation::Append,
+                                .target_relationship_id = std::nullopt,
+                                .evidence = SemanticRelationshipEvidence::StrongInference,
+                                .source_episode_ids = { "ep_srv_test_1" },
+                            },
+                        },
+                };
+        }
+        EXPECT_THAT(request.existing_relationships,
+                    ::testing::ElementsAre(::testing::Field(
+                        &ExistingSemanticRelationship::relationship_id, "rel_existing")));
+        return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "trusts",
+                            .to_label = "assistant",
+                            .to_category = "assistant",
+                            .operation = SemanticRelationshipOperation::Strengthen,
+                            .target_relationship_id = std::string("rel_existing"),
+                            .evidence = SemanticRelationshipEvidence::StrongInference,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
                     },
-                },
+            };
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(semantic_extractor->requests().size(), 2U);
+    ASSERT_EQ(store->relationship_writes.size(), 1U);
+    const Relationship& relationship = store->relationship_writes.front().relationship;
+    EXPECT_EQ(relationship.relationship_id, "rel_existing");
+    EXPECT_EQ(relationship.from_entity_id, kUserEntityId);
+    EXPECT_EQ(relationship.to_entity_id, kAssistantEntityId);
+    EXPECT_DOUBLE_EQ(relationship.weight, 14.0);
+    EXPECT_EQ(relationship.observation_count, 2);
+    EXPECT_EQ(relationship.source_episode_ids,
+              std::vector<std::string>({ "ep_old", "ep_srv_test_1" }));
+    EXPECT_EQ(relationship.created_at, Ts("2026-03-01T14:00:00Z"));
+
+    const auto user_entity_it = std::find_if(
+        store->entity_writes.begin(), store->entity_writes.end(),
+        [](const EntityWrite& write) { return write.entity.entity_id == kUserEntityId; });
+    ASSERT_NE(user_entity_it, store->entity_writes.end());
+    EXPECT_EQ(user_entity_it->entity.activeness, 5);
+    EXPECT_EQ(user_entity_it->entity.created_at, Ts("2026-03-01T14:00:00Z"));
+    EXPECT_EQ(user_entity_it->entity.updated_at, Ts("2026-03-08T14:00:01Z"));
+}
+
+TEST_F(MemoryOrchestratorTest,
+       RunSleepCycleSemanticExtractionTruncatesOversizedRelationshipContextDeterministically) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = std::string(kAssistantEntityId),
+            .user_id = "user_001",
+            .label = "assistant",
+            .category = "assistant",
+            .activeness = 3,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    for (int i = 0; i < 300; ++i) {
+        const std::string padded_index =
+            i < 10 ? "00" + std::to_string(i)
+                   : (i < 100 ? "0" + std::to_string(i) : std::to_string(i));
+        store->relationships.push_back(Relationship{
+            .relationship_id = "rel_" + padded_index,
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "context_predicate_" + padded_index,
+            .to_entity_id = std::string(kAssistantEntityId),
+            .weight = static_cast<double>(i + 1),
+            .observation_count = 1,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .created_at = Ts("2026-03-01T14:00:00Z"),
         });
+    }
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "context" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "trusts",
+                            .to_label = "assistant",
+                            .to_category = "assistant",
+                            .operation = SemanticRelationshipOperation::Append,
+                            .target_relationship_id = std::nullopt,
+                            .evidence = SemanticRelationshipEvidence::WeakInference,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
+                    },
+            };
+        }
+        EXPECT_EQ(request.existing_relationships.size(), 256U);
+        EXPECT_EQ(request.existing_relationships.front().relationship_id, "rel_299");
+        EXPECT_EQ(request.existing_relationships.back().relationship_id, "rel_044");
+        return SleepCycleSemanticExtractionResult{};
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(semantic_extractor->requests().size(), 2U);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleSemanticExtractionSupersedesExistingRelationship) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_portland",
+            .user_id = "user_001",
+            .label = "Portland",
+            .category = "location",
+            .activeness = 3,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_city_old",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "lives_in",
+            .to_entity_id = "entity_portland",
+            .weight = 5.0,
+            .observation_count = 1,
+            .last_observed_at = Ts("2026-03-01T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "move" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                    .relationships =
+                        {
+                            SemanticRelationshipObservation{
+                                .from_label = "user",
+                                .from_category = "person",
+                                .predicate = "lives_in",
+                                .to_label = "Seattle",
+                                .to_category = "location",
+                                .operation = SemanticRelationshipOperation::Append,
+                                .target_relationship_id = std::nullopt,
+                                .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                                .source_episode_ids = { "ep_srv_test_1" },
+                            },
+                        },
+                };
+        }
+        EXPECT_THAT(request.existing_relationships,
+                    ::testing::ElementsAre(::testing::Field(
+                        &ExistingSemanticRelationship::relationship_id, "rel_city_old")));
+        return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "lives_in",
+                            .to_label = "Seattle",
+                            .to_category = "location",
+                            .operation = SemanticRelationshipOperation::Supersede,
+                            .target_relationship_id = std::string("rel_city_old"),
+                            .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
+                    },
+            };
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(semantic_extractor->requests().size(), 2U);
+    ASSERT_EQ(store->relationship_writes.size(), 2U);
+
+    const auto archived_relationship_it =
+        std::find_if(store->relationship_writes.begin(), store->relationship_writes.end(),
+                     [](const RelationshipWrite& write) {
+                         return write.relationship.relationship_id == "rel_city_old";
+                     });
+    ASSERT_NE(archived_relationship_it, store->relationship_writes.end());
+    EXPECT_TRUE(archived_relationship_it->relationship.is_archived);
+    EXPECT_EQ(archived_relationship_it->relationship.archived_at, Ts("2026-03-08T14:00:01Z"));
+    ASSERT_TRUE(archived_relationship_it->relationship.superseded_by.has_value());
+
+    const auto new_relationship_it =
+        std::find_if(store->relationship_writes.begin(), store->relationship_writes.end(),
+                     [](const RelationshipWrite& write) {
+                         return write.relationship.relationship_id != "rel_city_old";
+                     });
+    ASSERT_NE(new_relationship_it, store->relationship_writes.end());
+    EXPECT_EQ(new_relationship_it->relationship.from_entity_id, kUserEntityId);
+    EXPECT_EQ(new_relationship_it->relationship.predicate, "lives_in");
+    EXPECT_DOUBLE_EQ(new_relationship_it->relationship.weight, 10.0);
+    EXPECT_EQ(new_relationship_it->relationship.observation_count, 1);
+    EXPECT_EQ(archived_relationship_it->relationship.superseded_by,
+              std::optional<std::string>(new_relationship_it->relationship.relationship_id));
+}
+
+TEST_F(MemoryOrchestratorTest,
+       RunSleepCycleSemanticExtractionDamagesOldRelationshipWhenSupersedeLoses) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_portland",
+            .user_id = "user_001",
+            .label = "Portland",
+            .category = "location",
+            .activeness = 3,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_city_old",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "lives_in",
+            .to_entity_id = "entity_portland",
+            .weight = 10.0,
+            .observation_count = 2,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "move" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                    .relationships =
+                        {
+                            SemanticRelationshipObservation{
+                                .from_label = "user",
+                                .from_category = "person",
+                                .predicate = "lives_in",
+                                .to_label = "Seattle",
+                                .to_category = "location",
+                                .operation = SemanticRelationshipOperation::Append,
+                                .target_relationship_id = std::nullopt,
+                                .evidence = SemanticRelationshipEvidence::WeakInference,
+                                .source_episode_ids = { "ep_srv_test_1" },
+                            },
+                        },
+                };
+        }
+        return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "lives_in",
+                            .to_label = "Seattle",
+                            .to_category = "location",
+                            .operation = SemanticRelationshipOperation::Supersede,
+                            .target_relationship_id = std::string("rel_city_old"),
+                            .evidence = SemanticRelationshipEvidence::WeakInference,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
+                    },
+            };
+    });
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
     ASSERT_TRUE(handler.ok()) << handler.status();
@@ -1100,22 +1486,348 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleSemanticExtractionStrengthensExistin
     ASSERT_TRUE(result.ok()) << result.status();
     ASSERT_EQ(store->relationship_writes.size(), 1U);
     const Relationship& relationship = store->relationship_writes.front().relationship;
-    EXPECT_EQ(relationship.relationship_id, "rel_existing");
-    EXPECT_EQ(relationship.from_entity_id, kUserEntityId);
-    EXPECT_EQ(relationship.to_entity_id, kAssistantEntityId);
-    EXPECT_DOUBLE_EQ(relationship.weight, 14.0);
+    EXPECT_EQ(relationship.relationship_id, "rel_city_old");
+    EXPECT_FALSE(relationship.is_archived);
+    EXPECT_DOUBLE_EQ(relationship.weight, 9.0);
     EXPECT_EQ(relationship.observation_count, 2);
-    EXPECT_EQ(relationship.source_episode_ids,
-              std::vector<std::string>({ "ep_old", "ep_srv_test_1" }));
-    EXPECT_EQ(relationship.created_at, Ts("2026-03-01T14:00:00Z"));
+    EXPECT_EQ(relationship.source_episode_ids, std::vector<std::string>({ "ep_old" }));
+}
 
-    const auto user_entity_it = std::find_if(
-        store->entity_writes.begin(), store->entity_writes.end(),
-        [](const EntityWrite& write) { return write.entity.entity_id == kUserEntityId; });
-    ASSERT_NE(user_entity_it, store->entity_writes.end());
-    EXPECT_EQ(user_entity_it->entity.activeness, 5);
-    EXPECT_EQ(user_entity_it->entity.created_at, Ts("2026-03-01T14:00:00Z"));
-    EXPECT_EQ(user_entity_it->entity.updated_at, Ts("2026-03-08T14:00:01Z"));
+TEST_F(MemoryOrchestratorTest,
+       RunSleepCycleSemanticExtractionRejectsSupersedeForSameRelationshipTriple) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = std::string(kAssistantEntityId),
+            .user_id = "user_001",
+            .label = "assistant",
+            .category = "assistant",
+            .activeness = 3,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_city_old",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "trusts",
+            .to_entity_id = std::string(kAssistantEntityId),
+            .weight = 10.0,
+            .observation_count = 2,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "move" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                    .relationships =
+                        {
+                            SemanticRelationshipObservation{
+                                .from_label = "user",
+                                .from_category = "person",
+                                .predicate = "trusts",
+                                .to_label = "assistant",
+                                .to_category = "assistant",
+                                .operation = SemanticRelationshipOperation::Append,
+                                .target_relationship_id = std::nullopt,
+                                .evidence = SemanticRelationshipEvidence::WeakInference,
+                                .source_episode_ids = { "ep_srv_test_1" },
+                            },
+                        },
+                };
+        }
+        return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "trusts",
+                            .to_label = "assistant",
+                            .to_category = "assistant",
+                            .operation = SemanticRelationshipOperation::Supersede,
+                            .target_relationship_id = std::string("rel_city_old"),
+                            .evidence = SemanticRelationshipEvidence::WeakInference,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
+                    },
+            };
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_THAT(result.status().message(), ::testing::HasSubstr("SUPERSEDE target must differ"));
+}
+
+TEST_F(MemoryOrchestratorTest,
+       RunSleepCycleSemanticExtractionRejectsSupersedeForUnrelatedTargetRelationship) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = std::string(kAssistantEntityId),
+            .user_id = "user_001",
+            .label = "assistant",
+            .category = "assistant",
+            .activeness = 3,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_existing",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "trusts",
+            .to_entity_id = std::string(kAssistantEntityId),
+            .weight = 10.0,
+            .observation_count = 2,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "move" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                    .relationships =
+                        {
+                            SemanticRelationshipObservation{
+                                .from_label = "user",
+                                .from_category = "person",
+                                .predicate = "lives_in",
+                                .to_label = "Seattle",
+                                .to_category = "location",
+                                .operation = SemanticRelationshipOperation::Append,
+                                .target_relationship_id = std::nullopt,
+                                .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                                .source_episode_ids = { "ep_srv_test_1" },
+                            },
+                        },
+                };
+        }
+        return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "lives_in",
+                            .to_label = "Seattle",
+                            .to_category = "location",
+                            .operation = SemanticRelationshipOperation::Supersede,
+                            .target_relationship_id = std::string("rel_existing"),
+                            .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
+                    },
+            };
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_THAT(result.status().message(), ::testing::HasSubstr("must be comparable"));
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleSemanticExtractionRejectsArchivedTargetRelationship) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_portland",
+            .user_id = "user_001",
+            .label = "Portland",
+            .category = "location",
+            .activeness = 3,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = std::string(kAssistantEntityId),
+            .user_id = "user_001",
+            .label = "assistant",
+            .category = "assistant",
+            .activeness = 3,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_archived",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "lives_in",
+            .to_entity_id = "entity_portland",
+            .weight = 10.0,
+            .observation_count = 2,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .is_archived = true,
+            .archived_at = Ts("2026-03-08T14:30:00Z"),
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Relationship{
+            .relationship_id = "rel_context",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "trusts",
+            .to_entity_id = std::string(kAssistantEntityId),
+            .weight = 4.0,
+            .observation_count = 1,
+            .last_observed_at = Ts("2026-03-07T14:00:00Z"),
+            .source_episode_ids = { "ep_context" },
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "move" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                    .relationships =
+                        {
+                            SemanticRelationshipObservation{
+                                .from_label = "user",
+                                .from_category = "person",
+                                .predicate = "lives_in",
+                                .to_label = "Seattle",
+                                .to_category = "location",
+                                .operation = SemanticRelationshipOperation::Append,
+                                .target_relationship_id = std::nullopt,
+                                .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                                .source_episode_ids = { "ep_srv_test_1" },
+                            },
+                        },
+                };
+        }
+        return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "lives_in",
+                            .to_label = "Seattle",
+                            .to_category = "location",
+                            .operation = SemanticRelationshipOperation::Supersede,
+                            .target_relationship_id = std::string("rel_archived"),
+                            .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
+                    },
+            };
+    });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_THAT(result.status().message(), ::testing::HasSubstr("archived target relationship"));
 }
 
 TEST_F(MemoryOrchestratorTest, AwaitAndDrainPropagatesCompactorFailure) {

@@ -33,6 +33,9 @@ constexpr std::uint64_t kFnv1aOffsetBasis = 14695981039346656037ULL;
 constexpr std::uint64_t kFnv1aPrime = 1099511628211ULL;
 constexpr int kNewSemanticEntityActiveness = 3;
 constexpr int kMaxEntityActiveness = 10;
+constexpr std::size_t kMaxExistingRelationshipsForSemanticContext = 256;
+constexpr double kRelationshipRecencyDecayPerDay = 0.0016;
+constexpr double kMinimumEffectiveRelationshipWeightFactor = 0.1;
 
 std::uint64_t StableHash64(std::string_view text) {
     std::uint64_t hash = kFnv1aOffsetBasis;
@@ -115,6 +118,19 @@ double TranslateEvidenceWeight(SemanticRelationshipEvidence evidence) {
     return 1.0;
 }
 
+double ComputeEffectiveRelationshipWeight(const Relationship& relationship,
+                                          Timestamp evaluation_time) {
+    if (evaluation_time <= relationship.last_observed_at) {
+        return relationship.weight;
+    }
+    const auto elapsed = evaluation_time - relationship.last_observed_at;
+    const double days_since_seen =
+        std::chrono::duration<double, std::ratio<86400>>(elapsed).count();
+    const double decay_factor = std::max(kMinimumEffectiveRelationshipWeightFactor,
+                                         1.0 - (days_since_seen * kRelationshipRecencyDecayPerDay));
+    return relationship.weight * decay_factor;
+}
+
 std::vector<std::string> SortedVectorFromSet(const std::unordered_set<std::string>& values) {
     std::vector<std::string> sorted(values.begin(), values.end());
     std::sort(sorted.begin(), sorted.end());
@@ -134,6 +150,8 @@ struct AggregatedRelationshipObservation {
     std::string from_entity_id;
     std::string predicate;
     std::string to_entity_id;
+    SemanticRelationshipOperation operation = SemanticRelationshipOperation::Append;
+    std::optional<std::string> target_relationship_id;
     double weight_increment = 0.0;
     int observation_count_increment = 0;
     std::unordered_set<std::string> source_episode_ids;
@@ -736,13 +754,141 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
     }
 
     if (sleep_cycle_semantic_extractor_ != nullptr) {
-        absl::StatusOr<SleepCycleSemanticExtractionResult> semantic_result =
-            sleep_cycle_semantic_extractor_->Extract(SleepCycleSemanticExtractionRequest{
-                .user_id = std::string(user_id),
-                .mid_term_episodes = mid_term_episodes,
-            });
-        if (!semantic_result.ok()) {
-            return semantic_result.status();
+        const auto collect_relevant_entity_ids =
+            [](const SleepCycleSemanticExtractionResult& semantic_result)
+            -> std::unordered_set<std::string> {
+            std::unordered_set<std::string> entity_ids;
+            for (const SemanticEntityCandidate& entity : semantic_result.entities) {
+                entity_ids.insert(BuildEntityId(entity.label, entity.category));
+            }
+            for (const SemanticRelationshipObservation& relationship :
+                 semantic_result.relationships) {
+                entity_ids.insert(
+                    BuildEntityId(relationship.from_label, relationship.from_category));
+                entity_ids.insert(BuildEntityId(relationship.to_label, relationship.to_category));
+            }
+            return entity_ids;
+        };
+
+        // NOTICE: This currently uses a correctness-first two-pass extraction flow.
+        // The first pass discovers likely entities from the mid-term episodes, then the
+        // second pass re-runs extraction with the relevant existing subgraph so the LLM
+        // can choose APPEND/STRENGTHEN/SUPERSEDE with better recall. A future optimization
+        // could replace this with a single bounded preloaded-context pass, or only trigger
+        // the second pass when the preliminary extraction indicates conflict-sensitive work.
+        SleepCycleSemanticExtractionRequest semantic_request{
+            .user_id = std::string(user_id),
+            .mid_term_episodes = mid_term_episodes,
+            .existing_relationships = {},
+        };
+        absl::StatusOr<SleepCycleSemanticExtractionResult> preliminary_semantic_result =
+            sleep_cycle_semantic_extractor_->Extract(semantic_request);
+        if (!preliminary_semantic_result.ok()) {
+            return preliminary_semantic_result.status();
+        }
+        SleepCycleSemanticExtractionResult semantic_result = *preliminary_semantic_result;
+
+        const std::unordered_set<std::string> relevant_entity_ids =
+            collect_relevant_entity_ids(semantic_result);
+        std::unordered_map<std::string, std::vector<Relationship>> existing_relationships_by_entity;
+        std::unordered_map<std::string, Relationship> existing_relationships_by_id;
+        if (!relevant_entity_ids.empty()) {
+            std::unordered_map<std::string, std::optional<Entity>> context_entities_by_id;
+            const auto load_context_entity =
+                [&](const std::string& entity_id) -> absl::StatusOr<std::optional<Entity>> {
+                if (const auto it = context_entities_by_id.find(entity_id);
+                    it != context_entities_by_id.end()) {
+                    return it->second;
+                }
+                const absl::StatusOr<std::optional<Entity>> entity = store_->GetEntity(entity_id);
+                if (!entity.ok()) {
+                    if (absl::IsUnimplemented(entity.status())) {
+                        context_entities_by_id.emplace(entity_id, std::nullopt);
+                        return std::optional<Entity>{};
+                    }
+                    return entity.status();
+                }
+                context_entities_by_id.emplace(entity_id, *entity);
+                return *entity;
+            };
+
+            std::unordered_set<std::string> seen_relationship_ids;
+            std::vector<ExistingSemanticRelationship> existing_relationships;
+            for (const std::string& entity_id : relevant_entity_ids) {
+                const absl::StatusOr<std::vector<Relationship>> entity_relationships =
+                    store_->ListRelationshipsForEntity(entity_id);
+                if (!entity_relationships.ok()) {
+                    if (absl::IsUnimplemented(entity_relationships.status())) {
+                        existing_relationships_by_entity.emplace(entity_id,
+                                                                 std::vector<Relationship>{});
+                        continue;
+                    }
+                    return entity_relationships.status();
+                }
+                existing_relationships_by_entity.emplace(entity_id, *entity_relationships);
+                for (const Relationship& relationship : *entity_relationships) {
+                    existing_relationships_by_id.emplace(relationship.relationship_id,
+                                                         relationship);
+                    if (relationship.is_archived ||
+                        !seen_relationship_ids.insert(relationship.relationship_id).second) {
+                        continue;
+                    }
+                    const absl::StatusOr<std::optional<Entity>> from_entity =
+                        load_context_entity(relationship.from_entity_id);
+                    if (!from_entity.ok()) {
+                        return from_entity.status();
+                    }
+                    if (!from_entity->has_value()) {
+                        continue;
+                    }
+                    const absl::StatusOr<std::optional<Entity>> to_entity =
+                        load_context_entity(relationship.to_entity_id);
+                    if (!to_entity.ok()) {
+                        return to_entity.status();
+                    }
+                    if (!to_entity->has_value()) {
+                        continue;
+                    }
+                    existing_relationships.push_back(ExistingSemanticRelationship{
+                        .relationship_id = relationship.relationship_id,
+                        .from_label = from_entity->value().label,
+                        .from_category = from_entity->value().category,
+                        .predicate = relationship.predicate,
+                        .to_label = to_entity->value().label,
+                        .to_category = to_entity->value().category,
+                        .weight = relationship.weight,
+                        .last_observed_at = relationship.last_observed_at,
+                    });
+                }
+            }
+            std::sort(existing_relationships.begin(), existing_relationships.end(),
+                      [](const ExistingSemanticRelationship& lhs,
+                         const ExistingSemanticRelationship& rhs) {
+                          if (lhs.weight != rhs.weight) {
+                              return lhs.weight > rhs.weight;
+                          }
+                          if (lhs.last_observed_at != rhs.last_observed_at) {
+                              return lhs.last_observed_at > rhs.last_observed_at;
+                          }
+                          return lhs.relationship_id < rhs.relationship_id;
+                      });
+            if (existing_relationships.size() > kMaxExistingRelationshipsForSemanticContext) {
+                LOG(WARNING)
+                    << "MemoryOrchestrator truncated semantic extraction relationship context"
+                    << " session_id=" << SanitizeForLog(session_id_)
+                    << " original_count=" << existing_relationships.size()
+                    << " truncated_count=" << kMaxExistingRelationshipsForSemanticContext;
+                existing_relationships.resize(kMaxExistingRelationshipsForSemanticContext);
+            }
+            if (!existing_relationships.empty()) {
+                semantic_request.existing_relationships = std::move(existing_relationships);
+                absl::StatusOr<SleepCycleSemanticExtractionResult> contextual_semantic_result =
+                    sleep_cycle_semantic_extractor_->Extract(semantic_request);
+                if (!contextual_semantic_result.ok()) {
+                    return contextual_semantic_result.status();
+                }
+                semantic_result = std::move(*contextual_semantic_result);
+            }
         }
 
         std::unordered_map<std::string, AggregatedEntityCandidate> aggregated_entities;
@@ -791,7 +937,7 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
             return entity_id;
         };
 
-        for (const SemanticEntityCandidate& entity : semantic_result->entities) {
+        for (const SemanticEntityCandidate& entity : semantic_result.entities) {
             absl::StatusOr<std::string> observed_entity_id =
                 observe_entity(entity.label, entity.category, entity.source_episode_ids);
             if (!observed_entity_id.ok()) {
@@ -799,7 +945,7 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
             }
         }
 
-        for (const SemanticRelationshipObservation& relationship : semantic_result->relationships) {
+        for (const SemanticRelationshipObservation& relationship : semantic_result.relationships) {
             absl::StatusOr<std::string> from_entity_id =
                 observe_entity(relationship.from_label, relationship.from_category,
                                relationship.source_episode_ids);
@@ -820,6 +966,13 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
             const std::string relationship_key =
                 BuildRelationshipTripleKey(*from_entity_id, predicate, *to_entity_id);
             auto relationship_it = aggregated_relationships.find(relationship_key);
+            if (relationship_it != aggregated_relationships.end() &&
+                (relationship_it->second.operation != relationship.operation ||
+                 relationship_it->second.target_relationship_id !=
+                     relationship.target_relationship_id)) {
+                return invalid_argument("sleep-cycle semantic extraction produced conflicting "
+                                        "operations for the same relationship triple");
+            }
 
             for (const std::string& source_episode_id : relationship.source_episode_ids) {
                 const auto episode_it = episodes_by_id.find(source_episode_id);
@@ -835,6 +988,9 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                                                            .from_entity_id = *from_entity_id,
                                                            .predicate = predicate,
                                                            .to_entity_id = *to_entity_id,
+                                                           .operation = relationship.operation,
+                                                           .target_relationship_id =
+                                                               relationship.target_relationship_id,
                                                            .weight_increment = 0.0,
                                                            .observation_count_increment = 0,
                                                            .source_episode_ids = {},
@@ -918,7 +1074,6 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                       return lhs.entity.entity_id < rhs.entity.entity_id;
                   });
 
-        std::unordered_map<std::string, std::vector<Relationship>> existing_relationships_by_entity;
         const auto load_existing_relationships =
             [&](const std::string& entity_id) -> absl::StatusOr<std::vector<Relationship>> {
             if (const auto it = existing_relationships_by_entity.find(entity_id);
@@ -935,11 +1090,25 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                 }
                 return existing_relationships.status();
             }
+            for (const Relationship& relationship : *existing_relationships) {
+                existing_relationships_by_id.emplace(relationship.relationship_id, relationship);
+            }
             existing_relationships_by_entity.emplace(entity_id, *existing_relationships);
             return *existing_relationships;
         };
 
         result.relationships.reserve(aggregated_relationships.size());
+        std::unordered_set<std::string> emitted_relationship_ids;
+        const auto append_relationship_write =
+            [&result, &emitted_relationship_ids](Relationship relationship) -> absl::Status {
+            if (!emitted_relationship_ids.insert(relationship.relationship_id).second) {
+                return invalid_argument("sleep-cycle extraction emitted multiple writes for the "
+                                        "same relationship_id");
+            }
+            result.relationships.push_back(
+                RelationshipWrite{ .relationship = std::move(relationship) });
+            return absl::OkStatus();
+        };
         for (const auto& [relationship_key, aggregated_relationship] : aggregated_relationships) {
             static_cast<void>(relationship_key);
             absl::StatusOr<std::vector<Relationship>> existing_relationships =
@@ -961,21 +1130,27 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                 break;
             }
 
-            Relationship relationship;
-            if (matched_relationship != nullptr) {
-                relationship = *matched_relationship;
-                relationship.weight += aggregated_relationship.weight_increment;
-                relationship.observation_count +=
-                    aggregated_relationship.observation_count_increment;
-                relationship.last_observed_at =
-                    std::max(relationship.last_observed_at, aggregated_relationship.latest_seen_at);
-                std::unordered_set<std::string> source_episode_ids(
-                    relationship.source_episode_ids.begin(), relationship.source_episode_ids.end());
-                source_episode_ids.insert(aggregated_relationship.source_episode_ids.begin(),
-                                          aggregated_relationship.source_episode_ids.end());
-                relationship.source_episode_ids = SortedVectorFromSet(source_episode_ids);
-            } else {
-                relationship = Relationship{
+            const Relationship* target_relationship = nullptr;
+            if (aggregated_relationship.target_relationship_id.has_value()) {
+                const auto target_it = existing_relationships_by_id.find(
+                    *aggregated_relationship.target_relationship_id);
+                if (target_it == existing_relationships_by_id.end()) {
+                    return invalid_argument("sleep-cycle semantic extraction referenced an unknown "
+                                            "target relationship");
+                }
+                target_relationship = &target_it->second;
+                if (target_relationship->user_id != user_id) {
+                    return invalid_argument("sleep-cycle semantic extraction referenced a target "
+                                            "relationship owned by a different user");
+                }
+                if (target_relationship->is_archived) {
+                    return invalid_argument("sleep-cycle semantic extraction referenced an "
+                                            "archived target relationship");
+                }
+            }
+
+            const auto build_new_relationship = [&]() {
+                return Relationship{
                     .relationship_id = BuildRelationshipId(
                         user_id, aggregated_relationship.from_entity_id,
                         aggregated_relationship.predicate, aggregated_relationship.to_entity_id),
@@ -990,10 +1165,111 @@ absl::StatusOr<SleepCycleExtractionResult> MemoryOrchestrator::BuildSleepCycleEx
                         SortedVectorFromSet(aggregated_relationship.source_episode_ids),
                     .created_at = aggregated_relationship.earliest_seen_at,
                 };
-            }
+            };
 
-            result.relationships.push_back(
-                RelationshipWrite{ .relationship = std::move(relationship) });
+            switch (aggregated_relationship.operation) {
+            case SemanticRelationshipOperation::Append: {
+                Relationship relationship = matched_relationship != nullptr
+                                                ? *matched_relationship
+                                                : build_new_relationship();
+                if (matched_relationship != nullptr) {
+                    relationship.weight += aggregated_relationship.weight_increment;
+                    relationship.observation_count +=
+                        aggregated_relationship.observation_count_increment;
+                    relationship.last_observed_at = std::max(
+                        relationship.last_observed_at, aggregated_relationship.latest_seen_at);
+                    std::unordered_set<std::string> source_episode_ids(
+                        relationship.source_episode_ids.begin(),
+                        relationship.source_episode_ids.end());
+                    source_episode_ids.insert(aggregated_relationship.source_episode_ids.begin(),
+                                              aggregated_relationship.source_episode_ids.end());
+                    relationship.source_episode_ids = SortedVectorFromSet(source_episode_ids);
+                }
+                if (absl::Status status = append_relationship_write(std::move(relationship));
+                    !status.ok()) {
+                    return status;
+                }
+                break;
+            }
+            case SemanticRelationshipOperation::Strengthen: {
+                if (target_relationship == nullptr) {
+                    return invalid_argument(
+                        "sleep-cycle semantic extraction STRENGTHEN relationship is missing its "
+                        "target");
+                }
+                if (target_relationship->from_entity_id != aggregated_relationship.from_entity_id ||
+                    target_relationship->to_entity_id != aggregated_relationship.to_entity_id ||
+                    CanonicalizePredicate(target_relationship->predicate) !=
+                        aggregated_relationship.predicate) {
+                    return invalid_argument("sleep-cycle semantic extraction STRENGTHEN target "
+                                            "does not match the observed relationship triple");
+                }
+                Relationship relationship = *target_relationship;
+                relationship.weight += aggregated_relationship.weight_increment;
+                relationship.observation_count +=
+                    aggregated_relationship.observation_count_increment;
+                relationship.last_observed_at =
+                    std::max(relationship.last_observed_at, aggregated_relationship.latest_seen_at);
+                std::unordered_set<std::string> source_episode_ids(
+                    relationship.source_episode_ids.begin(), relationship.source_episode_ids.end());
+                source_episode_ids.insert(aggregated_relationship.source_episode_ids.begin(),
+                                          aggregated_relationship.source_episode_ids.end());
+                relationship.source_episode_ids = SortedVectorFromSet(source_episode_ids);
+                if (absl::Status status = append_relationship_write(std::move(relationship));
+                    !status.ok()) {
+                    return status;
+                }
+                break;
+            }
+            case SemanticRelationshipOperation::Supersede: {
+                if (target_relationship == nullptr) {
+                    return invalid_argument(
+                        "sleep-cycle semantic extraction SUPERSEDE relationship is missing its "
+                        "target");
+                }
+                if (target_relationship->from_entity_id != aggregated_relationship.from_entity_id ||
+                    CanonicalizePredicate(target_relationship->predicate) !=
+                        aggregated_relationship.predicate) {
+                    return invalid_argument("sleep-cycle semantic extraction SUPERSEDE target "
+                                            "must be comparable to the observed relationship "
+                                            "triple (same source entity and predicate)");
+                }
+                if (target_relationship->to_entity_id == aggregated_relationship.to_entity_id) {
+                    return invalid_argument("sleep-cycle semantic extraction SUPERSEDE target "
+                                            "must differ from the observed relationship triple");
+                }
+                const double effective_old_weight = ComputeEffectiveRelationshipWeight(
+                    *target_relationship, aggregated_relationship.latest_seen_at);
+                if (aggregated_relationship.weight_increment > effective_old_weight) {
+                    Relationship new_relationship = build_new_relationship();
+                    Relationship archived_relationship = *target_relationship;
+                    archived_relationship.is_archived = true;
+                    archived_relationship.archived_at = aggregated_relationship.latest_seen_at;
+                    archived_relationship.superseded_by = new_relationship.relationship_id;
+                    if (absl::Status status =
+                            append_relationship_write(std::move(archived_relationship));
+                        !status.ok()) {
+                        return status;
+                    }
+                    if (absl::Status status =
+                            append_relationship_write(std::move(new_relationship));
+                        !status.ok()) {
+                        return status;
+                    }
+                } else {
+                    Relationship surviving_relationship = *target_relationship;
+                    surviving_relationship.weight =
+                        std::max(0.0, surviving_relationship.weight -
+                                          aggregated_relationship.weight_increment);
+                    if (absl::Status status =
+                            append_relationship_write(std::move(surviving_relationship));
+                        !status.ok()) {
+                        return status;
+                    }
+                }
+                break;
+            }
+            }
         }
 
         std::sort(result.relationships.begin(), result.relationships.end(),

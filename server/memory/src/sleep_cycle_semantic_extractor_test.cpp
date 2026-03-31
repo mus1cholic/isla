@@ -60,8 +60,9 @@ TEST(SleepCycleSemanticExtractorTest, ExtractParsesStrictJsonResponse) {
             EXPECT_THAT(request.system_prompt,
                         ::testing::HasSubstr("extract durable semantic memory candidates"));
             EXPECT_THAT(request.user_text, ::testing::HasSubstr("\"episode_id\":\"ep_001\""));
+            EXPECT_THAT(request.user_text, ::testing::HasSubstr("\"existing_relationships\":[]"));
             return EmitLlmResponse(
-                R"({"entities":[{"label":"Mochi","category":"pet","source_episode_ids":["ep_001"]}],"relationships":[{"from_label":"user","from_category":"person","predicate":"owns","to_label":"Mochi","to_category":"pet","evidence":"EXPLICIT_STATEMENT","source_episode_ids":["ep_001"]}]})",
+                R"({"entities":[{"label":"Mochi","category":"pet","source_episode_ids":["ep_001"]}],"relationships":[{"from_label":"user","from_category":"person","predicate":"owns","to_label":"Mochi","to_category":"pet","operation":"APPEND","target_relationship_id":null,"evidence":"EXPLICIT_STATEMENT","source_episode_ids":["ep_001"]}]})",
                 on_event);
         }));
 
@@ -84,6 +85,8 @@ TEST(SleepCycleSemanticExtractorTest, ExtractParsesStrictJsonResponse) {
     EXPECT_EQ(result->relationships.front().predicate, "owns");
     EXPECT_EQ(result->relationships.front().evidence,
               SemanticRelationshipEvidence::ExplicitStatement);
+    EXPECT_EQ(result->relationships.front().operation, SemanticRelationshipOperation::Append);
+    EXPECT_EQ(result->relationships.front().target_relationship_id, std::nullopt);
 }
 
 TEST(SleepCycleSemanticExtractorTest, ExtractAcceptsCodeFencedJson) {
@@ -143,7 +146,7 @@ TEST(SleepCycleSemanticExtractorTest, ExtractRejectsUnknownEvidenceValues) {
         .WillOnce(Invoke([](const LlmRequest& request, const LlmEventCallback& on_event) {
             static_cast<void>(request);
             return EmitLlmResponse(
-                R"({"entities":[],"relationships":[{"from_label":"user","from_category":"person","predicate":"owns","to_label":"Mochi","to_category":"pet","evidence":"MEDIUM_INFERENCE","source_episode_ids":["ep_001"]}]})",
+                R"({"entities":[],"relationships":[{"from_label":"user","from_category":"person","predicate":"owns","to_label":"Mochi","to_category":"pet","operation":"APPEND","target_relationship_id":null,"evidence":"MEDIUM_INFERENCE","source_episode_ids":["ep_001"]}]})",
                 on_event);
         }));
 
@@ -197,7 +200,7 @@ TEST(SleepCycleSemanticExtractorTest, ExtractRejectsTooManyRelationships) {
         .WillOnce(Invoke([](const LlmRequest& request, const LlmEventCallback& on_event) {
             static_cast<void>(request);
             const std::string relationships = RepeatJsonObjectList(
-                R"({"from_label":"user","from_category":"person","predicate":"owns","to_label":"Mochi","to_category":"pet","evidence":"EXPLICIT_STATEMENT","source_episode_ids":["ep_001"]})",
+                R"({"from_label":"user","from_category":"person","predicate":"owns","to_label":"Mochi","to_category":"pet","operation":"APPEND","target_relationship_id":null,"evidence":"EXPLICIT_STATEMENT","source_episode_ids":["ep_001"]})",
                 257U);
             return EmitLlmResponse(
                 std::string(R"({"entities":[],"relationships":)") + relationships + "}", on_event);
@@ -245,6 +248,73 @@ TEST(SleepCycleSemanticExtractorTest, ExtractRejectsTooManySourceEpisodeIdsPerIt
     EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_THAT(result.status().message(),
                 ::testing::HasSubstr("field 'source_episode_ids' exceeds max size"));
+}
+
+TEST(SleepCycleSemanticExtractorTest, ExtractRejectsUnknownOperationValues) {
+    auto llm_client = std::make_shared<MockLlmClient>();
+    EXPECT_CALL(*llm_client, StreamResponse(_, _))
+        .WillOnce(Invoke([](const LlmRequest& request, const LlmEventCallback& on_event) {
+            static_cast<void>(request);
+            return EmitLlmResponse(
+                R"({"entities":[],"relationships":[{"from_label":"user","from_category":"person","predicate":"owns","to_label":"Mochi","to_category":"pet","operation":"MERGE","target_relationship_id":null,"evidence":"EXPLICIT_STATEMENT","source_episode_ids":["ep_001"]}]})",
+                on_event);
+        }));
+
+    absl::StatusOr<SleepCycleSemanticExtractorPtr> extractor =
+        CreateLlmSleepCycleSemanticExtractor(llm_client, "gpt-test");
+    ASSERT_TRUE(extractor.ok()) << extractor.status();
+
+    absl::StatusOr<SleepCycleSemanticExtractionResult> result =
+        (*extractor)
+            ->Extract(SleepCycleSemanticExtractionRequest{
+                .user_id = "user_001",
+                .mid_term_episodes = { MakeEpisode() },
+            });
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_THAT(result.status().message(),
+                ::testing::HasSubstr("field 'operation' must be one of"));
+}
+
+TEST(SleepCycleSemanticExtractorTest, ExtractRejectsSupersedeWithoutTargetRelationshipId) {
+    auto llm_client = std::make_shared<MockLlmClient>();
+    EXPECT_CALL(*llm_client, StreamResponse(_, _))
+        .WillOnce(Invoke([](const LlmRequest& request, const LlmEventCallback& on_event) {
+            static_cast<void>(request);
+            return EmitLlmResponse(
+                R"({"entities":[],"relationships":[{"from_label":"user","from_category":"person","predicate":"lives_in","to_label":"Seattle","to_category":"location","operation":"SUPERSEDE","target_relationship_id":null,"evidence":"EXPLICIT_STATEMENT","source_episode_ids":["ep_001"]}]})",
+                on_event);
+        }));
+
+    absl::StatusOr<SleepCycleSemanticExtractorPtr> extractor =
+        CreateLlmSleepCycleSemanticExtractor(llm_client, "gpt-test");
+    ASSERT_TRUE(extractor.ok()) << extractor.status();
+
+    absl::StatusOr<SleepCycleSemanticExtractionResult> result =
+        (*extractor)
+            ->Extract(SleepCycleSemanticExtractionRequest{
+                .user_id = "user_001",
+                .mid_term_episodes = { MakeEpisode() },
+                .existing_relationships =
+                    {
+                        ExistingSemanticRelationship{
+                            .relationship_id = "rel_city",
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "lives_in",
+                            .to_label = "Portland",
+                            .to_category = "location",
+                            .weight = 10.0,
+                            .last_observed_at = Ts("2026-03-01T14:00:00Z"),
+                        },
+                    },
+            });
+
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_THAT(result.status().message(),
+                ::testing::HasSubstr("must include a non-empty target_relationship_id"));
 }
 
 } // namespace

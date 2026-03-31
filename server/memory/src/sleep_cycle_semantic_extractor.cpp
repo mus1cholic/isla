@@ -32,6 +32,7 @@ using nlohmann::json;
 constexpr std::size_t kMaxSemanticEntitiesPerExtraction = 128;
 constexpr std::size_t kMaxSemanticRelationshipsPerExtraction = 256;
 constexpr std::size_t kMaxSourceEpisodeIdsPerSemanticItem = 16;
+constexpr std::size_t kMaxExistingRelationshipsPerExtractionRequest = 256;
 
 absl::Status invalid_argument(std::string_view message) {
     return absl::InvalidArgumentError(std::string(message));
@@ -107,9 +108,23 @@ json SerializeRequest(const SleepCycleSemanticExtractionRequest& request) {
             { "created_at", episode.created_at },
         });
     }
+    json existing_relationships = json::array();
+    for (const ExistingSemanticRelationship& relationship : request.existing_relationships) {
+        existing_relationships.push_back(json{
+            { "relationship_id", relationship.relationship_id },
+            { "from_label", relationship.from_label },
+            { "from_category", relationship.from_category },
+            { "predicate", relationship.predicate },
+            { "to_label", relationship.to_label },
+            { "to_category", relationship.to_category },
+            { "weight", relationship.weight },
+            { "last_observed_at", relationship.last_observed_at },
+        });
+    }
     return json{
         { "user_id", request.user_id },
         { "episodes", std::move(episodes) },
+        { "existing_relationships", std::move(existing_relationships) },
     };
 }
 
@@ -132,7 +147,8 @@ absl::Status ValidateSourceEpisodeIds(const std::vector<std::string>& source_epi
 
 absl::StatusOr<SleepCycleSemanticExtractionResult>
 ParseResponse(const std::string& response_text,
-              const std::unordered_set<std::string>& valid_episode_ids) {
+              const std::unordered_set<std::string>& valid_episode_ids,
+              const std::unordered_set<std::string>& valid_relationship_ids) {
     json response;
     try {
         response = json::parse(response_text);
@@ -211,14 +227,19 @@ ParseResponse(const std::string& response_text,
         });
     }
 
-    constexpr std::array<std::string_view, 7> kRelationshipKeys = {
-        "from_label",  "from_category", "predicate",          "to_label",
-        "to_category", "evidence",      "source_episode_ids",
+    constexpr std::array<std::string_view, 9> kRelationshipKeys = {
+        "from_label", "from_category",          "predicate", "to_label",           "to_category",
+        "operation",  "target_relationship_id", "evidence",  "source_episode_ids",
     };
     constexpr std::array<std::string_view, 3> kAllowedEvidenceValues = {
         "EXPLICIT_STATEMENT",
         "STRONG_INFERENCE",
         "WEAK_INFERENCE",
+    };
+    constexpr std::array<std::string_view, 3> kAllowedOperationValues = {
+        "APPEND",
+        "STRENGTHEN",
+        "SUPERSEDE",
     };
     for (const json& relationship_json : response.at("relationships")) {
         if (absl::Status status =
@@ -238,6 +259,57 @@ ParseResponse(const std::string& response_text,
         if (!relationship_json.at("evidence").is_string()) {
             return invalid_argument(
                 "sleep-cycle semantic extractor relationship field 'evidence' must be a string");
+        }
+        if (!relationship_json.at("operation").is_string()) {
+            return invalid_argument(
+                "sleep-cycle semantic extractor relationship field 'operation' must be a string");
+        }
+        const std::string operation_value = relationship_json.at("operation").get<std::string>();
+        if (operation_value.empty()) {
+            return invalid_argument(
+                "sleep-cycle semantic extractor relationship field 'operation' must be a "
+                "non-empty string");
+        }
+        bool allowed_operation_value = false;
+        for (std::string_view allowed_value : kAllowedOperationValues) {
+            if (operation_value == allowed_value) {
+                allowed_operation_value = true;
+                break;
+            }
+        }
+        if (!allowed_operation_value) {
+            return invalid_argument(
+                "sleep-cycle semantic extractor relationship field 'operation' must be one of "
+                "APPEND, STRENGTHEN, or SUPERSEDE");
+        }
+        const bool target_relationship_id_is_null =
+            relationship_json.at("target_relationship_id").is_null();
+        if (!target_relationship_id_is_null &&
+            !relationship_json.at("target_relationship_id").is_string()) {
+            return invalid_argument("sleep-cycle semantic extractor relationship field "
+                                    "'target_relationship_id' must be null or a string");
+        }
+        const std::optional<std::string> target_relationship_id =
+            target_relationship_id_is_null
+                ? std::nullopt
+                : std::optional<std::string>(
+                      relationship_json.at("target_relationship_id").get<std::string>());
+        if (operation_value == "APPEND" && target_relationship_id.has_value()) {
+            return invalid_argument(
+                "sleep-cycle semantic extractor APPEND relationship must use null "
+                "target_relationship_id");
+        }
+        if ((operation_value == "STRENGTHEN" || operation_value == "SUPERSEDE") &&
+            (!target_relationship_id.has_value() || target_relationship_id->empty())) {
+            return invalid_argument(
+                "sleep-cycle semantic extractor STRENGTHEN/SUPERSEDE relationship must include "
+                "a non-empty target_relationship_id");
+        }
+        if (target_relationship_id.has_value() &&
+            !valid_relationship_ids.contains(*target_relationship_id)) {
+            return invalid_argument("sleep-cycle semantic extractor relationship references "
+                                    "unknown target_relationship_id '" +
+                                    *target_relationship_id + "'");
         }
         const std::string evidence_value = relationship_json.at("evidence").get<std::string>();
         if (evidence_value.empty()) {
@@ -296,12 +368,24 @@ class LlmSleepCycleSemanticExtractor final : public SleepCycleSemanticExtractor 
             return invalid_argument("sleep-cycle semantic extraction requires a non-empty user_id");
         }
         std::unordered_set<std::string> valid_episode_ids;
+        std::unordered_set<std::string> valid_relationship_ids;
         for (const Episode& episode : request.mid_term_episodes) {
             if (episode.episode_id.empty()) {
                 return invalid_argument(
                     "sleep-cycle semantic extraction requires all episodes to have an episode_id");
             }
             valid_episode_ids.insert(episode.episode_id);
+        }
+        if (request.existing_relationships.size() > kMaxExistingRelationshipsPerExtractionRequest) {
+            return invalid_argument(
+                "sleep-cycle semantic extraction request existing_relationships exceeds max size");
+        }
+        for (const ExistingSemanticRelationship& relationship : request.existing_relationships) {
+            if (relationship.relationship_id.empty()) {
+                return invalid_argument("sleep-cycle semantic extraction requires existing "
+                                        "relationships to have relationship_id");
+            }
+            valid_relationship_ids.insert(relationship.relationship_id);
         }
 
         const std::string user_text = SerializeRequest(request).dump();
@@ -336,7 +420,7 @@ class LlmSleepCycleSemanticExtractor final : public SleepCycleSemanticExtractor 
         }
 
         absl::StatusOr<SleepCycleSemanticExtractionResult> parsed =
-            ParseResponse(output_text, valid_episode_ids);
+            ParseResponse(output_text, valid_episode_ids, valid_relationship_ids);
         if (!parsed.ok()) {
             LOG(WARNING) << "LlmSleepCycleSemanticExtractor failed to parse response detail='"
                          << SanitizeForLog(parsed.status().message()) << "'";
