@@ -5,6 +5,7 @@
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
+#include "isla/server/memory/retrieved_memory_reranker.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -403,6 +404,50 @@ class RecordingSleepCycleSemanticExtractor final : public SleepCycleSemanticExtr
         extract_fn_;
 };
 
+class RecordingRetrievedMemoryReranker final : public RetrievedMemoryReranker {
+  public:
+    explicit RecordingRetrievedMemoryReranker(
+        absl::StatusOr<std::vector<double>> scores = std::vector<double>{})
+        : scores_(std::move(scores)) {}
+
+    [[nodiscard]] absl::StatusOr<std::vector<double>>
+    Score(std::string_view query,
+          const std::vector<RetrievedMemoryCandidate>& candidates) override {
+        queries_.push_back(std::string(query));
+        requests_.push_back(candidates);
+        if (score_fn_) {
+            return score_fn_(query, candidates);
+        }
+        return scores_;
+    }
+
+    void SetScores(absl::StatusOr<std::vector<double>> scores) {
+        scores_ = std::move(scores);
+    }
+
+    void SetScoreFn(std::function<absl::StatusOr<std::vector<double>>(
+                        std::string_view, const std::vector<RetrievedMemoryCandidate>&)>
+                        score_fn) {
+        score_fn_ = std::move(score_fn);
+    }
+
+    [[nodiscard]] const std::vector<std::string>& queries() const {
+        return queries_;
+    }
+
+    [[nodiscard]] const std::vector<std::vector<RetrievedMemoryCandidate>>& requests() const {
+        return requests_;
+    }
+
+  private:
+    std::vector<std::string> queries_;
+    std::vector<std::vector<RetrievedMemoryCandidate>> requests_;
+    absl::StatusOr<std::vector<double>> scores_;
+    std::function<absl::StatusOr<std::vector<double>>(std::string_view,
+                                                      const std::vector<RetrievedMemoryCandidate>&)>
+        score_fn_;
+};
+
 class MemoryOrchestratorTest : public ::testing::Test {
   protected:
     static Timestamp Ts(std::string_view text) {
@@ -427,12 +472,14 @@ class MemoryOrchestratorTest : public ::testing::Test {
                                                       });
     }
 
-    static absl::StatusOr<MemoryOrchestrator>
-    MakeHandlerWithCompactor(const MidTermCompactorPtr& compactor, MemoryStorePtr store = nullptr,
-                             const MidTermFlushDeciderPtr& decider = nullptr,
-                             const SleepCycleSemanticExtractorPtr& semantic_extractor = nullptr,
-                             std::size_t mid_term_flush_decider_interval_user_turns =
-                                 kImmediateMidTermFlushDeciderIntervalUserTurns) {
+    static absl::StatusOr<MemoryOrchestrator> MakeHandlerWithCompactor(
+        const MidTermCompactorPtr& compactor, MemoryStorePtr store = nullptr,
+        const MidTermFlushDeciderPtr& decider = nullptr,
+        const SleepCycleSemanticExtractorPtr& semantic_extractor = nullptr,
+        std::size_t mid_term_flush_decider_interval_user_turns =
+            kImmediateMidTermFlushDeciderIntervalUserTurns,
+        const RetrievedMemoryRerankerPtr& retrieved_memory_reranker = nullptr,
+        double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore) {
         absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
             .system_prompt = "You are Isla.",
             .user_id = "user_001",
@@ -442,7 +489,8 @@ class MemoryOrchestratorTest : public ::testing::Test {
         }
         return MemoryOrchestrator("srv_test", std::move(*memory), std::move(store), decider,
                                   compactor, semantic_extractor,
-                                  mid_term_flush_decider_interval_user_turns);
+                                  mid_term_flush_decider_interval_user_turns,
+                                  retrieved_memory_reranker, retrieved_memory_reranker_min_score);
     }
 
     static absl::StatusOr<std::size_t> WaitForDrain(MemoryOrchestrator& orchestrator,

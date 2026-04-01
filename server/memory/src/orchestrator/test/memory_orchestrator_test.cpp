@@ -1316,6 +1316,214 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryDeduplicatesLongTermContextAcrossS
     EXPECT_EQ(episode_pos, state.retrieved_memory->rfind("User discussed their cat Mochi"));
 }
 
+TEST_F(MemoryOrchestratorTest, HandleUserQueryFiltersRetrievedMemoryWithReranker) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_mochi",
+            .user_id = "user_001",
+            .label = "Mochi",
+            .category = "pet",
+            .familiar_label_text = std::string("Mochi - Airi's cat"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_001",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "owns",
+            .to_entity_id = "entity_mochi",
+            .weight = 10.0,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->long_term_episodes = {
+        LongTermEpisode{
+            .lte_id = "lte_001",
+            .user_id = "user_001",
+            .summary_compressed = "User discussed their cat Mochi",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    auto reranker =
+        std::make_shared<RecordingRetrievedMemoryReranker>(std::vector<double>{ 0.9, 0.2 });
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, nullptr,
+                                 kImmediateMidTermFlushDeciderIntervalUserTurns, reranker, 0.5);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "What do I know about Airi?", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    ASSERT_EQ(reranker->queries().size(), 1U);
+    EXPECT_EQ(reranker->queries()[0], "What do I know about Airi?");
+    ASSERT_EQ(reranker->requests().size(), 1U);
+    ASSERT_EQ(reranker->requests()[0].size(), 2U);
+    EXPECT_EQ(reranker->requests()[0][0].kind, RetrievedMemoryCandidateKind::KgFact);
+    EXPECT_EQ(reranker->requests()[0][0].candidate_text, "Airi owns Mochi (weight: 10)");
+    EXPECT_EQ(reranker->requests()[0][1].kind, RetrievedMemoryCandidateKind::Episode);
+    EXPECT_EQ(reranker->requests()[0][1].candidate_text, "User discussed their cat Mochi");
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("KG Facts:"), std::string::npos);
+    EXPECT_NE(state.retrieved_memory->find("Airi owns Mochi (weight: 10)"), std::string::npos);
+    EXPECT_EQ(state.retrieved_memory->find("Past Experiences:"), std::string::npos);
+    EXPECT_EQ(state.retrieved_memory->find("User discussed their cat Mochi"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryOrdersRelationshipsByRerankerScore) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_mochi",
+            .user_id = "user_001",
+            .label = "Mochi",
+            .category = "pet",
+            .familiar_label_text = std::string("Mochi - Airi's cat"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_tea",
+            .user_id = "user_001",
+            .label = "Tea",
+            .category = "drink",
+            .familiar_label_text = std::string("Airi likes tea"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_001",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "owns",
+            .to_entity_id = "entity_mochi",
+            .weight = 10.0,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Relationship{
+            .relationship_id = "rel_002",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "likes",
+            .to_entity_id = "entity_tea",
+            .weight = 4.0,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    auto reranker =
+        std::make_shared<RecordingRetrievedMemoryReranker>(std::vector<double>{ 0.1, 0.9 });
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, nullptr,
+                                 kImmediateMidTermFlushDeciderIntervalUserTurns, reranker, 0.0);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "What do I know about Airi?", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    const std::size_t likes_pos = state.retrieved_memory->find("Airi likes Tea (weight: 4)");
+    const std::size_t owns_pos = state.retrieved_memory->find("Airi owns Mochi (weight: 10)");
+    ASSERT_NE(likes_pos, std::string::npos);
+    ASSERT_NE(owns_pos, std::string::npos);
+    EXPECT_LT(likes_pos, owns_pos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryFallsBackWhenRetrievedMemoryRerankerFails) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_mochi",
+            .user_id = "user_001",
+            .label = "Mochi",
+            .category = "pet",
+            .familiar_label_text = std::string("Mochi - Airi's cat"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_001",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "owns",
+            .to_entity_id = "entity_mochi",
+            .weight = 10.0,
+            .last_observed_at = Ts("2026-03-08T14:00:00Z"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->long_term_episodes = {
+        LongTermEpisode{
+            .lte_id = "lte_001",
+            .user_id = "user_001",
+            .summary_compressed = "User discussed their cat Mochi",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    auto reranker = std::make_shared<RecordingRetrievedMemoryReranker>(
+        absl::InternalError("reranker unavailable"));
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, nullptr,
+                                 kImmediateMidTermFlushDeciderIntervalUserTurns, reranker, 0.5);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "What do I know about Airi?", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("Airi owns Mochi (weight: 10)"), std::string::npos);
+    EXPECT_NE(state.retrieved_memory->find("User discussed their cat Mochi"), std::string::npos);
+}
+
 TEST_F(MemoryOrchestratorTest, HandleUserQueryFallsBackToRawIdsWhenLabelEnrichmentFails) {
     auto store = std::make_shared<RecordingMemoryStore>();
     store->entities = {

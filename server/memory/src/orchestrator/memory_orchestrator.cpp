@@ -21,14 +21,17 @@ MemoryOrchestrator::MemoryOrchestrator(
     std::string session_id, WorkingMemory memory, MemoryStorePtr store,
     MidTermFlushDeciderPtr mid_term_flush_decider, MidTermCompactorPtr mid_term_compactor,
     SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor,
-    std::size_t mid_term_flush_decider_interval_user_turns)
+    std::size_t mid_term_flush_decider_interval_user_turns,
+    RetrievedMemoryRerankerPtr retrieved_memory_reranker,
+    double retrieved_memory_reranker_min_score)
     : session_id_(std::move(session_id)), memory_(std::move(memory)), store_(std::move(store)),
       mid_term_flush_decider_(std::move(mid_term_flush_decider)),
       mid_term_compactor_(std::move(mid_term_compactor)),
       sleep_cycle_semantic_extractor_(std::move(sleep_cycle_semantic_extractor)),
-      pending_mid_term_flushes_(),
+      retrieved_memory_reranker_(std::move(retrieved_memory_reranker)), pending_mid_term_flushes_(),
       mid_term_flush_decider_interval_user_turns_(mid_term_flush_decider_interval_user_turns),
       user_turns_since_last_mid_term_decider_run_(0), next_episode_sequence_(1),
+      retrieved_memory_reranker_min_score_(retrieved_memory_reranker_min_score),
       session_persisted_(false) {
     CHECK_GT(mid_term_flush_decider_interval_user_turns_, 0U)
         << "mid_term_flush_decider_interval_user_turns must be at least 1";
@@ -54,10 +57,11 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
     if (!memory.ok()) {
         return memory.status();
     }
-    return MemoryOrchestrator(std::move(session_id), std::move(*memory), init.store,
-                              init.mid_term_flush_decider, init.mid_term_compactor,
-                              init.sleep_cycle_semantic_extractor,
-                              init.mid_term_flush_decider_interval_user_turns);
+    return MemoryOrchestrator(
+        std::move(session_id), std::move(*memory), init.store, init.mid_term_flush_decider,
+        init.mid_term_compactor, init.sleep_cycle_semantic_extractor,
+        init.mid_term_flush_decider_interval_user_turns, init.retrieved_memory_reranker,
+        init.retrieved_memory_reranker_min_score);
 }
 
 absl::StatusOr<std::string> MemoryOrchestrator::RenderFullWorkingMemory() const {
