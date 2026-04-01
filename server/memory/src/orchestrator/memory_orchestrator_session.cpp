@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -81,6 +82,15 @@ struct RankedRetrievedMemoryCandidate {
     double score = 0.0;
 };
 
+std::string
+RenderRetrievedRelationshipCandidateText(const RetrievedRelationshipCandidate& relationship);
+
+std::string RenderRetrievedEpisodeCandidateText(const RetrievedEpisodeCandidate& episode);
+
+double SanitizeRetrievedMemoryRerankerScore(double score) {
+    return std::isfinite(score) ? score : -std::numeric_limits<double>::infinity();
+}
+
 absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>>
 LoadEntityMapForRetrievedMemory(MemoryStore* store, const std::vector<std::string>& entity_ids) {
     std::unordered_map<std::string, std::optional<Entity>> entities_by_id;
@@ -157,16 +167,7 @@ std::string RenderRetrievedMemory(const std::vector<RetrievedRelationshipCandida
         output.append("KG Facts:\n");
         for (const RetrievedRelationshipCandidate& relationship : relationships) {
             output.append("- ");
-            output.append(relationship.from_text);
-            output.push_back(' ');
-            output.append(relationship.predicate);
-            output.push_back(' ');
-            output.append(relationship.to_text);
-            if (relationship.weight > 0.0) {
-                output.append(" (weight: ");
-                output.append(std::to_string(static_cast<int>(std::round(relationship.weight))));
-                output.push_back(')');
-            }
+            output.append(RenderRetrievedRelationshipCandidateText(relationship));
             output.push_back('\n');
         }
     }
@@ -577,7 +578,7 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
                          << "; falling back to unreranked retrieval output";
         } else {
             for (std::size_t i = 0; i < ranked_candidates.size(); ++i) {
-                ranked_candidates[i].score = (*scores)[i];
+                ranked_candidates[i].score = SanitizeRetrievedMemoryRerankerScore((*scores)[i]);
             }
             std::sort(ranked_candidates.begin(), ranked_candidates.end(),
                       [](const RankedRetrievedMemoryCandidate& lhs,
