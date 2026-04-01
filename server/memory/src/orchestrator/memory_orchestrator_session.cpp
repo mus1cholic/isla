@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -73,6 +74,22 @@ struct RetrievedEpisodeCandidate {
     std::string summary_compressed;
     Timestamp created_at;
 };
+
+struct RankedRetrievedMemoryCandidate {
+    RetrievedMemoryCandidate candidate;
+    std::optional<RetrievedRelationshipCandidate> relationship;
+    std::optional<RetrievedEpisodeCandidate> episode;
+    double score = 0.0;
+};
+
+std::string
+RenderRetrievedRelationshipCandidateText(const RetrievedRelationshipCandidate& relationship);
+
+std::string RenderRetrievedEpisodeCandidateText(const RetrievedEpisodeCandidate& episode);
+
+double SanitizeRetrievedMemoryRerankerScore(double score) {
+    return std::isfinite(score) ? score : -std::numeric_limits<double>::infinity();
+}
 
 absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>>
 LoadEntityMapForRetrievedMemory(MemoryStore* store, const std::vector<std::string>& entity_ids) {
@@ -150,16 +167,7 @@ std::string RenderRetrievedMemory(const std::vector<RetrievedRelationshipCandida
         output.append("KG Facts:\n");
         for (const RetrievedRelationshipCandidate& relationship : relationships) {
             output.append("- ");
-            output.append(relationship.from_text);
-            output.push_back(' ');
-            output.append(relationship.predicate);
-            output.push_back(' ');
-            output.append(relationship.to_text);
-            if (relationship.weight > 0.0) {
-                output.append(" (weight: ");
-                output.append(std::to_string(static_cast<int>(std::round(relationship.weight))));
-                output.push_back(')');
-            }
+            output.append(RenderRetrievedRelationshipCandidateText(relationship));
             output.push_back('\n');
         }
     }
@@ -175,6 +183,26 @@ std::string RenderRetrievedMemory(const std::vector<RetrievedRelationshipCandida
         }
     }
     return output;
+}
+
+std::string
+RenderRetrievedRelationshipCandidateText(const RetrievedRelationshipCandidate& relationship) {
+    std::string output;
+    output.append(relationship.from_text);
+    output.push_back(' ');
+    output.append(relationship.predicate);
+    output.push_back(' ');
+    output.append(relationship.to_text);
+    if (relationship.weight > 0.0) {
+        output.append(" (weight: ");
+        output.append(std::to_string(static_cast<int>(std::round(relationship.weight))));
+        output.push_back(')');
+    }
+    return output;
+}
+
+std::string RenderRetrievedEpisodeCandidateText(const RetrievedEpisodeCandidate& episode) {
+    return episode.summary_compressed;
 }
 
 } // namespace
@@ -501,6 +529,86 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
                   }
                   return lhs.lte_id < rhs.lte_id;
               });
+
+    if (retrieved_memory_reranker_ != nullptr &&
+        (!relationship_candidates.empty() || !episode_candidates.empty())) {
+        std::vector<RankedRetrievedMemoryCandidate> ranked_candidates;
+        ranked_candidates.reserve(relationship_candidates.size() + episode_candidates.size());
+        std::vector<RetrievedMemoryCandidate> reranker_candidates;
+        reranker_candidates.reserve(relationship_candidates.size() + episode_candidates.size());
+
+        for (const RetrievedRelationshipCandidate& relationship : relationship_candidates) {
+            RetrievedMemoryCandidate candidate{
+                .kind = RetrievedMemoryCandidateKind::KgFact,
+                .source_id = relationship.relationship_id,
+                .candidate_text = RenderRetrievedRelationshipCandidateText(relationship),
+            };
+            reranker_candidates.push_back(candidate);
+            ranked_candidates.push_back(RankedRetrievedMemoryCandidate{
+                .candidate = std::move(candidate),
+                .relationship = relationship,
+            });
+        }
+        for (const RetrievedEpisodeCandidate& episode : episode_candidates) {
+            RetrievedMemoryCandidate candidate{
+                .kind = RetrievedMemoryCandidateKind::Episode,
+                .source_id = episode.lte_id,
+                .candidate_text = RenderRetrievedEpisodeCandidateText(episode),
+            };
+            reranker_candidates.push_back(candidate);
+            ranked_candidates.push_back(RankedRetrievedMemoryCandidate{
+                .candidate = std::move(candidate),
+                .episode = episode,
+            });
+        }
+
+        absl::StatusOr<std::vector<double>> scores =
+            retrieved_memory_reranker_->Score(user_message.content, reranker_candidates);
+        if (!scores.ok()) {
+            LOG(WARNING) << "MemoryOrchestrator failed to rerank long-term retrieval candidates"
+                         << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                         << SanitizeForLog(scores.status().message())
+                         << "'; falling back to unreranked retrieval output";
+        } else if (scores->size() != ranked_candidates.size()) {
+            LOG(WARNING) << "MemoryOrchestrator received mismatched reranker scores for long-term "
+                            "retrieval candidates"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " candidate_count=" << ranked_candidates.size()
+                         << " score_count=" << scores->size()
+                         << "; falling back to unreranked retrieval output";
+        } else {
+            for (std::size_t i = 0; i < ranked_candidates.size(); ++i) {
+                ranked_candidates[i].score = SanitizeRetrievedMemoryRerankerScore((*scores)[i]);
+            }
+            std::sort(ranked_candidates.begin(), ranked_candidates.end(),
+                      [](const RankedRetrievedMemoryCandidate& lhs,
+                         const RankedRetrievedMemoryCandidate& rhs) {
+                          if (lhs.score != rhs.score) {
+                              return lhs.score > rhs.score;
+                          }
+                          if (lhs.candidate.kind != rhs.candidate.kind) {
+                              return lhs.candidate.kind < rhs.candidate.kind;
+                          }
+                          if (lhs.candidate.source_id != rhs.candidate.source_id) {
+                              return lhs.candidate.source_id < rhs.candidate.source_id;
+                          }
+                          return lhs.candidate.candidate_text < rhs.candidate.candidate_text;
+                      });
+
+            relationship_candidates.clear();
+            episode_candidates.clear();
+            for (RankedRetrievedMemoryCandidate& ranked_candidate : ranked_candidates) {
+                if (ranked_candidate.score < retrieved_memory_reranker_min_score_) {
+                    continue;
+                }
+                if (ranked_candidate.relationship.has_value()) {
+                    relationship_candidates.push_back(*ranked_candidate.relationship);
+                } else if (ranked_candidate.episode.has_value()) {
+                    episode_candidates.push_back(std::move(*ranked_candidate.episode));
+                }
+            }
+        }
+    }
 
     std::string rendered_context =
         RenderRetrievedMemory(relationship_candidates, episode_candidates);

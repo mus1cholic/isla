@@ -13,6 +13,7 @@ cc_library(
         "memory_types.hpp",
         "memory_orchestrator.hpp",
         "prompt_loader.hpp",
+        "retrieved_memory_reranker.hpp",
         "sleep_cycle_semantic_extractor.hpp",
         "system_prompt.hpp",
         "supabase_memory_store.hpp",

@@ -13,12 +13,14 @@
 #include "isla/server/memory/memory_store.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
+#include "isla/server/memory/retrieved_memory_reranker.hpp"
 #include "isla/server/memory/sleep_cycle_semantic_extractor.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
 
 inline constexpr std::size_t kDefaultMidTermFlushDeciderIntervalUserTurns = 10U;
+inline constexpr double kDefaultRetrievedMemoryRerankerMinScore = 0.5;
 
 struct GatewayTurnText {
     std::string session_id;
@@ -63,6 +65,8 @@ struct MemoryOrchestratorInit {
     MidTermFlushDeciderPtr mid_term_flush_decider = nullptr;
     MidTermCompactorPtr mid_term_compactor = nullptr;
     SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor = nullptr;
+    RetrievedMemoryRerankerPtr retrieved_memory_reranker = nullptr;
+    double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore;
     std::size_t mid_term_flush_decider_interval_user_turns =
         kDefaultMidTermFlushDeciderIntervalUserTurns;
 };
@@ -80,12 +84,15 @@ struct SleepCycleResult {
 // coordinating future mid/long-term memory hooks.
 class MemoryOrchestrator {
   public:
-    MemoryOrchestrator(std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr,
-                       MidTermFlushDeciderPtr mid_term_flush_decider = nullptr,
-                       MidTermCompactorPtr mid_term_compactor = nullptr,
-                       SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor = nullptr,
-                       std::size_t mid_term_flush_decider_interval_user_turns =
-                           kDefaultMidTermFlushDeciderIntervalUserTurns);
+    MemoryOrchestrator(
+        std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr,
+        MidTermFlushDeciderPtr mid_term_flush_decider = nullptr,
+        MidTermCompactorPtr mid_term_compactor = nullptr,
+        SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor = nullptr,
+        std::size_t mid_term_flush_decider_interval_user_turns =
+            kDefaultMidTermFlushDeciderIntervalUserTurns,
+        RetrievedMemoryRerankerPtr retrieved_memory_reranker = nullptr,
+        double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore);
 
     // Builds a fresh orchestrator with empty working-memory conversation state for the session.
     // Persistence and async mid-term components are optional and can be attached up front.
@@ -206,9 +213,9 @@ class MemoryOrchestrator {
     // models and familiar labels) so the system prompt reflects prior knowledge from session start.
     [[nodiscard]] absl::Status HydratePersistentMemoryCache();
 
-    // Retrieves long-term context (relationships and episodes) for entities in the persistent
-    // cache. Today this returns all known context without filtering by user_message content;
-    // semantic relevance ranking will be added in a future iteration.
+    // Retrieves long-term context (relationships and episodes) for query-selected seed entities.
+    // When a reranker is configured, candidates are scored against the live user query before
+    // prompt injection.
     [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
     RetrieveRelevantMemories(const Message& user_message);
 
@@ -280,11 +287,13 @@ class MemoryOrchestrator {
     MidTermFlushDeciderPtr mid_term_flush_decider_;
     MidTermCompactorPtr mid_term_compactor_;
     SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor_;
+    RetrievedMemoryRerankerPtr retrieved_memory_reranker_;
     std::vector<PendingMidTermFlush> pending_mid_term_flushes_;
     std::size_t mid_term_flush_decider_interval_user_turns_ =
         kDefaultMidTermFlushDeciderIntervalUserTurns;
     std::size_t user_turns_since_last_mid_term_decider_run_ = 0;
     std::size_t next_episode_sequence_ = 1;
+    double retrieved_memory_reranker_min_score_ = kDefaultRetrievedMemoryRerankerMinScore;
     bool session_persisted_ = false;
 };
 
