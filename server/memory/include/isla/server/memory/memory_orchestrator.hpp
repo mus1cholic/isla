@@ -84,15 +84,15 @@ struct SleepCycleResult {
 // coordinating future mid/long-term memory hooks.
 class MemoryOrchestrator {
   public:
-    MemoryOrchestrator(std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr,
-                       MidTermFlushDeciderPtr mid_term_flush_decider = nullptr,
-                       MidTermCompactorPtr mid_term_compactor = nullptr,
-                       SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor = nullptr,
-                       std::size_t mid_term_flush_decider_interval_user_turns =
-                           kDefaultMidTermFlushDeciderIntervalUserTurns,
-                       RetrievedMemoryRerankerPtr retrieved_memory_reranker = nullptr,
-                       double retrieved_memory_reranker_min_score =
-                           kDefaultRetrievedMemoryRerankerMinScore);
+    MemoryOrchestrator(
+        std::string session_id, WorkingMemory memory, MemoryStorePtr store = nullptr,
+        MidTermFlushDeciderPtr mid_term_flush_decider = nullptr,
+        MidTermCompactorPtr mid_term_compactor = nullptr,
+        SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor = nullptr,
+        std::size_t mid_term_flush_decider_interval_user_turns =
+            kDefaultMidTermFlushDeciderIntervalUserTurns,
+        RetrievedMemoryRerankerPtr retrieved_memory_reranker = nullptr,
+        double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore);
 
     // Builds a fresh orchestrator with empty working-memory conversation state for the session.
     // Persistence and async mid-term components are optional and can be attached up front.

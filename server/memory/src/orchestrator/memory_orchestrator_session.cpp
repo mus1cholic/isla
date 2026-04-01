@@ -596,14 +596,14 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
 
             relationship_candidates.clear();
             episode_candidates.clear();
-            for (const RankedRetrievedMemoryCandidate& ranked_candidate : ranked_candidates) {
+            for (RankedRetrievedMemoryCandidate& ranked_candidate : ranked_candidates) {
                 if (ranked_candidate.score < retrieved_memory_reranker_min_score_) {
                     continue;
                 }
                 if (ranked_candidate.relationship.has_value()) {
                     relationship_candidates.push_back(*ranked_candidate.relationship);
                 } else if (ranked_candidate.episode.has_value()) {
-                    episode_candidates.push_back(*ranked_candidate.episode);
+                    episode_candidates.push_back(std::move(*ranked_candidate.episode));
                 }
             }
         }
