@@ -397,6 +397,12 @@ void ApplyLlmRuntimeEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLoo
         embedding_model.has_value()) {
         parsed->llm_runtime_config.mid_term_embedding_model = *embedding_model;
     }
+    if (const std::optional<std::string> retrieved_memory_reranker_model =
+            env_lookup("AI_GATEWAY_RETRIEVED_MEMORY_RERANKER_MODEL");
+        retrieved_memory_reranker_model.has_value()) {
+        parsed->llm_runtime_config.retrieved_memory_reranker_model =
+            *retrieved_memory_reranker_model;
+    }
     if (const std::optional<std::string> reasoning_effort =
             env_lookup("AI_GATEWAY_REASONING_EFFORT");
         reasoning_effort.has_value()) {
@@ -436,8 +442,13 @@ absl::Status ValidateLlmRuntimeConfig(const GatewayLlmRuntimeConfig& config) {
         !status.ok()) {
         return status;
     }
-    return ValidateOptionalModelOverride("mid-term-embedding-model",
-                                         config.mid_term_embedding_model);
+    if (const absl::Status status = ValidateOptionalModelOverride("mid-term-embedding-model",
+                                                                  config.mid_term_embedding_model);
+        !status.ok()) {
+        return status;
+    }
+    return ValidateOptionalModelOverride("retrieved-memory-reranker-model",
+                                         config.retrieved_memory_reranker_model);
 }
 
 } // namespace
@@ -858,6 +869,17 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
                 return absl::InvalidArgumentError("mid-term-embedding-model must not be empty");
             }
             parsed.llm_runtime_config.mid_term_embedding_model = model;
+            continue;
+        }
+        constexpr std::string_view kRetrievedMemoryRerankerModelPrefix =
+            "--retrieved-memory-reranker-model=";
+        if (argument.starts_with(kRetrievedMemoryRerankerModelPrefix)) {
+            const std::string model = argument.substr(kRetrievedMemoryRerankerModelPrefix.size());
+            if (model.empty()) {
+                return absl::InvalidArgumentError(
+                    "retrieved-memory-reranker-model must not be empty");
+            }
+            parsed.llm_runtime_config.retrieved_memory_reranker_model = model;
             continue;
         }
         constexpr std::string_view kReasoningEffortPrefix = "--reasoning-effort=";

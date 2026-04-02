@@ -98,7 +98,8 @@ ordered_json BuildCaseArtifactJson(const MemoryBenchmarkCase& benchmark_case) {
 
 bool IsDefaultLlmRuntimeConfig(const isla::server::ai_gateway::GatewayLlmRuntimeConfig& config) {
     return config.main_model.empty() && config.mid_term_flush_decider_model.empty() &&
-           config.mid_term_compactor_model.empty() && config.mid_term_embedding_model.empty();
+           config.mid_term_compactor_model.empty() && config.mid_term_embedding_model.empty() &&
+           config.retrieved_memory_reranker_model.empty();
 }
 
 bool IsDefaultOllamaConfig(const isla::server::OllamaLlmClientConfig& config) {

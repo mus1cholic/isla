@@ -26,6 +26,7 @@
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/openai_llm_client.hpp"
 #include "isla/server/openai_reasoning_effort_utils.hpp"
+#include "isla/server/retrieved_memory_reranker_client_adapter.hpp"
 #include "isla/server/tools/expand_mid_term_tool.hpp"
 #include "isla/server/tools/tool_registry.hpp"
 
@@ -118,6 +119,12 @@ std::string ResolveMidTermEmbeddingModel(const GatewayStubResponderConfig& confi
     return config.llm_runtime_config.mid_term_embedding_model.empty()
                ? std::string(kDefaultMidTermEmbeddingModel)
                : config.llm_runtime_config.mid_term_embedding_model;
+}
+
+std::string ResolveRetrievedMemoryRerankerModel(const GatewayStubResponderConfig& config) {
+    return config.llm_runtime_config.retrieved_memory_reranker_model.empty()
+               ? std::string(kDefaultRetrievedMemoryRerankerModel)
+               : config.llm_runtime_config.retrieved_memory_reranker_model;
 }
 
 class CallbackToolSessionReader final : public isla::server::tools::ToolSessionReader {
@@ -256,6 +263,8 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
     const std::string flush_decider_model = ResolveMidTermFlushDeciderModel(config_);
     const std::string compactor_model = ResolveMidTermCompactorModel(config_);
     const std::string embedding_model = ResolveMidTermEmbeddingModel(config_);
+    const std::string retrieved_memory_reranker_model =
+        ResolveRetrievedMemoryRerankerModel(config_);
     if (!mid_term_memory_configured_) {
         LOG(INFO) << "AI gateway stub mid-term memory not configured because no llm client was "
                      "provided";
@@ -277,6 +286,21 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
                       << SanitizeForLog(flush_decider_model)
                       << " compactor_model=" << SanitizeForLog(compactor_model)
                       << " embedding_model=" << SanitizeForLog(embedding_model);
+        }
+    }
+
+    if (config_.reranker_client != nullptr) {
+        absl::StatusOr<isla::server::memory::RetrievedMemoryRerankerPtr>
+            created_retrieved_memory_reranker = CreateClientBackedRetrievedMemoryReranker(
+                config_.reranker_client, retrieved_memory_reranker_model);
+        if (!created_retrieved_memory_reranker.ok()) {
+            LOG(WARNING) << "AI gateway stub disabled retrieved-memory reranker detail='"
+                         << SanitizeForLog(created_retrieved_memory_reranker.status().message())
+                         << "'";
+        } else {
+            retrieved_memory_reranker_ = std::move(*created_retrieved_memory_reranker);
+            LOG(INFO) << "AI gateway stub enabled retrieved-memory reranker model="
+                      << SanitizeForLog(retrieved_memory_reranker_model);
         }
     }
 
@@ -1527,6 +1551,9 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
                     .mid_term_flush_decider = mid_term_flush_decider_,
                     .mid_term_compactor = mid_term_compactor_,
                     .sleep_cycle_semantic_extractor = sleep_cycle_semantic_extractor_,
+                    .retrieved_memory_reranker = retrieved_memory_reranker_,
+                    .retrieved_memory_reranker_min_score =
+                        config_.retrieved_memory_reranker_min_score,
                     .mid_term_flush_decider_interval_user_turns =
                         config_.mid_term_flush_decider_interval_user_turns,
                 });

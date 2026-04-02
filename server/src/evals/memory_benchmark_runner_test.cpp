@@ -315,6 +315,27 @@ TEST(RunMemoryBenchmarkTest, RejectsLegacyProviderOverridesInLiveGatewayMode) {
     EXPECT_NE(std::string(result.status().message()).find("openai_config"), std::string::npos);
 }
 
+TEST(RunMemoryBenchmarkTest, RejectsLegacyRetrievedMemoryRerankerModelOverrideInLiveGatewayMode) {
+    MemoryBenchmarkRunConfig config;
+    config.llm_runtime_config.retrieved_memory_reranker_model = "bge-reranker-v2-m3";
+    MemoryBenchmarkSuite suite;
+    suite.benchmark_name = "test_bench";
+    suite.cases.push_back(MemoryBenchmarkCase{
+        .eval_case =
+            EvalCase{
+                .case_id = "q1",
+                .session_id = "session_1",
+                .input = EvalInput{ .text = "What is my favorite color?" },
+            },
+    });
+
+    const absl::StatusOr<MemoryBenchmarkReport> result =
+        RunMemoryBenchmark(std::move(config), suite);
+    ASSERT_FALSE(result.ok());
+    EXPECT_TRUE(absl::IsInvalidArgument(result.status()));
+    EXPECT_NE(std::string(result.status().message()).find("llm_runtime_config"), std::string::npos);
+}
+
 TEST(RunMemoryBenchmarkTest, RejectsLegacyPromptBudgetOverridesInLiveGatewayMode) {
     MemoryBenchmarkRunConfig config;
     config.max_rendered_working_memory_context_bytes = 512U * 1024U;
