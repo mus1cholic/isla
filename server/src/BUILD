@@ -43,6 +43,17 @@ cc_library(
 )
 
 cc_library(
+    name = "retrieved_memory_reranker_client_adapter",
+    srcs = ["retrieved_memory_reranker_client_adapter.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "gemini_api_embedding_client",
     srcs = ["gemini_api_embedding_client.cpp"],
     visibility = ["//visibility:public"],
@@ -472,6 +483,7 @@ cc_library(
         ":ai_gateway_planner",
         ":ai_gateway_server",
         ":ai_gateway_stub_responder_utils",
+        ":retrieved_memory_reranker_client_adapter",
         ":tools",
         "//server/memory/src:memory_orchestrator",
         "@abseil-cpp//absl/container:flat_hash_map",
@@ -748,6 +760,19 @@ cc_library(
 )
 
 cc_library(
+    name = "reranker_client_mock",
+    testonly = True,
+    hdrs = ["reranker_client_mock.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+    ],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        "@googletest//:gtest",
+    ],
+)
+
+cc_library(
     name = "llm_client_mock",
     testonly = True,
     hdrs = ["llm_client_mock.hpp"],
@@ -785,6 +810,17 @@ cc_library(
     deps = [
         "//server/include/isla/server:server_headers",
         "@googletest//:gtest",
+    ],
+)
+
+cc_test(
+    name = "retrieved_memory_reranker_client_adapter_test",
+    srcs = ["retrieved_memory_reranker_client_adapter_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":retrieved_memory_reranker_client_adapter",
+        ":reranker_client_mock",
+        "@googletest//:gtest_main",
     ],
 )
 

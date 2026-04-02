@@ -26,6 +26,7 @@
 #include "isla/server/memory/memory_orchestrator.hpp"
 #include "isla/server/memory/memory_store.hpp"
 #include "isla/server/openai_responses_client.hpp"
+#include "isla/server/reranker_client.hpp"
 
 namespace isla::server::ai_gateway {
 
@@ -87,6 +88,9 @@ struct GatewayStubResponderConfig {
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
     GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
     std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
+    std::shared_ptr<const isla::server::RerankerClient> reranker_client;
+    double retrieved_memory_reranker_min_score =
+        isla::server::memory::kDefaultRetrievedMemoryRerankerMinScore;
     std::size_t max_rendered_system_prompt_bytes = kDefaultMaxRenderedSystemPromptBytes;
     std::size_t max_rendered_working_memory_context_bytes =
         kDefaultMaxRenderedWorkingMemoryContextBytes;
@@ -259,6 +263,7 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     isla::server::memory::MidTermFlushDeciderPtr mid_term_flush_decider_;
     isla::server::memory::MidTermCompactorPtr mid_term_compactor_;
     isla::server::memory::SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor_;
+    isla::server::memory::RetrievedMemoryRerankerPtr retrieved_memory_reranker_;
     bool mid_term_memory_configured_ = false;
     absl::Status mid_term_memory_initialization_status_ = absl::OkStatus();
     mutable std::mutex mutex_;

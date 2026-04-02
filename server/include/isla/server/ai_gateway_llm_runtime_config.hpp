@@ -13,10 +13,12 @@ namespace isla::server::ai_gateway {
 //   --mid-term-flush-decider-model / AI_GATEWAY_MID_TERM_FLUSH_DECIDER_MODEL
 //   --mid-term-compactor-model / AI_GATEWAY_MID_TERM_COMPACTOR_MODEL
 //   --mid-term-embedding-model / AI_GATEWAY_MID_TERM_EMBEDDING_MODEL
+//   --retrieved-memory-reranker-model / AI_GATEWAY_RETRIEVED_MEMORY_RERANKER_MODEL
 inline constexpr std::string_view kDefaultMainLlmModel = "gpt-5.3-chat-latest";
 inline constexpr std::string_view kDefaultMidTermFlushDeciderModel = "gpt-5.4-mini";
 inline constexpr std::string_view kDefaultMidTermCompactorModel = "gpt-5.4-mini";
 inline constexpr std::string_view kDefaultMidTermEmbeddingModel = "gemini-embedding-2-preview";
+inline constexpr std::string_view kDefaultRetrievedMemoryRerankerModel = "bge-reranker-v2-m3";
 inline constexpr OpenAiReasoningEffort kDefaultReasoningEffort = OpenAiReasoningEffort::kMedium;
 
 struct GatewayLlmRuntimeConfig {
@@ -24,6 +26,7 @@ struct GatewayLlmRuntimeConfig {
     std::string mid_term_flush_decider_model;
     std::string mid_term_compactor_model;
     std::string mid_term_embedding_model;
+    std::string retrieved_memory_reranker_model;
     OpenAiReasoningEffort reasoning_effort = kDefaultReasoningEffort;
 };
 
