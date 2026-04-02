@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "absl/status/status.h"
-#include "server/src/reranker_client_mock.hpp"
+#include "reranker_client_mock.hpp"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -10,8 +11,8 @@
 namespace isla::server {
 namespace {
 
-absl::Status InvalidArgument(std::string message) {
-    return absl::InvalidArgumentError(std::move(message));
+absl::Status invalid_argument(std::string_view message) {
+    return absl::InvalidArgumentError(std::string(message));
 }
 
 class ClientBackedRetrievedMemoryReranker final
@@ -48,10 +49,10 @@ absl::StatusOr<isla::server::memory::RetrievedMemoryRerankerPtr>
 CreateClientBackedRetrievedMemoryReranker(std::shared_ptr<const RerankerClient> reranker_client,
                                           std::string model) {
     if (reranker_client == nullptr) {
-        return InvalidArgument("retrieved-memory reranker adapter requires a reranker_client");
+        return invalid_argument("retrieved-memory reranker adapter requires a reranker_client");
     }
     if (model.empty()) {
-        return InvalidArgument("retrieved-memory reranker adapter requires a model");
+        return invalid_argument("retrieved-memory reranker adapter requires a model");
     }
     if (absl::Status status = reranker_client->Validate(); !status.ok()) {
         return status;
