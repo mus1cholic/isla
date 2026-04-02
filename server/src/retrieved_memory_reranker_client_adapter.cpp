@@ -53,6 +53,9 @@ CreateClientBackedRetrievedMemoryReranker(std::shared_ptr<const RerankerClient> 
     if (model.empty()) {
         return InvalidArgument("retrieved-memory reranker adapter requires a model");
     }
+    if (absl::Status status = reranker_client->Validate(); !status.ok()) {
+        return status;
+    }
     return isla::server::memory::RetrievedMemoryRerankerPtr(
         std::make_shared<ClientBackedRetrievedMemoryReranker>(std::move(reranker_client),
                                                               std::move(model)));

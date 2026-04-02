@@ -51,6 +51,8 @@ auto kMidTermFlushDeciderModel = std::to_array("--mid-term-flush-decider-model=g
 auto kMidTermCompactorModel = std::to_array("--mid-term-compactor-model=gpt-4.1-nano");
 auto kMidTermEmbeddingModel =
     std::to_array("--mid-term-embedding-model=gemini-embedding-2-preview");
+auto kRetrievedMemoryRerankerModel =
+    std::to_array("--retrieved-memory-reranker-model=bge-reranker-v2-m3");
 auto kGeminiApiKey = std::to_array("--gemini-api-key=gemini_key_cli");
 auto kGeminiApiHost = std::to_array("--gemini-api-host=localhost");
 auto kGeminiApiTimeout = std::to_array("--gemini-api-timeout-ms=3200");
@@ -170,7 +172,7 @@ TEST(AiGatewayStartupConfigTest, LooksLikeOpenAiProjectIdRecognizesExpectedPrefi
 }
 
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
-    std::array<char*, 26> argv = { kArg0.data(),
+    std::array<char*, 27> argv = { kArg0.data(),
                                    kHost.data(),
                                    kPort.data(),
                                    kBacklog.data(),
@@ -189,6 +191,7 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
                                    kMidTermFlushDeciderModel.data(),
                                    kMidTermCompactorModel.data(),
                                    kMidTermEmbeddingModel.data(),
+                                   kRetrievedMemoryRerankerModel.data(),
                                    kGeminiApiKey.data(),
                                    kGeminiApiHost.data(),
                                    kGeminiApiTimeout.data(),
@@ -226,6 +229,7 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1-mini");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_embedding_model, "gemini-embedding-2-preview");
+    EXPECT_EQ(parsed->llm_runtime_config.retrieved_memory_reranker_model, "bge-reranker-v2-m3");
     EXPECT_TRUE(parsed->gemini_api_embedding_config.enabled);
     EXPECT_EQ(parsed->gemini_api_embedding_config.api_key, "gemini_key_cli");
     EXPECT_EQ(parsed->gemini_api_embedding_config.host, "localhost");
@@ -302,6 +306,7 @@ TEST(AiGatewayStartupConfigTest, UsesEnvironmentDefaultsWhenCliOmitted) {
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_flush_decider_model.empty());
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_compactor_model.empty());
     EXPECT_TRUE(parsed->llm_runtime_config.mid_term_embedding_model.empty());
+    EXPECT_TRUE(parsed->llm_runtime_config.retrieved_memory_reranker_model.empty());
 }
 
 TEST(AiGatewayStartupConfigTest, AppliesDefaultLlmRateLimitWhenNotOverridden) {
@@ -400,6 +405,9 @@ TEST(AiGatewayStartupConfigTest, UsesLlmModelEnvironmentDefaultsWhenCliOmitted) 
                                       if (name == "AI_GATEWAY_MID_TERM_EMBEDDING_MODEL") {
                                           return "gemini-embedding-2-preview";
                                       }
+                                      if (name == "AI_GATEWAY_RETRIEVED_MEMORY_RERANKER_MODEL") {
+                                          return "bge-reranker-v2-m3";
+                                      }
                                       return std::nullopt;
                                   });
 
@@ -408,6 +416,7 @@ TEST(AiGatewayStartupConfigTest, UsesLlmModelEnvironmentDefaultsWhenCliOmitted) 
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_flush_decider_model, "gpt-4.1-mini");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_compactor_model, "gpt-4.1-nano");
     EXPECT_EQ(parsed->llm_runtime_config.mid_term_embedding_model, "gemini-embedding-2-preview");
+    EXPECT_EQ(parsed->llm_runtime_config.retrieved_memory_reranker_model, "bge-reranker-v2-m3");
 }
 
 TEST(AiGatewayStartupConfigTest, AcceptsIndependentMidTermModelOverrides) {
@@ -491,6 +500,27 @@ TEST(AiGatewayStartupConfigTest, RejectsWhitespaceOnlyMidTermCompactorModelFromC
     EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
     EXPECT_EQ(parsed.status().message(),
               "mid-term-compactor-model must not be blank or whitespace-only");
+}
+
+TEST(AiGatewayStartupConfigTest, RejectsWhitespaceOnlyRetrievedMemoryRerankerModelFromEnvironment) {
+    std::array<char*, 1> argv = { kArg0.data() };
+
+    const absl::StatusOr<ParsedStartupConfig> parsed =
+        ParseGatewayStartupConfig(static_cast<int>(argv.size()), argv.data(),
+                                  [](std::string_view name) -> std::optional<std::string> {
+                                      if (name == "OPENAI_API_KEY") {
+                                          return "env_key";
+                                      }
+                                      if (name == "AI_GATEWAY_RETRIEVED_MEMORY_RERANKER_MODEL") {
+                                          return "   ";
+                                      }
+                                      return std::nullopt;
+                                  });
+
+    ASSERT_FALSE(parsed.ok());
+    EXPECT_EQ(parsed.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(parsed.status().message(),
+              "retrieved-memory-reranker-model must not be blank or whitespace-only");
 }
 
 TEST(AiGatewayStartupConfigTest, EnablesTelemetryLoggingFromEnvironmentDefaults) {

@@ -34,8 +34,21 @@ TEST(RetrievedMemoryRerankerClientAdapterTest, FactoryRejectsMissingModel) {
     EXPECT_EQ(reranker.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(RetrievedMemoryRerankerClientAdapterTest, FactoryPropagatesClientValidationFailure) {
+    auto client = std::make_shared<test::MockRerankerClient>();
+    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::InvalidArgumentError("bad config")));
+
+    const absl::StatusOr<isla::server::memory::RetrievedMemoryRerankerPtr> reranker =
+        CreateClientBackedRetrievedMemoryReranker(client, "bge-reranker-v2-m3");
+
+    ASSERT_FALSE(reranker.ok());
+    EXPECT_EQ(reranker.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(reranker.status().message(), "bad config");
+}
+
 TEST(RetrievedMemoryRerankerClientAdapterTest, ScoreDelegatesToClientWithCandidateTexts) {
     auto client = std::make_shared<test::MockRerankerClient>();
+    EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
     EXPECT_CALL(*client, Rerank(_))
         .WillOnce([](const RerankRequest& request) -> absl::StatusOr<std::vector<double>> {
             EXPECT_EQ(request.model, "bge-reranker-v2-m3");
