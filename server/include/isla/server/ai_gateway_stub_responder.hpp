@@ -22,6 +22,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/embedding_client.hpp"
 #include "isla/server/gemini_api_embedding_client.hpp"
+#include "isla/server/jina_api_reranker_client.hpp"
 #include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 #include "isla/server/memory/memory_store.hpp"
@@ -88,6 +89,7 @@ struct GatewayStubResponderConfig {
     std::shared_ptr<const OpenAiResponsesClient> openai_client;
     GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
     std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
+    JinaApiRerankerClientConfig jina_api_reranker_config;
     std::shared_ptr<const isla::server::RerankerClient> reranker_client;
     double retrieved_memory_reranker_min_score =
         isla::server::memory::kDefaultRetrievedMemoryRerankerMinScore;

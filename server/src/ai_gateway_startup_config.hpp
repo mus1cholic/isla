@@ -13,6 +13,7 @@
 #include "isla/server/ai_gateway_llm_runtime_config.hpp"
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/gemini_api_embedding_client.hpp"
+#include "isla/server/jina_api_reranker_client.hpp"
 #include "isla/server/memory/supabase_memory_store.hpp"
 #include "isla/server/ollama_llm_client.hpp"
 #include "isla/server/openai_responses_client.hpp"
@@ -27,6 +28,7 @@ struct ParsedStartupConfig {
     isla::server::OllamaLlmClientConfig ollama_config;
     isla::server::LlmRateLimitConfig llm_rate_limit_config;
     GeminiApiEmbeddingClientConfig gemini_api_embedding_config;
+    JinaApiRerankerClientConfig jina_api_reranker_config;
     isla::server::memory::SupabaseMemoryStoreConfig supabase_config;
     bool telemetry_logging_enabled = false;
     bool telemetry_event_logging_enabled = false;
