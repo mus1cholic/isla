@@ -56,6 +56,9 @@ auto kRetrievedMemoryRerankerModel =
 auto kGeminiApiKey = std::to_array("--gemini-api-key=gemini_key_cli");
 auto kGeminiApiHost = std::to_array("--gemini-api-host=localhost");
 auto kGeminiApiTimeout = std::to_array("--gemini-api-timeout-ms=3200");
+auto kJinaApiKey = std::to_array("--jina-api-key=jina_key_cli");
+auto kJinaApiHost = std::to_array("--jina-api-host=api.jina.test");
+auto kJinaApiTimeout = std::to_array("--jina-api-timeout-ms=4200");
 auto kSupabaseUrl = std::to_array("--supabase-url=https://project.supabase.co");
 auto kSupabaseKey = std::to_array("--supabase-service-role-key=service_role_key");
 auto kSupabaseSchema = std::to_array("--supabase-schema=private_mem");
@@ -172,7 +175,7 @@ TEST(AiGatewayStartupConfigTest, LooksLikeOpenAiProjectIdRecognizesExpectedPrefi
 }
 
 TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
-    std::array<char*, 27> argv = { kArg0.data(),
+    std::array<char*, 30> argv = { kArg0.data(),
                                    kHost.data(),
                                    kPort.data(),
                                    kBacklog.data(),
@@ -195,6 +198,9 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
                                    kGeminiApiKey.data(),
                                    kGeminiApiHost.data(),
                                    kGeminiApiTimeout.data(),
+                                   kJinaApiKey.data(),
+                                   kJinaApiHost.data(),
+                                   kJinaApiTimeout.data(),
                                    kSupabaseUrl.data(),
                                    kSupabaseKey.data(),
                                    kSupabaseSchema.data(),
@@ -234,6 +240,10 @@ TEST(AiGatewayStartupConfigTest, ParsesCliArgumentsAndOpenAiOverrides) {
     EXPECT_EQ(parsed->gemini_api_embedding_config.api_key, "gemini_key_cli");
     EXPECT_EQ(parsed->gemini_api_embedding_config.host, "localhost");
     EXPECT_EQ(parsed->gemini_api_embedding_config.request_timeout, std::chrono::milliseconds(3200));
+    EXPECT_TRUE(parsed->jina_api_reranker_config.enabled);
+    EXPECT_EQ(parsed->jina_api_reranker_config.api_key, "jina_key_cli");
+    EXPECT_EQ(parsed->jina_api_reranker_config.host, "api.jina.test");
+    EXPECT_EQ(parsed->jina_api_reranker_config.request_timeout, std::chrono::milliseconds(4200));
     EXPECT_TRUE(parsed->supabase_config.enabled);
     EXPECT_EQ(parsed->supabase_config.url, "https://project.supabase.co");
     EXPECT_EQ(parsed->supabase_config.service_role_key, "service_role_key");
@@ -457,6 +467,15 @@ TEST(AiGatewayStartupConfigTest, UsesGeminiApiEnvironmentDefaultsWhenConfigured)
                                       if (name == "GEMINI_API_TIMEOUT_MS") {
                                           return "3200";
                                       }
+                                      if (name == "JINA_API_KEY") {
+                                          return "env_jina_key";
+                                      }
+                                      if (name == "JINA_API_HOST") {
+                                          return "jina.env.host";
+                                      }
+                                      if (name == "JINA_API_TIMEOUT_MS") {
+                                          return "5200";
+                                      }
                                       return std::nullopt;
                                   });
 
@@ -465,6 +484,10 @@ TEST(AiGatewayStartupConfigTest, UsesGeminiApiEnvironmentDefaultsWhenConfigured)
     EXPECT_EQ(parsed->gemini_api_embedding_config.api_key, "env_gemini_key");
     EXPECT_EQ(parsed->gemini_api_embedding_config.host, "gemini.env.host");
     EXPECT_EQ(parsed->gemini_api_embedding_config.request_timeout, std::chrono::milliseconds(3200));
+    EXPECT_TRUE(parsed->jina_api_reranker_config.enabled);
+    EXPECT_EQ(parsed->jina_api_reranker_config.api_key, "env_jina_key");
+    EXPECT_EQ(parsed->jina_api_reranker_config.host, "jina.env.host");
+    EXPECT_EQ(parsed->jina_api_reranker_config.request_timeout, std::chrono::milliseconds(5200));
 }
 
 TEST(AiGatewayStartupConfigTest, RejectsWhitespaceOnlyMainLlmModelFromEnvironment) {

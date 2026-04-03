@@ -303,6 +303,54 @@ void ApplyGeminiApiEmbeddingEnvDefaults(GeminiApiEmbeddingClientConfig* config,
     config->enabled = !config->api_key.empty();
 }
 
+void ApplyJinaApiRerankerEnvDefaults(JinaApiRerankerClientConfig* config,
+                                     const StartupEnvLookup& env_lookup) {
+    if (const std::optional<std::string> api_key = env_lookup("JINA_API_KEY");
+        api_key.has_value()) {
+        config->api_key = *api_key;
+    }
+    if (const std::optional<std::string> scheme = env_lookup("JINA_API_SCHEME");
+        scheme.has_value()) {
+        config->scheme = *scheme;
+    }
+    if (const std::optional<std::string> host = env_lookup("JINA_API_HOST"); host.has_value()) {
+        config->host = *host;
+    }
+    if (const std::optional<std::string> target = env_lookup("JINA_API_TARGET");
+        target.has_value()) {
+        config->target = *target;
+    }
+    if (const std::optional<std::string> port = env_lookup("JINA_API_PORT"); port.has_value()) {
+        const absl::StatusOr<int> parsed_port = ParseIntArgument(*port, "JINA_API_PORT");
+        if (!parsed_port.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid JINA_API_PORT value='"
+                         << SanitizeForLog(*port) << "' detail='"
+                         << SanitizeForLog(parsed_port.status().message()) << "'";
+        } else if (*parsed_port < 0 || *parsed_port > 65535) {
+            LOG(WARNING) << "AI gateway ignored out-of-range JINA_API_PORT value='"
+                         << SanitizeForLog(*port) << "'";
+        } else {
+            config->port = static_cast<std::uint16_t>(*parsed_port);
+        }
+    }
+    if (const std::optional<std::string> timeout_ms = env_lookup("JINA_API_TIMEOUT_MS");
+        timeout_ms.has_value()) {
+        const absl::StatusOr<int> parsed_timeout =
+            ParseIntArgument(*timeout_ms, "JINA_API_TIMEOUT_MS");
+        if (!parsed_timeout.ok()) {
+            LOG(WARNING) << "AI gateway ignored invalid JINA_API_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "' detail='"
+                         << SanitizeForLog(parsed_timeout.status().message()) << "'";
+        } else if (*parsed_timeout <= 0) {
+            LOG(WARNING) << "AI gateway ignored non-positive JINA_API_TIMEOUT_MS value='"
+                         << SanitizeForLog(*timeout_ms) << "'";
+        } else {
+            config->request_timeout = std::chrono::milliseconds(*parsed_timeout);
+        }
+    }
+    config->enabled = !config->api_key.empty();
+}
+
 void ApplyTelemetryEnvDefaults(ParsedStartupConfig* parsed, const StartupEnvLookup& env_lookup) {
     if (const std::optional<std::string> enabled = env_lookup("AI_GATEWAY_TELEMETRY_LOG");
         enabled.has_value()) {
@@ -639,6 +687,7 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
     ApplyOllamaEnvDefaults(&parsed.ollama_config, env_lookup);
     ApplySupabaseEnvDefaults(&parsed.supabase_config, env_lookup);
     ApplyGeminiApiEmbeddingEnvDefaults(&parsed.gemini_api_embedding_config, env_lookup);
+    ApplyJinaApiRerankerEnvDefaults(&parsed.jina_api_reranker_config, env_lookup);
     ApplyTelemetryEnvDefaults(&parsed, env_lookup);
     ApplyLlmRateLimitEnvDefaults(&parsed, env_lookup);
     ApplyLlmRuntimeEnvDefaults(&parsed, env_lookup);
@@ -948,6 +997,59 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
         } else if (*handled) {
             continue;
         }
+        constexpr std::string_view kJinaApiKeyPrefix = "--jina-api-key=";
+        if (argument.starts_with(kJinaApiKeyPrefix)) {
+            parsed.jina_api_reranker_config.api_key = argument.substr(kJinaApiKeyPrefix.size());
+            parsed.jina_api_reranker_config.enabled = true;
+            continue;
+        }
+        constexpr std::string_view kJinaApiSchemePrefix = "--jina-api-scheme=";
+        if (argument.starts_with(kJinaApiSchemePrefix)) {
+            parsed.jina_api_reranker_config.scheme = argument.substr(kJinaApiSchemePrefix.size());
+            continue;
+        }
+        constexpr std::string_view kJinaApiHostPrefix = "--jina-api-host=";
+        if (argument.starts_with(kJinaApiHostPrefix)) {
+            parsed.jina_api_reranker_config.host = argument.substr(kJinaApiHostPrefix.size());
+            continue;
+        }
+        constexpr std::string_view kJinaApiTargetPrefix = "--jina-api-target=";
+        if (argument.starts_with(kJinaApiTargetPrefix)) {
+            parsed.jina_api_reranker_config.target = argument.substr(kJinaApiTargetPrefix.size());
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled =
+                TryParseIntFlag(argument, "--jina-api-port=", "jina-api-port",
+                                [&parsed](int port) -> absl::Status {
+                                    if (port < 0 || port > 65535) {
+                                        return absl::InvalidArgumentError(
+                                            "jina-api-port must be between 0 and 65535");
+                                    }
+                                    parsed.jina_api_reranker_config.port =
+                                        static_cast<std::uint16_t>(port);
+                                    return absl::OkStatus();
+                                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
+        if (const absl::StatusOr<bool> handled =
+                TryParseIntFlag(argument, "--jina-api-timeout-ms=", "jina-api-timeout-ms",
+                                [&parsed](int timeout_ms) -> absl::Status {
+                                    if (timeout_ms <= 0) {
+                                        return absl::InvalidArgumentError(
+                                            "jina-api-timeout-ms must be greater than zero");
+                                    }
+                                    parsed.jina_api_reranker_config.request_timeout =
+                                        std::chrono::milliseconds(timeout_ms);
+                                    return absl::OkStatus();
+                                });
+            !handled.ok()) {
+            return handled.status();
+        } else if (*handled) {
+            continue;
+        }
         if (argument.starts_with("--supabase-url=")) {
             parsed.supabase_config.url = argument.substr(15);
             parsed.supabase_config.enabled = true;
@@ -1027,6 +1129,13 @@ absl::StatusOr<ParsedStartupConfig> ParseGatewayStartupConfig(int argc, char** a
             ValidateGeminiApiEmbeddingClientConfig(parsed.gemini_api_embedding_config);
         if (!gemini_embedding_status.ok()) {
             return gemini_embedding_status;
+        }
+    }
+    if (parsed.jina_api_reranker_config.enabled) {
+        const absl::Status jina_reranker_status =
+            ValidateJinaApiRerankerClientConfig(parsed.jina_api_reranker_config);
+        if (!jina_reranker_status.ok()) {
+            return jina_reranker_status;
         }
     }
     if (parsed.supabase_config.enabled) {

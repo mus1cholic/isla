@@ -11,6 +11,7 @@
 #include "isla/server/ai_gateway_server.hpp"
 #include "isla/server/ai_gateway_stub_responder.hpp"
 #include "isla/server/gemini_api_embedding_client.hpp"
+#include "isla/server/jina_api_reranker_client.hpp"
 #include "isla/server/memory/supabase_memory_store.hpp"
 #include "isla/server/ollama_llm_client.hpp"
 #include "isla/server/openai_llm_client.hpp"
@@ -89,6 +90,7 @@ int main(int argc, char** argv) {
     std::shared_ptr<const isla::server::ai_gateway::OpenAiResponsesClient> openai_client;
     std::shared_ptr<const isla::server::LlmClient> llm_client;
     std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
+    std::shared_ptr<const isla::server::RerankerClient> reranker_client;
     if (startup_config->openai_config.enabled) {
         openai_client =
             isla::server::ai_gateway::CreateOpenAiResponsesClient(startup_config->openai_config);
@@ -191,6 +193,37 @@ int main(int argc, char** argv) {
             }
         }
     }
+    if (startup_config->jina_api_reranker_config.enabled) {
+        absl::StatusOr<std::shared_ptr<const isla::server::RerankerClient>>
+            created_reranker_client =
+                isla::server::CreateJinaApiRerankerClient(startup_config->jina_api_reranker_config);
+        if (!created_reranker_client.ok()) {
+            LOG(ERROR) << "AI gateway failed to create Jina API reranker client detail='"
+                       << isla::server::ai_gateway::SanitizeForLog(
+                              created_reranker_client.status().message())
+                       << "'";
+            return 1;
+        }
+        reranker_client = std::move(*created_reranker_client);
+        if (reranker_client != nullptr) {
+            const auto reranker_warmup_start = std::chrono::steady_clock::now();
+            const absl::Status reranker_warmup_status = reranker_client->WarmUp();
+            const auto reranker_warmup_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - reranker_warmup_start)
+                    .count();
+            if (reranker_warmup_status.ok()) {
+                LOG(INFO) << "AI gateway Jina API reranker warmup completed in "
+                          << reranker_warmup_ms << " ms";
+            } else {
+                LOG(WARNING) << "AI gateway Jina API reranker warmup failed after "
+                             << reranker_warmup_ms << " ms detail='"
+                             << isla::server::ai_gateway::SanitizeForLog(
+                                    reranker_warmup_status.message())
+                             << "'";
+            }
+        }
+    }
 
     // Warm up the Supabase persistent connection.
     if (*memory_store != nullptr) {
@@ -221,6 +254,8 @@ int main(int argc, char** argv) {
             .openai_client = openai_client,
             .gemini_api_embedding_config = startup_config->gemini_api_embedding_config,
             .embedding_client = embedding_client,
+            .jina_api_reranker_config = startup_config->jina_api_reranker_config,
+            .reranker_client = reranker_client,
         });
     isla::server::ai_gateway::GatewayServer server(startup_config->server_config, &responder);
     responder.AttachSessionRegistry(&server.session_registry());
@@ -324,6 +359,21 @@ int main(int argc, char** argv) {
                   << startup_config->gemini_api_embedding_config.request_timeout.count();
     } else {
         LOG(INFO) << "AI gateway Gemini API embeddings disabled";
+    }
+    if (startup_config->jina_api_reranker_config.enabled) {
+        LOG(INFO) << "AI gateway using Jina API reranker host="
+                  << isla::server::ai_gateway::SanitizeForLog(
+                         startup_config->jina_api_reranker_config.host)
+                  << " scheme="
+                  << isla::server::ai_gateway::SanitizeForLog(
+                         startup_config->jina_api_reranker_config.scheme)
+                  << ":" << startup_config->jina_api_reranker_config.port << " target="
+                  << isla::server::ai_gateway::SanitizeForLog(
+                         startup_config->jina_api_reranker_config.target)
+                  << " timeout_ms="
+                  << startup_config->jina_api_reranker_config.request_timeout.count();
+    } else {
+        LOG(INFO) << "AI gateway Jina API reranker disabled";
     }
     LOG(INFO) << "AI gateway listening on "
               << isla::server::ai_gateway::SanitizeForLog(startup_config->server_config.bind_host)

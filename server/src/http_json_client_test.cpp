@@ -1,6 +1,6 @@
 #include "http_json_client.hpp"
+#include "one_shot_http_server_test_utils.hpp"
 
-#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -33,6 +33,7 @@ namespace {
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 using namespace std::chrono_literals;
+using test::OneShotHttpServer;
 
 void ReportTestServerThreadException(std::string_view server_name) {
     try {
@@ -125,97 +126,6 @@ jMqTFlmO7kpf/jpCSmamp3/JSEE1BJKHwQ6Ql4nzRA2N1mnvWH7Zxcv043gkHeAu
 HcVKQHyOeyvnINuBAQ==
 -----END CERTIFICATE-----)";
 #endif
-
-class OneShotHttpServer {
-  public:
-    explicit OneShotHttpServer(std::string response)
-        : response_(std::move(response)), acceptor_(io_context_, tcp::endpoint(tcp::v4(), 0)) {
-        port_ = acceptor_.local_endpoint().port();
-        thread_ = std::thread([this] { Run(); });
-    }
-
-    virtual ~OneShotHttpServer() {
-        Stop();
-    }
-
-    [[nodiscard]] std::uint16_t port() const {
-        return port_;
-    }
-
-    [[nodiscard]] bool WaitForRequest() {
-        const auto deadline = std::chrono::steady_clock::now() + 2s;
-        while (std::chrono::steady_clock::now() < deadline) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (request_text_.has_value()) {
-                    return true;
-                }
-            }
-            std::this_thread::sleep_for(10ms);
-        }
-        return false;
-    }
-
-    [[nodiscard]] std::string request_text() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return request_text_.value_or("");
-    }
-
-  protected:
-    virtual void WriteResponse(tcp::socket* socket) {
-        asio::write(*socket, asio::buffer(response_.data(), response_.size()));
-    }
-
-  private:
-    void Stop() {
-        if (stopped_.exchange(true)) {
-            return;
-        }
-        boost::system::error_code error;
-        acceptor_.close(error);
-        io_context_.stop();
-        if (thread_.joinable()) {
-            thread_.join();
-        }
-    }
-
-    void Run() {
-        try {
-            tcp::socket socket(io_context_);
-            acceptor_.accept(socket);
-
-            asio::streambuf buffer;
-            asio::read_until(socket, buffer, "\r\n\r\n");
-            std::string request;
-            {
-                std::istream request_stream(&buffer);
-                request.assign(std::istreambuf_iterator<char>(request_stream),
-                               std::istreambuf_iterator<char>());
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                request_text_ = request;
-            }
-            WriteResponse(&socket);
-
-            boost::system::error_code error;
-            socket.shutdown(tcp::socket::shutdown_both, error);
-            socket.close(error);
-        } catch (...) {
-            ReportTestServerThreadException("OneShotHttpServer");
-        }
-    }
-
-    std::string response_;
-    mutable std::mutex mutex_;
-    std::optional<std::string> request_text_;
-    asio::io_context io_context_;
-    tcp::acceptor acceptor_;
-    std::thread thread_;
-    std::atomic<bool> stopped_{ false };
-    std::uint16_t port_ = 0;
-};
 
 class DelayedHeaderHttpServer final : public OneShotHttpServer {
   public:

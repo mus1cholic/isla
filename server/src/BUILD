@@ -22,6 +22,7 @@ cc_library(
         ":ai_gateway_logging_utils",
         ":ai_gateway_string_utils",
         ":gemini_api_embedding_client",
+        ":jina_api_reranker_client",
         ":ollama_llm_client",
         ":rate_limited_llm_client",
         "@abseil-cpp//absl/log:globals",
@@ -56,6 +57,22 @@ cc_library(
 cc_library(
     name = "gemini_api_embedding_client",
     srcs = ["gemini_api_embedding_client.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":http_json_client",
+        ":ai_gateway_logging_utils",
+        "@abseil-cpp//absl/log:log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@boost.beast//:boost.beast",
+        "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_library(
+    name = "jina_api_reranker_client",
+    srcs = ["jina_api_reranker_client.cpp"],
     visibility = ["//visibility:public"],
     deps = [
         "//server/include/isla/server:server_headers",
@@ -479,6 +496,7 @@ cc_library(
         ":ai_gateway_executor",
         ":ai_gateway_logging_utils",
         ":gemini_api_embedding_client",
+        ":jina_api_reranker_client",
         ":openai_llm_client",
         ":ai_gateway_planner",
         ":ai_gateway_server",
@@ -813,6 +831,19 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "one_shot_http_server_test_utils",
+    testonly = True,
+    hdrs = ["one_shot_http_server_test_utils.hpp"],
+    visibility = [
+        "//server/src:__pkg__",
+    ],
+    deps = [
+        "@boost.beast//:boost.beast",
+        "@googletest//:gtest",
+    ],
+)
+
 cc_test(
     name = "retrieved_memory_reranker_client_adapter_test",
     srcs = ["retrieved_memory_reranker_client_adapter_test.cpp"],
@@ -821,6 +852,19 @@ cc_test(
         ":retrieved_memory_reranker_client_adapter",
         ":reranker_client_mock",
         "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "jina_api_reranker_client_test",
+    srcs = ["jina_api_reranker_client_test.cpp"],
+    deps = [
+        "//server/include/isla/server:server_headers",
+        ":jina_api_reranker_client",
+        ":one_shot_http_server_test_utils",
+        "@boost.beast//:boost.beast",
+        "@googletest//:gtest_main",
+        "@nlohmann_json_upstream//:nlohmann_json",
     ],
 )
 
@@ -852,6 +896,7 @@ cc_test(
     srcs = ["http_json_client_test.cpp"],
     deps = [
         ":http_json_client",
+        ":one_shot_http_server_test_utils",
         "@boost.beast//:boost.beast",
         "@googletest//:gtest_main",
     ],
@@ -941,6 +986,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":ai_gateway_telemetry_test_utils",
+        ":one_shot_http_server_test_utils",
         ":openai_responses_client",
         ":openai_responses_inprocess_transport_test_hooks",
         "@boost.beast//:boost.beast",
@@ -967,6 +1013,7 @@ cc_test(
     deps = [
         "//server/include/isla/server:server_headers",
         ":gemini_api_embedding_client",
+        ":one_shot_http_server_test_utils",
         "@boost.beast//:boost.beast",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",

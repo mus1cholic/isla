@@ -22,6 +22,7 @@
 #include "isla/server/ai_gateway_session_handler.hpp"
 #include "isla/server/ai_gateway_stub_responder_utils.hpp"
 #include "isla/server/gemini_api_embedding_client.hpp"
+#include "isla/server/jina_api_reranker_client.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/openai_llm_client.hpp"
@@ -289,10 +290,33 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
         }
     }
 
-    if (config_.reranker_client != nullptr) {
+    std::shared_ptr<const isla::server::RerankerClient> reranker_client = config_.reranker_client;
+    // NOTICE: Keep this fallback even though ai_gateway_server_main usually injects a prebuilt
+    // reranker client. GatewayStubResponder is also constructed directly in tests/evals, and those
+    // call sites may provide reranker config without pre-creating the client.
+    if (reranker_client == nullptr && config_.jina_api_reranker_config.enabled) {
+        absl::StatusOr<std::shared_ptr<const isla::server::RerankerClient>>
+            created_reranker_client =
+                isla::server::CreateJinaApiRerankerClient(config_.jina_api_reranker_config);
+        if (!created_reranker_client.ok()) {
+            LOG(WARNING) << "AI gateway stub disabled Jina API reranker detail='"
+                         << SanitizeForLog(created_reranker_client.status().message()) << "'";
+        } else {
+            reranker_client = std::move(*created_reranker_client);
+            if (reranker_client != nullptr) {
+                if (const absl::Status warmup_status = reranker_client->WarmUp();
+                    !warmup_status.ok()) {
+                    LOG(WARNING) << "AI gateway stub Jina API reranker warmup failed detail='"
+                                 << SanitizeForLog(warmup_status.message()) << "'";
+                }
+            }
+        }
+    }
+
+    if (reranker_client != nullptr) {
         absl::StatusOr<isla::server::memory::RetrievedMemoryRerankerPtr>
             created_retrieved_memory_reranker = CreateClientBackedRetrievedMemoryReranker(
-                config_.reranker_client, retrieved_memory_reranker_model);
+                reranker_client, retrieved_memory_reranker_model);
         if (!created_retrieved_memory_reranker.ok()) {
             LOG(WARNING) << "AI gateway stub disabled retrieved-memory reranker detail='"
                          << SanitizeForLog(created_retrieved_memory_reranker.status().message())
