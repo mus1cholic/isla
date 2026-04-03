@@ -190,6 +190,8 @@ struct MidTermMemoryComponents {
     isla::server::memory::MidTermFlushDeciderPtr flush_decider;
     isla::server::memory::MidTermCompactorPtr compactor;
     isla::server::memory::SleepCycleSemanticExtractorPtr semantic_extractor;
+    std::shared_ptr<const isla::server::EmbeddingClient> embedding_client;
+    std::string embedding_model;
 };
 
 absl::StatusOr<MidTermMemoryComponents>
@@ -228,13 +230,19 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
         embedding_client = std::move(*created_embedding);
     }
 
+    const bool embedding_configured =
+        config.gemini_api_embedding_config.enabled || config.embedding_client != nullptr;
+    const std::string embedding_model =
+        embedding_configured ? ResolveMidTermEmbeddingModel(config) : std::string();
+
+    // Keep a shared copy for retrieval before the compactor takes ownership of its own copy.
+    std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client =
+        embedding_client;
+
     absl::StatusOr<isla::server::memory::MidTermCompactorPtr> compactor =
         isla::server::memory::CreateLlmMidTermCompactor(
             llm_client, ResolveMidTermCompactorModel(config), std::move(embedding_client),
-            config.gemini_api_embedding_config.enabled || config.embedding_client != nullptr
-                ? ResolveMidTermEmbeddingModel(config)
-                : std::string(),
-            reasoning_effort);
+            embedding_model, reasoning_effort);
     if (!compactor.ok()) {
         return compactor.status();
     }
@@ -250,6 +258,8 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
         .flush_decider = std::move(*decider),
         .compactor = std::move(*compactor),
         .semantic_extractor = std::move(*semantic_extractor),
+        .embedding_client = std::move(retrieval_embedding_client),
+        .embedding_model = embedding_model,
     };
 }
 
@@ -283,6 +293,8 @@ GatewayStubResponder::GatewayStubResponder(GatewayStubResponderConfig config)
             mid_term_flush_decider_ = std::move(created_components->flush_decider);
             mid_term_compactor_ = std::move(created_components->compactor);
             sleep_cycle_semantic_extractor_ = std::move(created_components->semantic_extractor);
+            retrieval_embedding_client_ = std::move(created_components->embedding_client);
+            retrieval_embedding_model_ = std::move(created_components->embedding_model);
             LOG(INFO) << "AI gateway stub enabled mid-term memory flush_decider_model="
                       << SanitizeForLog(flush_decider_model)
                       << " compactor_model=" << SanitizeForLog(compactor_model)
@@ -1580,6 +1592,8 @@ absl::Status GatewayStubResponder::InitializeSessionMemory(std::string_view sess
                         config_.retrieved_memory_reranker_min_score,
                     .mid_term_flush_decider_interval_user_turns =
                         config_.mid_term_flush_decider_interval_user_turns,
+                    .retrieval_embedding_client = retrieval_embedding_client_,
+                    .retrieval_embedding_model = retrieval_embedding_model_,
                 });
         if (!orchestrator.ok()) {
             failed_session_starts_.insert_or_assign(std::string(session_id), orchestrator.status());

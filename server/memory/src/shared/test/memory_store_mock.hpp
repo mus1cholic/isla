@@ -44,6 +44,9 @@ class MockMemoryStore : public MemoryStore {
                 (std::string_view entity_id), (const, override));
     MOCK_METHOD((absl::StatusOr<std::vector<LongTermEpisode>>), ListLongTermEpisodesForEntity,
                 (std::string_view entity_id), (const, override));
+    MOCK_METHOD((absl::StatusOr<std::vector<LongTermEpisode>>), SearchLongTermEpisodesByEmbedding,
+                (std::string_view user_id, const Embedding& query_embedding, int top_k),
+                (const, override));
 };
 
 } // namespace isla::server::memory::test

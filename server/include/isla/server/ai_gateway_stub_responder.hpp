@@ -266,6 +266,8 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     isla::server::memory::MidTermCompactorPtr mid_term_compactor_;
     isla::server::memory::SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor_;
     isla::server::memory::RetrievedMemoryRerankerPtr retrieved_memory_reranker_;
+    std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client_;
+    std::string retrieval_embedding_model_;
     bool mid_term_memory_configured_ = false;
     absl::Status mid_term_memory_initialization_status_ = absl::OkStatus();
     mutable std::mutex mutex_;

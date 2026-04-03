@@ -15,6 +15,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/embedding_client.hpp"
 #include "isla/server/memory/identifier_utils.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
@@ -399,46 +400,87 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
         return std::nullopt;
     }
 
-    const PersistentMemoryCache& cache = memory_.snapshot().system_prompt.persistent_memory_cache;
-    if (cache.active_models.empty() && cache.familiar_labels.empty()) {
-        return std::nullopt;
-    }
-
-    std::unordered_set<std::string> seen_entity_ids;
-    std::vector<std::string> entity_ids;
-    entity_ids.reserve(cache.active_models.size() + cache.familiar_labels.size());
-    for (const ActiveModel& model : cache.active_models) {
-        if (seen_entity_ids.insert(model.entity_id).second) {
-            entity_ids.push_back(model.entity_id);
-        }
-    }
-    for (const FamiliarLabel& label : cache.familiar_labels) {
-        if (seen_entity_ids.insert(label.entity_id).second) {
-            entity_ids.push_back(label.entity_id);
-        }
-    }
-
-    std::vector<std::string> seed_entity_ids = entity_ids;
-    absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>> cache_entities =
-        LoadEntityMapForRetrievedMemory(store_.get(), entity_ids);
-    if (cache_entities.ok()) {
-        seed_entity_ids =
-            SelectSeedEntityIdsForRetrievedMemory(user_message, entity_ids, *cache_entities);
-    } else {
-        LOG(WARNING) << "MemoryOrchestrator failed to load cache entity labels for query-aware "
-                        "retrieval; falling back to cached entity ids"
-                     << " session_id=" << SanitizeForLog(session_id_) << " detail='"
-                     << SanitizeForLog(cache_entities.status().message()) << "'";
-    }
-    if (seed_entity_ids.empty()) {
-        return std::nullopt;
-    }
+    const std::string& user_id = memory_.snapshot().conversation.user_id;
 
     std::unordered_set<std::string> seen_relationship_ids;
     std::vector<RetrievedRelationshipCandidate> relationship_candidates;
     std::unordered_set<std::string> seen_episode_ids;
     std::vector<RetrievedEpisodeCandidate> episode_candidates;
     std::unordered_set<std::string> related_entity_ids;
+
+    // --- Path 1: Direct episode similarity search (embedding-based) ---
+    if (retrieval_embedding_client_ != nullptr && !retrieval_embedding_model_.empty()) {
+        const absl::StatusOr<Embedding> query_embedding =
+            retrieval_embedding_client_->Embed(isla::server::EmbeddingRequest{
+                .model = retrieval_embedding_model_,
+                .text = user_message.content,
+            });
+        if (!query_embedding.ok()) {
+            LOG(WARNING) << "MemoryOrchestrator failed to embed user query for episode similarity "
+                            "search"
+                         << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                         << SanitizeForLog(query_embedding.status().message()) << "'";
+        } else if (!query_embedding->empty()) {
+            const absl::StatusOr<std::vector<LongTermEpisode>> similar_episodes =
+                store_->SearchLongTermEpisodesByEmbedding(user_id, *query_embedding,
+                                                          episode_similarity_search_top_k_);
+            if (!similar_episodes.ok()) {
+                if (!absl::IsUnimplemented(similar_episodes.status())) {
+                    LOG(WARNING) << "MemoryOrchestrator failed to search long-term episodes by "
+                                    "embedding"
+                                 << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                                 << SanitizeForLog(similar_episodes.status().message()) << "'";
+                }
+            } else {
+                for (const LongTermEpisode& episode : *similar_episodes) {
+                    if (episode.user_id != user_id ||
+                        !seen_episode_ids.insert(episode.lte_id).second) {
+                        continue;
+                    }
+                    episode_candidates.push_back(RetrievedEpisodeCandidate{
+                        .lte_id = episode.lte_id,
+                        .summary_compressed = episode.summary_compressed,
+                        .created_at = episode.created_at,
+                    });
+                }
+            }
+        }
+    }
+
+    // --- Path 2: Entity-triggered retrieval (KG facts + cross-linked episodes) ---
+    const PersistentMemoryCache& cache = memory_.snapshot().system_prompt.persistent_memory_cache;
+
+    std::vector<std::string> seed_entity_ids;
+    if (!cache.active_models.empty() || !cache.familiar_labels.empty()) {
+        std::unordered_set<std::string> seen_entity_ids;
+        std::vector<std::string> entity_ids;
+        entity_ids.reserve(cache.active_models.size() + cache.familiar_labels.size());
+        for (const ActiveModel& model : cache.active_models) {
+            if (seen_entity_ids.insert(model.entity_id).second) {
+                entity_ids.push_back(model.entity_id);
+            }
+        }
+        for (const FamiliarLabel& label : cache.familiar_labels) {
+            if (seen_entity_ids.insert(label.entity_id).second) {
+                entity_ids.push_back(label.entity_id);
+            }
+        }
+
+        seed_entity_ids = entity_ids;
+        absl::StatusOr<std::unordered_map<std::string, std::optional<Entity>>> cache_entities =
+            LoadEntityMapForRetrievedMemory(store_.get(), entity_ids);
+        if (cache_entities.ok()) {
+            seed_entity_ids =
+                SelectSeedEntityIdsForRetrievedMemory(user_message, entity_ids, *cache_entities);
+        } else {
+            LOG(WARNING)
+                << "MemoryOrchestrator failed to load cache entity labels for query-aware "
+                   "retrieval; falling back to cached entity ids"
+                << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                << SanitizeForLog(cache_entities.status().message()) << "'";
+        }
+    }
+
     for (const std::string& entity_id : seed_entity_ids) {
         const absl::StatusOr<std::vector<Relationship>> relationships =
             store_->ListRelationshipsForEntity(entity_id);
@@ -451,7 +493,7 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
             }
         } else {
             for (const Relationship& rel : *relationships) {
-                if (rel.is_archived || rel.user_id != memory_.snapshot().conversation.user_id ||
+                if (rel.is_archived || rel.user_id != user_id ||
                     !seen_relationship_ids.insert(rel.relationship_id).second) {
                     continue;
                 }
@@ -465,31 +507,6 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
                     .weight = rel.weight,
                 });
             }
-        }
-
-        const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
-            store_->ListLongTermEpisodesForEntity(entity_id);
-        if (!episodes.ok()) {
-            if (!absl::IsUnimplemented(episodes.status())) {
-                LOG(WARNING)
-                    << "MemoryOrchestrator failed to retrieve long-term episodes for entity"
-                    << " session_id=" << SanitizeForLog(session_id_)
-                    << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
-                    << SanitizeForLog(episodes.status().message()) << "'";
-            }
-            continue;
-        }
-
-        for (const LongTermEpisode& episode : *episodes) {
-            if (episode.user_id != memory_.snapshot().conversation.user_id ||
-                !seen_episode_ids.insert(episode.lte_id).second) {
-                continue;
-            }
-            episode_candidates.push_back(RetrievedEpisodeCandidate{
-                .lte_id = episode.lte_id,
-                .summary_compressed = episode.summary_compressed,
-                .created_at = episode.created_at,
-            });
         }
     }
 

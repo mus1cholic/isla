@@ -23,6 +23,7 @@
 #include "server/memory/src/mid_term/test/mid_term_compactor_mock.hpp"
 #include "server/memory/src/mid_term/test/mid_term_flush_decider_mock.hpp"
 #include "server/memory/src/shared/test/memory_store_mock.hpp"
+#include "server/src/embedding_client_mock.hpp"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -215,6 +216,26 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
                     static_cast<void>(entity_id);
                     return long_term_episodes;
                 });
+        ON_CALL(*this, SearchLongTermEpisodesByEmbedding(_, _, _))
+            .WillByDefault(
+                [this](std::string_view user_id, const Embedding& query_embedding,
+                       int top_k) -> absl::StatusOr<std::vector<LongTermEpisode>> {
+                    static_cast<void>(user_id);
+                    static_cast<void>(query_embedding);
+                    if (!search_long_term_episodes_status.ok()) {
+                        return search_long_term_episodes_status;
+                    }
+                    std::vector<LongTermEpisode> results;
+                    const std::size_t limit = static_cast<std::size_t>(
+                        top_k > 0 ? top_k : 0);
+                    for (const LongTermEpisode& episode : search_long_term_episodes_results) {
+                        if (results.size() >= limit) {
+                            break;
+                        }
+                        results.push_back(episode);
+                    }
+                    return results;
+                });
         ON_CALL(*this, ListMidTermEpisodes(_))
             .WillByDefault([](std::string_view session_id) -> absl::StatusOr<std::vector<Episode>> {
                 static_cast<void>(session_id);
@@ -264,6 +285,8 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     absl::Status upsert_long_term_episode_status = absl::OkStatus();
     absl::Status link_long_term_episode_entities_status = absl::OkStatus();
     absl::Status list_entities_status = absl::OkStatus();
+    std::vector<LongTermEpisode> search_long_term_episodes_results;
+    absl::Status search_long_term_episodes_status = absl::OkStatus();
 };
 
 std::shared_future<void> MakeReadyFuture() {
@@ -479,7 +502,9 @@ class MemoryOrchestratorTest : public ::testing::Test {
         std::size_t mid_term_flush_decider_interval_user_turns =
             kImmediateMidTermFlushDeciderIntervalUserTurns,
         const RetrievedMemoryRerankerPtr& retrieved_memory_reranker = nullptr,
-        double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore) {
+        double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore,
+        std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client = nullptr,
+        std::string retrieval_embedding_model = {}) {
         absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
             .system_prompt = "You are Isla.",
             .user_id = "user_001",
@@ -490,7 +515,9 @@ class MemoryOrchestratorTest : public ::testing::Test {
         return MemoryOrchestrator("srv_test", std::move(*memory), std::move(store), decider,
                                   compactor, semantic_extractor,
                                   mid_term_flush_decider_interval_user_turns,
-                                  retrieved_memory_reranker, retrieved_memory_reranker_min_score);
+                                  retrieved_memory_reranker, retrieved_memory_reranker_min_score,
+                                  std::move(retrieval_embedding_client),
+                                  std::move(retrieval_embedding_model));
     }
 
     static absl::StatusOr<std::size_t> WaitForDrain(MemoryOrchestrator& orchestrator,

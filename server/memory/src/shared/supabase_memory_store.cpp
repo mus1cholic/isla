@@ -411,6 +411,22 @@ HttpRequestSpec BuildRpcRequest(std::string_view function_name, const json& body
     return request;
 }
 
+// Like BuildRpcRequest but returns the result rows instead of suppressing the response body.
+// Use this for RPC functions that act as read queries (e.g., similarity search).
+HttpRequestSpec BuildRpcQueryRequest(std::string_view function_name, const json& body,
+                                     std::string_view schema,
+                                     const SupabaseMemoryStoreConfig& config) {
+    HttpRequestSpec request{
+        .method = boost::beast::http::verb::post,
+        .target_path = "/rest/v1/rpc/" + std::string(function_name),
+        .query_parameters = {},
+        .headers = BuildSupabaseAuthHeaders(config),
+        .body = body.dump(),
+    };
+    request.headers.emplace_back("Content-Profile", std::string(schema));
+    return request;
+}
+
 std::string ExtractSupabaseErrorDetail(std::string_view body) {
     if (body.empty()) {
         return "empty response body";
@@ -1360,6 +1376,63 @@ class SupabaseMemoryStore final : public MemoryStore {
             }
             absl::StatusOr<LongTermEpisode> episode =
                 ParseLongTermEpisodeRow(row.at("long_term_episodes"));
+            if (!episode.ok()) {
+                return episode.status();
+            }
+            episodes.push_back(std::move(*episode));
+        }
+        latency.SetOutcome("ok");
+        return episodes;
+    }
+
+    [[nodiscard]] absl::StatusOr<std::vector<LongTermEpisode>>
+    SearchLongTermEpisodesByEmbedding(std::string_view user_id, const Embedding& query_embedding,
+                                      int top_k) const override {
+        ScopedSupabaseOperationLatency latency(config_, "search_long_term_episodes_by_embedding",
+                                               std::nullopt);
+        if (user_id.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "SearchLongTermEpisodesByEmbedding requires user_id to be non-empty");
+        }
+        if (query_embedding.empty()) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "SearchLongTermEpisodesByEmbedding requires a non-empty query embedding");
+        }
+        if (top_k <= 0) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "SearchLongTermEpisodesByEmbedding requires top_k > 0");
+        }
+
+        const HttpRequestSpec request = BuildRpcQueryRequest(
+            "search_long_term_episodes_by_embedding",
+            json{
+                { "p_user_id", std::string(user_id) },
+                { "p_query_embedding", SerializeEmbeddingForVectorColumn(query_embedding) },
+                { "p_top_k", top_k },
+            },
+            config_.schema, config_);
+        const absl::StatusOr<std::string> response =
+            ExecuteSupabaseRequest(*client_, config_, request);
+        if (!response.ok()) {
+            return response.status();
+        }
+        const absl::StatusOr<json> rows =
+            ParseJsonArrayResponse(*response, "supabase search_long_term_episodes_by_embedding");
+        if (!rows.ok()) {
+            return rows.status();
+        }
+        if (rows->empty()) {
+            latency.SetOutcome("ok");
+            return std::vector<LongTermEpisode>{};
+        }
+
+        std::vector<LongTermEpisode> episodes;
+        episodes.reserve(rows->size());
+        for (const json& row : *rows) {
+            absl::StatusOr<LongTermEpisode> episode = ParseLongTermEpisodeRow(row);
             if (!episode.ok()) {
                 return episode.status();
             }
