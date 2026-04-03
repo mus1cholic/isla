@@ -840,7 +840,7 @@ cc_library(
     ],
     deps = [
         "@boost.beast//:boost.beast",
-        "@googletest//:gtest_main",
+        "@googletest//:gtest",
     ],
 )
 
