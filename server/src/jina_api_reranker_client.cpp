@@ -47,14 +47,10 @@ std::string NormalizeTarget(std::string_view target) {
 }
 
 json BuildRerankRequestBody(const RerankRequest& request) {
-    json documents = json::array();
-    for (const std::string& candidate : request.candidates) {
-        documents.push_back(candidate);
-    }
     return json{
         { "model", request.model },
         { "query", request.query },
-        { "documents", std::move(documents) },
+        { "documents", json(request.candidates) },
         { "top_n", request.candidates.size() },
     };
 }
@@ -96,6 +92,7 @@ absl::Status MapJinaApiHttpError(unsigned int status_code, std::string_view body
     case 422:
         return absl::InvalidArgumentError(detail);
     case 401:
+        return absl::UnauthenticatedError(detail);
     case 403:
         return absl::PermissionDeniedError(detail);
     case 404:
