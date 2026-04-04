@@ -213,6 +213,7 @@ cc_library(
     deps = [
         ":identifier_utils",
         ":memory_store",
+        "//server/include/isla/server:server_headers",
         "//server/memory/include/isla/server/memory:memory_headers",
         "//server/src:ai_gateway_logging_utils",
         "@abseil-cpp//absl/log:log",

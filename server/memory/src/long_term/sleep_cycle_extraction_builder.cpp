@@ -14,7 +14,9 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/embedding_client.hpp"
 #include "isla/server/memory/identifier_utils.hpp"
+#include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
 namespace isla::server::memory {
@@ -137,7 +139,8 @@ class SleepCycleExtractionBuilder {
     explicit SleepCycleExtractionBuilder(const SleepCycleExtractionBuilderInput& input)
         : session_id_(input.session_id), user_id_(input.user_id),
           mid_term_episodes_(input.mid_term_episodes), store_(input.store),
-          semantic_extractor_(input.semantic_extractor) {}
+          semantic_extractor_(input.semantic_extractor), embedding_client_(input.embedding_client),
+          embedding_model_(input.embedding_model) {}
 
     [[nodiscard]] absl::StatusOr<SleepCycleExtractionResult> Build();
 
@@ -164,6 +167,9 @@ class SleepCycleExtractionBuilder {
     [[nodiscard]] absl::Status AppendRelationshipWrite(SleepCycleExtractionResult& result,
                                                        Relationship relationship);
     [[nodiscard]] absl::Status BuildRelationshipWrites(SleepCycleExtractionResult& result);
+    void PopulateRelationshipEmbeddings(SleepCycleExtractionResult& result);
+    [[nodiscard]] std::string RenderRelationshipText(const Relationship& relationship) const;
+    [[nodiscard]] std::string_view LookupEntityLabel(const std::string& entity_id) const;
     void BuildEpisodeEntityLinks(SleepCycleExtractionResult& result);
 
     std::string_view session_id_;
@@ -171,6 +177,8 @@ class SleepCycleExtractionBuilder {
     const std::vector<Episode>* mid_term_episodes_;
     MemoryStore* store_;
     SleepCycleSemanticExtractor* semantic_extractor_;
+    const isla::server::EmbeddingClient* embedding_client_;
+    std::string_view embedding_model_;
     std::unordered_map<std::string, const Episode*> episodes_by_id_;
     std::unordered_map<std::string, std::optional<Entity>> context_entities_by_id_;
     std::unordered_map<std::string, std::vector<Relationship>> existing_relationships_by_entity_;
@@ -256,6 +264,8 @@ absl::Status SleepCycleExtractionBuilder::BuildSemanticWrites(SleepCycleExtracti
     if (!relationship_status.ok()) {
         return relationship_status;
     }
+
+    PopulateRelationshipEmbeddings(result);
 
     BuildEpisodeEntityLinks(result);
     return absl::OkStatus();
@@ -787,6 +797,84 @@ SleepCycleExtractionBuilder::BuildRelationshipWrites(SleepCycleExtractionResult&
                   return lhs.relationship.relationship_id < rhs.relationship.relationship_id;
               });
     return absl::OkStatus();
+}
+
+std::string_view
+SleepCycleExtractionBuilder::LookupEntityLabel(const std::string& entity_id) const {
+    if (const auto it = aggregated_entities_.find(entity_id); it != aggregated_entities_.end()) {
+        return it->second.label;
+    }
+    if (const auto it = existing_entities_by_id_.find(entity_id);
+        it != existing_entities_by_id_.end() && it->second.has_value()) {
+        return it->second->label;
+    }
+    if (const auto it = context_entities_by_id_.find(entity_id);
+        it != context_entities_by_id_.end() && it->second.has_value()) {
+        return it->second->label;
+    }
+    return entity_id;
+}
+
+std::string
+SleepCycleExtractionBuilder::RenderRelationshipText(const Relationship& relationship) const {
+    // Canonical triple rendering used as input to the edge embedding model. Kept simple so the
+    // same text can be regenerated deterministically when the edge needs to be re-embedded
+    // (e.g. after a predicate change or on lazy backfill during a later sleep cycle).
+    std::string text;
+    text.append(LookupEntityLabel(relationship.from_entity_id));
+    text.push_back(' ');
+    text.append(relationship.predicate);
+    text.push_back(' ');
+    text.append(LookupEntityLabel(relationship.to_entity_id));
+    return text;
+}
+
+void SleepCycleExtractionBuilder::PopulateRelationshipEmbeddings(
+    SleepCycleExtractionResult& result) {
+    if (embedding_client_ == nullptr) {
+        return;
+    }
+
+    for (RelationshipWrite& write : result.relationships) {
+        Relationship& relationship = write.relationship;
+        // Skip archived relationships — they are terminal and will never be searched.
+        if (relationship.is_archived) {
+            continue;
+        }
+        // Preserve embeddings on relationships that already carry one (e.g. STRENGTHEN over an
+        // existing edge). Empty/missing embeddings are populated now, which naturally backfills
+        // older rows as they get observed again.
+        if (relationship.embedding.has_value() && !relationship.embedding->empty()) {
+            continue;
+        }
+
+        const std::string text = RenderRelationshipText(relationship);
+        absl::StatusOr<Embedding> embedding =
+            embedding_client_->Embed(isla::server::EmbeddingRequest{
+                .model = std::string(embedding_model_),
+                .text = text,
+                .output_dimensionality = kEmbeddingDimensions,
+                .telemetry_context = nullptr,
+            });
+        if (!embedding.ok()) {
+            LOG(WARNING) << "SleepCycleExtractionBuilder relationship embedding call failed"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " relationship_id=" << SanitizeForLog(relationship.relationship_id)
+                         << " model=" << SanitizeForLog(embedding_model_) << " detail='"
+                         << SanitizeForLog(embedding.status().message()) << "'";
+            continue;
+        }
+        if (embedding->size() != kEmbeddingDimensions) {
+            LOG(WARNING) << "SleepCycleExtractionBuilder relationship embedding dimension mismatch"
+                         << " session_id=" << SanitizeForLog(session_id_)
+                         << " relationship_id=" << SanitizeForLog(relationship.relationship_id)
+                         << " model=" << SanitizeForLog(embedding_model_)
+                         << " returned_dimensions=" << embedding->size()
+                         << " expected_dimensions=" << kEmbeddingDimensions;
+            continue;
+        }
+        relationship.embedding = std::move(*embedding);
+    }
 }
 
 void SleepCycleExtractionBuilder::BuildEpisodeEntityLinks(SleepCycleExtractionResult& result) {

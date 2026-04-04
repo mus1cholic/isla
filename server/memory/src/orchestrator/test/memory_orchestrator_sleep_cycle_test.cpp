@@ -1229,5 +1229,279 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleSemanticExtractionRejectsArchivedTar
     EXPECT_THAT(result.status().message(), ::testing::HasSubstr("archived target relationship"));
 }
 
+TEST_F(MemoryOrchestratorTest, RunSleepCyclePopulatesRelationshipEmbeddingsForNewRelationships) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "mochi" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor =
+        std::make_shared<RecordingSleepCycleSemanticExtractor>(SleepCycleSemanticExtractionResult{
+            .relationships =
+                {
+                    SemanticRelationshipObservation{
+                        .from_label = "user",
+                        .from_category = "person",
+                        .predicate = "owns",
+                        .to_label = "Mochi",
+                        .to_category = "pet",
+                        .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                        .source_episode_ids = { "ep_srv_test_1" },
+                    },
+                },
+        });
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    // Retrieval-path embedding for HandleUserQuery + relationship-edge embedding for the sleep
+    // cycle. The second call is the one under test.
+    EXPECT_CALL(*embedding_client, Embed(_))
+        .WillOnce(Return(Embedding(kEmbeddingDimensions, 0.1)))
+        .WillOnce(Return(Embedding(kEmbeddingDimensions, 0.42)));
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, semantic_extractor,
+        kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->relationship_writes.size(), 1U);
+    const Relationship& relationship = store->relationship_writes.front().relationship;
+    ASSERT_TRUE(relationship.embedding.has_value());
+    EXPECT_EQ(relationship.embedding->size(), kEmbeddingDimensions);
+    EXPECT_DOUBLE_EQ(relationship.embedding->front(), 0.42);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCyclePreservesExistingRelationshipEmbeddingOnStrengthen) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    const Embedding preserved_embedding(kEmbeddingDimensions, 0.77);
+    store->entities = {
+        Entity{
+            .entity_id = std::string(kUserEntityId),
+            .user_id = "user_001",
+            .label = "user",
+            .category = "person",
+            .activeness = 4,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = std::string(kAssistantEntityId),
+            .user_id = "user_001",
+            .label = "assistant",
+            .category = "assistant",
+            .activeness = 5,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+            .updated_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    store->relationships = {
+        Relationship{
+            .relationship_id = "rel_existing",
+            .user_id = "user_001",
+            .from_entity_id = std::string(kUserEntityId),
+            .predicate = "trusts",
+            .to_entity_id = std::string(kAssistantEntityId),
+            .weight = 10.0,
+            .observation_count = 1,
+            .last_observed_at = Ts("2026-03-01T14:00:00Z"),
+            .source_episode_ids = { "ep_old" },
+            .embedding = preserved_embedding,
+            .created_at = Ts("2026-03-01T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "trust" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor = std::make_shared<RecordingSleepCycleSemanticExtractor>();
+    semantic_extractor->SetExtractFn([](const SleepCycleSemanticExtractionRequest& request)
+                                         -> absl::StatusOr<SleepCycleSemanticExtractionResult> {
+        if (request.existing_relationships.empty()) {
+            return SleepCycleSemanticExtractionResult{
+                .relationships =
+                    {
+                        SemanticRelationshipObservation{
+                            .from_label = "user",
+                            .from_category = "person",
+                            .predicate = "trusts",
+                            .to_label = "assistant",
+                            .to_category = "assistant",
+                            .operation = SemanticRelationshipOperation::Append,
+                            .evidence = SemanticRelationshipEvidence::StrongInference,
+                            .source_episode_ids = { "ep_srv_test_1" },
+                        },
+                    },
+            };
+        }
+        return SleepCycleSemanticExtractionResult{
+            .relationships =
+                {
+                    SemanticRelationshipObservation{
+                        .from_label = "user",
+                        .from_category = "person",
+                        .predicate = "trusts",
+                        .to_label = "assistant",
+                        .to_category = "assistant",
+                        .operation = SemanticRelationshipOperation::Strengthen,
+                        .target_relationship_id = std::string("rel_existing"),
+                        .evidence = SemanticRelationshipEvidence::StrongInference,
+                        .source_episode_ids = { "ep_srv_test_1" },
+                    },
+                },
+        };
+    });
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    // Retrieval path embeds the user query once; the builder must NOT re-embed the strengthened
+    // edge because it already has an embedding.
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding(kEmbeddingDimensions, 0.1)));
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, semantic_extractor,
+        kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->relationship_writes.size(), 1U);
+    const Relationship& relationship = store->relationship_writes.front().relationship;
+    ASSERT_TRUE(relationship.embedding.has_value());
+    EXPECT_EQ(*relationship.embedding, preserved_embedding);
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCyclePersistsRelationshipsWhenEmbeddingClientFails) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "mochi" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor =
+        std::make_shared<RecordingSleepCycleSemanticExtractor>(SleepCycleSemanticExtractionResult{
+            .relationships =
+                {
+                    SemanticRelationshipObservation{
+                        .from_label = "user",
+                        .from_category = "person",
+                        .predicate = "owns",
+                        .to_label = "Mochi",
+                        .to_category = "pet",
+                        .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                        .source_episode_ids = { "ep_srv_test_1" },
+                    },
+                },
+        });
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_))
+        .WillOnce(Return(Embedding(kEmbeddingDimensions, 0.1)))
+        .WillOnce(Return(absl::InternalError("embedding service unavailable")));
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, semantic_extractor,
+        kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    // Embedding failures must not fail the sleep cycle — the relationship is persisted
+    // without an embedding and will be lazily backfilled on a later consolidation.
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->relationship_writes.size(), 1U);
+    const Relationship& relationship = store->relationship_writes.front().relationship;
+    EXPECT_FALSE(relationship.embedding.has_value());
+}
+
+TEST_F(MemoryOrchestratorTest, RunSleepCycleSkipsRelationshipEmbeddingsWhenNoEmbeddingClient) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "mochi" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor =
+        std::make_shared<RecordingSleepCycleSemanticExtractor>(SleepCycleSemanticExtractionResult{
+            .relationships =
+                {
+                    SemanticRelationshipObservation{
+                        .from_label = "user",
+                        .from_category = "person",
+                        .predicate = "owns",
+                        .to_label = "Mochi",
+                        .to_category = "pet",
+                        .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                        .source_episode_ids = { "ep_srv_test_1" },
+                    },
+                },
+        });
+    absl::StatusOr<MemoryOrchestrator> handler =
+        MakeHandlerWithCompactor(compactor, store, nullptr, semantic_extractor);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->relationship_writes.size(), 1U);
+    EXPECT_FALSE(store->relationship_writes.front().relationship.embedding.has_value());
+}
+
 } // namespace
 } // namespace isla::server::memory

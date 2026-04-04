@@ -74,6 +74,8 @@ MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_e
             .mid_term_episodes = &mid_term_episodes,
             .store = store_.get(),
             .semantic_extractor = sleep_cycle_semantic_extractor_.get(),
+            .embedding_client = retrieval_embedding_client_.get(),
+            .embedding_model = retrieval_embedding_model_,
         });
     if (!extraction.ok()) {
         LOG(WARNING) << "MemoryOrchestrator failed to build sleep-cycle extraction result"
