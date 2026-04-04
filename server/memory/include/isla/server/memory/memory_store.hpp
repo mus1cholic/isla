@@ -264,8 +264,7 @@ class MemoryStore {
     // ordered by descending cosine similarity. Episodes without a stored embedding are excluded.
     [[nodiscard]] virtual absl::StatusOr<std::vector<LongTermEpisode>>
     SearchLongTermEpisodesByEmbedding(std::string_view /*user_id*/,
-                                      const Embedding& /*query_embedding*/,
-                                      int /*top_k*/) const {
+                                      const Embedding& /*query_embedding*/, int /*top_k*/) const {
         return absl::UnimplementedError("SearchLongTermEpisodesByEmbedding not implemented");
     }
 };

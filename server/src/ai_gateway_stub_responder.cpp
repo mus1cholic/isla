@@ -235,7 +235,8 @@ CreateMidTermMemoryComponents(const GatewayStubResponderConfig& config) {
     const std::string embedding_model =
         embedding_configured ? ResolveMidTermEmbeddingModel(config) : std::string();
 
-    // Keep a shared copy for retrieval before the compactor takes ownership of its own copy.
+    // Share the same embedding client between compaction and retrieval paths.
+    // Copy the shared_ptr before it is moved into the compactor below.
     std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client =
         embedding_client;
 

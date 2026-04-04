@@ -217,25 +217,23 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
                     return long_term_episodes;
                 });
         ON_CALL(*this, SearchLongTermEpisodesByEmbedding(_, _, _))
-            .WillByDefault(
-                [this](std::string_view user_id, const Embedding& query_embedding,
-                       int top_k) -> absl::StatusOr<std::vector<LongTermEpisode>> {
-                    static_cast<void>(user_id);
-                    static_cast<void>(query_embedding);
-                    if (!search_long_term_episodes_status.ok()) {
-                        return search_long_term_episodes_status;
+            .WillByDefault([this](std::string_view user_id, const Embedding& query_embedding,
+                                  int top_k) -> absl::StatusOr<std::vector<LongTermEpisode>> {
+                static_cast<void>(user_id);
+                static_cast<void>(query_embedding);
+                if (!search_long_term_episodes_status.ok()) {
+                    return search_long_term_episodes_status;
+                }
+                std::vector<LongTermEpisode> results;
+                const std::size_t limit = static_cast<std::size_t>(top_k > 0 ? top_k : 0);
+                for (const LongTermEpisode& episode : search_long_term_episodes_results) {
+                    if (results.size() >= limit) {
+                        break;
                     }
-                    std::vector<LongTermEpisode> results;
-                    const std::size_t limit = static_cast<std::size_t>(
-                        top_k > 0 ? top_k : 0);
-                    for (const LongTermEpisode& episode : search_long_term_episodes_results) {
-                        if (results.size() >= limit) {
-                            break;
-                        }
-                        results.push_back(episode);
-                    }
-                    return results;
-                });
+                    results.push_back(episode);
+                }
+                return results;
+            });
         ON_CALL(*this, ListMidTermEpisodes(_))
             .WillByDefault([](std::string_view session_id) -> absl::StatusOr<std::vector<Episode>> {
                 static_cast<void>(session_id);
@@ -512,12 +510,11 @@ class MemoryOrchestratorTest : public ::testing::Test {
         if (!memory.ok()) {
             return memory.status();
         }
-        return MemoryOrchestrator("srv_test", std::move(*memory), std::move(store), decider,
-                                  compactor, semantic_extractor,
-                                  mid_term_flush_decider_interval_user_turns,
-                                  retrieved_memory_reranker, retrieved_memory_reranker_min_score,
-                                  std::move(retrieval_embedding_client),
-                                  std::move(retrieval_embedding_model));
+        return MemoryOrchestrator(
+            "srv_test", std::move(*memory), std::move(store), decider, compactor,
+            semantic_extractor, mid_term_flush_decider_interval_user_turns,
+            retrieved_memory_reranker, retrieved_memory_reranker_min_score,
+            std::move(retrieval_embedding_client), std::move(retrieval_embedding_model));
     }
 
     static absl::StatusOr<std::size_t> WaitForDrain(MemoryOrchestrator& orchestrator,

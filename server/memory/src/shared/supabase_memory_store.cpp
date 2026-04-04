@@ -1400,6 +1400,13 @@ class SupabaseMemoryStore final : public MemoryStore {
             return absl::InvalidArgumentError(
                 "SearchLongTermEpisodesByEmbedding requires a non-empty query embedding");
         }
+        if (query_embedding.size() != kEmbeddingDimensions) {
+            latency.SetOutcome("validation_error");
+            return absl::InvalidArgumentError(
+                "SearchLongTermEpisodesByEmbedding query embedding must contain exactly " +
+                std::to_string(kEmbeddingDimensions) + " values, got " +
+                std::to_string(query_embedding.size()));
+        }
         if (top_k <= 0) {
             latency.SetOutcome("validation_error");
             return absl::InvalidArgumentError(

@@ -32,13 +32,11 @@ MemoryOrchestrator::MemoryOrchestrator(
       sleep_cycle_semantic_extractor_(std::move(sleep_cycle_semantic_extractor)),
       retrieved_memory_reranker_(std::move(retrieved_memory_reranker)),
       retrieval_embedding_client_(std::move(retrieval_embedding_client)),
-      retrieval_embedding_model_(std::move(retrieval_embedding_model)),
-      pending_mid_term_flushes_(),
+      retrieval_embedding_model_(std::move(retrieval_embedding_model)), pending_mid_term_flushes_(),
       mid_term_flush_decider_interval_user_turns_(mid_term_flush_decider_interval_user_turns),
       user_turns_since_last_mid_term_decider_run_(0), next_episode_sequence_(1),
       retrieved_memory_reranker_min_score_(retrieved_memory_reranker_min_score),
-      episode_similarity_search_top_k_(episode_similarity_search_top_k),
-      session_persisted_(false) {
+      episode_similarity_search_top_k_(episode_similarity_search_top_k), session_persisted_(false) {
     CHECK_GT(mid_term_flush_decider_interval_user_turns_, 0U)
         << "mid_term_flush_decider_interval_user_turns must be at least 1";
 }
@@ -54,6 +52,10 @@ absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string sessio
     if (init.mid_term_flush_decider_interval_user_turns == 0U) {
         return invalid_argument(
             "memory orchestrator mid-term flush decider interval must be at least 1 user turn");
+    }
+    if (init.episode_similarity_search_top_k <= 0) {
+        return invalid_argument(
+            "memory orchestrator episode_similarity_search_top_k must be at least 1");
     }
 
     absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
