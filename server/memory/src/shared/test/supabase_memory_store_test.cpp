@@ -1928,5 +1928,232 @@ TEST(SupabaseMemoryStoreTest, ListLongTermEpisodesForEntityReturnsEmptyWhenNoJun
     EXPECT_TRUE(episodes->empty());
 }
 
+// --- SearchLongTermEpisodesByEmbedding tests ---
+
+TEST(SupabaseMemoryStoreTest, SearchLongTermEpisodesByEmbeddingCallsRpcAndParsesResponse) {
+    const json response_rows = json::array({
+        json{
+            { "lte_id", "lte_001" },
+            { "user_id", "user_001" },
+            { "summary_full", "Full summary of an episode" },
+            { "summary_compressed", "Compressed summary" },
+            { "keywords", json::array({ "travel", "memory" }) },
+            { "embedding", MakeEmbeddingJson(0.5) },
+            { "outcome", "resolved" },
+            { "complexity", 4 },
+            { "original_episode_ids", json::array({ "ep_001", "ep_002" }) },
+            { "caused_by", nullptr },
+            { "led_to", nullptr },
+            { "created_at", "2026-03-08T14:00:00Z" },
+        },
+        json{
+            { "lte_id", "lte_002" },
+            { "user_id", "user_001" },
+            { "summary_full", "Another episode" },
+            { "summary_compressed", "Another compressed" },
+            { "keywords", json::array({ "work" }) },
+            { "embedding", MakeEmbeddingJson(0.3) },
+            { "outcome", "ongoing" },
+            { "complexity", 2 },
+            { "original_episode_ids", json::array({ "ep_003" }) },
+            { "caused_by", "lte_001" },
+            { "led_to", nullptr },
+            { "created_at", "2026-03-09T10:00:00Z" },
+        },
+    });
+    const std::string response_body = response_rows.dump();
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(response_body.size()) + "\r\n\r\n" + response_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const Embedding query_embedding = MakeEmbedding(0.1);
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->SearchLongTermEpisodesByEmbedding("user_001", query_embedding, 5);
+
+    ASSERT_TRUE(episodes.ok()) << episodes.status();
+    ASSERT_EQ(episodes->size(), 2U);
+
+    EXPECT_EQ((*episodes)[0].lte_id, "lte_001");
+    EXPECT_EQ((*episodes)[0].user_id, "user_001");
+    EXPECT_EQ((*episodes)[0].summary_full, "Full summary of an episode");
+    EXPECT_EQ((*episodes)[0].summary_compressed, "Compressed summary");
+    EXPECT_EQ((*episodes)[0].outcome, LongTermEpisodeOutcome::Resolved);
+    EXPECT_EQ((*episodes)[0].complexity, 4);
+    ASSERT_EQ((*episodes)[0].original_episode_ids.size(), 2U);
+    EXPECT_EQ((*episodes)[0].original_episode_ids[0], "ep_001");
+    EXPECT_EQ((*episodes)[0].original_episode_ids[1], "ep_002");
+
+    EXPECT_EQ((*episodes)[1].lte_id, "lte_002");
+    EXPECT_EQ((*episodes)[1].outcome, LongTermEpisodeOutcome::Ongoing);
+    EXPECT_EQ((*episodes)[1].caused_by, "lte_001");
+
+    // Verify the RPC request path and body.
+    ASSERT_TRUE(server.WaitForRequestCount(1U));
+    const std::vector<std::string> requests = server.requests();
+    ASSERT_EQ(requests.size(), 1U);
+    EXPECT_NE(requests[0].find("POST /rest/v1/rpc/search_long_term_episodes_by_embedding HTTP/1.1"),
+              std::string::npos);
+    EXPECT_NE(requests[0].find("Content-Profile: public"), std::string::npos);
+    // BuildRpcQueryRequest must NOT include Prefer: return=minimal (read-path).
+    EXPECT_EQ(requests[0].find("Prefer: return=minimal"), std::string::npos);
+
+    const std::size_t body_pos = requests[0].find("\r\n\r\n");
+    ASSERT_NE(body_pos, std::string::npos);
+    const json body = json::parse(requests[0].substr(body_pos + 4U));
+    EXPECT_EQ(body["p_user_id"], "user_001");
+    EXPECT_EQ(body["p_top_k"], 5);
+    ASSERT_TRUE(body["p_query_embedding"].is_array());
+    EXPECT_EQ(body["p_query_embedding"].size(), kEmbeddingDimensions);
+}
+
+TEST(SupabaseMemoryStoreTest, SearchLongTermEpisodesByEmbeddingReturnsEmptyOnNoResults) {
+    const std::string empty_body = "[]";
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(empty_body.size()) + "\r\n\r\n" + empty_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->SearchLongTermEpisodesByEmbedding("user_001", MakeEmbedding(0.1), 10);
+
+    ASSERT_TRUE(episodes.ok()) << episodes.status();
+    EXPECT_TRUE(episodes->empty());
+}
+
+TEST(SupabaseMemoryStoreTest, SearchLongTermEpisodesByEmbeddingRejectsEmptyUserId) {
+    // No server needed — validation fires before any HTTP call.
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:1",
+            .service_role_key = "service_role_key",
+            .schema = "public",
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->SearchLongTermEpisodesByEmbedding("", MakeEmbedding(0.1), 10);
+
+    ASSERT_FALSE(episodes.ok());
+    EXPECT_EQ(episodes.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(episodes.status().message().find("user_id"), std::string_view::npos);
+}
+
+TEST(SupabaseMemoryStoreTest, SearchLongTermEpisodesByEmbeddingRejectsEmptyEmbedding) {
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:1",
+            .service_role_key = "service_role_key",
+            .schema = "public",
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const Embedding empty_embedding;
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->SearchLongTermEpisodesByEmbedding("user_001", empty_embedding, 10);
+
+    ASSERT_FALSE(episodes.ok());
+    EXPECT_EQ(episodes.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(episodes.status().message().find("embedding"), std::string_view::npos);
+}
+
+TEST(SupabaseMemoryStoreTest, SearchLongTermEpisodesByEmbeddingRejectsZeroTopK) {
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:1",
+            .service_role_key = "service_role_key",
+            .schema = "public",
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->SearchLongTermEpisodesByEmbedding("user_001", MakeEmbedding(0.1), 0);
+
+    ASSERT_FALSE(episodes.ok());
+    EXPECT_EQ(episodes.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(episodes.status().message().find("top_k"), std::string_view::npos);
+}
+
+TEST(SupabaseMemoryStoreTest, SearchLongTermEpisodesByEmbeddingRejectsWrongDimensionality) {
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:1",
+            .service_role_key = "service_role_key",
+            .schema = "public",
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const Embedding wrong_size_embedding(512, 0.1);
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->SearchLongTermEpisodesByEmbedding("user_001", wrong_size_embedding, 10);
+
+    ASSERT_FALSE(episodes.ok());
+    EXPECT_EQ(episodes.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(episodes.status().message().find(std::to_string(kEmbeddingDimensions)),
+              std::string_view::npos);
+}
+
+TEST(SupabaseMemoryStoreTest, SearchLongTermEpisodesByEmbeddingRejectsNegativeTopK) {
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:1",
+            .service_role_key = "service_role_key",
+            .schema = "public",
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->SearchLongTermEpisodesByEmbedding("user_001", MakeEmbedding(0.1), -3);
+
+    ASSERT_FALSE(episodes.ok());
+    EXPECT_EQ(episodes.status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_NE(episodes.status().message().find("top_k"), std::string_view::npos);
+}
+
+TEST(SupabaseMemoryStoreTest, SearchLongTermEpisodesByEmbeddingPropagatesMalformedResponse) {
+    const std::string malformed_body = "not valid json";
+    SequentialHttpServer server({
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+            std::to_string(malformed_body.size()) + "\r\n\r\n" + malformed_body,
+    });
+    const absl::StatusOr<MemoryStorePtr> store =
+        CreateSupabaseMemoryStore(SupabaseMemoryStoreConfig{
+            .enabled = true,
+            .url = "http://127.0.0.1:" + std::to_string(server.port()),
+            .service_role_key = "service_role_key",
+            .schema = "public",
+            .request_timeout = 2s,
+        });
+    ASSERT_TRUE(store.ok()) << store.status();
+
+    const absl::StatusOr<std::vector<LongTermEpisode>> episodes =
+        (*store)->SearchLongTermEpisodesByEmbedding("user_001", MakeEmbedding(0.1), 5);
+
+    ASSERT_FALSE(episodes.ok());
+}
+
 } // namespace
 } // namespace isla::server::memory

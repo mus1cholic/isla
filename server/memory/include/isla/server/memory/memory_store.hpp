@@ -259,6 +259,15 @@ class MemoryStore {
     ListLongTermEpisodesForEntity(std::string_view /*entity_id*/) const {
         return absl::UnimplementedError("ListLongTermEpisodesForEntity not implemented");
     }
+
+    // Returns the top-k long-term episodes most similar to the query embedding for a given user,
+    // ordered by ascending cosine distance (most similar first). Episodes without a stored
+    // embedding are excluded.
+    [[nodiscard]] virtual absl::StatusOr<std::vector<LongTermEpisode>>
+    SearchLongTermEpisodesByEmbedding(std::string_view /*user_id*/,
+                                      const Embedding& /*query_embedding*/, int /*top_k*/) const {
+        return absl::UnimplementedError("SearchLongTermEpisodesByEmbedding not implemented");
+    }
 };
 
 using MemoryStorePtr = std::shared_ptr<MemoryStore>;

@@ -17,7 +17,13 @@
 #include "isla/server/memory/sleep_cycle_semantic_extractor.hpp"
 #include "isla/server/memory/working_memory.hpp"
 
+namespace isla::server {
+class EmbeddingClient;
+} // namespace isla::server
+
 namespace isla::server::memory {
+
+inline constexpr int kDefaultEpisodeSimilaritySearchTopK = 10;
 
 inline constexpr std::size_t kDefaultMidTermFlushDeciderIntervalUserTurns = 10U;
 inline constexpr double kDefaultRetrievedMemoryRerankerMinScore = 0.5;
@@ -69,6 +75,9 @@ struct MemoryOrchestratorInit {
     double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore;
     std::size_t mid_term_flush_decider_interval_user_turns =
         kDefaultMidTermFlushDeciderIntervalUserTurns;
+    std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client = nullptr;
+    std::string retrieval_embedding_model;
+    int episode_similarity_search_top_k = kDefaultEpisodeSimilaritySearchTopK;
 };
 
 struct SleepCycleResult {
@@ -92,7 +101,10 @@ class MemoryOrchestrator {
         std::size_t mid_term_flush_decider_interval_user_turns =
             kDefaultMidTermFlushDeciderIntervalUserTurns,
         RetrievedMemoryRerankerPtr retrieved_memory_reranker = nullptr,
-        double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore);
+        double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore,
+        std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client = nullptr,
+        std::string retrieval_embedding_model = {},
+        int episode_similarity_search_top_k = kDefaultEpisodeSimilaritySearchTopK);
 
     // Builds a fresh orchestrator with empty working-memory conversation state for the session.
     // Persistence and async mid-term components are optional and can be attached up front.
@@ -288,12 +300,15 @@ class MemoryOrchestrator {
     MidTermCompactorPtr mid_term_compactor_;
     SleepCycleSemanticExtractorPtr sleep_cycle_semantic_extractor_;
     RetrievedMemoryRerankerPtr retrieved_memory_reranker_;
+    std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client_;
+    std::string retrieval_embedding_model_;
     std::vector<PendingMidTermFlush> pending_mid_term_flushes_;
     std::size_t mid_term_flush_decider_interval_user_turns_ =
         kDefaultMidTermFlushDeciderIntervalUserTurns;
     std::size_t user_turns_since_last_mid_term_decider_run_ = 0;
     std::size_t next_episode_sequence_ = 1;
     double retrieved_memory_reranker_min_score_ = kDefaultRetrievedMemoryRerankerMinScore;
+    int episode_similarity_search_top_k_ = kDefaultEpisodeSimilaritySearchTopK;
     bool session_persisted_ = false;
 };
 
