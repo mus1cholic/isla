@@ -587,8 +587,8 @@ create index if not exists long_term_episodes_user_id_idx
     on public.long_term_episodes (user_id);
 
 -- Cosine similarity search over long-term episode embeddings.
--- Returns the top-k most similar episodes for a given user, ordered by descending similarity.
--- Episodes without an embedding are excluded.
+-- Returns the top-k most similar episodes for a given user, ordered by ascending cosine distance
+-- (i.e. most similar first). Episodes without an embedding are excluded.
 create or replace function public.search_long_term_episodes_by_embedding(
     p_user_id text,
     p_query_embedding extensions.vector,
@@ -601,6 +601,6 @@ as $$
     from public.long_term_episodes
     where user_id = p_user_id
       and embedding is not null
-    order by embedding <=> p_query_embedding
+    order by embedding <=> p_query_embedding asc
     limit p_top_k;
 $$;

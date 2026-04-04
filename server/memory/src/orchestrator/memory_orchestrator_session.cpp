@@ -447,7 +447,7 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
         }
     }
 
-    // --- Path 2: Entity-triggered retrieval (KG facts + cross-linked episodes) ---
+    // --- Path 2: Entity-triggered retrieval (KG facts) ---
     const PersistentMemoryCache& cache = memory_.snapshot().system_prompt.persistent_memory_cache;
 
     std::vector<std::string> seed_entity_ids;
@@ -473,11 +473,10 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
             seed_entity_ids =
                 SelectSeedEntityIdsForRetrievedMemory(user_message, entity_ids, *cache_entities);
         } else {
-            LOG(WARNING)
-                << "MemoryOrchestrator failed to load cache entity labels for query-aware "
-                   "retrieval; falling back to cached entity ids"
-                << " session_id=" << SanitizeForLog(session_id_) << " detail='"
-                << SanitizeForLog(cache_entities.status().message()) << "'";
+            LOG(WARNING) << "MemoryOrchestrator failed to load cache entity labels for query-aware "
+                            "retrieval; falling back to cached entity ids"
+                         << " session_id=" << SanitizeForLog(session_id_) << " detail='"
+                         << SanitizeForLog(cache_entities.status().message()) << "'";
         }
     }
 
