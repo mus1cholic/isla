@@ -1330,8 +1330,7 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryFiltersRetrievedMemoryWithReranker
         },
     };
     // Score 0.9 for the KG fact (above 0.5 threshold) -> kept.
-    auto reranker =
-        std::make_shared<RecordingRetrievedMemoryReranker>(std::vector<double>{ 0.9 });
+    auto reranker = std::make_shared<RecordingRetrievedMemoryReranker>(std::vector<double>{ 0.9 });
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     absl::StatusOr<MemoryOrchestrator> handler =
         MakeHandlerWithCompactor(compactor, store, nullptr, nullptr,
@@ -1703,8 +1702,7 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsSimilaritySearchEpisodes) {
     };
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
-    EXPECT_CALL(*embedding_client, Embed(_))
-        .WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
 
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
         compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
@@ -1720,8 +1718,9 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsSimilaritySearchEpisodes) {
     const WorkingMemoryState& state = handler->memory().snapshot();
     ASSERT_TRUE(state.retrieved_memory.has_value());
     EXPECT_NE(state.retrieved_memory->find("Past Experiences:"), std::string::npos);
-    EXPECT_NE(state.retrieved_memory->find("Fixed inverted normals by switching to CCW face culling"),
-              std::string::npos);
+    EXPECT_NE(
+        state.retrieved_memory->find("Fixed inverted normals by switching to CCW face culling"),
+        std::string::npos);
 }
 
 TEST_F(MemoryOrchestratorTest, HandleUserQuerySimilaritySearchWorksWithEmptyCache) {
@@ -1737,8 +1736,7 @@ TEST_F(MemoryOrchestratorTest, HandleUserQuerySimilaritySearchWorksWithEmptyCach
     };
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
-    EXPECT_CALL(*embedding_client, Embed(_))
-        .WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
 
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
         compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
@@ -1746,9 +1744,8 @@ TEST_F(MemoryOrchestratorTest, HandleUserQuerySimilaritySearchWorksWithEmptyCach
     ASSERT_TRUE(handler.ok()) << handler.status();
 
     ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
-    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
-        GatewayUserQuery("srv_test", "turn_001", "similar bug from before",
-                         Ts("2026-03-08T14:00:00Z")));
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "similar bug from before", Ts("2026-03-08T14:00:00Z")));
     ASSERT_TRUE(result.ok()) << result.status();
 
     const WorkingMemoryState& state = handler->memory().snapshot();
@@ -1756,8 +1753,7 @@ TEST_F(MemoryOrchestratorTest, HandleUserQuerySimilaritySearchWorksWithEmptyCach
     EXPECT_NE(state.retrieved_memory->find("Debugged a winding order issue"), std::string::npos);
 }
 
-TEST_F(MemoryOrchestratorTest,
-       HandleUserQueryReturnsBothKgFactsAndSimilaritySearchEpisodes) {
+TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsBothKgFactsAndSimilaritySearchEpisodes) {
     auto store = std::make_shared<RecordingMemoryStore>();
     store->entities = {
         Entity{
@@ -1802,8 +1798,7 @@ TEST_F(MemoryOrchestratorTest,
 
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
-    EXPECT_CALL(*embedding_client, Embed(_))
-        .WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
 
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
         compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
@@ -1811,9 +1806,8 @@ TEST_F(MemoryOrchestratorTest,
     ASSERT_TRUE(handler.ok()) << handler.status();
 
     ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
-    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
-        GatewayUserQuery("srv_test", "turn_001", "What do I know about Airi?",
-                         Ts("2026-03-08T14:00:00Z")));
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "What do I know about Airi?", Ts("2026-03-08T14:00:00Z")));
     ASSERT_TRUE(result.ok()) << result.status();
 
     const WorkingMemoryState& state = handler->memory().snapshot();
