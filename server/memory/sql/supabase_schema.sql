@@ -591,7 +591,7 @@ create index if not exists long_term_episodes_user_id_idx
 -- (i.e. most similar first). Episodes without an embedding are excluded.
 create or replace function public.search_long_term_episodes_by_embedding(
     p_user_id text,
-    p_query_embedding extensions.vector,
+    p_query_embedding extensions.vector(1536),
     p_top_k integer default 10
 )
 returns setof public.long_term_episodes

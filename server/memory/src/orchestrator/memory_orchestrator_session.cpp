@@ -538,13 +538,9 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
             }
             return lhs.relationship_id < rhs.relationship_id;
         });
-    std::sort(episode_candidates.begin(), episode_candidates.end(),
-              [](const RetrievedEpisodeCandidate& lhs, const RetrievedEpisodeCandidate& rhs) {
-                  if (lhs.created_at != rhs.created_at) {
-                      return lhs.created_at > rhs.created_at;
-                  }
-                  return lhs.lte_id < rhs.lte_id;
-              });
+    // Note: episode_candidates are intentionally NOT re-sorted here. They arrive from
+    // similarity search in ascending cosine distance order (most relevant first), and we
+    // want to preserve that ranking in the fallback path when the reranker is unavailable.
 
     if (retrieved_memory_reranker_ != nullptr &&
         (!relationship_candidates.empty() || !episode_candidates.empty())) {

@@ -261,7 +261,8 @@ class MemoryStore {
     }
 
     // Returns the top-k long-term episodes most similar to the query embedding for a given user,
-    // ordered by descending cosine similarity. Episodes without a stored embedding are excluded.
+    // ordered by ascending cosine distance (most similar first). Episodes without a stored
+    // embedding are excluded.
     [[nodiscard]] virtual absl::StatusOr<std::vector<LongTermEpisode>>
     SearchLongTermEpisodesByEmbedding(std::string_view /*user_id*/,
                                       const Embedding& /*query_embedding*/, int /*top_k*/) const {

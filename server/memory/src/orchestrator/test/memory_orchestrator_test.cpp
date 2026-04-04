@@ -1702,7 +1702,7 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsSimilaritySearchEpisodes) {
     };
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
-    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding(kEmbeddingDimensions, 0.1)));
 
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
         compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
@@ -1736,7 +1736,7 @@ TEST_F(MemoryOrchestratorTest, HandleUserQuerySimilaritySearchWorksWithEmptyCach
     };
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
-    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding(kEmbeddingDimensions, 0.1)));
 
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
         compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
@@ -1798,7 +1798,7 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsBothKgFactsAndSimilaritySea
 
     auto compactor = std::make_shared<RecordingMidTermCompactor>();
     auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
-    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 0.1, 0.2, 0.3 }));
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding(kEmbeddingDimensions, 0.1)));
 
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
         compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,

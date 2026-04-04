@@ -39,6 +39,8 @@ MemoryOrchestrator::MemoryOrchestrator(
       episode_similarity_search_top_k_(episode_similarity_search_top_k), session_persisted_(false) {
     CHECK_GT(mid_term_flush_decider_interval_user_turns_, 0U)
         << "mid_term_flush_decider_interval_user_turns must be at least 1";
+    CHECK_GT(episode_similarity_search_top_k_, 0)
+        << "episode_similarity_search_top_k must be at least 1";
 }
 
 absl::StatusOr<MemoryOrchestrator> MemoryOrchestrator::Create(std::string session_id,
