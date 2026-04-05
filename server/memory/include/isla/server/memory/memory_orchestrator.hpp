@@ -24,6 +24,8 @@ class EmbeddingClient;
 namespace isla::server::memory {
 
 inline constexpr int kDefaultEpisodeSimilaritySearchTopK = 10;
+inline constexpr int kDefaultKgHop1TopK = 50;
+inline constexpr int kDefaultKgHop2TopK = 20;
 
 inline constexpr std::size_t kDefaultMidTermFlushDeciderIntervalUserTurns = 10U;
 inline constexpr double kDefaultRetrievedMemoryRerankerMinScore = 0.5;
@@ -78,6 +80,8 @@ struct MemoryOrchestratorInit {
     std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client = nullptr;
     std::string retrieval_embedding_model;
     int episode_similarity_search_top_k = kDefaultEpisodeSimilaritySearchTopK;
+    int kg_hop_1_top_k_per_entity = kDefaultKgHop1TopK;
+    int kg_hop_2_top_k_per_entity = kDefaultKgHop2TopK;
 };
 
 struct SleepCycleResult {
@@ -104,7 +108,9 @@ class MemoryOrchestrator {
         double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore,
         std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client = nullptr,
         std::string retrieval_embedding_model = {},
-        int episode_similarity_search_top_k = kDefaultEpisodeSimilaritySearchTopK);
+        int episode_similarity_search_top_k = kDefaultEpisodeSimilaritySearchTopK,
+        int kg_hop_1_top_k_per_entity = kDefaultKgHop1TopK,
+        int kg_hop_2_top_k_per_entity = kDefaultKgHop2TopK);
 
     // Builds a fresh orchestrator with empty working-memory conversation state for the session.
     // Persistence and async mid-term components are optional and can be attached up front.
@@ -309,6 +315,8 @@ class MemoryOrchestrator {
     std::size_t next_episode_sequence_ = 1;
     double retrieved_memory_reranker_min_score_ = kDefaultRetrievedMemoryRerankerMinScore;
     int episode_similarity_search_top_k_ = kDefaultEpisodeSimilaritySearchTopK;
+    int kg_hop_1_top_k_per_entity_ = kDefaultKgHop1TopK;
+    int kg_hop_2_top_k_per_entity_ = kDefaultKgHop2TopK;
     bool session_persisted_ = false;
 };
 

@@ -18,6 +18,7 @@
 #include "isla/server/embedding_client.hpp"
 #include "isla/server/memory/identifier_utils.hpp"
 #include "isla/server/memory/working_memory.hpp"
+#include "server/memory/src/shared/retrieval_ranking.hpp"
 
 namespace isla::server::memory {
 namespace {
@@ -407,20 +408,24 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
     std::unordered_set<std::string> seen_episode_ids;
     std::vector<RetrievedEpisodeCandidate> episode_candidates;
     std::unordered_set<std::string> related_entity_ids;
+    std::optional<Embedding> query_embedding;
 
     // --- Path 1: Direct episode similarity search (embedding-based) ---
     if (retrieval_embedding_client_ != nullptr && !retrieval_embedding_model_.empty()) {
-        const absl::StatusOr<Embedding> query_embedding =
+        const absl::StatusOr<Embedding> embedded_query =
             retrieval_embedding_client_->Embed(isla::server::EmbeddingRequest{
                 .model = retrieval_embedding_model_,
                 .text = user_message.content,
+                .output_dimensionality = kEmbeddingDimensions,
+                .telemetry_context = nullptr,
             });
-        if (!query_embedding.ok()) {
+        if (!embedded_query.ok()) {
             LOG(WARNING) << "MemoryOrchestrator failed to embed user query for episode similarity "
                             "search"
                          << " session_id=" << SanitizeForLog(session_id_) << " detail='"
-                         << SanitizeForLog(query_embedding.status().message()) << "'";
-        } else if (!query_embedding->empty()) {
+                         << SanitizeForLog(embedded_query.status().message()) << "'";
+        } else if (!embedded_query->empty()) {
+            query_embedding = *embedded_query;
             const absl::StatusOr<std::vector<LongTermEpisode>> similar_episodes =
                 store_->SearchLongTermEpisodesByEmbedding(user_id, *query_embedding,
                                                           episode_similarity_search_top_k_);
@@ -480,33 +485,127 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
         }
     }
 
-    for (const std::string& entity_id : seed_entity_ids) {
-        const absl::StatusOr<std::vector<Relationship>> relationships =
-            store_->ListRelationshipsForEntity(entity_id);
-        if (!relationships.ok()) {
-            if (!absl::IsUnimplemented(relationships.status())) {
-                LOG(WARNING) << "MemoryOrchestrator failed to retrieve relationships for entity"
-                             << " session_id=" << SanitizeForLog(session_id_)
-                             << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
-                             << SanitizeForLog(relationships.status().message()) << "'";
+    const auto append_relationship_candidate = [&](const Relationship& relationship) {
+        related_entity_ids.insert(relationship.from_entity_id);
+        related_entity_ids.insert(relationship.to_entity_id);
+        relationship_candidates.push_back(RetrievedRelationshipCandidate{
+            .relationship_id = relationship.relationship_id,
+            .from_text = relationship.from_entity_id,
+            .predicate = relationship.predicate,
+            .to_text = relationship.to_entity_id,
+            .weight = relationship.weight,
+        });
+    };
+
+    if (query_embedding.has_value()) {
+        std::unordered_set<std::string> seed_entity_id_set(seed_entity_ids.begin(),
+                                                           seed_entity_ids.end());
+        std::unordered_set<std::string> seen_hop_1_entity_ids;
+        std::vector<std::string> hop_1_entity_ids;
+        const auto collect_rankable_relationships =
+            [&](const std::vector<Relationship>& relationships) {
+                std::vector<Relationship> eligible_relationships;
+                eligible_relationships.reserve(relationships.size());
+                for (const Relationship& rel : relationships) {
+                    if (rel.is_archived || rel.user_id != user_id ||
+                        seen_relationship_ids.contains(rel.relationship_id)) {
+                        continue;
+                    }
+                    eligible_relationships.push_back(rel);
+                }
+                return eligible_relationships;
+            };
+
+        for (const std::string& entity_id : seed_entity_ids) {
+            const absl::StatusOr<std::vector<Relationship>> relationships =
+                store_->ListRelationshipsForEntity(entity_id);
+            if (!relationships.ok()) {
+                if (!absl::IsUnimplemented(relationships.status())) {
+                    LOG(WARNING) << "MemoryOrchestrator failed to retrieve relationships for entity"
+                                 << " session_id=" << SanitizeForLog(session_id_)
+                                 << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
+                                 << SanitizeForLog(relationships.status().message()) << "'";
+                }
+                continue;
             }
-        } else {
+
+            const std::vector<Relationship> eligible_relationships =
+                collect_rankable_relationships(*relationships);
+            for (const Relationship& rel : RankEdgesBySimilarity(
+                     *query_embedding, eligible_relationships, kg_hop_1_top_k_per_entity_)) {
+                if (!seen_relationship_ids.insert(rel.relationship_id).second) {
+                    continue;
+                }
+                append_relationship_candidate(rel);
+
+                const auto maybe_enqueue_hop_1_entity =
+                    [&](const std::string& candidate_entity_id) {
+                        if (seed_entity_id_set.contains(candidate_entity_id) ||
+                            !seen_hop_1_entity_ids.insert(candidate_entity_id).second) {
+                            return;
+                        }
+                        hop_1_entity_ids.push_back(candidate_entity_id);
+                    };
+                maybe_enqueue_hop_1_entity(rel.from_entity_id);
+                maybe_enqueue_hop_1_entity(rel.to_entity_id);
+            }
+        }
+
+        for (const std::string& entity_id : hop_1_entity_ids) {
+            const absl::StatusOr<std::vector<Relationship>> relationships =
+                store_->ListRelationshipsForEntity(entity_id);
+            if (!relationships.ok()) {
+                if (!absl::IsUnimplemented(relationships.status())) {
+                    LOG(WARNING) << "MemoryOrchestrator failed to retrieve relationships for hop-1 "
+                                    "entity"
+                                 << " session_id=" << SanitizeForLog(session_id_)
+                                 << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
+                                 << SanitizeForLog(relationships.status().message()) << "'";
+                }
+                continue;
+            }
+
+            const std::vector<Relationship> eligible_relationships =
+                collect_rankable_relationships(*relationships);
+            for (const Relationship& rel : RankEdgesBySimilarity(
+                     *query_embedding, eligible_relationships, kg_hop_2_top_k_per_entity_)) {
+                if (!seen_relationship_ids.insert(rel.relationship_id).second) {
+                    continue;
+                }
+                append_relationship_candidate(rel);
+            }
+        }
+    } else {
+        for (const std::string& entity_id : seed_entity_ids) {
+            const absl::StatusOr<std::vector<Relationship>> relationships =
+                store_->ListRelationshipsForEntity(entity_id);
+            if (!relationships.ok()) {
+                if (!absl::IsUnimplemented(relationships.status())) {
+                    LOG(WARNING) << "MemoryOrchestrator failed to retrieve relationships for entity"
+                                 << " session_id=" << SanitizeForLog(session_id_)
+                                 << " entity_id=" << SanitizeForLog(entity_id) << " detail='"
+                                 << SanitizeForLog(relationships.status().message()) << "'";
+                }
+                continue;
+            }
+
             for (const Relationship& rel : *relationships) {
                 if (rel.is_archived || rel.user_id != user_id ||
                     !seen_relationship_ids.insert(rel.relationship_id).second) {
                     continue;
                 }
-                related_entity_ids.insert(rel.from_entity_id);
-                related_entity_ids.insert(rel.to_entity_id);
-                relationship_candidates.push_back(RetrievedRelationshipCandidate{
-                    .relationship_id = rel.relationship_id,
-                    .from_text = rel.from_entity_id,
-                    .predicate = rel.predicate,
-                    .to_text = rel.to_entity_id,
-                    .weight = rel.weight,
-                });
+                append_relationship_candidate(rel);
             }
         }
+
+        std::sort(relationship_candidates.begin(), relationship_candidates.end(),
+                  [](const RetrievedRelationshipCandidate& lhs,
+                     const RetrievedRelationshipCandidate& rhs) {
+                      if (lhs.weight != rhs.weight) {
+                          return lhs.weight > rhs.weight;
+                      }
+                      return lhs.relationship_id < rhs.relationship_id;
+                  });
     }
 
     const std::vector<std::string> related_entity_ids_vector(related_entity_ids.begin(),
@@ -529,15 +628,6 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
                      << " session_id=" << SanitizeForLog(session_id_) << " detail='"
                      << SanitizeForLog(related_entities.status().message()) << "'";
     }
-
-    std::sort(
-        relationship_candidates.begin(), relationship_candidates.end(),
-        [](const RetrievedRelationshipCandidate& lhs, const RetrievedRelationshipCandidate& rhs) {
-            if (lhs.weight != rhs.weight) {
-                return lhs.weight > rhs.weight;
-            }
-            return lhs.relationship_id < rhs.relationship_id;
-        });
     // Note: episode_candidates are intentionally NOT re-sorted here. They arrive from
     // similarity search in ascending cosine distance order (most relevant first), and we
     // want to preserve that ranking in the fallback path when the reranker is unavailable.
