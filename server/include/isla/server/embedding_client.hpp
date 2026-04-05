@@ -23,8 +23,13 @@ struct EmbeddingRequest {
     // providers will typically reject inputs that exceed their max token budget.
     std::string text;
     // When set, requests the provider produce an embedding with exactly this many
-    // dimensions. Only honored by providers that support Matryoshka-style truncation;
-    // ignored otherwise.
+    // dimensions. Providers that support Matryoshka-style truncation (e.g. Gemini's
+    // gemini-embedding-2 family) honor this directly. Implementations are required
+    // to validate the returned vector against this value and return a non-OK status
+    // from Embed() if it does not match — so setting this field on a provider that
+    // does NOT support dimensionality control will fail the request rather than
+    // silently falling back to the model's native dimensionality. Leave unset to
+    // accept whatever dimensionality the model natively produces.
     std::optional<std::size_t> output_dimensionality;
     // Optional per-turn telemetry context used to attribute latency and token usage
     // back to a specific user turn. Pass nullptr for background work (sleep cycle
