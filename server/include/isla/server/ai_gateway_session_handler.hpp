@@ -164,10 +164,12 @@ class GatewaySessionHandler {
     // the transport should do next. This is the single entry point for client
     // messages — the transport hands every received frame through here.
     //
-    // On success, exactly one of the result's event fields may be populated
+    // On success, at most one of the result's event fields may be populated
     // (session_start_requested, transcript_seed, accepted_turn,
     // cancel_requested); the transport layer forwards that to the application
-    // sink. On failure, `ok` is false, `error_message` explains why, and
+    // sink. Some frames (e.g. `session.end`) produce outgoing frames but no
+    // event, so callers must tolerate results where every event field is
+    // empty. On failure, `ok` is false, `error_message` explains why, and
     // `outgoing_frames` already contains a pre-encoded `error` frame to send
     // back to the client — no additional error emission is required.
     //

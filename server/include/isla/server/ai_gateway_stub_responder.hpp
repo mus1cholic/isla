@@ -240,9 +240,13 @@ struct GatewayAcceptedTurnResult {
 // returning — do not destroy while the owning GatewayServer is still running.
 class GatewayStubResponder final : public GatewayApplicationEventSink {
   public:
-    // Constructs a responder with the given config. All injected clients in
-    // the config are validated lazily on first use (not in the constructor),
-    // so construction is cheap and does not perform network I/O.
+    // Constructs a responder with the given config. The constructor eagerly
+    // initializes mid-term memory components (flush decider, compactor,
+    // sleep-cycle extractor, retrieved-memory reranker) from the injected
+    // clients and warms up the reranker client when present, so any
+    // configuration errors surface immediately via
+    // MidTermMemoryInitializationStatus() rather than on first use. The LLM
+    // and embedding clients themselves are not called during construction.
     explicit GatewayStubResponder(GatewayStubResponderConfig config = {});
     // Stops the worker, joins the thread pool, and tears down all per-session
     // state. Blocks until every in-flight turn either finishes or hits
