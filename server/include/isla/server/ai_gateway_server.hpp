@@ -103,8 +103,17 @@ class GatewaySessionRegistry final : public GatewaySessionEventSink {
     std::unique_ptr<Impl> impl_;
 };
 
+// Top-level WebSocket gateway server. Owns the listening socket, accepts
+// incoming connections, and brokers session lifecycle events between the
+// transport layer (GatewayLiveSession/GatewaySessionRegistry) and the
+// application layer (GatewayApplicationEventSink, typically the stub responder).
+// A single GatewayServer instance is expected per process.
 class GatewayServer {
   public:
+    // Constructs the server with the given config and application sink. The
+    // session_id_generator is pluggable for deterministic IDs in tests; in
+    // production the default UUID generator is used. The server is created in
+    // the stopped state — call Start() to begin listening.
     explicit GatewayServer(GatewayServerConfig config,
                            GatewayApplicationEventSink* application_sink = nullptr,
                            std::unique_ptr<SessionIdGenerator> session_id_generator =
@@ -114,11 +123,54 @@ class GatewayServer {
     GatewayServer(const GatewayServer&) = delete;
     GatewayServer& operator=(const GatewayServer&) = delete;
 
+    // Binds to the configured host/port and starts accepting connections on a
+    // background I/O thread. Returns OK once the listener is bound and ready
+    // (at which point bound_port() reflects the actual port, which matters when
+    // the config requested port 0). Returns a non-OK status if the bind/listen
+    // fails — the server remains in the stopped state in that case. Calling
+    // Start() on an already-running server is an error.
     [[nodiscard]] absl::Status Start();
+
+    // Stops accepting new connections and tears the server down in order:
+    //   1. Cancels and closes the listening acceptor so no new sessions are
+    //      admitted.
+    //   2. Notifies the application sink via OnServerStopping() and asks every
+    //      currently-live session to stop (each session drains any in-flight
+    //      writes within the configured shutdown_write_grace_period).
+    //   3. Joins the accept thread and the session-reaper thread.
+    //   4. Joins every remaining live session so no transport callbacks can
+    //      fire after Stop() returns.
+    //   5. Stops the shared Asio I/O thread.
+    // Safe to call multiple times; stopping a server that was never started is
+    // a no-op. Safe to call from any application-owned thread (test fixtures,
+    // signal handlers, the thread that called Start()).
+    //
+    // MUST NOT be called from one of the server's own internal threads —
+    // specifically the accept thread, the session reaper thread, the shared
+    // Asio I/O thread, or any transport callback running on the I/O thread
+    // (e.g. from inside a GatewayApplicationEventSink handler). Stop() joins
+    // each of those threads unconditionally, so calling it from one of them
+    // would self-join and deadlock (or throw on platforms where the runtime
+    // catches self-join). If you need to stop the server in response to an
+    // event that originates on an internal thread, hand off to an
+    // application-owned thread first.
+    //
+    // IMPORTANT: This is a fully blocking shutdown — the call does not return
+    // until every background thread (acceptor, reaper, I/O) and every live
+    // session has fully exited. Worst-case wall time is therefore bounded by
+    // the slowest live session's drain, which in turn is bounded by
+    // shutdown_write_grace_period. Callers that need a time-bounded shutdown
+    // should size that config value accordingly.
     void Stop();
 
+    // True between a successful Start() and the corresponding Stop().
     [[nodiscard]] bool is_running() const;
+    // Returns the port the listener is bound to. Only meaningful while running;
+    // useful after Start() when config.port was 0 (ephemeral port) to discover
+    // the assigned port for tests and logging.
     [[nodiscard]] std::uint16_t bound_port() const;
+    // Access to the session registry so the application layer can enumerate or
+    // look up live sessions (e.g. to push out-of-band events).
     [[nodiscard]] GatewaySessionRegistry& session_registry();
     [[nodiscard]] const GatewaySessionRegistry& session_registry() const;
 
