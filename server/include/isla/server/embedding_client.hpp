@@ -62,8 +62,19 @@ class EmbeddingClient {
     // returns the resulting vector. Must be thread-safe; callers may issue
     // concurrent Embed() calls from retrieval and consolidation paths. Returns a
     // non-OK status for transport errors, provider rejections, and dimensionality
-    // mismatches — callers should log and fall back rather than propagate failures
-    // up the turn pipeline.
+    // mismatches against `request.output_dimensionality`.
+    //
+    // Error-handling policy is the caller's choice and varies by call site:
+    //   - Retrieval path (query-time similarity search) and sleep-cycle edge
+    //     embedding both log a warning and fall back gracefully (skip the
+    //     similarity hop / persist the row without an embedding for later
+    //     backfill) so a provider outage never fails a live turn.
+    //   - Write path during mid-term compaction currently propagates the status
+    //     up so the failing turn surfaces the error; this is intentional because
+    //     mid-term episodes without an embedding cannot be found by later
+    //     retrieval.
+    // New callers should pick explicitly based on whether the embedding is
+    // load-bearing for the operation or merely an optional enrichment.
     [[nodiscard]] virtual absl::StatusOr<isla::server::memory::Embedding>
     Embed(const EmbeddingRequest& request) const = 0;
 };

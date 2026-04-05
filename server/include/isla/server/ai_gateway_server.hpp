@@ -141,8 +141,19 @@ class GatewayServer {
     //   4. Joins every remaining live session so no transport callbacks can
     //      fire after Stop() returns.
     //   5. Stops the shared Asio I/O thread.
-    // Safe to call from any thread and safe to call multiple times; stopping a
-    // server that was never started is a no-op.
+    // Safe to call multiple times; stopping a server that was never started is
+    // a no-op. Safe to call from any application-owned thread (test fixtures,
+    // signal handlers, the thread that called Start()).
+    //
+    // MUST NOT be called from one of the server's own internal threads —
+    // specifically the accept thread, the session reaper thread, the shared
+    // Asio I/O thread, or any transport callback running on the I/O thread
+    // (e.g. from inside a GatewayApplicationEventSink handler). Stop() joins
+    // each of those threads unconditionally, so calling it from one of them
+    // would self-join and deadlock (or throw on platforms where the runtime
+    // catches self-join). If you need to stop the server in response to an
+    // event that originates on an internal thread, hand off to an
+    // application-owned thread first.
     //
     // IMPORTANT: This is a fully blocking shutdown — the call does not return
     // until every background thread (acceptor, reaper, I/O) and every live
