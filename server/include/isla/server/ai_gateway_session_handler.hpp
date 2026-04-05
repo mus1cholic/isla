@@ -40,9 +40,11 @@ namespace isla::server::ai_gateway {
 // transcript.seed). Requests exceeding this are rejected with a bad_request
 // error before any application-layer work is done.
 inline constexpr std::size_t kMaxTextInputBytes = 32U * 1024U;
-// Maximum size, in bytes, of a single outbound text.output frame. The
-// application layer is expected to chunk longer responses across multiple
-// EmitTextOutput() calls.
+// Maximum size, in bytes, of a single outbound text.output frame. The FSM
+// currently allows at most one text.output emission per active turn, so the
+// application layer must keep each turn's final reply under this limit
+// rather than splitting it across multiple EmitTextOutput() calls — a second
+// call on the same turn will fail with an invalid-FSM-state error.
 inline constexpr std::size_t kMaxTextOutputBytes = 32U * 1024U;
 
 // Event emitted when a client text.input message has been validated and
@@ -194,8 +196,11 @@ class GatewaySessionHandler {
     // Produces an outgoing `text.output` frame for an active turn and records
     // that text output has been sent for the turn (used by the FSM to decide
     // whether a subsequent `turn.completed` is valid). Rejects empty text,
-    // text exceeding kMaxTextOutputBytes, and writes for turns that are not
-    // currently active.
+    // text exceeding kMaxTextOutputBytes, writes for turns that are not
+    // currently active, and — importantly — a second EmitTextOutput for a
+    // turn that has already emitted text (the FSM currently allows only one
+    // text.output per active turn, so the caller must buffer the full reply
+    // and emit it in a single call rather than streaming chunks).
     [[nodiscard]] absl::StatusOr<EmitResult> EmitTextOutput(std::string_view turn_id,
                                                             std::string_view text);
 

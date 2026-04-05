@@ -64,13 +64,16 @@ namespace isla::server::ai_gateway {
 // not override it via GatewayLlmRuntimeConfig.
 inline constexpr std::string_view kDefaultMidTermMemoryModel = kDefaultMidTermFlushDeciderModel;
 // Default hard cap on the rendered system-prompt section of a turn's prompt.
-// Exceeding this truncates with a warning; the cap exists so a pathological
-// working-memory snapshot cannot blow up the prompt budget.
+// Exceeding the cap logs an ERROR and fails the turn (the responder rejects
+// the rendered prompt rather than silently truncating) so a pathological
+// working-memory snapshot cannot quietly blow through the provider's token
+// budget.
 inline constexpr std::size_t kDefaultMaxRenderedSystemPromptBytes =
     static_cast<std::size_t>(64U * 1024U);
 // Default hard cap on the rendered working-memory context section of a turn's
 // prompt. Independent from the system-prompt cap so retrieval results can be
-// sized separately from static instructions.
+// sized separately from static instructions. Enforcement is identical: the
+// turn is rejected rather than truncated when the limit is exceeded.
 inline constexpr std::size_t kDefaultMaxRenderedWorkingMemoryContextBytes =
     static_cast<std::size_t>(64U * 1024U);
 
@@ -123,9 +126,11 @@ class GatewaySessionClock {
 // populate the memory_store / llm_client / openai_client / embedding_client /
 // reranker_client fields to wire in real backends.
 struct GatewayStubResponderConfig {
-    // Baseline artificial delay inserted before emitting a stubbed reply when
-    // no real LLM client is configured. Exists purely so tests can exercise
-    // timing-sensitive paths (cancellation, overlap) without a real provider.
+    // Per-turn scheduling delay applied unconditionally in OnTurnAccepted
+    // before the worker picks up the turn — it opens a cancellation window
+    // between accept and execution and gives tests a knob for simulating
+    // provider latency. Applies to every accepted turn regardless of
+    // whether a real LLM client is configured.
     std::chrono::milliseconds response_delay{ 50 };
     // Upper bound on any single async emit back to the transport layer. If a
     // GatewayLiveSession async-emit callback does not fire within this window
@@ -242,11 +247,15 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
   public:
     // Constructs a responder with the given config. The constructor eagerly
     // initializes mid-term memory components (flush decider, compactor,
-    // sleep-cycle extractor, retrieved-memory reranker) from the injected
-    // clients and warms up the reranker client when present, so any
-    // configuration errors surface immediately via
-    // MidTermMemoryInitializationStatus() rather than on first use. The LLM
-    // and embedding clients themselves are not called during construction.
+    // sleep-cycle extractor) from the injected clients; failures there are
+    // captured and exposed via MidTermMemoryInitializationStatus() so callers
+    // can detect them programmatically. The retrieved-memory reranker is
+    // also constructed and warmed up eagerly, but any reranker creation or
+    // warmup failure is logged only and does NOT flow into
+    // MidTermMemoryInitializationStatus() — callers that need to hard-fail
+    // startup on a bad reranker must validate the client themselves before
+    // handing it in. The LLM and embedding clients themselves are not
+    // invoked during construction.
     explicit GatewayStubResponder(GatewayStubResponderConfig config = {});
     // Stops the worker, joins the thread pool, and tears down all per-session
     // state. Blocks until every in-flight turn either finishes or hits
@@ -342,9 +351,12 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     // false if the responder stopped before the count was reached. Used by
     // tests to synchronize on "all expected turns have been dispatched".
     [[nodiscard]] bool WaitForAcceptedTurns(std::size_t expected_count);
-    // True when the config supplies every dependency needed for mid-term
-    // memory (store, LLM, compactor). Does not verify runtime availability —
-    // use IsMidTermMemoryAvailable for that.
+    // True when the config supplies an LLM pathway (either `llm_client` or
+    // `openai_client`) that mid-term memory can drive. This is a necessary
+    // but not sufficient condition: a missing memory store or a failure in
+    // CreateMidTermMemoryComponents will still leave mid-term memory
+    // unavailable at runtime. Use IsMidTermMemoryAvailable() to check
+    // whether mid-term memory is actually usable.
     [[nodiscard]] bool IsMidTermMemoryConfigured() const;
     // True when mid-term memory is both configured AND its one-time
     // initialization (decider/compactor/extractor construction) succeeded.
@@ -352,9 +364,15 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     // status; see MidTermMemoryInitializationStatus for the failure detail.
     [[nodiscard]] bool IsMidTermMemoryAvailable() const;
     // Terminal status of mid-term memory initialization. OK if available or
-    // not configured; a captured non-OK status explains why initialization
-    // failed (e.g. unreachable store, bad model id). Stable for the lifetime
-    // of the responder — initialization is attempted once at construction.
+    // not configured; a captured non-OK status explains why
+    // CreateMidTermMemoryComponents() failed — for example an invalid
+    // flush-decider or compactor model id, a missing required LLM pathway,
+    // or an embedding client that failed its readiness check. Note that
+    // MemoryStore reachability is NOT validated here; the store is only
+    // touched at runtime on session start / persistence, so a broken store
+    // will surface as a HandleSessionStart failure rather than through this
+    // status. Stable for the lifetime of the responder — initialization is
+    // attempted once at construction.
     [[nodiscard]] const absl::Status& MidTermMemoryInitializationStatus() const;
 
   private:
