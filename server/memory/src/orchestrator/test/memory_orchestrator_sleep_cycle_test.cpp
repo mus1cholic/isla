@@ -1503,5 +1503,58 @@ TEST_F(MemoryOrchestratorTest, RunSleepCycleSkipsRelationshipEmbeddingsWhenNoEmb
     EXPECT_FALSE(store->relationship_writes.front().relationship.embedding.has_value());
 }
 
+TEST_F(MemoryOrchestratorTest, RunSleepCycleSkipsRelationshipEmbeddingsWhenEmbeddingModelIsEmpty) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    auto compactor = std::make_shared<RecordingMidTermCompactor>(CompactedMidTermEpisode{
+        .tier1_detail = std::string("full detail"),
+        .tier2_summary = "summary",
+        .tier3_ref = "stub ref",
+        .tier3_keywords = { "mochi" },
+        .salience = 6,
+        .embedding = {},
+    });
+    auto semantic_extractor =
+        std::make_shared<RecordingSleepCycleSemanticExtractor>(SleepCycleSemanticExtractionResult{
+            .relationships =
+                {
+                    SemanticRelationshipObservation{
+                        .from_label = "user",
+                        .from_category = "person",
+                        .predicate = "owns",
+                        .to_label = "Mochi",
+                        .to_category = "pet",
+                        .evidence = SemanticRelationshipEvidence::ExplicitStatement,
+                        .source_episode_ids = { "ep_srv_test_1" },
+                    },
+                },
+        });
+    // Client is configured but the model string is empty. This must be treated as
+    // "edge embeddings disabled" — no Embed() calls should be issued.
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).Times(0);
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, semantic_extractor,
+        kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, /*model=*/"");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    ASSERT_TRUE(handler
+                    ->HandleUserQuery(GatewayUserQuery("srv_test", "turn_001", "hello",
+                                                       Ts("2026-03-08T14:00:00Z")))
+                    .ok());
+    ASSERT_TRUE(handler
+                    ->HandleAssistantReply(GatewayAssistantReply("srv_test", "turn_001", "hi there",
+                                                                 Ts("2026-03-08T14:00:01Z")))
+                    .ok());
+
+    const absl::StatusOr<SleepCycleResult> result =
+        handler->RunSleepCycle(Ts("2026-03-09T04:00:00Z"));
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    ASSERT_EQ(store->relationship_writes.size(), 1U);
+    EXPECT_FALSE(store->relationship_writes.front().relationship.embedding.has_value());
+}
+
 } // namespace
 } // namespace isla::server::memory

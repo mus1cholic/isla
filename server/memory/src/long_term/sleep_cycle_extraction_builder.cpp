@@ -831,7 +831,10 @@ SleepCycleExtractionBuilder::RenderRelationshipText(const Relationship& relation
 
 void SleepCycleExtractionBuilder::PopulateRelationshipEmbeddings(
     SleepCycleExtractionResult& result) {
-    if (embedding_client_ == nullptr) {
+    // Mirror the retrieval-path gating in memory_orchestrator_session.cpp: a client without a
+    // configured model counts as "edge embeddings disabled" so we do not spam the provider (and
+    // the warning log) with empty-model requests once per relationship.
+    if (embedding_client_ == nullptr || embedding_model_.empty()) {
         return;
     }
 
