@@ -103,8 +103,17 @@ class GatewaySessionRegistry final : public GatewaySessionEventSink {
     std::unique_ptr<Impl> impl_;
 };
 
+// Top-level WebSocket gateway server. Owns the listening socket, accepts
+// incoming connections, and brokers session lifecycle events between the
+// transport layer (GatewayLiveSession/GatewaySessionRegistry) and the
+// application layer (GatewayApplicationEventSink, typically the stub responder).
+// A single GatewayServer instance is expected per process.
 class GatewayServer {
   public:
+    // Constructs the server with the given config and application sink. The
+    // session_id_generator is pluggable for deterministic IDs in tests; in
+    // production the default UUID generator is used. The server is created in
+    // the stopped state — call Start() to begin listening.
     explicit GatewayServer(GatewayServerConfig config,
                            GatewayApplicationEventSink* application_sink = nullptr,
                            std::unique_ptr<SessionIdGenerator> session_id_generator =
@@ -114,11 +123,30 @@ class GatewayServer {
     GatewayServer(const GatewayServer&) = delete;
     GatewayServer& operator=(const GatewayServer&) = delete;
 
+    // Binds to the configured host/port and starts accepting connections on a
+    // background I/O thread. Returns OK once the listener is bound and ready
+    // (at which point bound_port() reflects the actual port, which matters when
+    // the config requested port 0). Returns a non-OK status if the bind/listen
+    // fails — the server remains in the stopped state in that case. Calling
+    // Start() on an already-running server is an error.
     [[nodiscard]] absl::Status Start();
+
+    // Stops accepting new connections, notifies the application sink via
+    // OnServerStopping(), and drains in-flight sessions using the configured
+    // shutdown_write_grace_period before tearing down the I/O thread. Safe to
+    // call from any thread and safe to call multiple times; stopping a server
+    // that was never started is a no-op. Blocks until the I/O thread has
+    // fully exited.
     void Stop();
 
+    // True between a successful Start() and the corresponding Stop().
     [[nodiscard]] bool is_running() const;
+    // Returns the port the listener is bound to. Only meaningful while running;
+    // useful after Start() when config.port was 0 (ephemeral port) to discover
+    // the assigned port for tests and logging.
     [[nodiscard]] std::uint16_t bound_port() const;
+    // Access to the session registry so the application layer can enumerate or
+    // look up live sessions (e.g. to push out-of-band events).
     [[nodiscard]] GatewaySessionRegistry& session_registry();
     [[nodiscard]] const GatewaySessionRegistry& session_registry() const;
 
