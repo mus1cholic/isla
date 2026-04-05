@@ -67,6 +67,12 @@ MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_e
     }
 
     const std::string& user_id = memory_.snapshot().conversation.user_id;
+    // Mirror the retrieval-path gating in memory_orchestrator_session.cpp: only advertise the
+    // embedding client to the builder when a model is actually configured. The builder also
+    // defends against this internally, but gating here keeps the "edge embeddings disabled"
+    // contract visible at the orchestrator layer.
+    const bool edge_embeddings_enabled =
+        retrieval_embedding_client_ != nullptr && !retrieval_embedding_model_.empty();
     absl::StatusOr<SleepCycleExtractionResult> extraction =
         BuildSleepCycleExtractionResult(SleepCycleExtractionBuilderInput{
             .session_id = session_id_,
@@ -74,6 +80,11 @@ MemoryOrchestrator::ConsolidateToLongTerm(const std::vector<Episode>& mid_term_e
             .mid_term_episodes = &mid_term_episodes,
             .store = store_.get(),
             .semantic_extractor = sleep_cycle_semantic_extractor_.get(),
+            .embedding_client =
+                edge_embeddings_enabled ? retrieval_embedding_client_.get() : nullptr,
+            .embedding_model = edge_embeddings_enabled
+                                   ? std::string_view(retrieval_embedding_model_)
+                                   : std::string_view{},
         });
     if (!extraction.ok()) {
         LOG(WARNING) << "MemoryOrchestrator failed to build sleep-cycle extraction result"
