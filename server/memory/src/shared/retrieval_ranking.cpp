@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string_view>
@@ -139,8 +140,8 @@ struct RankedRelationship {
 
 std::vector<Relationship> RankEdgesBySimilarity(const Embedding& query_embedding,
                                                 const std::vector<Relationship>& relationships,
-                                                int top_k) {
-    if (relationships.empty() || top_k <= 0) {
+                                                std::size_t top_k) {
+    if (relationships.empty() || top_k == 0U) {
         return {};
     }
 
@@ -170,8 +171,7 @@ std::vector<Relationship> RankEdgesBySimilarity(const Embedding& query_embedding
                   return lhs.relationship.relationship_id < rhs.relationship.relationship_id;
               });
 
-    const std::size_t limit =
-        std::min<std::size_t>(ranked_relationships.size(), static_cast<std::size_t>(top_k));
+    const std::size_t limit = std::min(ranked_relationships.size(), top_k);
     std::vector<Relationship> result;
     result.reserve(limit);
     for (std::size_t i = 0; i < limit; ++i) {

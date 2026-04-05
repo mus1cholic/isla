@@ -2054,8 +2054,7 @@ TEST_F(MemoryOrchestratorTest,
 
     ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
     const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
-        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi",
-                         Ts("2026-03-08T14:00:00Z")));
+        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi", Ts("2026-03-08T14:00:00Z")));
     ASSERT_TRUE(result.ok()) << result.status();
 
     const WorkingMemoryState& state = handler->memory().snapshot();
@@ -2472,9 +2471,8 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryHop1TopKIsAppliedPerSeedEntity) {
     ASSERT_TRUE(handler.ok()) << handler.status();
 
     ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
-    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
-        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi and Mochi",
-                         Ts("2026-03-08T14:00:00Z")));
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "Tell me about Airi and Mochi", Ts("2026-03-08T14:00:00Z")));
     ASSERT_TRUE(result.ok()) << result.status();
 
     const WorkingMemoryState& state = handler->memory().snapshot();

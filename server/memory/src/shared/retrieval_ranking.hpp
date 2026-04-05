@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 #include "isla/server/memory/memory_types.hpp"
@@ -11,6 +12,6 @@ namespace isla::server::memory {
 // surfaced as a deterministic fallback.
 [[nodiscard]] std::vector<Relationship>
 RankEdgesBySimilarity(const Embedding& query_embedding,
-                      const std::vector<Relationship>& relationships, int top_k);
+                      const std::vector<Relationship>& relationships, std::size_t top_k);
 
 } // namespace isla::server::memory

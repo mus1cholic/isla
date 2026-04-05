@@ -1,14 +1,10 @@
 ﻿#pragma once
 
-#include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
-#include "isla/server/memory/prompt_loader.hpp"
 #include "isla/server/memory/retrieved_memory_reranker.hpp"
 
-#include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <functional>
 #include <future>
@@ -24,7 +20,6 @@
 #include "server/memory/src/mid_term/test/mid_term_compactor_mock.hpp"
 #include "server/memory/src/mid_term/test/mid_term_flush_decider_mock.hpp"
 #include "server/memory/src/shared/test/memory_store_mock.hpp"
-#include "server/src/embedding_client_mock.hpp"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -530,8 +525,7 @@ class MemoryOrchestratorTest : public ::testing::Test {
             semantic_extractor, mid_term_flush_decider_interval_user_turns,
             retrieved_memory_reranker, retrieved_memory_reranker_min_score,
             std::move(retrieval_embedding_client), std::move(retrieval_embedding_model),
-            episode_similarity_search_top_k, kg_hop_1_top_k_per_entity,
-            kg_hop_2_top_k_per_entity);
+            episode_similarity_search_top_k, kg_hop_1_top_k_per_entity, kg_hop_2_top_k_per_entity);
     }
 
     static absl::StatusOr<std::size_t> WaitForDrain(MemoryOrchestrator& orchestrator,
