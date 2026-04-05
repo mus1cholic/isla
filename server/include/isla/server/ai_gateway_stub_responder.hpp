@@ -158,8 +158,13 @@ struct GatewayStubResponderConfig {
     // Per-turn LLM runtime parameters (model id, temperature, max tokens, tool
     // catalogue). Shared across all turns produced by this responder.
     GatewayLlmRuntimeConfig llm_runtime_config;
-    // Primary chat LLM client. When null the responder falls back to stubbed
-    // canned replies paced by `response_delay`.
+    // Primary chat LLM client used by the planner/executor path. The
+    // responder always runs turns through the plan executor, so at least
+    // one LLM pathway must be configured: either this `llm_client`, or an
+    // OpenAI Responses client via `openai_client` / enabled `openai_config`.
+    // If no pathway is configured, accepted turns fail with a
+    // FailedPrecondition from the executor rather than falling back to a
+    // canned reply.
     std::shared_ptr<const isla::server::LlmClient> llm_client;
     // Config for an optional OpenAI Responses API client used for the planner/
     // tool-calling execution path. Only consulted when `openai_client` is null
@@ -257,9 +262,15 @@ class GatewayStubResponder final : public GatewayApplicationEventSink {
     // handing it in. The LLM and embedding clients themselves are not
     // invoked during construction.
     explicit GatewayStubResponder(GatewayStubResponderConfig config = {});
-    // Stops the worker, joins the thread pool, and tears down all per-session
-    // state. Blocks until every in-flight turn either finishes or hits
-    // `async_emit_timeout`.
+    // Stops the worker, joins the boost::asio::thread_pool, and tears down
+    // all per-session state. Blocks until every task scheduled on the worker
+    // pool has run to completion — including any in-flight LLM calls, tool
+    // invocations, and memory operations. Only the transport-facing emit
+    // steps are bounded by `async_emit_timeout`; other in-flight work has
+    // no destructor-level timeout, so a wedged LLM call without its own
+    // deadline can stall destruction indefinitely. Callers that need a
+    // hard shutdown bound must cancel/timeout those upstream operations
+    // before destroying the responder.
     ~GatewayStubResponder() override;
 
     GatewayStubResponder(const GatewayStubResponder&) = delete;
