@@ -132,8 +132,8 @@ SimilarityResult ComputeCosineSimilarity(const Embedding& lhs, const Embedding& 
     };
 }
 
-struct RankedRelationship {
-    Relationship relationship;
+struct RankedRelationshipIndex {
+    std::size_t index = 0;
     double score = kMissingEmbeddingScore;
 };
 
@@ -146,9 +146,10 @@ std::vector<Relationship> RankEdgesBySimilarity(const Embedding& query_embedding
         return {};
     }
 
-    std::vector<RankedRelationship> ranked_relationships;
+    std::vector<RankedRelationshipIndex> ranked_relationships;
     ranked_relationships.reserve(relationships.size());
-    for (const Relationship& relationship : relationships) {
+    for (std::size_t i = 0; i < relationships.size(); ++i) {
+        const Relationship& relationship = relationships[i];
         SimilarityResult similarity = SimilarityResult{
             .score = kMissingEmbeddingScore,
             .status = SimilarityStatus::kMissingEmbedding,
@@ -158,25 +159,27 @@ std::vector<Relationship> RankEdgesBySimilarity(const Embedding& query_embedding
             MaybeLogMalformedEmbedding(relationship.relationship_id, similarity.status,
                                        query_embedding.size(), relationship.embedding->size());
         }
-        ranked_relationships.push_back(RankedRelationship{
-            .relationship = relationship,
+        ranked_relationships.push_back(RankedRelationshipIndex{
+            .index = i,
             .score = similarity.score,
         });
     }
 
-    std::sort(ranked_relationships.begin(), ranked_relationships.end(),
-              [](const RankedRelationship& lhs, const RankedRelationship& rhs) {
-                  if (lhs.score != rhs.score) {
-                      return lhs.score > rhs.score;
-                  }
-                  return lhs.relationship.relationship_id < rhs.relationship.relationship_id;
-              });
-
     const std::size_t limit = std::min(ranked_relationships.size(), top_k);
+    std::partial_sort(ranked_relationships.begin(), ranked_relationships.begin() + limit,
+                      ranked_relationships.end(),
+                      [&](const RankedRelationshipIndex& lhs, const RankedRelationshipIndex& rhs) {
+                          if (lhs.score != rhs.score) {
+                              return lhs.score > rhs.score;
+                          }
+                          return relationships[lhs.index].relationship_id <
+                                 relationships[rhs.index].relationship_id;
+                      });
+
     std::vector<Relationship> result;
     result.reserve(limit);
     for (std::size_t i = 0; i < limit; ++i) {
-        result.push_back(std::move(ranked_relationships[i].relationship));
+        result.push_back(relationships[ranked_relationships[i].index]);
     }
     return result;
 }
