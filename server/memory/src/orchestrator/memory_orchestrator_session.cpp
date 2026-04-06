@@ -15,6 +15,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/embedding_client.hpp"
 #include "isla/server/memory/identifier_utils.hpp"
 #include "isla/server/memory/working_memory.hpp"
@@ -395,8 +396,9 @@ absl::Status MemoryOrchestrator::PersistConversationMessage(std::string_view tur
     return absl::OkStatus();
 }
 
-absl::StatusOr<std::optional<RetrievedMemory>>
-MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
+absl::StatusOr<std::optional<RetrievedMemory>> MemoryOrchestrator::RetrieveRelevantMemories(
+    const Message& user_message,
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context) {
     if (!store_) {
         return std::nullopt;
     }
@@ -409,16 +411,28 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
     std::vector<RetrievedEpisodeCandidate> episode_candidates;
     std::unordered_set<std::string> related_entity_ids;
     std::optional<Embedding> query_embedding;
+    std::size_t episodic_candidates_retrieved = 0;
+    std::size_t hop_1_entities_visited = 0;
+    std::size_t hop_2_entities_visited = 0;
+    std::size_t hop_1_edges_selected = 0;
+    std::size_t hop_2_edges_selected = 0;
+    std::size_t malformed_relationship_embedding_count = 0;
+    bool used_single_hop_fallback = false;
 
     // --- Path 1: Direct episode similarity search (embedding-based) ---
     if (retrieval_embedding_client_ != nullptr && !retrieval_embedding_model_.empty()) {
+        const auto embed_query_started_at =
+            isla::server::ai_gateway::TurnTelemetryContext::Clock::now();
         const absl::StatusOr<Embedding> embedded_query =
             retrieval_embedding_client_->Embed(isla::server::EmbeddingRequest{
                 .model = retrieval_embedding_model_,
                 .text = user_message.content,
                 .output_dimensionality = kEmbeddingDimensions,
-                .telemetry_context = nullptr,
+                .telemetry_context = telemetry_context,
             });
+        isla::server::ai_gateway::RecordTelemetryPhase(
+            telemetry_context, isla::server::ai_gateway::telemetry::kPhaseMemoryRetrievalEmbedQuery,
+            embed_query_started_at, isla::server::ai_gateway::TurnTelemetryContext::Clock::now());
         if (!embedded_query.ok()) {
             LOG(WARNING) << "MemoryOrchestrator failed to embed user query for episode similarity "
                             "search"
@@ -447,6 +461,7 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
                         .summary_compressed = episode.summary_compressed,
                         .created_at = episode.created_at,
                     });
+                    ++episodic_candidates_retrieved;
                 }
             }
         }
@@ -484,6 +499,10 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
                          << SanitizeForLog(cache_entities.status().message()) << "'";
         }
     }
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalSeedEntityCount,
+        static_cast<double>(seed_entity_ids.size()));
 
     const auto append_relationship_candidate = [&](const Relationship& relationship) {
         related_entity_ids.insert(relationship.from_entity_id);
@@ -517,6 +536,7 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
             };
 
         for (const std::string& entity_id : seed_entity_ids) {
+            ++hop_1_entities_visited;
             const absl::StatusOr<std::vector<Relationship>> relationships =
                 store_->ListRelationshipsForEntity(entity_id);
             if (!relationships.ok()) {
@@ -531,12 +551,15 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
 
             const std::vector<Relationship> eligible_relationships =
                 collect_rankable_relationships(*relationships);
-            for (const Relationship& rel : RankEdgesBySimilarity(
-                     *query_embedding, eligible_relationships, kg_hop_1_top_k_per_entity_)) {
+            RetrievalRankingStats ranking_stats;
+            for (const Relationship& rel :
+                 RankEdgesBySimilarity(*query_embedding, eligible_relationships,
+                                       kg_hop_1_top_k_per_entity_, &ranking_stats)) {
                 if (!seen_relationship_ids.insert(rel.relationship_id).second) {
                     continue;
                 }
                 append_relationship_candidate(rel);
+                ++hop_1_edges_selected;
 
                 const auto maybe_enqueue_hop_1_entity =
                     [&](const std::string& candidate_entity_id) {
@@ -549,9 +572,11 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
                 maybe_enqueue_hop_1_entity(rel.from_entity_id);
                 maybe_enqueue_hop_1_entity(rel.to_entity_id);
             }
+            malformed_relationship_embedding_count += ranking_stats.malformed_embedding_count;
         }
 
         for (const std::string& entity_id : hop_1_entity_ids) {
+            ++hop_2_entities_visited;
             const absl::StatusOr<std::vector<Relationship>> relationships =
                 store_->ListRelationshipsForEntity(entity_id);
             if (!relationships.ok()) {
@@ -567,15 +592,20 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
 
             const std::vector<Relationship> eligible_relationships =
                 collect_rankable_relationships(*relationships);
-            for (const Relationship& rel : RankEdgesBySimilarity(
-                     *query_embedding, eligible_relationships, kg_hop_2_top_k_per_entity_)) {
+            RetrievalRankingStats ranking_stats;
+            for (const Relationship& rel :
+                 RankEdgesBySimilarity(*query_embedding, eligible_relationships,
+                                       kg_hop_2_top_k_per_entity_, &ranking_stats)) {
                 if (!seen_relationship_ids.insert(rel.relationship_id).second) {
                     continue;
                 }
                 append_relationship_candidate(rel);
+                ++hop_2_edges_selected;
             }
+            malformed_relationship_embedding_count += ranking_stats.malformed_embedding_count;
         }
     } else {
+        used_single_hop_fallback = true;
         for (const std::string& entity_id : seed_entity_ids) {
             const absl::StatusOr<std::vector<Relationship>> relationships =
                 store_->ListRelationshipsForEntity(entity_id);
@@ -631,6 +661,9 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
     // Note: episode_candidates are intentionally NOT re-sorted here. They arrive from
     // similarity search in ascending cosine distance order (most relevant first), and we
     // want to preserve that ranking in the fallback path when the reranker is unavailable.
+    const std::size_t total_candidates_before_rerank =
+        relationship_candidates.size() + episode_candidates.size();
+    std::size_t total_candidates_after_rerank = total_candidates_before_rerank;
 
     if (retrieved_memory_reranker_ != nullptr &&
         (!relationship_candidates.empty() || !episode_candidates.empty())) {
@@ -664,8 +697,12 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
             });
         }
 
+        const auto rerank_started_at = isla::server::ai_gateway::TurnTelemetryContext::Clock::now();
         absl::StatusOr<std::vector<double>> scores =
             retrieved_memory_reranker_->Score(user_message.content, reranker_candidates);
+        isla::server::ai_gateway::RecordTelemetryPhase(
+            telemetry_context, isla::server::ai_gateway::telemetry::kPhaseMemoryRetrievalRerank,
+            rerank_started_at, isla::server::ai_gateway::TurnTelemetryContext::Clock::now());
         if (!scores.ok()) {
             LOG(WARNING) << "MemoryOrchestrator failed to rerank long-term retrieval candidates"
                          << " session_id=" << SanitizeForLog(session_id_) << " detail='"
@@ -711,6 +748,52 @@ MemoryOrchestrator::RetrieveRelevantMemories(const Message& user_message) {
             }
         }
     }
+    total_candidates_after_rerank = relationship_candidates.size() + episode_candidates.size();
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgHop1EntitiesVisited,
+        static_cast<double>(hop_1_entities_visited));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgHop2EntitiesVisited,
+        static_cast<double>(hop_2_entities_visited));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgHop1EdgesSelected,
+        static_cast<double>(hop_1_edges_selected));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgHop2EdgesSelected,
+        static_cast<double>(hop_2_edges_selected));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalEpisodicCandidatesRetrieved,
+        static_cast<double>(episodic_candidates_retrieved));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalTotalCandidatesBeforeRerank,
+        static_cast<double>(total_candidates_before_rerank));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalTotalCandidatesAfterRerank,
+        static_cast<double>(total_candidates_after_rerank));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalInjectedKgCount,
+        static_cast<double>(relationship_candidates.size()));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalInjectedEpisodeCount,
+        static_cast<double>(episode_candidates.size()));
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgFallbackSingleHopUsed,
+        used_single_hop_fallback ? 1.0 : 0.0);
+    isla::server::ai_gateway::RecordTelemetryMeasurement(
+        telemetry_context,
+        isla::server::ai_gateway::telemetry::
+            kMeasurementMemoryRetrievalRelationshipEmbeddingMalformedCount,
+        static_cast<double>(malformed_relationship_embedding_count));
 
     std::string rendered_context =
         RenderRetrievedMemory(relationship_candidates, episode_candidates);

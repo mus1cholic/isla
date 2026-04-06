@@ -1,7 +1,63 @@
 ﻿#include "memory_orchestrator_test_support.hpp"
 
+#include "isla/server/ai_gateway_telemetry.hpp"
+
 namespace isla::server::memory {
 namespace {
+
+struct TelemetryMeasurementRecord {
+    std::string name;
+    double value = 0.0;
+};
+
+class RecordingTelemetrySink final : public isla::server::ai_gateway::TelemetrySink {
+  public:
+    void OnPhase(const isla::server::ai_gateway::TurnTelemetryContext& context,
+                 std::string_view phase_name,
+                 isla::server::ai_gateway::TurnTelemetryContext::Clock::time_point started_at,
+                 isla::server::ai_gateway::TurnTelemetryContext::Clock::time_point completed_at)
+        const override {
+        static_cast<void>(context);
+        static_cast<void>(started_at);
+        static_cast<void>(completed_at);
+        phases_.push_back(std::string(phase_name));
+    }
+
+    void OnMeasurement(const isla::server::ai_gateway::TurnTelemetryContext& context,
+                       std::string_view name, double value) const override {
+        static_cast<void>(context);
+        measurements_.push_back(TelemetryMeasurementRecord{
+            .name = std::string(name),
+            .value = value,
+        });
+    }
+
+    [[nodiscard]] const std::vector<std::string>& phases() const {
+        return phases_;
+    }
+
+    [[nodiscard]] const std::vector<TelemetryMeasurementRecord>& measurements() const {
+        return measurements_;
+    }
+
+  private:
+    mutable std::vector<std::string> phases_;
+    mutable std::vector<TelemetryMeasurementRecord> measurements_;
+};
+
+bool ContainsMeasurement(const std::vector<TelemetryMeasurementRecord>& measurements,
+                         std::string_view name, double value) {
+    for (const TelemetryMeasurementRecord& measurement : measurements) {
+        if (measurement.name == name && measurement.value == value) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ContainsPhase(const std::vector<std::string>& phases, std::string_view name) {
+    return std::find(phases.begin(), phases.end(), name) != phases.end();
+}
 
 TEST_F(MemoryOrchestratorTest, HandleUserQueryAppendsUserMessageAndRendersPrompt) {
     absl::StatusOr<MemoryOrchestrator> handler = MakeHandler();
@@ -1816,6 +1872,192 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsBothKgFactsAndSimilaritySea
     EXPECT_NE(state.retrieved_memory->find("Airi owns Mochi (weight: 10)"), std::string::npos);
     EXPECT_NE(state.retrieved_memory->find("Past Experiences:"), std::string::npos);
     EXPECT_NE(state.retrieved_memory->find("User discussed their cat Mochi"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryRecordsRetrievalTelemetry) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_bug",
+            .user_id = "user_001",
+            .label = "Winding order",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_good",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Relationship{
+            .relationship_id = "rel_bad",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "debugged",
+            .to_entity_id = "entity_bug",
+            .embedding = Embedding{ 1.0, 0.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->search_long_term_episodes_results = {
+        LongTermEpisode{
+            .lte_id = "lte_telemetry_001",
+            .user_id = "user_001",
+            .summary_compressed = "Airi fixed the renderer culling issue",
+            .created_at = Ts("2026-03-08T13:30:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto reranker =
+        std::make_shared<RecordingRetrievedMemoryReranker>(std::vector<double>{ 0.95, 0.10, 0.80 });
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 1.0, 0.0 }));
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    const auto telemetry_context = isla::server::ai_gateway::MakeTurnTelemetryContext(
+        "srv_test", "turn_telemetry", telemetry_sink);
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns,
+        reranker, kDefaultRetrievedMemoryRerankerMinScore, embedding_client,
+        "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_telemetry", "What do I know about Airi?",
+                         Ts("2026-03-08T14:00:00Z"), telemetry_context));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    EXPECT_TRUE(
+        ContainsPhase(telemetry_sink->phases(),
+                      isla::server::ai_gateway::telemetry::kPhaseMemoryRetrievalEmbedQuery));
+    EXPECT_TRUE(ContainsPhase(telemetry_sink->phases(),
+                              isla::server::ai_gateway::telemetry::kPhaseMemoryRetrievalRerank));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalSeedEntityCount, 1.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgHop1EntitiesVisited,
+        1.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgHop2EntitiesVisited,
+        2.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgHop1EdgesSelected, 2.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgHop2EdgesSelected, 0.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalEpisodicCandidatesRetrieved,
+        1.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalTotalCandidatesBeforeRerank,
+        3.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalTotalCandidatesAfterRerank,
+        2.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalInjectedKgCount, 1.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalInjectedEpisodeCount, 1.0));
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgFallbackSingleHopUsed,
+        0.0));
+    EXPECT_TRUE(
+        ContainsMeasurement(telemetry_sink->measurements(),
+                            isla::server::ai_gateway::telemetry::
+                                kMeasurementMemoryRetrievalRelationshipEmbeddingMalformedCount,
+                            1.0));
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryRecordsSingleHopFallbackTelemetry) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_good",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .weight = 10.0,
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_))
+        .WillOnce(Return(absl::InternalError("embedding service unavailable")));
+    auto telemetry_sink = std::make_shared<RecordingTelemetrySink>();
+    const auto telemetry_context = isla::server::ai_gateway::MakeTurnTelemetryContext(
+        "srv_test", "turn_fallback", telemetry_sink);
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_fallback", "What do I know about Airi?",
+                         Ts("2026-03-08T14:00:00Z"), telemetry_context));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    EXPECT_TRUE(ContainsMeasurement(
+        telemetry_sink->measurements(),
+        isla::server::ai_gateway::telemetry::kMeasurementMemoryRetrievalKgFallbackSingleHopUsed,
+        1.0));
 }
 
 TEST_F(MemoryOrchestratorTest, HandleUserQueryPerformsTwoHopKgRetrieval) {

@@ -141,7 +141,7 @@ struct RankedRelationshipIndex {
 
 std::vector<Relationship> RankEdgesBySimilarity(const Embedding& query_embedding,
                                                 const std::vector<Relationship>& relationships,
-                                                std::size_t top_k) {
+                                                std::size_t top_k, RetrievalRankingStats* stats) {
     if (relationships.empty() || top_k == 0U) {
         return {};
     }
@@ -158,6 +158,13 @@ std::vector<Relationship> RankEdgesBySimilarity(const Embedding& query_embedding
             similarity = ComputeCosineSimilarity(query_embedding, *relationship.embedding);
             MaybeLogMalformedEmbedding(relationship.relationship_id, similarity.status,
                                        query_embedding.size(), relationship.embedding->size());
+        }
+        if (stats != nullptr) {
+            if (similarity.status == SimilarityStatus::kMissingEmbedding) {
+                ++stats->missing_embedding_count;
+            } else if (similarity.status != SimilarityStatus::kOk) {
+                ++stats->malformed_embedding_count;
+            }
         }
         ranked_relationships.push_back(RankedRelationshipIndex{
             .index = i,

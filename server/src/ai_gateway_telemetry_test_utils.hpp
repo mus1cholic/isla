@@ -24,6 +24,11 @@ struct TelemetryPhaseRecord {
     TurnTelemetryContext::Clock::time_point completed_at;
 };
 
+struct TelemetryMeasurementRecord {
+    std::string name;
+    double value = 0.0;
+};
+
 struct TurnFinishedRecord {
     std::string outcome;
     TurnTelemetryContext::Clock::time_point finished_at;
@@ -59,6 +64,19 @@ class RecordingTelemetrySink final : public TelemetrySink {
         cv_.notify_all();
     }
 
+    void OnMeasurement(const TurnTelemetryContext& context, std::string_view name,
+                       double value) const override {
+        static_cast<void>(context);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            measurements_.push_back(TelemetryMeasurementRecord{
+                .name = std::string(name),
+                .value = value,
+            });
+        }
+        cv_.notify_all();
+    }
+
     void OnTurnFinished(const TurnTelemetryContext& context, std::string_view outcome,
                         TurnTelemetryContext::Clock::time_point finished_at) const override {
         static_cast<void>(context);
@@ -82,6 +100,11 @@ class RecordingTelemetrySink final : public TelemetrySink {
         return phases_;
     }
 
+    [[nodiscard]] std::vector<TelemetryMeasurementRecord> measurements() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return measurements_;
+    }
+
     [[nodiscard]] std::vector<TurnFinishedRecord> finished() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return finished_;
@@ -99,6 +122,7 @@ class RecordingTelemetrySink final : public TelemetrySink {
     mutable std::condition_variable cv_;
     mutable std::vector<TelemetryEventRecord> events_;
     mutable std::vector<TelemetryPhaseRecord> phases_;
+    mutable std::vector<TelemetryMeasurementRecord> measurements_;
     mutable std::vector<TurnFinishedRecord> finished_;
 };
 
@@ -116,6 +140,17 @@ inline bool ContainsTelemetryPhase(const std::vector<TelemetryPhaseRecord>& phas
                                    std::string_view name) {
     for (const auto& phase : phases) {
         if (phase.name == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool
+ContainsTelemetryMeasurement(const std::vector<TelemetryMeasurementRecord>& measurements,
+                             std::string_view name, double value) {
+    for (const auto& measurement : measurements) {
+        if (measurement.name == name && measurement.value == value) {
             return true;
         }
     }
