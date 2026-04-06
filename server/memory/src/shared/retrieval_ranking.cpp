@@ -150,7 +150,7 @@ std::vector<Relationship> RankEdgesBySimilarity(const Embedding& query_embedding
     ranked_relationships.reserve(relationships.size());
     for (std::size_t i = 0; i < relationships.size(); ++i) {
         const Relationship& relationship = relationships[i];
-        SimilarityResult similarity = SimilarityResult{
+        auto similarity = SimilarityResult{
             .score = kMissingEmbeddingScore,
             .status = SimilarityStatus::kMissingEmbedding,
         };
