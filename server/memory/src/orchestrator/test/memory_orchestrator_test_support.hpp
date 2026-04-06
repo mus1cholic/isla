@@ -3,6 +3,7 @@
 #include "isla/server/memory/memory_orchestrator.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
+#include "isla/server/memory/prompt_loader.hpp"
 #include "isla/server/memory/retrieved_memory_reranker.hpp"
 
 #include <chrono>
