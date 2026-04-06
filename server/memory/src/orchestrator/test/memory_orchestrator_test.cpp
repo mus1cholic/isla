@@ -1818,6 +1818,772 @@ TEST_F(MemoryOrchestratorTest, HandleUserQueryReturnsBothKgFactsAndSimilaritySea
     EXPECT_NE(state.retrieved_memory->find("User discussed their cat Mochi"), std::string::npos);
 }
 
+TEST_F(MemoryOrchestratorTest, HandleUserQueryPerformsTwoHopKgRetrieval) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_winding_order",
+            .user_id = "user_001",
+            .label = "Winding order",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_user_renderer",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_renderer"] = {
+        Relationship{
+            .relationship_id = "rel_renderer_winding",
+            .user_id = "user_001",
+            .from_entity_id = "entity_renderer",
+            .predicate = "requires",
+            .to_entity_id = "entity_winding_order",
+            .embedding = Embedding{ 0.9, 0.1 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_))
+        .WillOnce([&](const isla::server::EmbeddingRequest& request) -> absl::StatusOr<Embedding> {
+            if (!request.output_dimensionality.has_value()) {
+                return absl::InvalidArgumentError("query embedding request must set dimensions");
+            }
+            EXPECT_EQ(*request.output_dimensionality, kEmbeddingDimensions);
+            return Embedding{ 1.0, 0.0 };
+        });
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "What do I know about Airi?", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("Airi uses Renderer"), std::string::npos);
+    EXPECT_NE(state.retrieved_memory->find("Renderer requires Winding order"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryHop2DedupesWithHop1) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_bug",
+            .user_id = "user_001",
+            .label = "Winding order",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    const Relationship duplicated_relationship{
+        .relationship_id = "rel_shared",
+        .user_id = "user_001",
+        .from_entity_id = "entity_user",
+        .predicate = "debugged",
+        .to_entity_id = "entity_bug",
+        .embedding = Embedding{ 0.95, 0.05 },
+        .created_at = Ts("2026-03-08T14:00:00Z"),
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_user_renderer",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        duplicated_relationship,
+    };
+    store->relationships_by_entity["entity_renderer"] = { duplicated_relationship };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 1.0, 0.0 }));
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    const std::size_t fact_position = state.retrieved_memory->find("Airi debugged Winding order");
+    ASSERT_NE(fact_position, std::string::npos);
+    EXPECT_EQ(fact_position, state.retrieved_memory->rfind("Airi debugged Winding order"));
+}
+
+TEST_F(MemoryOrchestratorTest,
+       HandleUserQueryHop2BackfillsAfterFilteringDuplicateEdgesBeforeRanking) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_bug",
+            .user_id = "user_001",
+            .label = "Winding order",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_normals",
+            .user_id = "user_001",
+            .label = "Normals",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    const Relationship duplicated_relationship{
+        .relationship_id = "rel_shared",
+        .user_id = "user_001",
+        .from_entity_id = "entity_user",
+        .predicate = "debugged",
+        .to_entity_id = "entity_bug",
+        .embedding = Embedding{ 0.99, 0.01 },
+        .created_at = Ts("2026-03-08T14:00:00Z"),
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_user_renderer",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        duplicated_relationship,
+    };
+    store->relationships_by_entity["entity_renderer"] = {
+        duplicated_relationship,
+        Relationship{
+            .relationship_id = "rel_renderer_normals",
+            .user_id = "user_001",
+            .from_entity_id = "entity_renderer",
+            .predicate = "touches",
+            .to_entity_id = "entity_normals",
+            .embedding = Embedding{ 0.9, 0.1 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 1.0, 0.0 }));
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model",
+        kDefaultEpisodeSimilaritySearchTopK, kDefaultKgHop1TopK, 1);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("Airi debugged Winding order"), std::string::npos);
+    EXPECT_NE(state.retrieved_memory->find("Renderer touches Normals"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryHop2SkipsSeedEntities) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_mochi",
+            .user_id = "user_001",
+            .label = "Mochi",
+            .category = "pet",
+            .familiar_label_text = std::string("Mochi - Airi's cat"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_user_renderer",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_mochi"] = {
+        Relationship{
+            .relationship_id = "rel_mochi_renderer",
+            .user_id = "user_001",
+            .from_entity_id = "entity_mochi",
+            .predicate = "appears_in",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 0.9, 0.1 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_renderer"] = {
+        Relationship{
+            .relationship_id = "rel_renderer_user",
+            .user_id = "user_001",
+            .from_entity_id = "entity_renderer",
+            .predicate = "helps",
+            .to_entity_id = "entity_user",
+            .embedding = Embedding{ 0.8, 0.2 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 1.0, 0.0 }));
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "Tell me about Airi and Mochi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    EXPECT_EQ(std::count(store->list_relationships_requests.begin(),
+                         store->list_relationships_requests.end(), "entity_user"),
+              1);
+    EXPECT_EQ(std::count(store->list_relationships_requests.begin(),
+                         store->list_relationships_requests.end(), "entity_mochi"),
+              1);
+    EXPECT_EQ(std::count(store->list_relationships_requests.begin(),
+                         store->list_relationships_requests.end(), "entity_renderer"),
+              1);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryHop1RespectsTopKLimit) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_gameplay",
+            .user_id = "user_001",
+            .label = "Gameplay",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_best",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Relationship{
+            .relationship_id = "rel_filtered",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "explores",
+            .to_entity_id = "entity_gameplay",
+            .embedding = Embedding{ 0.0, 1.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 1.0, 0.0 }));
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model",
+        kDefaultEpisodeSimilaritySearchTopK, 1, kDefaultKgHop2TopK);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("Airi uses Renderer"), std::string::npos);
+    EXPECT_EQ(state.retrieved_memory->find("Airi explores Gameplay"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryHop2RespectsTopKLimit) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_winding_order",
+            .user_id = "user_001",
+            .label = "Winding order",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_normals",
+            .user_id = "user_001",
+            .label = "Normals",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_user_renderer",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_renderer"] = {
+        Relationship{
+            .relationship_id = "rel_best_hop2",
+            .user_id = "user_001",
+            .from_entity_id = "entity_renderer",
+            .predicate = "requires",
+            .to_entity_id = "entity_winding_order",
+            .embedding = Embedding{ 0.95, 0.05 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Relationship{
+            .relationship_id = "rel_filtered_hop2",
+            .user_id = "user_001",
+            .from_entity_id = "entity_renderer",
+            .predicate = "touches",
+            .to_entity_id = "entity_normals",
+            .embedding = Embedding{ 0.0, 1.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 1.0, 0.0 }));
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model",
+        kDefaultEpisodeSimilaritySearchTopK, kDefaultKgHop1TopK, 1);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("Renderer requires Winding order"), std::string::npos);
+    EXPECT_EQ(state.retrieved_memory->find("Renderer touches Normals"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryGracefullyHandlesRelationshipsWithoutEmbeddings) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_no_embedding",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = std::nullopt,
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 1.0, 0.0 }));
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("Airi uses Renderer"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryHop1TopKIsAppliedPerSeedEntity) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_mochi",
+            .user_id = "user_001",
+            .label = "Mochi",
+            .category = "pet",
+            .familiar_label_text = std::string("Mochi - Airi's cat"),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_gameplay",
+            .user_id = "user_001",
+            .label = "Gameplay",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_treats",
+            .user_id = "user_001",
+            .label = "Treats",
+            .category = "item",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_naps",
+            .user_id = "user_001",
+            .label = "Naps",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_user_best",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Relationship{
+            .relationship_id = "rel_user_filtered",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "explores",
+            .to_entity_id = "entity_gameplay",
+            .embedding = Embedding{ 0.0, 1.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_mochi"] = {
+        Relationship{
+            .relationship_id = "rel_mochi_best",
+            .user_id = "user_001",
+            .from_entity_id = "entity_mochi",
+            .predicate = "likes",
+            .to_entity_id = "entity_treats",
+            .embedding = Embedding{ 0.95, 0.05 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Relationship{
+            .relationship_id = "rel_mochi_filtered",
+            .user_id = "user_001",
+            .from_entity_id = "entity_mochi",
+            .predicate = "takes",
+            .to_entity_id = "entity_naps",
+            .embedding = Embedding{ 0.0, 1.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_)).WillOnce(Return(Embedding{ 1.0, 0.0 }));
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model",
+        kDefaultEpisodeSimilaritySearchTopK, 1, kDefaultKgHop2TopK);
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(GatewayUserQuery(
+        "srv_test", "turn_001", "Tell me about Airi and Mochi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    EXPECT_NE(state.retrieved_memory->find("Airi uses Renderer"), std::string::npos);
+    EXPECT_NE(state.retrieved_memory->find("Mochi likes Treats"), std::string::npos);
+    EXPECT_EQ(state.retrieved_memory->find("Airi explores Gameplay"), std::string::npos);
+    EXPECT_EQ(state.retrieved_memory->find("Mochi takes Naps"), std::string::npos);
+}
+
+TEST_F(MemoryOrchestratorTest, HandleUserQueryFallsBackToSingleHopWhenQueryEmbeddingFails) {
+    auto store = std::make_shared<RecordingMemoryStore>();
+    store->entities = {
+        Entity{
+            .entity_id = "entity_user",
+            .user_id = "user_001",
+            .label = "Airi",
+            .category = "person",
+            .active_model_text = std::string("Airi, the user."),
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_renderer",
+            .user_id = "user_001",
+            .label = "Renderer",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_bug",
+            .user_id = "user_001",
+            .label = "Winding order",
+            .category = "concept",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Entity{
+            .entity_id = "entity_other",
+            .user_id = "user_001",
+            .label = "Gameplay",
+            .category = "project",
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+            .updated_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_user"] = {
+        Relationship{
+            .relationship_id = "rel_high_weight",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "uses",
+            .to_entity_id = "entity_renderer",
+            .weight = 10.0,
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+        Relationship{
+            .relationship_id = "rel_low_weight",
+            .user_id = "user_001",
+            .from_entity_id = "entity_user",
+            .predicate = "explores",
+            .to_entity_id = "entity_other",
+            .weight = 5.0,
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+    store->relationships_by_entity["entity_renderer"] = {
+        Relationship{
+            .relationship_id = "rel_hop2_only",
+            .user_id = "user_001",
+            .from_entity_id = "entity_renderer",
+            .predicate = "requires",
+            .to_entity_id = "entity_bug",
+            .weight = 50.0,
+            .embedding = Embedding{ 1.0, 0.0 },
+            .created_at = Ts("2026-03-08T14:00:00Z"),
+        },
+    };
+
+    auto compactor = std::make_shared<RecordingMidTermCompactor>();
+    auto embedding_client = std::make_shared<isla::server::test::MockEmbeddingClient>();
+    EXPECT_CALL(*embedding_client, Embed(_))
+        .WillOnce(Return(absl::InternalError("embedding service unavailable")));
+
+    absl::StatusOr<MemoryOrchestrator> handler = MakeHandlerWithCompactor(
+        compactor, store, nullptr, nullptr, kImmediateMidTermFlushDeciderIntervalUserTurns, nullptr,
+        kDefaultRetrievedMemoryRerankerMinScore, embedding_client, "test-embedding-model");
+    ASSERT_TRUE(handler.ok()) << handler.status();
+
+    ASSERT_TRUE(handler->BeginSession(Ts("2026-03-08T13:59:59Z")).ok());
+    const absl::StatusOr<UserQueryMemoryResult> result = handler->HandleUserQuery(
+        GatewayUserQuery("srv_test", "turn_001", "Tell me about Airi", Ts("2026-03-08T14:00:00Z")));
+    ASSERT_TRUE(result.ok()) << result.status();
+
+    const WorkingMemoryState& state = handler->memory().snapshot();
+    ASSERT_TRUE(state.retrieved_memory.has_value());
+    const std::size_t uses_position =
+        state.retrieved_memory->find("Airi uses Renderer (weight: 10)");
+    const std::size_t explores_position =
+        state.retrieved_memory->find("Airi explores Gameplay (weight: 5)");
+    ASSERT_NE(uses_position, std::string::npos);
+    ASSERT_NE(explores_position, std::string::npos);
+    EXPECT_LT(uses_position, explores_position);
+    EXPECT_EQ(state.retrieved_memory->find("Renderer requires Winding order (weight: 50)"),
+              std::string::npos);
+    EXPECT_EQ(std::count(store->list_relationships_requests.begin(),
+                         store->list_relationships_requests.end(), "entity_renderer"),
+              0);
+}
+
 TEST_F(MemoryOrchestratorTest, HandleUserQueryGracefullySkipsSimilaritySearchWhenEmbeddingFails) {
     auto store = std::make_shared<RecordingMemoryStore>();
     store->entities = {

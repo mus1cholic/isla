@@ -1,20 +1,18 @@
 ﻿#pragma once
 
-#include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/memory_orchestrator.hpp"
 #include "isla/server/memory/mid_term_compactor.hpp"
 #include "isla/server/memory/mid_term_flush_decider.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
 #include "isla/server/memory/retrieved_memory_reranker.hpp"
 
-#include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <functional>
 #include <future>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -207,7 +205,15 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
         ON_CALL(*this, ListRelationshipsForEntity(_))
             .WillByDefault(
                 [this](std::string_view entity_id) -> absl::StatusOr<std::vector<Relationship>> {
-                    static_cast<void>(entity_id);
+                    list_relationships_requests.push_back(std::string(entity_id));
+                    if (!list_relationships_status.ok()) {
+                        return list_relationships_status;
+                    }
+                    const auto relationships_it =
+                        relationships_by_entity.find(std::string(entity_id));
+                    if (relationships_it != relationships_by_entity.end()) {
+                        return relationships_it->second;
+                    }
                     return relationships;
                 });
         ON_CALL(*this, ListLongTermEpisodesForEntity(_))
@@ -269,6 +275,8 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     std::vector<LongTermEpisodeEntityLink> long_term_episode_entity_links;
     std::vector<Entity> entities;
     std::vector<Relationship> relationships;
+    std::unordered_map<std::string, std::vector<Relationship>> relationships_by_entity;
+    std::vector<std::string> list_relationships_requests;
     std::vector<LongTermEpisode> long_term_episodes;
     absl::Status upsert_session_status = absl::OkStatus();
     absl::Status upsert_user_working_memory_status = absl::OkStatus();
@@ -283,6 +291,7 @@ class RecordingMemoryStore final : public NiceMock<test::MockMemoryStore> {
     absl::Status upsert_long_term_episode_status = absl::OkStatus();
     absl::Status link_long_term_episode_entities_status = absl::OkStatus();
     absl::Status list_entities_status = absl::OkStatus();
+    absl::Status list_relationships_status = absl::OkStatus();
     std::vector<LongTermEpisode> search_long_term_episodes_results;
     absl::Status search_long_term_episodes_status = absl::OkStatus();
 };
@@ -502,7 +511,10 @@ class MemoryOrchestratorTest : public ::testing::Test {
         const RetrievedMemoryRerankerPtr& retrieved_memory_reranker = nullptr,
         double retrieved_memory_reranker_min_score = kDefaultRetrievedMemoryRerankerMinScore,
         std::shared_ptr<const isla::server::EmbeddingClient> retrieval_embedding_client = nullptr,
-        std::string retrieval_embedding_model = {}) {
+        std::string retrieval_embedding_model = {},
+        int episode_similarity_search_top_k = kDefaultEpisodeSimilaritySearchTopK,
+        int kg_hop_1_top_k_per_entity = kDefaultKgHop1TopK,
+        int kg_hop_2_top_k_per_entity = kDefaultKgHop2TopK) {
         absl::StatusOr<WorkingMemory> memory = WorkingMemory::Create(WorkingMemoryInit{
             .system_prompt = "You are Isla.",
             .user_id = "user_001",
@@ -514,7 +526,8 @@ class MemoryOrchestratorTest : public ::testing::Test {
             "srv_test", std::move(*memory), std::move(store), decider, compactor,
             semantic_extractor, mid_term_flush_decider_interval_user_turns,
             retrieved_memory_reranker, retrieved_memory_reranker_min_score,
-            std::move(retrieval_embedding_client), std::move(retrieval_embedding_model));
+            std::move(retrieval_embedding_client), std::move(retrieval_embedding_model),
+            episode_similarity_search_top_k, kg_hop_1_top_k_per_entity, kg_hop_2_top_k_per_entity);
     }
 
     static absl::StatusOr<std::size_t> WaitForDrain(MemoryOrchestrator& orchestrator,

@@ -139,6 +139,17 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "retrieval_ranking",
+    srcs = ["shared/retrieval_ranking.cpp"],
+    hdrs = ["shared/retrieval_ranking.hpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//server/memory/include/isla/server/memory:memory_headers",
+        "@abseil-cpp//absl/log:log",
+    ],
+)
+
 cc_test(
     name = "llm_json_utils_test",
     srcs = ["shared/test/llm_json_utils_test.cpp"],
@@ -235,6 +246,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":identifier_utils",
+        ":retrieval_ranking",
         ":working_memory",
         ":memory_store",
         ":sleep_cycle_extraction_builder",
@@ -342,6 +354,15 @@ cc_test(
         ":working_memory",
         "@googletest//:gtest_main",
         "@nlohmann_json_upstream//:nlohmann_json",
+    ],
+)
+
+cc_test(
+    name = "retrieval_ranking_test",
+    srcs = ["shared/test/retrieval_ranking_test.cpp"],
+    deps = [
+        ":retrieval_ranking",
+        "@googletest//:gtest_main",
     ],
 )
 
