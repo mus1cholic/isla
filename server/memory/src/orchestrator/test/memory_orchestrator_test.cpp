@@ -1,4 +1,6 @@
-﻿#include "memory_orchestrator_test_support.hpp"
+﻿#include <algorithm>
+
+#include "memory_orchestrator_test_support.hpp"
 
 #include "isla/server/ai_gateway_telemetry.hpp"
 
@@ -20,7 +22,7 @@ class RecordingTelemetrySink final : public isla::server::ai_gateway::TelemetryS
         static_cast<void>(context);
         static_cast<void>(started_at);
         static_cast<void>(completed_at);
-        phases_.push_back(std::string(phase_name));
+        phases_.emplace_back(phase_name);
     }
 
     void OnMeasurement(const isla::server::ai_gateway::TurnTelemetryContext& context,
