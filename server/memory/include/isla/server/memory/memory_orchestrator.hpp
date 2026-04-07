@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <future>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,6 +20,9 @@
 
 namespace isla::server {
 class EmbeddingClient;
+namespace ai_gateway {
+struct TurnTelemetryContext;
+} // namespace ai_gateway
 } // namespace isla::server
 
 namespace isla::server::memory {
@@ -35,29 +39,37 @@ struct GatewayTurnText {
     std::string turn_id;
     std::string text;
     Timestamp create_time;
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+        nullptr;
 };
 
 struct GatewayUserQuery : GatewayTurnText {
     GatewayUserQuery() = default;
     GatewayUserQuery(std::string session_id_in, std::string turn_id_in, std::string text_in,
-                     Timestamp create_time_in)
+                     Timestamp create_time_in,
+                     std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext>
+                         telemetry_context_in = nullptr)
         : GatewayTurnText{
               .session_id = std::move(session_id_in),
               .turn_id = std::move(turn_id_in),
               .text = std::move(text_in),
               .create_time = create_time_in,
+              .telemetry_context = std::move(telemetry_context_in),
           } {}
 };
 
 struct GatewayAssistantReply : GatewayTurnText {
     GatewayAssistantReply() = default;
     GatewayAssistantReply(std::string session_id_in, std::string turn_id_in, std::string text_in,
-                          Timestamp create_time_in)
+                          Timestamp create_time_in,
+                          std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext>
+                              telemetry_context_in = nullptr)
         : GatewayTurnText{
               .session_id = std::move(session_id_in),
               .turn_id = std::move(turn_id_in),
               .text = std::move(text_in),
               .create_time = create_time_in,
+              .telemetry_context = std::move(telemetry_context_in),
           } {}
 };
 
@@ -211,17 +223,20 @@ class MemoryOrchestrator {
     PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFlush& flush);
 
     // Shared turn-ingest path used by both user and assistant messages.
-    [[nodiscard]] absl::Status HandleConversationMessage(std::string_view session_id,
-                                                         std::string_view turn_id,
-                                                         std::string_view text,
-                                                         Timestamp create_time, MessageRole role);
+    [[nodiscard]] absl::Status HandleConversationMessage(
+        std::string_view session_id, std::string_view turn_id, std::string_view text,
+        Timestamp create_time, MessageRole role,
+        std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+            nullptr);
 
     // Freezes the current tail into its own conversation item before another append when a pending
     // flush still targets that tail item.
     void PrepareConversationForAppend();
 
     // Post-user hook for retrieval and other query-time memory enrichment.
-    [[nodiscard]] absl::Status AfterUserQueryAppended(const Message& user_message);
+    [[nodiscard]] absl::Status AfterUserQueryAppended(
+        const Message& user_message,
+        std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context);
 
     // Post-assistant hook for queueing mid-term analysis or direct compaction after a full
     // user/assistant exchange exists.
@@ -234,8 +249,9 @@ class MemoryOrchestrator {
     // Retrieves long-term context (relationships and episodes) for query-selected seed entities.
     // When a reranker is configured, candidates are scored against the live user query before
     // prompt injection.
-    [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>>
-    RetrieveRelevantMemories(const Message& user_message);
+    [[nodiscard]] absl::StatusOr<std::optional<RetrievedMemory>> RetrieveRelevantMemories(
+        const Message& user_message,
+        std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context);
 
     // Returns whether the decider cadence threshold has been reached for the live session.
     [[nodiscard]] bool ShouldQueueMidTermAnalysisAfterAssistantReply() const;

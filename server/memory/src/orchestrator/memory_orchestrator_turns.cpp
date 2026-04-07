@@ -8,6 +8,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/memory/conversation.hpp"
 
 namespace isla::server::memory {
@@ -21,10 +22,12 @@ absl::Status invalid_argument(std::string_view message) {
 
 } // namespace
 
-absl::Status MemoryOrchestrator::AfterUserQueryAppended(const Message& user_message) {
+absl::Status MemoryOrchestrator::AfterUserQueryAppended(
+    const Message& user_message,
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context) {
     NoteUserTurnAppended();
     absl::StatusOr<std::optional<RetrievedMemory>> retrieved_memory =
-        RetrieveRelevantMemories(user_message);
+        RetrieveRelevantMemories(user_message, std::move(telemetry_context));
     if (!retrieved_memory.ok()) {
         return retrieved_memory.status();
     }
@@ -100,11 +103,10 @@ absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assi
     return absl::OkStatus();
 }
 
-absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view session_id,
-                                                           std::string_view turn_id,
-                                                           std::string_view text,
-                                                           Timestamp create_time,
-                                                           MessageRole role) {
+absl::Status MemoryOrchestrator::HandleConversationMessage(
+    std::string_view session_id, std::string_view turn_id, std::string_view text,
+    Timestamp create_time, MessageRole role,
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context) {
     if (absl::Status validation_status =
             ValidateTurnText(session_id, turn_id, role == MessageRole::User ? "user" : "assistant");
         !validation_status.ok()) {
@@ -127,7 +129,9 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
             !persistence_status.ok()) {
             return persistence_status;
         }
-        if (absl::Status post_status = AfterUserQueryAppended(user_message); !post_status.ok()) {
+        if (absl::Status post_status =
+                AfterUserQueryAppended(user_message, std::move(telemetry_context));
+            !post_status.ok()) {
             return post_status;
         }
     } else {
@@ -158,7 +162,8 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(std::string_view sess
 absl::StatusOr<UserQueryMemoryResult>
 MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
     if (absl::Status status = HandleConversationMessage(query.session_id, query.turn_id, query.text,
-                                                        query.create_time, MessageRole::User);
+                                                        query.create_time, MessageRole::User,
+                                                        query.telemetry_context);
         !status.ok()) {
         return status;
     }
@@ -177,7 +182,7 @@ MemoryOrchestrator::HandleUserQuery(const GatewayUserQuery& query) {
 
 absl::Status MemoryOrchestrator::HandleAssistantReply(const GatewayAssistantReply& reply) {
     return HandleConversationMessage(reply.session_id, reply.turn_id, reply.text, reply.create_time,
-                                     MessageRole::Assistant);
+                                     MessageRole::Assistant, reply.telemetry_context);
 }
 
 absl::StatusOr<std::string>

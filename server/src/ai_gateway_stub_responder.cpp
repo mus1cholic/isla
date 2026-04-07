@@ -662,7 +662,8 @@ absl::Status GatewayStubResponder::AppendSessionUserMessage(std::string_view ses
             session_memory->orchestrator.HandleUserQuery(isla::server::memory::GatewayUserQuery(
                 std::string(session_id), std::string(turn_id), std::string(text),
                 ResolveConversationMessageTime(session_id, turn_id,
-                                               isla::server::memory::MessageRole::User)));
+                                               isla::server::memory::MessageRole::User),
+                nullptr));
         if (!result.ok()) {
             return result.status();
         }
@@ -1686,7 +1687,8 @@ GatewayStubResponder::HandleAcceptedTurnMemory(const TurnAcceptedEvent& event) {
             session_memory->orchestrator.HandleUserQuery(isla::server::memory::GatewayUserQuery(
                 event.session_id, event.turn_id, event.text,
                 ResolveConversationMessageTime(event.session_id, event.turn_id,
-                                               isla::server::memory::MessageRole::User)));
+                                               isla::server::memory::MessageRole::User),
+                event.telemetry_context));
         if (result.ok() && config_.on_user_query_memory_ready) {
             config_.on_user_query_memory_ready(event.session_id, *result);
         }

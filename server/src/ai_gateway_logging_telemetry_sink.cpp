@@ -67,6 +67,14 @@ class LoggingTelemetrySink final : public TelemetrySink {
                                                       : std::string("n/a"));
     }
 
+    void OnMeasurement(const TurnTelemetryContext& context, std::string_view name,
+                       double value) const override {
+        LOG(INFO) << "AI gateway telemetry measurement session="
+                  << SanitizeForLog(context.session_id)
+                  << " turn_id=" << SanitizeForLog(context.turn_id)
+                  << " name=" << SanitizeForLog(name) << " value=" << value;
+    }
+
     void OnTurnFinished(const TurnTelemetryContext& context, std::string_view outcome,
                         TurnTelemetryContext::Clock::time_point finished_at) const override {
         const std::optional<std::int64_t> total_duration_ms =

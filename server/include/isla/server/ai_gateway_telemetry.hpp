@@ -14,6 +14,8 @@ namespace telemetry {
 
 inline constexpr std::string_view kPhaseGatewayAccept = "gateway.accept";
 inline constexpr std::string_view kPhaseMemoryUserQuery = "memory.user_query";
+inline constexpr std::string_view kPhaseMemoryRetrievalEmbedQuery = "memory.retrieval.embed_query";
+inline constexpr std::string_view kPhaseMemoryRetrievalRerank = "memory.retrieval.rerank";
 inline constexpr std::string_view kPhaseQueueWait = "queue.wait";
 inline constexpr std::string_view kPhasePlanCreate = "plan.create";
 inline constexpr std::string_view kPhaseExecutorTotal = "executor.total";
@@ -65,6 +67,31 @@ inline constexpr std::string_view kOutcomeSucceeded = "succeeded";
 inline constexpr std::string_view kOutcomeFailed = "failed";
 inline constexpr std::string_view kOutcomeCancelled = "cancelled";
 
+inline constexpr std::string_view kMeasurementMemoryRetrievalSeedEntityCount =
+    "memory.retrieval.seed_entity_count";
+inline constexpr std::string_view kMeasurementMemoryRetrievalKgHop1EntitiesVisited =
+    "memory.retrieval.kg.hop1.entities_visited";
+inline constexpr std::string_view kMeasurementMemoryRetrievalKgHop2EntitiesVisited =
+    "memory.retrieval.kg.hop2.entities_visited";
+inline constexpr std::string_view kMeasurementMemoryRetrievalKgHop1EdgesSelected =
+    "memory.retrieval.kg.hop1.edges_selected";
+inline constexpr std::string_view kMeasurementMemoryRetrievalKgHop2EdgesSelected =
+    "memory.retrieval.kg.hop2.edges_selected";
+inline constexpr std::string_view kMeasurementMemoryRetrievalEpisodicCandidatesRetrieved =
+    "memory.retrieval.episodic_candidates_retrieved";
+inline constexpr std::string_view kMeasurementMemoryRetrievalTotalCandidatesBeforeRerank =
+    "memory.retrieval.total_candidates_before_rerank";
+inline constexpr std::string_view kMeasurementMemoryRetrievalTotalCandidatesAfterRerank =
+    "memory.retrieval.total_candidates_after_rerank";
+inline constexpr std::string_view kMeasurementMemoryRetrievalInjectedKgCount =
+    "memory.retrieval.injected.kg_count";
+inline constexpr std::string_view kMeasurementMemoryRetrievalInjectedEpisodeCount =
+    "memory.retrieval.injected.episode_count";
+inline constexpr std::string_view kMeasurementMemoryRetrievalKgFallbackSingleHopUsed =
+    "memory.retrieval.kg_fallback_single_hop_used";
+inline constexpr std::string_view kMeasurementMemoryRetrievalRelationshipEmbeddingMalformedCount =
+    "memory.retrieval.relationship_embedding_malformed_count";
+
 } // namespace telemetry
 
 struct TurnTelemetryContext {
@@ -98,6 +125,13 @@ class TelemetrySink {
         static_cast<void>(phase_name);
         static_cast<void>(started_at);
         static_cast<void>(completed_at);
+    }
+
+    virtual void OnMeasurement(const TurnTelemetryContext& context, std::string_view name,
+                               double value) const {
+        static_cast<void>(context);
+        static_cast<void>(name);
+        static_cast<void>(value);
     }
 
     virtual void OnTurnFinished(const TurnTelemetryContext& context, std::string_view outcome,
@@ -152,6 +186,18 @@ inline void RecordTelemetryPhase(const std::shared_ptr<const TurnTelemetryContex
     }
     try {
         context->sink->OnPhase(*context, phase_name, started_at, completed_at);
+    } catch (...) {
+        internal::SwallowTelemetryException();
+    }
+}
+
+inline void RecordTelemetryMeasurement(const std::shared_ptr<const TurnTelemetryContext>& context,
+                                       std::string_view name, double value) {
+    if (context == nullptr || context->sink == nullptr) {
+        return;
+    }
+    try {
+        context->sink->OnMeasurement(*context, name, value);
     } catch (...) {
         internal::SwallowTelemetryException();
     }
