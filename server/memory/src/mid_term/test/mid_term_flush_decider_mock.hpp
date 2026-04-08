@@ -8,7 +8,10 @@ namespace isla::server::memory::test {
 
 class MockMidTermFlushDecider : public MidTermFlushDecider {
   public:
-    MOCK_METHOD((absl::StatusOr<MidTermFlushDecision>), Decide, (const Conversation& conversation),
+    MOCK_METHOD((absl::StatusOr<MidTermFlushDecision>), Decide,
+                (const Conversation& conversation,
+                 std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext>
+                     telemetry_context),
                 (override));
 };
 

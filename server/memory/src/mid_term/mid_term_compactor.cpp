@@ -14,6 +14,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/embedding_client.hpp"
 #include "isla/server/llm_client.hpp"
 #include "isla/server/memory/llm_json_utils.hpp"
@@ -200,6 +201,9 @@ class LlmMidTermCompactor final : public MidTermCompactor {
 
     [[nodiscard]] absl::StatusOr<CompactedMidTermEpisode>
     Compact(const MidTermCompactionRequest& request) override {
+        isla::server::ai_gateway::ScopedTelemetryPhase compact_phase(
+            request.telemetry_context,
+            isla::server::ai_gateway::telemetry::kPhaseMemoryMidTermCompact);
         VLOG(1) << "LlmMidTermCompactor compacting session_id="
                 << SanitizeForLog(request.session_id)
                 << " conversation_item_index=" << request.flush_candidate.conversation_item_index
@@ -216,6 +220,7 @@ class LlmMidTermCompactor final : public MidTermCompactor {
                 .system_prompt = system_prompt_,
                 .user_text = user_text,
                 .reasoning_effort = reasoning_effort_,
+                .telemetry_context = request.telemetry_context,
             },
             [&output_text](const LlmEvent& event) -> absl::Status {
                 return std::visit(
@@ -257,14 +262,14 @@ class LlmMidTermCompactor final : public MidTermCompactor {
         }
 
         if (embedding_client_ != nullptr) {
-            // TODO(memory): Thread compaction telemetry into embedding requests once
-            // MidTermCompactionRequest carries a telemetry context so flush-time
-            // observability stays consistent across LLM and embedding calls.
+            isla::server::ai_gateway::ScopedTelemetryPhase embed_summary_phase(
+                request.telemetry_context,
+                isla::server::ai_gateway::telemetry::kPhaseMemoryMidTermEmbedSummary);
             absl::StatusOr<Embedding> embedding = embedding_client_->Embed(EmbeddingRequest{
                 .model = embedding_model_,
                 .text = compacted->tier2_summary,
                 .output_dimensionality = kEmbeddingDimensions,
-                .telemetry_context = nullptr,
+                .telemetry_context = request.telemetry_context,
             });
             if (!embedding.ok()) {
                 LOG(WARNING) << "LlmMidTermCompactor embedding call failed session_id="

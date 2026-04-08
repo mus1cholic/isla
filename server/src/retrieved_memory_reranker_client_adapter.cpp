@@ -24,7 +24,9 @@ class ClientBackedRetrievedMemoryReranker final
 
     [[nodiscard]] absl::StatusOr<std::vector<double>>
     Score(std::string_view query,
-          const std::vector<isla::server::memory::RetrievedMemoryCandidate>& candidates) override {
+          const std::vector<isla::server::memory::RetrievedMemoryCandidate>& candidates,
+          std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+              nullptr) override {
         std::vector<std::string> candidate_texts;
         candidate_texts.reserve(candidates.size());
         for (const isla::server::memory::RetrievedMemoryCandidate& candidate : candidates) {
@@ -34,7 +36,7 @@ class ClientBackedRetrievedMemoryReranker final
             .model = model_,
             .query = std::string(query),
             .candidates = std::move(candidate_texts),
-            .telemetry_context = nullptr,
+            .telemetry_context = std::move(telemetry_context),
         });
     }
 

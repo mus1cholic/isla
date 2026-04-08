@@ -12,6 +12,9 @@
 
 namespace isla::server {
 class EmbeddingClient;
+namespace ai_gateway {
+struct TurnTelemetryContext;
+} // namespace ai_gateway
 } // namespace isla::server
 
 namespace isla::server::memory {
@@ -19,6 +22,8 @@ namespace isla::server::memory {
 struct MidTermCompactionRequest {
     std::string session_id;
     OngoingEpisodeFlushCandidate flush_candidate;
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+        nullptr;
 };
 
 struct CompactedMidTermEpisode {

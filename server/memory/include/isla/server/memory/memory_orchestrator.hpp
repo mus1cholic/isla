@@ -240,7 +240,9 @@ class MemoryOrchestrator {
 
     // Post-assistant hook for queueing mid-term analysis or direct compaction after a full
     // user/assistant exchange exists.
-    [[nodiscard]] absl::Status AfterAssistantReplyAppended(const Message& assistant_message);
+    [[nodiscard]] absl::Status AfterAssistantReplyAppended(
+        const Message& assistant_message,
+        std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context);
 
     // Loads entities from long-term storage and populates the persistent-memory cache (active
     // models and familiar labels) so the system prompt reflects prior knowledge from session start.
@@ -263,13 +265,17 @@ class MemoryOrchestrator {
 
     // Runs the decider against a snapshot, and if it chooses completed segments, chains
     // compaction work for those captured conversation ranges off-thread.
-    [[nodiscard]] absl::Status QueueMidTermAnalysis(const Conversation& conversation_snapshot);
+    [[nodiscard]] absl::Status QueueMidTermAnalysis(
+        const Conversation& conversation_snapshot,
+        std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context);
 
     // Queues compaction for an already chosen flush candidate. The captured snapshot is owned by
     // the async task so later live conversation edits do not affect the compactor input.
-    [[nodiscard]] absl::Status
-    QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate,
-                      std::optional<std::size_t> split_at_message_index = std::nullopt);
+    [[nodiscard]] absl::Status QueueMidTermFlush(
+        const OngoingEpisodeFlushCandidate& flush_candidate,
+        std::optional<std::size_t> split_at_message_index = std::nullopt,
+        std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+            nullptr);
 
     // Compacts and flushes the live tail synchronously for the sleep-cycle boundary when any
     // unflushed ongoing episode remains after pending async work has drained.
@@ -305,10 +311,11 @@ class MemoryOrchestrator {
         bool freeze_tail_before_append = false;
     };
 
-    [[nodiscard]] static absl::StatusOr<CompletedFlushBuildInput>
-    CompactFlushCandidate(const MidTermCompactorPtr& compactor, std::string_view session_id,
-                          const OngoingEpisodeFlushCandidate& flush_candidate,
-                          std::string_view failure_context);
+    [[nodiscard]] static absl::StatusOr<CompletedFlushBuildInput> CompactFlushCandidate(
+        const MidTermCompactorPtr& compactor, std::string_view session_id,
+        const OngoingEpisodeFlushCandidate& flush_candidate, std::string_view failure_context,
+        std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+            nullptr);
 
     [[nodiscard]] CompletedOngoingEpisodeFlush
     BuildCompletedEpisodeFlush(std::size_t conversation_item_index,

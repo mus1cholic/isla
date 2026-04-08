@@ -35,7 +35,9 @@ absl::Status MemoryOrchestrator::AfterUserQueryAppended(
     return absl::OkStatus();
 }
 
-absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assistant_message) {
+absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(
+    const Message& assistant_message,
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context) {
     if (mid_term_compactor_ == nullptr) {
         return absl::OkStatus();
     }
@@ -65,7 +67,8 @@ absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assi
                     << " pending_count=" << pending_mid_term_flushes_.size();
             return absl::OkStatus();
         }
-        if (absl::Status status = QueueMidTermAnalysis(conversation); !status.ok()) {
+        if (absl::Status status = QueueMidTermAnalysis(conversation, std::move(telemetry_context));
+            !status.ok()) {
             return status;
         }
         NoteMidTermAnalysisQueued();
@@ -97,7 +100,9 @@ absl::Status MemoryOrchestrator::AfterAssistantReplyAppended(const Message& assi
     if (!candidate.ok()) {
         return candidate.status();
     }
-    if (absl::Status queue_status = QueueMidTermFlush(*candidate); !queue_status.ok()) {
+    if (absl::Status queue_status =
+            QueueMidTermFlush(*candidate, std::nullopt, std::move(telemetry_context));
+        !queue_status.ok()) {
         return queue_status;
     }
     return absl::OkStatus();
@@ -143,7 +148,8 @@ absl::Status MemoryOrchestrator::HandleConversationMessage(
             !persistence_status.ok()) {
             return persistence_status;
         }
-        if (absl::Status post_status = AfterAssistantReplyAppended(assistant_message);
+        if (absl::Status post_status =
+                AfterAssistantReplyAppended(assistant_message, std::move(telemetry_context));
             !post_status.ok()) {
             return post_status;
         }

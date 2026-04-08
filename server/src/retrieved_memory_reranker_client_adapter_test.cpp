@@ -5,7 +5,9 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "reranker_client_mock.hpp"
+#include "server/src/ai_gateway_telemetry_test_utils.hpp"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -48,14 +50,18 @@ TEST(RetrievedMemoryRerankerClientAdapterTest, FactoryPropagatesClientValidation
 
 TEST(RetrievedMemoryRerankerClientAdapterTest, ScoreDelegatesToClientWithCandidateTexts) {
     auto client = std::make_shared<test::MockRerankerClient>();
+    auto telemetry_sink = std::make_shared<ai_gateway::test::RecordingTelemetrySink>();
+    const auto telemetry_context =
+        ai_gateway::MakeTurnTelemetryContext("srv_test", "turn_rerank", telemetry_sink);
     EXPECT_CALL(*client, Validate()).WillOnce(Return(absl::OkStatus()));
     EXPECT_CALL(*client, Rerank(_))
-        .WillOnce([](const RerankRequest& request) -> absl::StatusOr<std::vector<double>> {
+        .WillOnce([telemetry_context](
+                      const RerankRequest& request) -> absl::StatusOr<std::vector<double>> {
             EXPECT_EQ(request.model, "bge-reranker-v2-m3");
             EXPECT_EQ(request.query, "Tell me about Mochi");
             EXPECT_THAT(request.candidates, ElementsAre("Airi owns Mochi (weight: 10)",
                                                         "User discussed their cat Mochi"));
-            EXPECT_EQ(request.telemetry_context, nullptr);
+            EXPECT_EQ(request.telemetry_context, telemetry_context);
             return std::vector<double>{ 0.8, 0.6 };
         });
 
@@ -76,7 +82,8 @@ TEST(RetrievedMemoryRerankerClientAdapterTest, ScoreDelegatesToClientWithCandida
                 .source_id = "lte_001",
                 .candidate_text = "User discussed their cat Mochi",
             },
-        });
+        },
+        telemetry_context);
 
     ASSERT_TRUE(scores.ok()) << scores.status();
     EXPECT_THAT(*scores, ElementsAre(0.8, 0.6));

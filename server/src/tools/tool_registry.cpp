@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_telemetry.hpp"
 
 namespace isla::server::tools {
 namespace {
@@ -57,7 +58,10 @@ absl::StatusOr<ToolResult> ToolRegistry::Execute(const ToolExecutionContext& con
         return absl::NotFoundError("tool registry could not find the requested tool");
     }
 
+    isla::server::ai_gateway::ScopedTelemetryPhase tool_execute_phase(
+        context.telemetry_context, isla::server::ai_gateway::telemetry::kPhaseToolExecute);
     absl::StatusOr<ToolResult> result = tools_[it->second]->Execute(context, call);
+    tool_execute_phase.Finish();
     if (!result.ok()) {
         return result.status();
     }

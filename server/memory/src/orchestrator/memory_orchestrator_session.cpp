@@ -698,8 +698,8 @@ absl::StatusOr<std::optional<RetrievedMemory>> MemoryOrchestrator::RetrieveRelev
         }
 
         const auto rerank_started_at = isla::server::ai_gateway::TurnTelemetryContext::Clock::now();
-        absl::StatusOr<std::vector<double>> scores =
-            retrieved_memory_reranker_->Score(user_message.content, reranker_candidates);
+        absl::StatusOr<std::vector<double>> scores = retrieved_memory_reranker_->Score(
+            user_message.content, reranker_candidates, telemetry_context);
         isla::server::ai_gateway::RecordTelemetryPhase(
             telemetry_context, isla::server::ai_gateway::telemetry::kPhaseMemoryRetrievalRerank,
             rerank_started_at, isla::server::ai_gateway::TurnTelemetryContext::Clock::now());

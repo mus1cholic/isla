@@ -7,6 +7,10 @@
 
 #include "absl/status/statusor.h"
 
+namespace isla::server::ai_gateway {
+struct TurnTelemetryContext;
+} // namespace isla::server::ai_gateway
+
 namespace isla::server::memory {
 
 enum class RetrievedMemoryCandidateKind {
@@ -25,7 +29,9 @@ class RetrievedMemoryReranker {
     virtual ~RetrievedMemoryReranker() = default;
 
     [[nodiscard]] virtual absl::StatusOr<std::vector<double>>
-    Score(std::string_view query, const std::vector<RetrievedMemoryCandidate>& candidates) = 0;
+    Score(std::string_view query, const std::vector<RetrievedMemoryCandidate>& candidates,
+          std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+              nullptr) = 0;
 };
 
 using RetrievedMemoryRerankerPtr = std::shared_ptr<RetrievedMemoryReranker>;

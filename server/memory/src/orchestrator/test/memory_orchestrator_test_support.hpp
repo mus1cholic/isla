@@ -356,15 +356,19 @@ class RecordingMidTermFlushDecider final : public NiceMock<test::MockMidTermFlus
     explicit RecordingMidTermFlushDecider(
         absl::StatusOr<MidTermFlushDecision> decision = MidTermFlushDecision{})
         : decision_(std::move(decision)) {
-        ON_CALL(*this, Decide(_)).WillByDefault([this](const Conversation& conversation) {
-            absl::StatusOr<MidTermFlushDecision> decision = MidTermFlushDecision{};
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                requests_.push_back(conversation);
-                decision = decision_;
-            }
-            return decision;
-        });
+        ON_CALL(*this, Decide(_, _))
+            .WillByDefault([this](const Conversation& conversation,
+                                  std::shared_ptr<const isla::server::ai_gateway::
+                                                      TurnTelemetryContext> telemetry_context) {
+                static_cast<void>(telemetry_context);
+                absl::StatusOr<MidTermFlushDecision> decision = MidTermFlushDecision{};
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    requests_.push_back(conversation);
+                    decision = decision_;
+                }
+                return decision;
+            });
     }
 
     [[nodiscard]] bool WaitForRequestCount(std::size_t expected_count) const {
@@ -442,7 +446,10 @@ class RecordingRetrievedMemoryReranker final : public RetrievedMemoryReranker {
 
     [[nodiscard]] absl::StatusOr<std::vector<double>>
     Score(std::string_view query,
-          const std::vector<RetrievedMemoryCandidate>& candidates) override {
+          const std::vector<RetrievedMemoryCandidate>& candidates,
+          std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+              nullptr) override {
+        static_cast<void>(telemetry_context);
         queries_.push_back(std::string(query));
         requests_.push_back(candidates);
         if (score_fn_) {
