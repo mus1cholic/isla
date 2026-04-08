@@ -13,6 +13,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/llm_client.hpp"
 #include "isla/server/memory/conversation.hpp"
 #include "isla/server/memory/llm_json_utils.hpp"
@@ -237,7 +238,11 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
           system_prompt_(std::move(system_prompt)), reasoning_effort_(reasoning_effort) {}
 
     [[nodiscard]] absl::StatusOr<MidTermFlushDecision>
-    Decide(const Conversation& conversation) override {
+    Decide(const Conversation& conversation,
+           std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+               nullptr) override {
+        isla::server::ai_gateway::ScopedTelemetryPhase decide_phase(
+            telemetry_context, isla::server::ai_gateway::telemetry::kPhaseMemoryMidTermFlushDecide);
         if (VLOG_IS_ON(1)) {
             std::string items_summary = "[";
             for (std::size_t i = 0; i < conversation.items.size(); ++i) {
@@ -272,6 +277,7 @@ class LlmMidTermFlushDecider final : public MidTermFlushDecider {
                 .system_prompt = system_prompt_,
                 .user_text = user_text,
                 .reasoning_effort = reasoning_effort_,
+                .telemetry_context = telemetry_context,
             },
             [&output_text](const LlmEvent& event) -> absl::Status {
                 return std::visit(

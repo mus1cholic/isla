@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,6 +17,7 @@
 #include "absl/status/statusor.h"
 #include "http_json_client.hpp"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_telemetry.hpp"
 
 namespace isla::server {
 namespace {
@@ -210,6 +210,9 @@ class JinaApiRerankerClient final : public RerankerClient {
                 << "' model='" << SanitizeForLog(request.model)
                 << "' candidates=" << request.candidates.size();
 
+        isla::server::ai_gateway::ScopedTelemetryPhase transport_phase(
+            request.telemetry_context,
+            isla::server::ai_gateway::telemetry::kPhaseProviderTransport);
         const absl::StatusOr<HttpResponse> response = http_client_->Execute(http_request);
         if (!response.ok()) {
             LOG(WARNING) << "JinaApiRerankerClient transport failed host='"

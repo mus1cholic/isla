@@ -17,6 +17,7 @@
 #include "absl/status/statusor.h"
 #include "http_json_client.hpp"
 #include "isla/server/ai_gateway_session_handler.hpp"
+#include "isla/server/ai_gateway_telemetry.hpp"
 
 namespace isla::server {
 namespace {
@@ -565,12 +566,15 @@ class OllamaLlmClient final : public LlmClient {
             body["messages"].push_back(message);
         }
 
+        ai_gateway::ScopedTelemetryPhase transport_phase(
+            request.telemetry_context, ai_gateway::telemetry::kPhaseProviderTransport);
         const absl::StatusOr<HttpResponse> response = http_client_->Execute(HttpRequestSpec{
             .method = boost::beast::http::verb::post,
             .target_path = "/api/chat",
             .headers = BuildHeaders(config_),
             .body = body.dump(),
         });
+        transport_phase.Finish();
         if (!response.ok()) {
             return response.status();
         }
@@ -637,12 +641,15 @@ class OllamaLlmClient final : public LlmClient {
             body["messages"].push_back(message);
         }
 
+        ai_gateway::ScopedTelemetryPhase transport_phase(
+            request.telemetry_context, ai_gateway::telemetry::kPhaseProviderTransport);
         const absl::StatusOr<HttpResponse> response = http_client_->Execute(HttpRequestSpec{
             .method = boost::beast::http::verb::post,
             .target_path = "/api/chat",
             .headers = BuildHeaders(config_),
             .body = body.dump(),
         });
+        transport_phase.Finish();
         if (!response.ok()) {
             return response.status();
         }

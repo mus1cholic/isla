@@ -10,8 +10,10 @@
 #include <nlohmann/json.hpp>
 
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
+#include "server/src/ai_gateway_telemetry_test_utils.hpp"
 #include "server/src/llm_client_mock.hpp"
 
 namespace isla::server::memory {
@@ -228,16 +230,25 @@ TEST(LlmMidTermFlushDeciderTest, DecideUsesCorrectModelAndSystemPrompt) {
     const std::string response = R"({"boundaries": [], "tail_complete": false, "reasoning": "No"})";
     auto [fake, last_request, decider] = MakeDecider(response);
     ASSERT_NE(decider, nullptr);
+    auto telemetry_sink =
+        std::make_shared<isla::server::ai_gateway::test::RecordingTelemetrySink>();
+    const auto telemetry_context = isla::server::ai_gateway::MakeTurnTelemetryContext(
+        "session_test", "turn_decide", telemetry_sink);
 
     const Conversation conversation = MakeSimpleConversation();
-    const absl::StatusOr<MidTermFlushDecision> decision = decider->Decide(conversation);
+    const absl::StatusOr<MidTermFlushDecision> decision =
+        decider->Decide(conversation, telemetry_context);
     ASSERT_TRUE(decision.ok()) << decision.status();
 
     EXPECT_EQ(last_request->model, "test-model");
+    EXPECT_EQ(last_request->telemetry_context, telemetry_context);
     const absl::StatusOr<std::string> expected_prompt =
         LoadPrompt(PromptAsset::kMidTermFlushDeciderSystemPrompt);
     ASSERT_TRUE(expected_prompt.ok()) << expected_prompt.status();
     EXPECT_EQ(last_request->system_prompt, *expected_prompt);
+    EXPECT_TRUE(isla::server::ai_gateway::test::ContainsTelemetryPhase(
+        telemetry_sink->phases(),
+        isla::server::ai_gateway::telemetry::kPhaseMemoryMidTermFlushDecide));
 }
 
 TEST(LlmMidTermFlushDeciderTest, DecideRejectsInvalidJson) {

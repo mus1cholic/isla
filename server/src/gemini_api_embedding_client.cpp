@@ -15,6 +15,7 @@
 #include "absl/status/statusor.h"
 #include "http_json_client.hpp"
 #include "isla/server/ai_gateway_logging_utils.hpp"
+#include "isla/server/ai_gateway_telemetry.hpp"
 
 namespace isla::server {
 namespace {
@@ -230,6 +231,9 @@ class GeminiApiEmbeddingClient final : public EmbeddingClient {
         VLOG(1) << "GeminiApiEmbeddingClient dispatching host='" << SanitizeForLog(config_.host)
                 << "' model='" << SanitizeForLog(request.model) << "'";
 
+        isla::server::ai_gateway::ScopedTelemetryPhase transport_phase(
+            request.telemetry_context,
+            isla::server::ai_gateway::telemetry::kPhaseProviderTransport);
         const absl::StatusOr<HttpResponse> response = http_client_->Execute(http_request);
         if (!response.ok()) {
             LOG(WARNING) << "GeminiApiEmbeddingClient transport failed host='"

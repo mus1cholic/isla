@@ -697,6 +697,7 @@ cc_library(
     hdrs = ["ai_gateway_telemetry_test_utils.hpp"],
     visibility = [
         "//server/src:__pkg__",
+        "//server/memory/src:__pkg__",
     ],
     deps = [
         "//server/include/isla/server:server_headers",
@@ -849,6 +850,7 @@ cc_test(
     srcs = ["retrieved_memory_reranker_client_adapter_test.cpp"],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_telemetry_test_utils",
         ":retrieved_memory_reranker_client_adapter",
         ":reranker_client_mock",
         "@googletest//:gtest_main",
@@ -1028,6 +1030,7 @@ cc_test(
     ],
     deps = [
         "//server/include/isla/server:server_headers",
+        ":ai_gateway_telemetry_test_utils",
         ":tools",
         "@googletest//:gtest_main",
     ],

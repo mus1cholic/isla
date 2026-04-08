@@ -1718,7 +1718,8 @@ absl::Status GatewayStubResponder::HandleSuccessfulReplyMemory(const PendingTurn
         isla::server::memory::GatewayAssistantReply(
             turn.session_id, turn.turn_id, std::string(reply_text),
             ResolveConversationMessageTime(turn.session_id, turn.turn_id,
-                                           isla::server::memory::MessageRole::Assistant)));
+                                           isla::server::memory::MessageRole::Assistant),
+            turn.telemetry_context));
 }
 
 absl::StatusOr<std::string>

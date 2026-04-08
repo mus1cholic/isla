@@ -4,6 +4,8 @@
 #include <string>
 #include <utility>
 
+#include "isla/server/ai_gateway_telemetry.hpp"
+#include "server/src/ai_gateway_telemetry_test_utils.hpp"
 #include <gtest/gtest.h>
 
 namespace isla::server::tools {
@@ -85,6 +87,39 @@ TEST(ToolRegistryTest, ExecuteNormalizesMissingResultMetadata) {
     EXPECT_EQ(result->tool_name, "echo_tool");
     EXPECT_EQ(result->output_text, "ok");
     EXPECT_FALSE(result->is_error);
+}
+
+TEST(ToolRegistryTest, ExecuteRecordsToolPhaseWhenTelemetryContextExists) {
+    const auto tool = std::make_shared<StaticTool>(
+        ToolDefinition{
+            .name = "echo_tool",
+            .description = "echo",
+            .input_json_schema = "{}",
+        },
+        ToolResult{
+            .output_text = "ok",
+        });
+    const absl::StatusOr<ToolRegistry> registry = ToolRegistry::Create({ tool });
+    ASSERT_TRUE(registry.ok()) << registry.status();
+    auto telemetry_sink =
+        std::make_shared<isla::server::ai_gateway::test::RecordingTelemetrySink>();
+    const auto telemetry_context =
+        isla::server::ai_gateway::MakeTurnTelemetryContext("srv_test", "turn_tool", telemetry_sink);
+
+    const absl::StatusOr<ToolResult> result = registry->Execute(
+        ToolExecutionContext{
+            .session_id = "srv_test",
+            .telemetry_context = telemetry_context,
+        },
+        ToolCall{
+            .call_id = "call_telemetry",
+            .name = "echo_tool",
+            .arguments_json = "{}",
+        });
+
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_TRUE(isla::server::ai_gateway::test::ContainsTelemetryPhase(
+        telemetry_sink->phases(), isla::server::ai_gateway::telemetry::kPhaseToolExecute));
 }
 
 TEST(ToolRegistryTest, ExecuteReturnsNotFoundForUnknownTool) {

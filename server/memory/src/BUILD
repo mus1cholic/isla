@@ -431,6 +431,7 @@ cc_test(
     name = "mid_term_compactor_test",
     srcs = ["mid_term/test/mid_term_compactor_test.cpp"],
     deps = [
+        "//server/src:ai_gateway_telemetry_test_utils",
         "//server/src:embedding_client_mock",
         "//server/src:llm_client_mock",
         ":mid_term_compactor",
@@ -445,6 +446,7 @@ cc_test(
     name = "mid_term_flush_decider_test",
     srcs = ["mid_term/test/mid_term_flush_decider_test.cpp"],
     deps = [
+        "//server/src:ai_gateway_telemetry_test_utils",
         "//server/src:llm_client_mock",
         ":mid_term_flush_decider",
         ":prompt_loader",

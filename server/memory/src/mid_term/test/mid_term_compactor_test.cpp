@@ -9,9 +9,11 @@
 #include <nlohmann/json.hpp>
 
 #include "absl/status/status.h"
+#include "isla/server/ai_gateway_telemetry.hpp"
 #include "isla/server/embedding_client.hpp"
 #include "isla/server/memory/memory_types.hpp"
 #include "isla/server/memory/prompt_loader.hpp"
+#include "server/src/ai_gateway_telemetry_test_utils.hpp"
 #include "server/src/embedding_client_mock.hpp"
 #include "server/src/llm_client_mock.hpp"
 
@@ -488,9 +490,14 @@ TEST(LlmMidTermCompactorTest, CompactGeneratesEmbeddingWhenEmbeddingClientConfig
     const CompactorWithFake built =
         MakeCompactor(response, embedding_client, "gemini-embedding-2-preview");
     ASSERT_NE(built.compactor, nullptr);
+    auto telemetry_sink =
+        std::make_shared<isla::server::ai_gateway::test::RecordingTelemetrySink>();
+    const auto telemetry_context = isla::server::ai_gateway::MakeTurnTelemetryContext(
+        "session_test", "turn_compact", telemetry_sink);
+    MidTermCompactionRequest request = MakeCompactionRequest();
+    request.telemetry_context = telemetry_context;
 
-    const absl::StatusOr<CompactedMidTermEpisode> compacted =
-        built.compactor->Compact(MakeCompactionRequest());
+    const absl::StatusOr<CompactedMidTermEpisode> compacted = built.compactor->Compact(request);
 
     ASSERT_TRUE(compacted.ok()) << compacted.status();
     EXPECT_EQ(compacted->embedding.size(), kEmbeddingDimensions);
@@ -499,6 +506,13 @@ TEST(LlmMidTermCompactorTest, CompactGeneratesEmbeddingWhenEmbeddingClientConfig
     EXPECT_EQ(built.last_embedding_request->output_dimensionality, kEmbeddingDimensions);
     EXPECT_EQ(built.last_embedding_request->text,
               "The discussion focused on debugging an export crash.");
+    EXPECT_EQ(built.last_request->telemetry_context, telemetry_context);
+    EXPECT_EQ(built.last_embedding_request->telemetry_context, telemetry_context);
+    EXPECT_TRUE(isla::server::ai_gateway::test::ContainsTelemetryPhase(
+        telemetry_sink->phases(), isla::server::ai_gateway::telemetry::kPhaseMemoryMidTermCompact));
+    EXPECT_TRUE(isla::server::ai_gateway::test::ContainsTelemetryPhase(
+        telemetry_sink->phases(),
+        isla::server::ai_gateway::telemetry::kPhaseMemoryMidTermEmbedSummary));
 }
 
 TEST(LlmMidTermCompactorTest, CompactRejectsUnexpectedEmbeddingDimension) {

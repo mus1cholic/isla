@@ -10,6 +10,10 @@
 #include "isla/server/llm_client.hpp"
 #include "isla/server/memory/memory_types.hpp"
 
+namespace isla::server::ai_gateway {
+struct TurnTelemetryContext;
+} // namespace isla::server::ai_gateway
+
 namespace isla::server::memory {
 
 struct MidTermFlushBoundary {
@@ -33,7 +37,9 @@ class MidTermFlushDecider {
     // remaining tail has also concluded. An empty boundary list with tail_complete=false means
     // the conversation should remain live with no flush.
     [[nodiscard]] virtual absl::StatusOr<MidTermFlushDecision>
-    Decide(const Conversation& conversation) = 0;
+    Decide(const Conversation& conversation,
+           std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context =
+               nullptr) = 0;
 };
 
 using MidTermFlushDeciderPtr = std::shared_ptr<MidTermFlushDecider>;

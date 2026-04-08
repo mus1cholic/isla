@@ -146,14 +146,15 @@ std::string MemoryOrchestrator::NextEpisodeId() {
 }
 
 absl::StatusOr<MemoryOrchestrator::CompletedFlushBuildInput>
-MemoryOrchestrator::CompactFlushCandidate(const MidTermCompactorPtr& compactor,
-                                          std::string_view session_id,
-                                          const OngoingEpisodeFlushCandidate& flush_candidate,
-                                          std::string_view failure_context) {
+MemoryOrchestrator::CompactFlushCandidate(
+    const MidTermCompactorPtr& compactor, std::string_view session_id,
+    const OngoingEpisodeFlushCandidate& flush_candidate, std::string_view failure_context,
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context) {
     const absl::StatusOr<CompactedMidTermEpisode> compacted =
         compactor->Compact(MidTermCompactionRequest{
             .session_id = std::string(session_id),
             .flush_candidate = flush_candidate,
+            .telemetry_context = std::move(telemetry_context),
         });
     if (!compacted.ok()) {
         return compacted.status();
@@ -294,7 +295,9 @@ MemoryOrchestrator::PersistCompletedEpisodeFlush(const CompletedOngoingEpisodeFl
     return absl::OkStatus();
 }
 
-absl::Status MemoryOrchestrator::QueueMidTermAnalysis(const Conversation& conversation_snapshot) {
+absl::Status MemoryOrchestrator::QueueMidTermAnalysis(
+    const Conversation& conversation_snapshot,
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context) {
     if (mid_term_compactor_ == nullptr || mid_term_flush_decider_ == nullptr) {
         return absl::OkStatus();
     }
@@ -311,9 +314,10 @@ absl::Status MemoryOrchestrator::QueueMidTermAnalysis(const Conversation& conver
         .future = std::async(
             std::launch::async,
             [decider = std::move(decider), compactor = std::move(compactor), session_id,
-             conversation_snapshot]() -> absl::StatusOr<AsyncMidTermFlushResult> {
+             conversation_snapshot, telemetry_context = std::move(telemetry_context)]()
+                -> absl::StatusOr<AsyncMidTermFlushResult> {
                 const absl::StatusOr<MidTermFlushDecision> decision =
-                    decider->Decide(conversation_snapshot);
+                    decider->Decide(conversation_snapshot, telemetry_context);
                 if (!decision.ok()) {
                     return decision.status();
                 }
@@ -339,7 +343,7 @@ absl::Status MemoryOrchestrator::QueueMidTermAnalysis(const Conversation& conver
                 for (const OngoingEpisodeFlushCandidate& candidate : *candidates) {
                     absl::StatusOr<CompletedFlushBuildInput> build_input =
                         MemoryOrchestrator::CompactFlushCandidate(compactor, session_id, candidate,
-                                                                  "mid-term");
+                                                                  "mid-term", telemetry_context);
                     if (!build_input.ok()) {
                         return build_input.status();
                     }
@@ -360,9 +364,10 @@ absl::Status MemoryOrchestrator::QueueMidTermAnalysis(const Conversation& conver
     return absl::OkStatus();
 }
 
-absl::Status
-MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_candidate,
-                                      std::optional<std::size_t> split_at_message_index) {
+absl::Status MemoryOrchestrator::QueueMidTermFlush(
+    const OngoingEpisodeFlushCandidate& flush_candidate,
+    std::optional<std::size_t> split_at_message_index,
+    std::shared_ptr<const isla::server::ai_gateway::TurnTelemetryContext> telemetry_context) {
     if (mid_term_compactor_ == nullptr) {
         return absl::OkStatus();
     }
@@ -371,23 +376,24 @@ MemoryOrchestrator::QueueMidTermFlush(const OngoingEpisodeFlushCandidate& flush_
     MidTermCompactorPtr compactor = mid_term_compactor_;
     pending_mid_term_flushes_.push_back(PendingMidTermFlush{
         .conversation_item_index = flush_candidate.conversation_item_index,
-        .future = std::async(std::launch::async,
-                             [compactor = std::move(compactor), session_id, split_at_message_index,
-                              flush_candidate = OngoingEpisodeFlushCandidate(
-                                  flush_candidate)]() -> absl::StatusOr<AsyncMidTermFlushResult> {
-                                 absl::StatusOr<CompletedFlushBuildInput> build_input =
-                                     MemoryOrchestrator::CompactFlushCandidate(
-                                         compactor, session_id, flush_candidate, "mid-term");
-                                 if (!build_input.ok()) {
-                                     return build_input.status();
-                                 }
-                                 return AsyncMidTermFlushResult{
-                                     .completed_flushes = { std::move(*build_input) },
-                                     .captured_message_count =
-                                         flush_candidate.ongoing_episode.messages.size(),
-                                     .tail_complete = !split_at_message_index.has_value(),
-                                 };
-                             }),
+        .future = std::async(
+            std::launch::async,
+            [compactor = std::move(compactor), session_id, split_at_message_index,
+             flush_candidate = OngoingEpisodeFlushCandidate(flush_candidate),
+             telemetry_context =
+                 std::move(telemetry_context)]() -> absl::StatusOr<AsyncMidTermFlushResult> {
+                absl::StatusOr<CompletedFlushBuildInput> build_input =
+                    MemoryOrchestrator::CompactFlushCandidate(
+                        compactor, session_id, flush_candidate, "mid-term", telemetry_context);
+                if (!build_input.ok()) {
+                    return build_input.status();
+                }
+                return AsyncMidTermFlushResult{
+                    .completed_flushes = { std::move(*build_input) },
+                    .captured_message_count = flush_candidate.ongoing_episode.messages.size(),
+                    .tail_complete = !split_at_message_index.has_value(),
+                };
+            }),
         .freeze_tail_before_append = !split_at_message_index.has_value(),
     });
     VLOG(1) << "MemoryOrchestrator queued async mid-term flush session_id="
